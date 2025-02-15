@@ -1,0 +1,6 @@
+{
+    "name": "Top 100 Popularity",
+    "filter": {
+        "popularity_min": 100
+    }
+}
