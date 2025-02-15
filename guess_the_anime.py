@@ -3317,7 +3317,7 @@ select_button = create_button(first_row_frame, "CHOOSE DIRECTORY:", select_direc
                               "the extension if it's .mp4.\n\nYou'll want to hit the CREATE " + 
                               "button after to create the playlist.")
 
-directory_entry = tk.Entry(first_row_frame, width=29, bg="black", fg="white", insertbackground="white")
+directory_entry = tk.Entry(first_row_frame, width=28, bg="black", fg="white", insertbackground="white")
 directory_entry.pack(side="left")
 
 # Generate playlist button
@@ -3382,6 +3382,8 @@ go_button = create_button(first_row_frame, "GO TO:", go_to_index,
                               "It will play it immediately and set the current index."))
 current_entry = tk.Entry(first_row_frame, width=5, bg="black", fg="white", insertbackground="white", justify='center')
 current_entry.pack(side="left")
+
+blank_space(first_row_frame)
 
 save_button = create_button(first_row_frame, "SAVE", save, True,
                               help_title="SAVE PLAYLIST",
