@@ -307,8 +307,10 @@ def fetch_all_metadata(delay=1):
     if not confirm:
         return  # User canceled
     def worker():
-        for filename in playlist:
-
+        total_checked = 0
+        total_fetched = 0
+        for filename in directory_files:
+            total_checked = total_checked + 1
             # Skip if metadata already exists
             if filename in file_metadata:
                 file_data = file_metadata.get(filename)
@@ -316,10 +318,10 @@ def fetch_all_metadata(delay=1):
                 if mal_id in anime_metadata:
                     continue  
             fetch_metadata(filename)  # Call your existing metadata function
-
+            total_fetched = total_fetched + 1
             time.sleep(delay)  # Delay to avoid API rate limits
 
-        print("Metadata fetching complete!")
+        print("Metadata fetching complete! - Checked:" + str(total_checked) + " Missing:" + str(total_fetched))
 
     # Run in a separate thread so it doesn’t freeze the UI
     threading.Thread(target=worker, daemon=True).start()
@@ -708,15 +710,19 @@ def save_config():
 def load_config():
     """Function to load configuration"""
     global playlist, playlist_name, directory_files
-    if os.path.exists(config_file):
-        with open(config_file, "r") as f:
-            config = json.load(f)
-        directory_files = config.get("directory_files", {})
-        update_playlist_name(config.get("playlist_name", ""))
-        playlist = config.get("playlist", [])
-        directory_entry.insert(0, config.get("directory", ""))
-        update_current_index(config.get("current_index", 0))
-        return True
+    try:
+        if os.path.exists(config_file):
+            with open(config_file, "r") as f:
+                config = json.load(f)
+            directory_files = config.get("directory_files", {})
+            update_playlist_name(config.get("playlist_name", ""))
+            playlist = config.get("playlist", [])
+            directory_entry.insert(0, config.get("directory", ""))
+            update_current_index(config.get("current_index", 0))
+    except Exception as e:
+        os.remove(config_file)
+        print(f"Error loading config: {e}")
+        return False
     return False
 
 def update_playlist_name(name):
@@ -786,8 +792,10 @@ def save_playlist(playlist, current_index, parent, autosave):
     save_config()
     print(f"Playlist saved as {filename}")
 
+playlist_loaded = False
 def load_playlist(index):
     """Loads a saved playlist from JSON."""
+    global playlist_loaded
     playlist_data = get_playlists_dict()[index]
     name = playlist_data
     filename = os.path.join(PLAYLISTS_FOLDER, f"{name}.json")
@@ -808,6 +816,7 @@ def load_playlist(index):
     update_current_index(data.get('current_index'))
     root.title(WINDOW_TITLE + " - " + playlist_name)
     print(f"Loaded playlist: {name}")
+    playlist_loaded = True
     save_config()
     load(True)
 
@@ -1410,7 +1419,7 @@ def get_playlists_dict():
 speed_mode_enabled = False
 def speed_mode_toggle():
     global speed_mode_enabled
-    if blind_speed_mode_enabled or frame_speed_mode_enabled:
+    if blind_speed_mode_enabled or frame_speed_mode_enabled or clues_speed_mode_enabled or variety_speed_mode_enabled:
         speed_mode_enabled = True
     else:
         speed_mode_enabled = not speed_mode_enabled
@@ -1545,7 +1554,7 @@ def unselect_SPEED_MODES():
 last_round = -1
 def set_variety_speed_mode():
     global speed_mode_enabled, last_round, speed_round_length
-    data = get_metadata(currently_playing.get('filename'))
+    data = currently_playing.get('data')
     popularity = data.get('popularity')
     if popularity <= 100:
         round_options = [0,1,1,2,2,2,3,3]
@@ -1555,7 +1564,10 @@ def set_variety_speed_mode():
         round_options = [0,0,0,1,1,1,1,2]
     else:
         round_options = [0,0,0,0,0,1,1,1]
-        
+
+    if data.get("mal") in clues_anime_ids:
+        round_options = [x for x in round_options if x != 3]
+
     round_options = [x for x in round_options if x != last_round]  # Filter list
     random.shuffle(round_options)  # Shuffle in place
     next_round = round_options[0] if round_options else 0
@@ -2305,7 +2317,7 @@ def get_tags_string(data):
 def get_song_string(data):
     for theme in data.get("songs", []):
         if theme.get("slug") == data.get("slug"):
-            return theme.get("title") + " by " + get_artists_string(theme.get("artist")) #theme["animethemeentries"][0]["episodes"] if theme["animethemeentries"] else "N/A"
+            return theme.get("title") + " by " + get_artists_string(theme.get("artist"))
     return ""
 
 # =========================================
@@ -2313,9 +2325,10 @@ def get_song_string(data):
 # =========================================
 
 currently_playing = {}
-# Function to play a specific video by index
 def play_video(index = current_index):
-    global video_stopped, currently_playing, search_queue, censors_enabled, blind_censors_enabled, frame_speed_round_started, speed_round_start_time
+    """Function to play a specific video by index"""
+    global video_stopped, currently_playing, search_queue, censors_enabled, blind_censors_enabled, frame_speed_round_started, speed_round_start_time, playlist_loaded
+    playlist_loaded = False
     speed_round_start_time = None
     video_stopped = True
     toggle_title_popup(False)
@@ -2351,7 +2364,7 @@ def play_video(index = current_index):
     root.after(3000, thread_prefetch_metadata)
 
 def play_filename(filename):
-    global currently_playing, video_stopped, total_themes_played
+    global currently_playing, video_stopped, total_themes_played, clues_anime_ids
     filepath = directory_files.get(filename)  # Get file path from playlist
     if not filepath or not os.path.exists(filepath):  # Check if file exists
         print(f"File not found: {filepath}. Skipping...")
@@ -2362,6 +2375,15 @@ def play_filename(filename):
         "filename":filename,
         "data":get_metadata(filename)
     }
+    if variety_speed_mode_enabled:
+        set_variety_speed_mode()
+    if clues_speed_mode_enabled:
+        mal_id = currently_playing.get("data").get("mal")
+        if mal_id in clues_anime_ids:
+            play_next()
+            return
+        else:
+            clues_anime_ids.append(mal_id)
     if auto_info_start:
         toggle_title_popup(True)
     if not root.attributes("-topmost") and not disable_shortcuts:
@@ -2373,8 +2395,6 @@ def play_filename(filename):
     player.set_media(media)
     global speed_round_number
     if speed_mode_enabled:
-        if variety_speed_mode_enabled:
-            set_variety_speed_mode()
         if speed_round_number%10 == 0:
             next_background_track()
         speed_round_number = speed_round_number + 1
@@ -2409,11 +2429,13 @@ def play_video_retry(retries):
 
 # Function to play next video
 def play_next():
-    if current_index + 1 < len(playlist):
+    if playlist_loaded:
+        play_video(current_index)
+    elif current_index + 1 < len(playlist):
         play_video(current_index + 1)
 
-# Function to play previous video
 def play_previous():
+    """Function to play previous video"""
     if current_index - 1 >= 0:
         play_video(current_index - 1)
 
@@ -3066,13 +3088,10 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "START/END LIGHTNING ROUND", "[L]")
     add_single_line(right_column, "FRAME", "[F]", False)
     add_single_line(right_column, "BLIND", "[B]", False)
-    add_single_line(right_column, "CLUES", "[C]", False)
+    add_single_line(right_column, "CLUES", "[U]", False)
     add_single_line(right_column, "VARIETY", "[V]")
     add_single_line(right_column, "END SESSION", "[E]")
-    add_single_line(right_column, "SCORE", "[SHIFT+]", False)
-    add_single_line(right_column, "SIZE", "[S]", False)
-    add_single_line(right_column, "FLIP", "[F]", False)
-    add_single_line(right_column, "END", "[E]", False)
+    add_single_line(right_column, "[W]IDTH [A]NCHOR E[X]TEND [Q]UIT", "SCOREBOARD", False)
     right_column.config(state=tk.DISABLED)
 
 def add_single_line(column, line, title, newline=True):
@@ -3545,7 +3564,7 @@ speed_mode_button = create_button(second_row_frame, "[L]IGHTNING ROUND", lambda:
                               help_title="[L]IGHTNING ROUND (Shortcut Key = 'l')",
                               help_text=("Start/End the Lightning Round mode. This mode uses the same playlist as "
                                          "normal, but uses the following rules:\n\n" + SPEED_MODES["regular"]["desc"] +
-                                         "\n\nThe round will queue up with a COMING NEXT popup and start after the current theme "
+                                         "\n\nThe round will queue up with a UP NEXT popup and start after the current theme "
                                          "finishes.\n\nNumber of rounds are tracked and you can go on as long as you like "
                                          "until ended.\n\nLightning Rounds also avoid any censors you may have added."))
 frame_speed_mode_button = create_button(second_row_frame, "📷", lambda: toggle_speed_mode("frame"),
@@ -3567,7 +3586,7 @@ blind_speed_mode_button = create_button(second_row_frame, "👁", lambda: toggle
                                          "only may be hard if you're not an expert or using popular shows. It may be recommended to "
                                          "use a filtered playlist based on popularity depending on the crowd."))
 clues_speed_mode_button = create_button(second_row_frame, "🔍", lambda: toggle_speed_mode("clues"),
-                              help_title="[C]LUES LIGHTNING ROUND (Shortcut Key = 'c')",
+                              help_title="CL[U]ES LIGHTNING ROUND (Shortcut Key = 'u')",
                               help_text=("Lightning Round varient using the following rules:\n\n" + SPEED_MODES["clues"]["desc"] +
                                          "\n\nThis mode is pretty difficult unless you are quite knowledgable. Probably not recommended "
                                          "on its own unless using a pretty curated playlist.\n\nThe music is the same from the Frame Lightning Round. "
@@ -3585,7 +3604,7 @@ show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE", show
                                          "based on the youtube_links.txt file in the files/ folder. The downloads are stored in the "
                                          "youtube/ folder and deleted when removed from the youtube_links.txt file. All videos are "
                                          "also listed in the youtube_archive.txt file just to keep track of videos downloaded.\n\n"
-                                         "Videos are queued with a COMING UP popup when selected, and will play after the current theme. "
+                                         "Videos are queued with a UP NEXT popup when selected, and will play after the current theme. "
                                          "Only one video may be queued at a time, and selecting the same video will unqueue it."))
 
 toggle_censor_bar_button = create_button(second_row_frame, "[C]ENSORS", toggle_censor_bar, True, enabled=censors_enabled,
@@ -3803,7 +3822,7 @@ def on_release(key):
                 toggle_speed_mode("frame")
             elif key.char == 'b':
                 toggle_speed_mode("blind")
-            elif key.char == 'c':
+            elif key.char == 'u':
                 toggle_speed_mode("clues")
             elif key.char == 'v':
                 toggle_speed_mode("variety")
