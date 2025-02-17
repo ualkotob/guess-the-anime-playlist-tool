@@ -41,7 +41,7 @@ instance = vlc.Instance() #instance = vlc.Instance("--no-xlib --no-video-deco") 
 player = instance.media_player_new()
 
 # =========================================
-#        GLOBAL VARIABLES/CONSTANTS
+#       *GLOBAL VARIABLES/CONSTANTS
 # =========================================
 
 playlist = []
@@ -67,7 +67,7 @@ TAGGED_FILE = "files/tagged.txt"
 HIGHLIGHT_COLOR = "gray26"
 
 # =========================================
-#          FETCHING ANIME METADATA
+#         *FETCHING ANIME METADATA
 # =========================================
 
 # Function to fetch anime metadata using AnimeThemes.moe API
@@ -101,14 +101,14 @@ def pre_fetch_metadata():
         if i >= 0 and i < len(playlist) and i != current_index and (fetching_metadata.get(playlist[i]) is None):
             get_metadata(playlist[i], True)
 
-def get_metadata(filename, refresh = False):
+def get_metadata(filename, refresh = False, refresh_all = False):
     global fetched_metadata
     file_data = file_metadata.get(filename)
     if file_data:
         mal_id = file_data.get('mal')
         anime_data = anime_metadata.get(mal_id)
         if anime_data:
-            if mal_id not in fetched_metadata and refresh and auto_refresh_toggle:
+            if mal_id not in fetched_metadata and refresh and (refresh_all or auto_refresh_toggle):
                 fetched_metadata.append(mal_id)
                 refresh_jikan_data(mal_id, anime_data)
             return file_data | anime_data
@@ -127,7 +127,9 @@ def fetch_metadata(filename = None, refetch = False):
     if filename is None:
         filename = playlist[current_index]
         refetch = True
-    print("Fetching metadata for " + filename + "...")
+
+    print(f"Fetching metadata for {filename}...", end="", flush=True)
+
     fetching_metadata[filename] = True
     slug = filename.split("-")[1].split(".")[0].split("v")[0]
     if (not "[MAL]" in filename):
@@ -171,27 +173,27 @@ def fetch_metadata(filename = None, refetch = False):
             if jikan_data:
                 anime_data = {
                     "title":jikan_data.get("title"),
-                    "eng_title":jikan_data.get('title_english', 'N/A'),
+                    "eng_title":jikan_data.get("title_english", "N/A"),
                     "series":get_name_list(anime_themes, "series"),
-                    "season":str(jikan_data.get('season') or 'N/A') + " " + str(jikan_data.get('year', 'N/A')),
-                    "score":jikan_data.get('score', 'N/A'),
-                    "rank":jikan_data.get('rank', 'N/A'),
-                    "members":jikan_data.get('members', 'N/A'),
-                    "popularity":jikan_data.get('popularity', 'N/A'),
-                    "type":jikan_data.get('type', 'N/A'),
-                    "source":jikan_data.get('source', 'N/A'),
-                    "episodes":jikan_data.get('episodes', 'N/A'),
+                    "season":str(jikan_data.get("season") or "N/A") + " " + str(jikan_data.get("year") or "N/A"),
+                    "score":jikan_data.get("score", "N/A"),
+                    "rank":jikan_data.get("rank", "N/A"),
+                    "members":jikan_data.get("members", "N/A"),
+                    "popularity":jikan_data.get("popularity", "N/A"),
+                    "type":jikan_data.get("type", "N/A"),
+                    "source":jikan_data.get("source", "N/A"),
+                    "episodes":jikan_data.get("episodes", "N/A"),
                     "studios":get_name_list(jikan_data, "studios"),
                     "genres":get_name_list(jikan_data, "genres"),
                     "themes":get_name_list(jikan_data, "themes"),
                     "demographics":get_name_list(jikan_data, "demographics"),
-                    "synopsis":jikan_data.get('synopsis', 'N/A'),
+                    "synopsis":jikan_data.get('synopsis', "N/A"),
                     "songs":get_theme_list(anime_themes)
                 }
-                if 'N/A' in anime_data.get("season"):
-                    anime_data["season"] = str(anime_themes.get('season', 'N/A')) + " " + str(anime_themes.get('year', 'N/A'))
+                if "N/A" in anime_data.get("season"):
+                    anime_data["season"] = str(anime_themes.get("season", "N/A")) + " " + str(anime_themes.get("year", "N/A"))
                 else:
-                    anime_data['season'] = anime_data['season'].capitalize()
+                    anime_data["season"] = anime_data["season"].capitalize()
                 anime_metadata[mal_id] = anime_data
         elif manual_file:
             existing_songs = anime_data.get("songs", []) if anime_data else []
@@ -200,15 +202,15 @@ def fetch_metadata(filename = None, refetch = False):
             # Avoid duplicates by checking slugs (each song has a unique slug)
             all_songs = {song["slug"]: song for song in existing_songs + new_songs}.values()
             anime_data["songs"] = list(all_songs)
-        print("Metadata fetching for " + filename + " complete.")
         save_metadata()
         data = file_data | anime_data
         if currently_playing.get('filename') == filename:
             currently_playing["data"] = data
             update_metadata()
+        print(f"\rFetching metadata for {filename}...COMPLETE")
     else:
         data = None
-        print("Metadata fetching for " + filename + " failed.")
+        print(f"\rFetching metadata for {filename}...FAILED")
     return data
 
 def get_theme_list(data):
@@ -262,26 +264,28 @@ def get_filename_metadata(filename):
     return metadata
 
 def refresh_jikan_data(mal_id, data):
-    print("Refreshing jikan data for " + data["title"] + "...")
+    print(f"Refreshing Jikan data for {data['title']}...", end="", flush=True)
+    
     jikan_data = fetch_jikan_metadata(mal_id)
     if jikan_data:
-        data["eng_title"] = jikan_data.get('title_english', 'N/A')
-        data["score"] = jikan_data.get('score', 'N/A')
-        data["rank"] = jikan_data.get('rank', 'N/A')
-        data["members"] = jikan_data.get('members', 'N/A')
-        data["popularity"] = jikan_data.get('popularity', 'N/A')
-        data["type"] = jikan_data.get('type', 'N/A')
-        data["source"] = jikan_data.get('source', 'N/A')
-        data["episodes"] = jikan_data.get('episodes', 'N/A')
+        data["eng_title"] = jikan_data.get('title_english', "N/A")
+        data["score"] = jikan_data.get('score', "N/A")
+        data["rank"] = jikan_data.get('rank', "N/A")
+        data["members"] = jikan_data.get('members', "N/A")
+        data["popularity"] = jikan_data.get('popularity', "N/A")
+        data["type"] = jikan_data.get('type', "N/A")
+        data["source"] = jikan_data.get('source', "N/A")
+        data["episodes"] = jikan_data.get('episodes', "N/A")
         data["studios"] = get_name_list(jikan_data, 'studios')
-        data["genres"] = get_name_list(jikan_data,'genres')
+        data["genres"] = get_name_list(jikan_data, 'genres')
         data["themes"] = get_name_list(jikan_data, 'themes')
         data["demographics"] = get_name_list(jikan_data, 'demographics')
-        data["synopsis"] = jikan_data.get('synopsis', 'N/A')
+        data["synopsis"] = jikan_data.get('synopsis', "N/A")
+        
         save_metadata()
-        print("Refreshing jikan data for " + data["title"] + " complete.")
+        print(f"\rRefreshing Jikan data for {data['title']}...COMPLETE")
     else:
-        print("Failed to get jikan data for " + data["title"] + ".")
+        print(f"\rRefreshing Jikan data for {data['title']}...FAILED")
 
 def get_last_two_folders(filepath):
     path_parts = filepath.split(os.sep)
@@ -299,10 +303,10 @@ def get_name_list(data, get):
     return name_list
 
 def get_artists_string(artists):
-    return ",".join(artists) if artists else "N/A"
+    return ", ".join(artists) if artists else "N/A"
 
 def fetch_all_metadata(delay=1):
-    """Fetches missing metadata for the entire playlist, spacing out API calls."""
+    """Fetches missing metadata for the entire directory, spacing out API calls."""
     confirm = messagebox.askyesno("Fetch All Missing Metadata", f"Are you sure you want to fetch all missing metadata?")
     if not confirm:
         return  # User canceled
@@ -326,8 +330,26 @@ def fetch_all_metadata(delay=1):
     # Run in a separate thread so it doesn’t freeze the UI
     threading.Thread(target=worker, daemon=True).start()
 
+def refresh_all_metadata(delay=1):
+    """Refreshes all jikan metadata for the entire directory, spacing out API calls."""
+    confirm = messagebox.askyesno("Refresh All Jikan Metadata", f"Are you sure you want to refresh all jikan metadata?")
+    if not confirm:
+        return  # User canceled
+    def worker():
+        total_checked = 0
+        for filename in directory_files:
+            get_metadata(filename, refresh = True, refresh_all = True)
+            total_checked = total_checked + 1
+            # time.sleep(delay)  # Delay to avoid API rate limits
+
+        print("Metadata refeshing complete! - Refreshed:" + str(total_checked))
+
+    # Run in a separate thread so it doesn’t freeze the UI
+    threading.Thread(target=worker, daemon=True).start()
+
+
 # =========================================
-#         UPDATING METADATA DISPLAY
+#        *UPDATING METADATA DISPLAY
 # =========================================
 
 def clear_metadata():
@@ -363,6 +385,7 @@ def update_metadata():
     filename = currently_playing.get("filename")
     if filename:
         button_seleted(tag_button, check_tagged(filename))
+        button_seleted(favorite_button, check_favorited(filename))
         data = currently_playing.get('data')
         # Clear previous metadata
         reset_metadata()
@@ -380,7 +403,15 @@ def update_metadata():
             left_column.insert(tk.END, "EPISODES (TYPE): ", "bold")
             left_column.insert(tk.END, f"{data.get('episodes')} ({data.get('type')})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
-            add_multiple_data_line(left_column, data, "SERIES: ", "series")
+            add_multiple_data_line(left_column, data, "SERIES (THEMES): ", "series", False)
+            series = data.get('series')
+            series_count = len(get_all_series(series))
+            if series_count > 0:
+                left_column.insert(tk.END, f" ({series_count} total)", "white")
+                if series_count > 1:
+                    btn = tk.Button(left_column, text="▶", borderwidth=0, pady=0, command=lambda: show_series(series), bg="black", fg="white")
+                    left_column.window_create(tk.END, window=btn)
+            left_column.insert(tk.END, "\n\n", "blank")
             left_column.insert(tk.END, "SOURCE: ", "bold")
             left_column.insert(tk.END, f"{data.get('source')}", "white")
             left_column.insert(tk.END, "\n\n", "blank")
@@ -400,9 +431,74 @@ def update_metadata():
                 elif not endingAdded and theme["type"] == "ED":
                     endingAdded = True
                     middle_column.insert(tk.END, "ENDINGS:\n", "bold")
-                add_op_ed(theme, middle_column, data.get("slug"))
+                add_op_ed(theme, middle_column, data.get("slug"), data.get("title"))
             toggleColumnEdit(False)
             updating_metadata = False
+
+def get_all_series(series):
+    filenames = []
+    for filename in directory_files:
+        file_data = get_metadata(filename)
+        file_series = file_data.get("series")
+        if file_series and file_series == series:
+            filenames.append(filename)
+
+    return sorted(filenames)
+
+def add_multiple_data_line(column, data, title, get, blank = True):
+    column.insert(tk.END, title, "bold")
+    count = 0
+    for item in data.get(get, []):
+        count += 1
+        name = item
+        if count > 1:
+            name = ", " + name 
+        column.insert(tk.END, name, "white")
+    if count == 0:
+        column.insert(tk.END, "N/A", "white")
+    if blank:
+        column.insert(tk.END, "\n\n", "blank")
+
+def add_single_data_line(column, data, title, get):
+    column.insert(tk.END, title, "bold")
+    if data:
+        column.insert(tk.END, f"{data.get(get, "N/A")}", "white")
+    else:
+        column.insert(tk.END, "N/A", "white")
+    column.insert(tk.END, "\n\n", "blank")
+
+def add_op_ed(theme, column, slug, title):
+    theme_slug = theme.get("slug")
+    song_title = theme.get("title")
+    artist = get_artists_string(theme.get("artist"))
+    episodes = theme.get("episodes")
+    format = "white"
+    if theme_slug == slug:
+        format = "highlight"
+    filename = get_theme_filename(title, theme_slug)
+    if filename:
+        btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white")
+        column.window_create(tk.END, window=btn)
+    else:
+        column.insert(tk.END, ">", format)
+    column.insert(tk.END, f"{theme_slug}: {song_title}\n", format)
+    column.insert(tk.END, f"Artist(s): {artist}\n", format)
+    column.insert(tk.END, f"(Episodes: {episodes})\n", format)
+    if theme_slug == slug:
+        column.see("end-1c")
+    column.insert(tk.END, "\n", "blank")
+
+def get_theme_filename(title, slug):
+    for filename in directory_files:
+        data = get_metadata(filename)
+        if data.get("title") == title and data.get("slug") == slug:
+            return filename
+    return None
+
+def play_video_from_filename(filename):
+    global search_queue
+    search_queue = filename
+    play_video()
 
 def toggleColumnEdit(toggle):
     if toggle:
@@ -436,7 +532,7 @@ def insert_column_line(column, title, data):
     column.insert(tk.END, "\n\n", "blank")
 
 # =========================================
-#         FETCHING YOTUBE METADATA
+#        *FETCHING YOTUBE METADATA
 # =========================================
 
 def load_video_links():
@@ -570,7 +666,7 @@ def get_youtube_metadata_from_index(index):
             return value
 
 # =========================================
-#            PLAYLIST CREATION
+#           *PLAYLIST CREATION
 # =========================================
 
 playlist_changed = False
@@ -584,7 +680,7 @@ def generate_playlist():
     return playlist
 
 # =========================================
-#             PLAYLIST SHUFFLING
+#            *PLAYLIST SHUFFLING
 # =========================================
 
 def randomize_playlist():
@@ -692,7 +788,7 @@ def weighted_shuffle(playlist):
     return final_playlist
 
 # =========================================
-#          SAVING/LOADING DATA
+#         *SAVING/LOADING DATA
 # =========================================
 
 def save_config():
@@ -868,7 +964,7 @@ def delete_playlist(index):
     delete(True)
 
 # =========================================
-#            FILTERING PLAYLISTS
+#           *FILTERING PLAYLISTS
 # =========================================
 
 def load_filters(update = False):
@@ -1254,7 +1350,7 @@ def get_song_by_slug(data, slug):
     return {}  # Return empty list if no match
 
 # =========================================
-#             SORTING PLAYLISTS
+#            *SORTING PLAYLISTS
 # =========================================
 
 SORTING_TYPES = [
@@ -1326,7 +1422,7 @@ def sort_playlist(index):
     save_config()
 
 # =========================================
-#             SEARCHING THEMES
+#            *SEARCHING THEMES
 # =========================================
 
 search_term = ""
@@ -1413,7 +1509,7 @@ def get_playlists_dict():
     return {i: os.path.splitext(playlist)[0] for i, playlist in enumerate(playlists)}
 
 # =========================================
-#             LIGHTNING ROUNDS
+#            *LIGHTNING ROUNDS
 # =========================================
 
 speed_mode_enabled = False
@@ -2079,7 +2175,7 @@ def generate_random_color(min = 0, max = 255):
     return color
 
 # =========================================
-#             BACKGROUND MUSIC
+#            *BACKGROUND MUSIC
 # =========================================
 
 pygame.mixer.init()
@@ -2130,7 +2226,7 @@ def play_background_music(toggle):
             music_changed = False
 
 # =========================================
-#             INFORMATION POPUP
+#            *INFORMATION POPUP
 # =========================================
 
 def toggle_info_popup():
@@ -2321,7 +2417,7 @@ def get_song_string(data):
     return ""
 
 # =========================================
-#         VIDEO PLAYBACK/CONTROLS
+#         *VIDEO PLAYBACK/CONTROLS
 # =========================================
 
 currently_playing = {}
@@ -2375,6 +2471,7 @@ def play_filename(filename):
         "filename":filename,
         "data":get_metadata(filename)
     }
+    toggle_censor_bar_button.configure(text="[C]ENSORS(" + str(len(censor_list.get(filename, {}))) +")")
     if variety_speed_mode_enabled:
         set_variety_speed_mode()
     if clues_speed_mode_enabled:
@@ -2409,8 +2506,8 @@ def play_filename(filename):
         speed_round_number = 0
         set_countdown(-1)
         set_speed_round_number(str(speed_round_number))
-        play_video_retry(10)
         player.play()
+        root.after(2000, play_video_retry, 5)  # Retry playback
     total_themes_played = total_themes_played + 1
     save_config()
 
@@ -2418,14 +2515,17 @@ def thread_prefetch_metadata():
     threading.Thread(target=pre_fetch_metadata, daemon=True).start()
 
 def play_video_retry(retries):
-        global video_stopped
-        player.play()
-        # Check if the video is playing
-        if not player.is_playing() and retries > 0:
+    global video_stopped
+    # Check if the video is playing
+    if not player.is_playing():
+        if retries > 0:
             print(f"Retrying playback for: {currently_playing.get('filename')}")
-            root.after(1000, play_video_retry, retries - 1)  # Retry playback
+            player.play()
+            root.after(2000, play_video_retry, retries - 1)  # Retry playback
             return
-        video_stopped = False
+        else:
+            play_next()
+    video_stopped = False
 
 # Function to play next video
 def play_next():
@@ -2597,7 +2697,7 @@ def format_seconds(seconds):
     return f"{minutes:02}:{remaining_seconds:02}"
 
 # =========================================
-#             OTHER UI OVERLAYS
+#            *OTHER UI OVERLAYS
 # =========================================
 
 coming_up_window = None  # Store the speed round window
@@ -2755,7 +2855,7 @@ def black_while_loading(toggle):
         set_black_screen(False)
 
 # =========================================
-#               CENSOR BOXES
+#              *CENSOR BOXES
 # =========================================
 
 censor_list = {}
@@ -2821,6 +2921,8 @@ def check_file_censors(filename, time, video_end):
                     censor_bar.attributes("-topmost", True)
                     if root.attributes("-topmost"):
                         root.lift()
+                    if title_window:
+                        title_window.lift()
                 censor_bar.configure(bg=get_image_color())
                 censor_bar.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
                 set_window_position(censor_bar, censor['pos_x'], censor['pos_y'])
@@ -2860,36 +2962,64 @@ def rgbtohex(r,g,b):
     return f'#{r:02x}{g:02x}{b:02x}'
 
 # =========================================
-#                TAG FILES
+#               *TAG/FAVORITE FILES
 # =========================================
 
-def tag():
-    filename = playlist[current_index]
-    if not check_tagged(filename):
-        # Tag file by appending the filename
-        with open(TAGGED_FILE, "a") as file:
-            file.write(filename + "\n")
-        button_seleted(tag_button, True)
-    else:
-        # Remove the tag by reading all lines and rewriting without the filename
-        with open(TAGGED_FILE, "r") as file:
-            lines = file.readlines()
-        with open(TAGGED_FILE, "w") as file:
-            for line in lines:
-                if line.strip() != filename:
-                    file.write(line)
-        button_seleted(tag_button, False)
+def toggle_theme(playlist_name, button):
+    """Toggles a theme in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
+    filename = currently_playing.get("filename")
+    playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
 
-def check_tagged(filename):
-    filename = filename + "\n"
-    with open(TAGGED_FILE, "r") as file:
-        for line in file:
-            if line == filename:
-                return True
+    # Load or initialize the playlist
+    if os.path.exists(playlist_path):
+        with open(playlist_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            theme_list = data.get("playlist", [])
+    else:
+        data = {"name": playlist_name, "current_index": 0, "playlist": []}
+        theme_list = data["playlist"]
+
+    if filename in theme_list:
+        # Remove theme
+        theme_list.remove(filename)
+        button_seleted(button, False)
+    else:
+        # Add theme
+        theme_list.append(filename)
+        button_seleted(button, True)
+
+    # Save the updated playlist
+    data["playlist"] = theme_list
+    with open(playlist_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+def check_theme(filename, playlist_name):
+    """Checks if a theme exists in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
+    playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
+    if os.path.exists(playlist_path):
+        with open(playlist_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return filename in data.get("playlist", [])
     return False
 
+def tag():
+    """Toggles the current theme in the 'Tagged Themes' playlist."""
+    toggle_theme("Tagged Themes", tag_button)
+
+def check_tagged(filename):
+    """Checks if a filename is in the 'Tagged Themes' playlist."""
+    return check_theme(filename, "Tagged Themes")
+
+def favorite():
+    """Toggles the current theme in the 'Favorite Themes' playlist."""
+    toggle_theme("Favorite Themes", favorite_button)
+
+def check_favorited(filename):
+    """Checks if a filename is in the 'Favorite Themes' playlist."""
+    return check_theme(filename, "Favorite Themes")
+
 # =========================================
-#               DOCK PLAYER
+#               *DOCK PLAYER
 # =========================================
 
 undock_position = []
@@ -2942,8 +3072,24 @@ def move_root_to_bottom(toggle=True):
         root.after(10, lambda: animate_window(root, x_position, y_position-30))
 
 # =========================================
-#                  LISTS
+#                  *LISTS
 # =========================================
+
+last_series_listed = {}
+def show_series(series, update = False):
+    global last_series_listed
+    series_list = get_all_series(series)
+    last_series_listed = series_list
+    selected = -1
+    for index, filename in enumerate(series_list):
+        if filename == currently_playing.get('filename'):
+            selected = index
+            break
+    show_list("series", right_column, convert_playlist_to_dict(series_list), get_filename, play_video_from_series, selected, update)
+
+def play_video_from_series(index):
+    if last_series_listed:
+        play_video_from_filename(last_series_listed[index])
 
 def show_playlist(update = False):
     show_list("playlist", right_column, convert_playlist_to_dict(playlist), get_filename, play_video, current_index, update)
@@ -3038,7 +3184,7 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
     scrolled = False
     for index, (key, value) in enumerate(content.items()):
         name = str(index+1) + ": " + name_func(key, value)
-        if disable_shortcuts:
+        if list_size < 50 or disable_shortcuts:
             # Create button for the video
             btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda idx=index: btn_func(idx), bg="black", fg="white")
             column.window_create(tk.END, window=btn)
@@ -3074,7 +3220,8 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "TOGGLE FULLSCREEN", "[TAB]")
     add_single_line(right_column, "MUTE VIDEO", "[M]", False)
     add_single_line(right_column, "SCROLL UP/DOWN", "[⬆]/[⬇]")
-    add_single_line(right_column, "TAG FILE", "[T]", False)
+    add_single_line(right_column, "TAG THEME", "[T]", False)
+    add_single_line(right_column, "FAVORITE THEME", "[*]")
     add_single_line(right_column, "REFETCH METADATA", "[R]")
     add_single_line(right_column, "SHOW YOUTUBE PLAYLIST", "[Y]")
     add_single_line(right_column, "SHOW PLAYLIST", "[P]", False)
@@ -3084,12 +3231,12 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "SEARCH/QUEUE", "[S]", False)
     add_single_line(right_column, "CANCEL SEARCH", "[ESC]")
     add_single_line(right_column, "TOGGLE BLIND", "[BACKSPACE]")
-    add_single_line(right_column, "TOGGLE CENSOR BAR", "[C]")
     add_single_line(right_column, "START/END LIGHTNING ROUND", "[L]")
     add_single_line(right_column, "FRAME", "[F]", False)
     add_single_line(right_column, "BLIND", "[B]", False)
     add_single_line(right_column, "CLUES", "[U]", False)
     add_single_line(right_column, "VARIETY", "[V]")
+    add_single_line(right_column, "TOGGLE CENSOR BAR", "[C]", False)
     add_single_line(right_column, "END SESSION", "[E]")
     add_single_line(right_column, "[W]IDTH [A]NCHOR E[X]TEND [Q]UIT", "SCOREBOARD", False)
     right_column.config(state=tk.DISABLED)
@@ -3102,45 +3249,8 @@ def add_single_line(column, line, title, newline=True):
     else:
         column.insert(tk.END, "   ", "white")
 
-def add_multiple_data_line(column, data, title, get):
-    column.insert(tk.END, title, "bold")
-    count = 0
-    for item in data.get(get, []):
-        count += 1
-        name = item
-        if count > 1:
-            name = ", " + name 
-        column.insert(tk.END, name, "white")
-    if count == 0:
-        column.insert(tk.END, "N/A", "white")
-    column.insert(tk.END, "\n\n", "blank")
-
-def add_single_data_line(column, data, title, get):
-    column.insert(tk.END, title, "bold")
-    if data:
-        column.insert(tk.END, f"{data.get(get, 'N/A')}", "white")
-    else:
-        column.insert(tk.END, "N/A", "white")
-    column.insert(tk.END, "\n\n", "blank")
-
-def add_op_ed(theme, column, slug):
-    theme_slug = theme.get("slug")
-    song_title = theme.get("title")
-    artist = get_artists_string(theme.get("artist"))
-    episodes = theme.get("episodes")
-    if theme_slug == slug:
-        column.insert(tk.END, f">{theme_slug}: {song_title}\n", "highlight")
-        column.insert(tk.END, f"Artist(s): {artist}\n", "highlight")
-        column.insert(tk.END, f"(Episodes: {episodes})\n", "highlight")
-        column.see("end-1c")
-    else:
-        column.insert(tk.END, f">{theme_slug}: {song_title}\n", "white")
-        column.insert(tk.END, f"Artist(s): {artist}\n", "white")
-        column.insert(tk.END, f"(Episodes: {episodes})\n", "white")
-    column.insert(tk.END, "\n", "blank")
-
 # =========================================
-#                  TOGGLES
+#                 *TOGGLES
 # =========================================
 
 def toggle_disable_shortcuts():
@@ -3194,7 +3304,7 @@ def toggle_mute():
     button_seleted(mute_button, not disable_video_audio)
 
 # =========================================
-#               END SESSION
+#              *END SESSION
 # =========================================
 
 total_themes_played = 0
@@ -3253,9 +3363,8 @@ def toggle_end_message(speed=500):
 def on_closing():
     pass
 
-
 # =========================================
-#                 GUI SETUP
+#                 *GUI SETUP
 # =========================================
 
 BACKGROUND_COLOR = "gray12"
@@ -3370,7 +3479,7 @@ generate_button = create_button(first_row_frame, "CREATE", generate_playlist_but
                               "to be able to use all the other playlist functions, "
                               "you'll need to fetch the metadata for all the files. "
                               "You can do this by hitting the '?' button next to the "
-                              "[R]EFETCH METADATA button. It may take awhile "
+                              "[R]EFETCH button. It may take awhile "
                               "depending on how many themes you have.\n\n"
                               "You will be asked to confirm when creating."))
 
@@ -3524,21 +3633,25 @@ end_info_button = create_button(second_row_frame, "⏩", toggle_auto_info_end, T
                               help_text=("When enabled, will show the theme's info popup during the last 8 seconds.\n\n"
                                          "Useful if you want to go more hands off with the trivia, and just show the answer at the end."))
 
-tag_button = create_button(second_row_frame, "[T]AG", tag, True,
-                              help_title="[T]AG FILE (shortcut Key = 't')",
-                              help_text=("Tags the currently playing theme. This adds or removes it from "
-                                         "tagged.txt file in the files folder.\n\nThe purpose is to tag "
+tag_button = create_button(second_row_frame, "[T]AG", tag, False,
+                              help_title="[T]AG THEME (Shortcut Key = 't')",
+                              help_text=("Adds the current;y playing theme to a 'Tagged Themes' playlist. Clicking again "
+                                         "will remove it from the playlist.\n\nThe purpose is to tag "
                                          "themes you may need to check out later for various reasons. "
                                          "Like adding censors, updating the theme, or even deleting it. "
                                          "Just a reminder."))
+favorite_button = create_button(second_row_frame, "❤️", favorite, True,
+                              help_title="FAVORITE THEME (Shortcut Key='*')",
+                              help_text=("Adds the current;y playing theme to a 'Favorite Themes' playlist. Clicking again "
+                                         "will remove it from the playlist.\n\nJust a way to keep track of your favorite themes."))
 
-refetch_metadata_button = create_button(second_row_frame, "[R]EFETCH METADATA", refetch_metadata,
+refetch_metadata_button = create_button(second_row_frame, "[R]EFETCH", refetch_metadata,
                               help_title="[R]EFETCH THEME METADATA (Shortcut Key = 'r')",
                               help_text=("Refetch the metadata for the currently playing theme.\n\n"
                                          "You may want to do this if there's mising information that "
                                          "may have been filled by now, or you want to update the score/ "
                                          "members stats. For that purpose though, you can enable auto refresh "
-                                         "of jikan metadata by hitting the 🔄 button next to this."))
+                                         "of jikan metadata by hitting the ♻ button."))
 fetch_missing_metadata_button = create_button(second_row_frame, "❓", fetch_all_metadata,
                               help_title="FETCH ALL MISSING METADATA",
                               help_text=("Use this to check if metadata exists for all files in the chosen "
@@ -3546,7 +3659,13 @@ fetch_missing_metadata_button = create_button(second_row_frame, "❓", fetch_all
                                          "this whenever you have new videos in the directory.\n\n"
                                          "It can take quite awhile depending on how many themes you have. "
                                          "It may need to be left overnight if you have thousands."))
-toggle_refresh_metadata_button = create_button(second_row_frame, "🔄", toggle_auto_auto_refresh, True,
+refresh_all_metadata_button = create_button(second_row_frame, "⭮", refresh_all_metadata, False,
+                              help_title="REFRESH ALL JIKAN METADATA",
+                              help_text=("Refreshes the jikan metadata for all files in the directory. "
+                                         "You may want to do this if you feel the score and members data are outdated, "
+                                         "although you could also use the ♻ button to toggle auto refreshing the data "
+                                         "as files are playing if you don't want to have it call for all the files at once."))
+toggle_refresh_metadata_button = create_button(second_row_frame, "♻", toggle_auto_auto_refresh, True,
                               help_title="TOGGLE AUTO REFRESH JIKAN METADATA",
                               help_text=("Toggle auto refreshing jikan metadata. This will refresh the "
                                          "jikan metadata for the currently playing theme, and the next "
@@ -3555,7 +3674,7 @@ toggle_refresh_metadata_button = create_button(second_row_frame, "🔄", toggle_
                                          "over time. It's not too nessessary if you don't care about it being up "
                                          "to date, or if you've already grabbed the metadata recently.\n\n"
                                          "It doesn't refetch everything, or call the AnimeThemes API like "
-                                         "the regular [R]EFETCH METADATA does for the current theme. If you "
+                                         "the regular [R]EFETCH does for the current theme. If you "
                                          "want to to do that for all files, you would need to delete the "
                                          "anime_metadata.json file in the metadata/ folder, and fetch "
                                          "all missing metadata again, but I wouldn't recommend that."))
@@ -3607,7 +3726,7 @@ show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE", show
                                          "Videos are queued with a UP NEXT popup when selected, and will play after the current theme. "
                                          "Only one video may be queued at a time, and selecting the same video will unqueue it."))
 
-toggle_censor_bar_button = create_button(second_row_frame, "[C]ENSORS", toggle_censor_bar, True, enabled=censors_enabled,
+toggle_censor_bar_button = create_button(second_row_frame, "[C]ENSORS(0)", toggle_censor_bar, True, enabled=censors_enabled,
                               help_title="TOGGLE [C]ENSOR BARS (Shortcut Key = 'c')",
                               help_text=("Toggle censor bars. These are pulled from the censors.txt file in the files/ "
                                          "folder. These have to be manually added by adding lines to the censors.txt file.\n\n"
@@ -3636,7 +3755,7 @@ toggle_disable_shortcuts_button = create_button(second_row_frame, "ENABLE SHORTC
                                          "So I've mapped all the functions I may want to use during a session to shortcut keys. "
                                          "It may be hard to track them all, but most buttons have the shortcut key on them.\n\n"
                                          "For a full reference, use the SHORTCUT [K]EYS button.\n\nAlso when this is enabled, "
-                                         "lists no longer have buttons. The buttons slow down things a bit, and since they "
+                                         "lists greater than 50 items no longer have buttons. The buttons slow down things a bit, and since they "
                                          "aren't needed if I'm using shortcuts, I disabled them."))
 
 list_keyboard_shortcuts_button = create_button(second_row_frame, "SHORTCUT [K]EYS", list_keyboard_shortcuts, True,
@@ -3715,6 +3834,7 @@ right_column.tag_configure("blank", foreground="white", font=("Arial", 6))
 
 list_buttons = [
     {"button":show_playlist_button, "label":"playlist", "func":show_playlist},
+    {"button":show_playlist_button, "label":"series", "func":show_series},
     {"button":remove_button, "label":"remove", "func":remove_theme},
     {"button":load_button, "label":"load_playlist", "func":load},
     {"button":delete_button, "label":"delete_playlist", "func":delete},
@@ -3727,7 +3847,7 @@ list_buttons = [
 ]     
 
 # =========================================
-#            KEYBOARD SHORTCUTS
+#            *KEYBOARD SHORTCUTS
 # =========================================
 
 disable_shortcuts = True
@@ -3796,6 +3916,8 @@ def on_release(key):
                 toggle_mute()
             elif key.char == 't':
                 tag()
+            elif key.char == '*':
+                favorite()
             elif key.char == 'd':
                 dock_player()
             elif key.char == 'p':
@@ -3836,7 +3958,7 @@ def on_release(key):
                 search()
 
 # =========================================
-#                 STARTUP
+#                *STARTUP
 # =========================================
 
 listener = keyboard.Listener(
