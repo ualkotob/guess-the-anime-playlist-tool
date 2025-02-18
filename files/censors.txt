@@ -508,3 +508,5 @@ Konosuba-OP1.webm,95.51x16.18,36.52x76.06,14,25
 SoraWoKakeruShoujo-OP1.webm,42.89x8.06,70.45x34.14,18,23
 ShuumatsuNoWalkureS2-OP1-[MAL]49618[ART]Minami[SNG]Rude Lose Dance.webm,100.00x50.35,66.67x58.60,15,27
 TomodachiGame-OP1.webm,85.16x48.47,46.32x51.35,33,37
+VioletEvergarden-OP1-NCBD1080.webm,70.43x51.94,50.86x56.21,3,14
+BubukiBuranki-OP1.webm,98.01x67.57,47.06x6.42,6.2,8

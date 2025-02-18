@@ -132,6 +132,7 @@ def fetch_metadata(filename = None, refetch = False):
 
     fetching_metadata[filename] = True
     slug = filename.split("-")[1].split(".")[0].split("v")[0]
+    manual_file = False
     if (not "[MAL]" in filename):
         anime_themes = fetch_animethemes_metadata(filename)
         if anime_themes:
@@ -401,7 +402,7 @@ def update_metadata():
             left_column.insert(tk.END, f"{f"{data.get('members'):,}"} (#{data.get('popularity')})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
             left_column.insert(tk.END, "EPISODES (TYPE): ", "bold")
-            left_column.insert(tk.END, f"{data.get('episodes')} ({data.get('type')})", "white")
+            left_column.insert(tk.END, f"{data.get("episodes") or "Airing"} ({data.get('type')})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
             add_multiple_data_line(left_column, data, "SERIES (THEMES): ", "series", False)
             series = data.get('series')
@@ -546,51 +547,53 @@ def load_video_links():
         with open(ARCHIVE_FILE, "r") as archive:
             archived_lines = {line.strip() for line in archive}
 
-    try:
-        with open(YOUTUBE_LINKS_FILE, "r") as file, open(ARCHIVE_FILE, "a") as archive:  # Open archive once for efficiency
-            for index, line in enumerate(file):
-                url, start, end, title = line.strip().split(",")
-                if url and url != 'url':  # Ensure URL is valid and not a header
-                    video_map[url] = {
-                        'index': index,
-                        'url': url,
-                        'start': start,
-                        'end': end,
-                        'title': title
-                    }
+    if os.path.exists(YOUTUBE_LINKS_FILE):
+        try:
+            with open(YOUTUBE_LINKS_FILE, "r") as file, open(ARCHIVE_FILE, "a") as archive:  # Open archive once for efficiency
+                for index, line in enumerate(file):
+                    url, start, end, title = line.strip().split(",")
+                    if url and url != 'url':  # Ensure URL is valid and not a header
+                        video_map[url] = {
+                            'index': index,
+                            'url': url,
+                            'start': start,
+                            'end': end,
+                            'title': title
+                        }
 
-                    # Format full archive line: [DATE] URL, start, end, title
-                    archive_entry = f"{datetime.now().strftime('%Y-%m-%d')}, {line.strip()}"
+                        # Format full archive line: [DATE] URL, start, end, title
+                        archive_entry = f"{datetime.now().strftime('%Y-%m-%d')}, {line.strip()}"
 
-                    # Add to archive if not already present
-                    if archive_entry not in archived_lines:
-                        archive.write(archive_entry + "\n")
-                        archived_lines.add(archive_entry)
-        # remove old metadata
-        to_delete = []
-        for key, value in youtube_metadata.items():
-            match = False
-            for k, v in video_map.items():
-                if key == v.get('url'):
-                    match = True
-                    break
-            if not match:
-                to_delete.append(key)
-        for d in to_delete:
-            del youtube_metadata[d]
-        save_youtube_metadata()
-        # Delete outdated videos
-        for filename in os.listdir(YOUTUBE_FOLDER):
-            match = False
-            for url, value in youtube_metadata.items():
-                if value.get('title') + '.webm' == filename:
-                    match = True
-                    break
-            if not match:
-                os.remove(os.path.join(YOUTUBE_FOLDER, filename))
-                print(f"Deleted outdated video: {filename}")
-    except FileNotFoundError:
-        print("Error: " + filename + " not found.")
+                        # Add to archive if not already present
+                        if archive_entry not in archived_lines:
+                            archive.write(archive_entry + "\n")
+                            archived_lines.add(archive_entry)
+            # remove old metadata
+            to_delete = []
+            for key, value in youtube_metadata.items():
+                match = False
+                for k, v in video_map.items():
+                    if key == v.get('url'):
+                        match = True
+                        break
+                if not match:
+                    to_delete.append(key)
+            for d in to_delete:
+                del youtube_metadata[d]
+            save_youtube_metadata()
+            # Delete outdated videos
+            if os.path.exists(YOUTUBE_FOLDER):
+                for filename in os.listdir(YOUTUBE_FOLDER):
+                    match = False
+                    for url, value in youtube_metadata.items():
+                        if value.get('title') + '.webm' == filename:
+                            match = True
+                            break
+                    if not match:
+                        os.remove(os.path.join(YOUTUBE_FOLDER, filename))
+                        print(f"Deleted outdated video: {filename}")
+        except Exception as e:
+            print("Error: " + str(e))
 
     return video_map
 
@@ -793,6 +796,11 @@ def weighted_shuffle(playlist):
 
 def save_config():
     """Function to save configuration"""
+    files_folder = os.path.dirname(config_file)  # Get the folder path
+
+    # Create the folder if it does not exist
+    if not os.path.exists(files_folder):
+        os.makedirs(files_folder)
     config = {
         "current_index": current_index,
         "playlist_name": playlist_name,
@@ -827,10 +835,19 @@ def update_playlist_name(name):
     root.title(WINDOW_TITLE + " - " + playlist_name)
 
 def save_metadata():
+    """Ensures the metadata folder exists before saving metadata files."""
+    metadata_folder = os.path.dirname(file_metadata_file)  # Get the folder path
+
+    # Create the folder if it does not exist
+    if not os.path.exists(metadata_folder):
+        os.makedirs(metadata_folder)
+
+    # Save metadata files
     with open(file_metadata_file, "w") as f:
-        json.dump(file_metadata, f)
+        json.dump(file_metadata, f, indent=4)  # Pretty-print for readability
+
     with open(anime_metadata_file, "w") as f:
-        json.dump(anime_metadata, f)
+        json.dump(anime_metadata, f, indent=4)
 
 def load_metadata():
     global file_metadata, anime_metadata
@@ -844,6 +861,13 @@ def load_metadata():
             print("Loaded metadata for " + str(len(anime_metadata)) + " anime...")
 
 def save_youtube_metadata():
+    """Ensures the metadata folder exists before saving metadata file."""
+    metadata_folder = os.path.dirname(youtube_metadata_file)  # Get the folder path
+
+    # Create the folder if it does not exist
+    if not os.path.exists(metadata_folder):
+        os.makedirs(metadata_folder)
+
     with open(youtube_metadata_file, "w") as f:
         json.dump(youtube_metadata, f)
 
@@ -859,7 +883,7 @@ def load_youtube_metadata():
 def save(autosave = False):
     save_playlist(playlist, current_index, root, autosave)
 
-def save_playlist(playlist, current_index, parent, autosave):
+def save_playlist(playlist, index, parent, autosave):
     """Opens a popup to enter a name, then saves the playlist, and index as JSON."""
     if not os.path.exists(PLAYLISTS_FOLDER):
         os.makedirs(PLAYLISTS_FOLDER)
@@ -877,7 +901,7 @@ def save_playlist(playlist, current_index, parent, autosave):
     # Save playlist data
     data = {
         "name": name,
-        "current_index": current_index,
+        "current_index": index,
         "playlist": playlist
     }
 
@@ -1629,9 +1653,11 @@ def toggle_speed_mode(type):
         speed_mode_enabled = True
         speed_round_length = mode.get("length", 12)
         image_path = mode.get("img")
-        image = Image.open(image_path)
-        image = image.resize((400, 225), Image.LANCZOS)  # Resize if needed
-        image_tk = ImageTk.PhotoImage(image)  # Convert to Tkinter format
+        image_tk = None
+        if os.path.exists(image_path):
+            image = Image.open(image_path)
+            image = image.resize((400, 225), Image.LANCZOS)  # Resize if needed
+            image_tk = ImageTk.PhotoImage(image)  # Convert to Tkinter format
         toggle_coming_up_popup(True, mode.get("title"), mode.get("desc"), image_tk)
 
 def unselect_SPEED_MODES():
@@ -1782,20 +1808,24 @@ def get_frame_speed_round_frames():
     length = player.get_length()-((buffer+speed_round_answer_length+1)*1000)
     start_time = buffer*1000
     increment = round(length/4)
+    try_count = 0
     for f in range(4):
         frame = None
         while frame is None:
             frame = random.randint(start_time, start_time + increment)/1000
-            if length > 60 and len(frames) > 0 and (frame - frames[len(frames)-1]) <= 5:
-                frame = None
-            else:
-                file_censors = censor_list.get(currently_playing.get('filename'))
-                if file_censors != None:
-                    for censor in file_censors:
-                        if (frame) > censor['start'] and (frame) < censor['end']:
-                            frame = None
-                            break
+            try_count = try_count + 1
+            if try_count < 10:
+                if length > 60 and len(frames) > 0 and (frame - frames[len(frames)-1]) <= 5:
+                    frame = None
+                else:
+                    file_censors = censor_list.get(currently_playing.get('filename'))
+                    if file_censors != None:
+                        for censor in file_censors:
+                            if (frame) > censor['start'] and (frame) < censor['end']:
+                                frame = None
+                                break
         start_time = start_time + increment
+        try_count = 0
         frames.append(frame)
     random.shuffle(frames)
     return frames
@@ -1850,10 +1880,10 @@ def update_frame_speed_round(currently_playing_filename):
                     frame_speed_round_frame_time = -1000
                 time = int(frame_speed_round_frames[frame_speed_round_frame_index]*1000)
                 length = player.get_length()
+                apply_censors(time/1000,length/1000)
                 player.set_time(time)
                 update_progress_bar(time, length)
                 set_frame_number(str(frame_speed_round_frame_index+1) + "/" + str(len(frame_speed_round_frames)))
-                apply_censors(time/1000,length/1000)
             elif not is_title_window_up():
                 frame_speed_round_frame_time = 0
                 player.play()
@@ -1934,7 +1964,7 @@ def toggle_clues_overlay(destroy=False):
         tags=get_tags_string(data).replace(", ", "\n")
         score=f"{data.get('score')}\n#{data.get('rank')}"
         popularity=f"{data.get('members'):,}\n#{data.get('popularity')}"
-        episodes = str(data.get('episodes'))
+        episodes = str(data.get('episodes') or "Airing")
         type = data.get('type')
         source = data.get('source')
 
@@ -2201,15 +2231,18 @@ def next_background_track():
             current_music_index = 0
         music_changed = True
 
+checked_music_folder = False
 def play_background_music(toggle):
     """Function to play or pause background music"""
-    global music_loaded, current_music_index, music_changed
+    global music_loaded, current_music_index, music_changed, checked_music_folder
 
     if not music_files:  # Ensure music is loaded
         load_music_files()
     
     if not music_files:  # If still empty, return
-        print("No music files found in 'music' folder.")
+        if not checked_music_folder:
+            print("No music files found in 'music' folder.")
+            checked_music_folder = True
         return
 
     if music_loaded and not music_changed:
@@ -2471,7 +2504,7 @@ def play_filename(filename):
         "filename":filename,
         "data":get_metadata(filename)
     }
-    toggle_censor_bar_button.configure(text="[C]ENSORS(" + str(len(censor_list.get(filename, {}))) +")")
+    update_censor_button_count()
     if variety_speed_mode_enabled:
         set_variety_speed_mode()
     if clues_speed_mode_enabled:
@@ -2864,25 +2897,28 @@ censors_enabled = True
 def load_censors():
     global censor_list
     censor_map = {}
-    try:
-        with open(CENSOR_FILE, "r") as file:
-            for line in file:
-                filename, size, pos, start, end = line.strip().split(",")  # Split on first comma
-                if filename != "filename":
-                    if censor_map.get(filename) is None:
-                        censor_map[filename] = []
-                    censor_map[filename].append({
-                        "size_w":float(size.split("x")[0]),
-                        "size_h":float(size.split("x")[1]),
-                        "pos_x":float(pos.split("x")[0]),
-                        "pos_y":float(pos.split("x")[1]),
-                        "start":float(start),
-                        "end":float(end)
-                    })
-    except FileNotFoundError:
-        print("Error: " + filename + " not found.")
-    print("Loaded censors for " + str(len(censor_map)) + " files...")
-    censor_list = censor_map
+    if os.path.exists(CENSOR_FILE):
+        try:
+            with open(CENSOR_FILE, "r") as file:
+                for line in file:
+                    filename, size, pos, start, end = line.strip().split(",")  # Split on first comma
+                    if filename != "filename":
+                        if censor_map.get(filename) is None:
+                            censor_map[filename] = []
+                        censor_map[filename].append({
+                            "size_w":float(size.split("x")[0]),
+                            "size_h":float(size.split("x")[1]),
+                            "pos_x":float(pos.split("x")[0]),
+                            "pos_y":float(pos.split("x")[1]),
+                            "start":float(start),
+                            "end":float(end)
+                        })
+        except FileNotFoundError:
+            print("Error: " + filename + " not found.")
+        print("Loaded censors for " + str(len(censor_map)) + " files...")
+        censor_list = censor_map
+        if currently_playing and currently_playing.get("filename"):
+            update_censor_button_count()
 load_censors()
 
 censor_used = False
@@ -2961,8 +2997,11 @@ def get_image_color():
 def rgbtohex(r,g,b):
     return f'#{r:02x}{g:02x}{b:02x}'
 
+def update_censor_button_count():
+    toggle_censor_bar_button.configure(text="[C]ENSORS(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
+    
 # =========================================
-#               *TAG/FAVORITE FILES
+#            *TAG/FAVORITE FILES
 # =========================================
 
 def toggle_theme(playlist_name, button):
@@ -2990,6 +3029,10 @@ def toggle_theme(playlist_name, button):
 
     # Save the updated playlist
     data["playlist"] = theme_list
+
+    if not os.path.exists(PLAYLISTS_FOLDER):
+        os.makedirs(PLAYLISTS_FOLDER)
+
     with open(playlist_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
@@ -3238,7 +3281,7 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "VARIETY", "[V]")
     add_single_line(right_column, "TOGGLE CENSOR BAR", "[C]", False)
     add_single_line(right_column, "END SESSION", "[E]")
-    add_single_line(right_column, "[W]IDTH [A]NCHOR E[X]TEND [Q]UIT", "SCOREBOARD", False)
+    add_single_line(right_column, "[W]IDEN [Z]IP [A]NCHOR E[X]TEND [Q]UIT", "SCORE", False)
     right_column.config(state=tk.DISABLED)
 
 def add_single_line(column, line, title, newline=True):
@@ -3347,7 +3390,6 @@ def toggle_end_message(speed=500):
         screen_height = end_message_window.winfo_screenheight()
 
         window_width = label.winfo_reqwidth()
-        window_height = label.winfo_reqheight()
 
         start_x = screen_width - window_width - 50 # Bottom-right corner
         start_y = screen_height
@@ -3618,7 +3660,7 @@ second_row_frame = tk.Frame(root, bg=BACKGROUND_COLOR)
 second_row_frame.pack(pady=5)
 
 info_button = create_button(second_row_frame, "[I]NFO POPUP", toggle_info_popup,
-                              help_title="SHOW/HIDE [I]NFOR POPUP (Shortcut Key = 'i')",
+                              help_title="SHOW/HIDE [I]NFO POPUP (Shortcut Key = 'i')",
                               help_text=("Show or hide the information popup at the bottom of the screen.\n\n"
                                          "This shows most of the information from the main player is a nicer format. "
                                          "During trivia, if someone gets the answer correct or people give up, "

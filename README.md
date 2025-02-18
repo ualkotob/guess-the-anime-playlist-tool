@@ -21,7 +21,27 @@ Guess The Anime - Playlist Tool is a Python-based program I created to help me r
 
 ## Installation
 
-### Requirements
+### Windows EXE
+
+You should be able to just download the windows exe in releases and run the application without python. See below for running in Python.
+
+## Folders
+
+In whichever place you keep the exe, it will create/check folders for files. Here's an explanation of each.
+
+**banners**: This folder is checked for the banners for ligning rounds. You can grab them from this repository, or just use your own as long as they have the same names.
+**files**: The following files are stored here.
+  - **config.txt** Stores currently loaded playlist, index, and directory information.
+  - **censors.txt** Stores all censors created for files. These are created outside of the application. My file is in the repository, and also the censor_bar_tool.py for help in creating them.
+  - **youtube_links.txt** This is where youtbe links are read, then downloaded. I have an example file in the repository.
+  - **youtube_archive.txt** Just a copy of any link read in the youtube_links.txt to keep a history.
+**filters**: Filters will be stored here.
+**metadata**: Metadata for files, anime, and youtube videos are stored here.
+**music**: Create this folder and place music files in it to have them play in the background of Frame and Clues lightning rounds.
+**playlists**: Saved playlists are stored here, including Tagged Themes, and Favorite Themes.
+**youtube**: This is where downloaded youtube videos will be stored. They are automatically deleted if remoed from the youtube_links.txt file.
+
+### Python Requirements
 
 Ensure you have the following installed:
 
