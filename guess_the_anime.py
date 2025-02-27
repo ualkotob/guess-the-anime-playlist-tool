@@ -37,7 +37,7 @@ except OSError as e:
     exit(1)
 
 # Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance() #instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
+instance = vlc.Instance("--no-xlib") #instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
 player = instance.media_player_new()
 
 # =========================================
@@ -54,6 +54,7 @@ file_metadata = {}
 file_metadata_file = "metadata/file_metadata.json"
 anime_metadata = {}
 anime_metadata_file = "metadata/anime_metadata.json"
+manual_metadata_file = "metadata/manual_metadata.json"
 youtube_metadata = {}
 youtube_metadata_file = "metadata/youtube_metadata.json"
 directory_files = {}
@@ -99,20 +100,23 @@ fetched_metadata = []
 def pre_fetch_metadata():
     for i in range(current_index-1, current_index+2):
         if i >= 0 and i < len(playlist) and i != current_index and (fetching_metadata.get(playlist[i]) is None):
-            get_metadata(playlist[i], True)
+            get_metadata(playlist[i], True, fetch=True)
 
-def get_metadata(filename, refresh = False, refresh_all = False):
+def get_metadata(filename, refresh = False, refresh_all = False, fetch = False):
     global fetched_metadata
     file_data = file_metadata.get(filename)
     if file_data:
         mal_id = file_data.get('mal')
         anime_data = anime_metadata.get(mal_id)
         if anime_data:
-            if mal_id not in fetched_metadata and refresh and (refresh_all or auto_refresh_toggle):
+            if mal_id not in fetched_metadata and refresh and (refresh_all or (auto_refresh_toggle and fetch)):
                 fetched_metadata.append(mal_id)
                 refresh_jikan_data(mal_id, anime_data)
             return file_data | anime_data
-    return fetch_metadata(filename)
+    if fetch:
+        return fetch_metadata(filename)
+    else:
+        return {}
 
 def refetch_metadata():
     if currently_playing and currently_playing.get('type') == 'theme':
@@ -133,14 +137,15 @@ def fetch_metadata(filename = None, refetch = False):
     fetching_metadata[filename] = True
     slug = filename.split("-")[1].split(".")[0].split("v")[0]
     manual_file = False
-    if (not "[MAL]" in filename):
+    mal_id = None
+    if (not "[MAL]" in filename) and (not "[ID]" in filename):
         anime_themes = fetch_animethemes_metadata(filename)
         if anime_themes:
             for resource in anime_themes.get("resources", []):
                 if resource["site"] == "MyAnimeList":
                     mal_id = str(resource["external_id"])
                     break
-    else:
+    elif ("[MAL]" in filename):
         filename_metadata = get_filename_metadata(filename)
         mal_id = filename_metadata.get('mal_id')
         anime_themes = {
@@ -162,6 +167,8 @@ def fetch_metadata(filename = None, refetch = False):
             anime_themes["season"] = season
             anime_themes["year"] = year
         manual_file = True
+    else:
+        mal_id = re.search(r"\[ID](.*?)(?=\[|$|\.)", filename).group(1)
     if mal_id:
         file_data = {
             "mal":mal_id,
@@ -175,6 +182,7 @@ def fetch_metadata(filename = None, refetch = False):
                 anime_data = {
                     "title":jikan_data.get("title"),
                     "eng_title":jikan_data.get("title_english", "N/A"),
+                    "synonyms":jikan_data.get("title_synonyms", []),
                     "series":get_name_list(anime_themes, "series"),
                     "season":str(jikan_data.get("season") or "N/A") + " " + str(jikan_data.get("year") or "N/A"),
                     "score":jikan_data.get("score", "N/A"),
@@ -210,7 +218,7 @@ def fetch_metadata(filename = None, refetch = False):
             update_metadata()
         print(f"\rFetching metadata for {filename}...COMPLETE")
     else:
-        data = None
+        data = {}
         print(f"\rFetching metadata for {filename}...FAILED")
     return data
 
@@ -269,19 +277,20 @@ def refresh_jikan_data(mal_id, data):
     
     jikan_data = fetch_jikan_metadata(mal_id)
     if jikan_data:
-        data["eng_title"] = jikan_data.get('title_english', "N/A")
-        data["score"] = jikan_data.get('score', "N/A")
-        data["rank"] = jikan_data.get('rank', "N/A")
-        data["members"] = jikan_data.get('members', "N/A")
-        data["popularity"] = jikan_data.get('popularity', "N/A")
-        data["type"] = jikan_data.get('type', "N/A")
-        data["source"] = jikan_data.get('source', "N/A")
-        data["episodes"] = jikan_data.get('episodes', "N/A")
-        data["studios"] = get_name_list(jikan_data, 'studios')
-        data["genres"] = get_name_list(jikan_data, 'genres')
-        data["themes"] = get_name_list(jikan_data, 'themes')
-        data["demographics"] = get_name_list(jikan_data, 'demographics')
-        data["synopsis"] = jikan_data.get('synopsis', "N/A")
+        data["eng_title"] = jikan_data.get("title_english", "N/A")
+        data["synonyms"] = jikan_data.get("title_synonyms", [])
+        data["score"] = jikan_data.get("score", "N/A")
+        data["rank"] = jikan_data.get("rank", "N/A")
+        data["members"] = jikan_data.get("members", "N/A")
+        data["popularity"] = jikan_data.get("popularity", "N/A")
+        data["type"] = jikan_data.get("type", "N/A")
+        data["source"] = jikan_data.get("source", "N/A")
+        data["episodes"] = jikan_data.get("episodes", "N/A")
+        data["studios"] = get_name_list(jikan_data, "studios")
+        data["genres"] = get_name_list(jikan_data, "genres")
+        data["themes"] = get_name_list(jikan_data, "themes")
+        data["demographics"] = get_name_list(jikan_data, "demographics")
+        data["synopsis"] = jikan_data.get("synopsis", "N/A")
         
         save_metadata()
         print(f"\rRefreshing Jikan data for {data['title']}...COMPLETE")
@@ -393,33 +402,30 @@ def update_metadata():
         if data:
             # Left Column: Filename, Title, English Title, and Large Image
             add_single_data_line(left_column, data, "TITLE: ", 'title')
-            add_single_data_line(left_column, data, "ENGLISH TITLE: ", 'eng_title')
-            add_single_data_line(left_column, data, "SEASON AIRED: ", 'season')
+            add_single_data_line(left_column, data, "ENGLISH (SYNONYMS): ", 'eng_title', False)
+            left_column.insert(tk.END, f" (", "white")
+            add_multiple_data_line(left_column, data, "", "synonyms", False)
+            left_column.insert(tk.END, f")", "white")
+            left_column.insert(tk.END, "\n\n", "blank")
+            add_single_data_line(left_column, data, "SEASON AIRED (THEMES): ", "season", False)
+            add_field_total_button(left_column, get_all_matching_field("season", data.get("season")))
             left_column.insert(tk.END, "SCORE (RANK): ", "bold")
             left_column.insert(tk.END, f"{data.get('score')} (#{data.get('rank')})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
             left_column.insert(tk.END, "MEMBERS (POPULARITY): ", "bold")
-            left_column.insert(tk.END, f"{f"{data.get('members'):,}"} (#{data.get('popularity')})", "white")
+            left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
-            left_column.insert(tk.END, "EPISODES (TYPE): ", "bold")
-            left_column.insert(tk.END, f"{data.get("episodes") or "Airing"} ({data.get('type')})", "white")
+            left_column.insert(tk.END, "EPISODES (TYPE/SOURCE): ", "bold")
+            left_column.insert(tk.END, f"{data.get("episodes") or "Airing"} ({data.get('type')}/{data.get("source")})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
             add_multiple_data_line(left_column, data, "SERIES (THEMES): ", "series", False)
-            series = data.get('series')
-            series_count = len(get_all_series(series))
-            if series_count > 0:
-                left_column.insert(tk.END, f" ({series_count} total)", "white")
-                if series_count > 1:
-                    btn = tk.Button(left_column, text="▶", borderwidth=0, pady=0, command=lambda: show_series(series), bg="black", fg="white")
-                    left_column.window_create(tk.END, window=btn)
-            left_column.insert(tk.END, "\n\n", "blank")
-            left_column.insert(tk.END, "SOURCE: ", "bold")
-            left_column.insert(tk.END, f"{data.get('source')}", "white")
-            left_column.insert(tk.END, "\n\n", "blank")
+            add_field_total_button(left_column, get_all_matching_field("series", data.get("series")))
             left_column.insert(tk.END, "TAGS: ", "bold")
             left_column.insert(tk.END, f"{get_tags_string(data)}", "white")
             left_column.insert(tk.END, "\n\n", "blank")
-            add_multiple_data_line(left_column, data, "STUDIOS: ", "studios")
+            add_multiple_data_line(left_column, data, "STUDIOS (THEMES): ", "studios", False)
+            add_field_total_button(left_column, get_all_matching_field("studios", data.get("studios")))
+            up_next_text()
             add_single_data_line(right_column, data, "SYNOPSIS:\n", 'synopsis')
 
             # Right Column: List of OP/EDs
@@ -434,15 +440,53 @@ def update_metadata():
                     middle_column.insert(tk.END, "ENDINGS:\n", "bold")
                 add_op_ed(theme, middle_column, data.get("slug"), data.get("title"))
             toggleColumnEdit(False)
-            updating_metadata = False
+        else:
+            up_next_text()
+    else:
+        up_next_text()
+    updating_metadata = False
 
-def get_all_series(series):
+def up_next_text():
+    right_column.insert(tk.END, "NEXT UP: ", "bold")
+    next_up_text = "End of playlist"
+    if current_index+1 < len(playlist):
+        next_up_data = get_metadata(playlist[current_index+1])
+        next_up_text = (next_up_data.get("eng_title") or next_up_data.get("title")) + " - " + format_slug(next_up_data.get("slug"))
+    right_column.insert(tk.END, f"{next_up_text}", "white")
+    right_column.insert(tk.END, "\n\n", "blank")
+
+def add_field_total_button(column, group, blank = True):
+    count = len(group)
+    if count > 0:
+        column.insert(tk.END, f" ({count}", "white")
+        if count > 1:
+            btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: show_field_themes(group=group), bg="black", fg="white")
+            column.window_create(tk.END, window=btn)
+        column.insert(tk.END, f")", "white")
+    if blank:
+        column.insert(tk.END, "\n\n", "blank")
+
+def get_all_matching_field(field, match):
     filenames = []
     for filename in directory_files:
         file_data = get_metadata(filename)
-        file_series = file_data.get("series")
-        if file_series and file_series == series:
-            filenames.append(filename)
+        if file_data:
+            file_field = file_data.get(field, "")
+            if file_field and file_field == match:
+                filenames.append(filename)
+
+    return sorted(filenames)
+
+def get_filenames_from_artist(match):
+    filenames = []
+    for filename in directory_files:
+        file_data = get_metadata(filename)
+        if file_data:
+            for theme in file_data.get("songs", []) or []:
+                if file_data.get("slug") == theme.get("slug"):
+                    for artist in theme.get("artist", []) or []:
+                        if artist == match:
+                            filenames.append(filename)
 
     return sorted(filenames)
 
@@ -460,13 +504,14 @@ def add_multiple_data_line(column, data, title, get, blank = True):
     if blank:
         column.insert(tk.END, "\n\n", "blank")
 
-def add_single_data_line(column, data, title, get):
+def add_single_data_line(column, data, title, get, blank = True):
     column.insert(tk.END, title, "bold")
     if data:
         column.insert(tk.END, f"{data.get(get, "N/A")}", "white")
     else:
         column.insert(tk.END, "N/A", "white")
-    column.insert(tk.END, "\n\n", "blank")
+    if blank:
+        column.insert(tk.END, "\n\n", "blank")
 
 def add_op_ed(theme, column, slug, title):
     theme_slug = theme.get("slug")
@@ -483,8 +528,18 @@ def add_op_ed(theme, column, slug, title):
     else:
         column.insert(tk.END, ">", format)
     column.insert(tk.END, f"{theme_slug}: {song_title}\n", format)
-    column.insert(tk.END, f"Artist(s): {artist}\n", format)
-    column.insert(tk.END, f"(Episodes: {episodes})\n", format)
+    column.insert(tk.END, f"Artist(s): ", format)
+    if theme.get("artist") == []:
+        column.insert(tk.END, f"N/A", format)
+    else:
+        for index, artist in enumerate(theme.get("artist")):
+            column.insert(tk.END, f"{artist}", format)
+            artist_files = get_filenames_from_artist(artist)
+            add_field_total_button(column, artist_files, blank = False)
+            if index < len(theme.get("artist"))-1:
+                column.insert(tk.END, f", ", format)
+    column.insert(tk.END, f"\n", format)        
+    column.insert(tk.END, f"(Episodes: {episodes})\n", format)        
     if theme_slug == slug:
         column.see("end-1c")
     column.insert(tk.END, "\n", "blank")
@@ -711,7 +766,7 @@ def weighted_shuffle(playlist):
         return playlist  # Return as is if empty
 
     # Step 1: Sort by popularity and split into 3 groups
-    sorted_playlist = sorted(playlist, key=lambda x: get_metadata(x).get("members", 0), reverse=True)
+    sorted_playlist = sorted(playlist, key=lambda x: get_metadata(x).get("members", 0) or 0, reverse=True)
     total_entries = len(sorted_playlist)
     group_size = total_entries // 3  # Split into 3 equal groups
 
@@ -761,14 +816,20 @@ def weighted_shuffle(playlist):
         groups = [group for group in groups if any(group)]
 
     # Step 6: Prevent repeats (title & series)
-    min_spacing = max(3, total_entries // 50)  # Dynamic spacing rule
     final_playlist = shuffled_playlist[:]
 
     def find_suitable_swap(index):
         """Finds a suitable index to swap to reduce repetition issues."""
+        # Check forward first
         for swap_index in range(index + min_spacing, len(final_playlist)):
             if is_safe_swap(index, swap_index):
                 return swap_index
+        
+        # If no forward swap found, check backward
+        for swap_index in range(index - min_spacing, -1, -1):
+            if is_safe_swap(index, swap_index):
+                return swap_index
+
         return None  # No good swap found
 
     def is_safe_swap(i1, i2):
@@ -777,9 +838,15 @@ def weighted_shuffle(playlist):
         title2, series2 = get_metadata(final_playlist[i2]).get("title", ""), get_metadata(final_playlist[i2]).get("series", "")
         return (title1 != title2 and series1 != series2)  # Ensure they are from different series
 
+    
+    min_spacing = max(3, total_entries // 30)  # Dynamic spacing rule
     # Adjust for spacing issues
     for i in range(len(final_playlist) - min_spacing):
         title, series = get_metadata(final_playlist[i]).get("title", ""), get_metadata(final_playlist[i]).get("series", "")
+        total_series = len(get_all_matching_field("series", get_metadata(final_playlist[i]).get("series")))
+        if total_series == 0:
+            total_series = len(get_all_matching_field("title", get_metadata(final_playlist[i]).get("title")))
+        min_spacing = max(3, total_entries // (total_series*2))  # Dynamic spacing rule
         for j in range(1, min_spacing + 1):
             if i + j < len(final_playlist):
                 next_title, next_series = get_metadata(final_playlist[i + j]).get("title", ""), get_metadata(final_playlist[i + j]).get("series", "")
@@ -859,6 +926,63 @@ def load_metadata():
         with open(anime_metadata_file, "r") as a:
             anime_metadata = json.load(a)
             print("Loaded metadata for " + str(len(anime_metadata)) + " anime...")
+    if os.path.exists(manual_metadata_file):
+        with open(manual_metadata_file, "r") as m:
+            manual_metadata = json.load(m)
+            for entry in manual_metadata:
+                anime_metadata[entry] = manual_metadata[entry]
+                anime_metadata[entry]["popularity"] = estimate_manual_popularity(anime_metadata[entry].get("members"))
+                anime_metadata[entry]["rank"] = estimate_manual_rank(anime_metadata[entry].get("score"))
+
+def estimate_manual_popularity(members):
+    """Estimate popularity rank based on member count."""
+    if not members:
+        return None # Return N/A if no data is available
+
+    # Load all known anime popularity & members counts
+    known_popularities = []
+    for anime in anime_metadata.values():
+        if anime.get("members") and anime.get("popularity") not in ["N/A", None]:
+            known_popularities.append((anime["members"], anime["popularity"]))
+
+    if not known_popularities:
+        return None  # If no valid data, return N/A
+
+    # Sort by members to find ranking distribution
+    known_popularities.sort(reverse=True, key=lambda x: x[0])  # Most members first
+
+    # Find the closest position based on members
+    for index, (known_members, known_popularity) in enumerate(known_popularities):
+        if members >= known_members:
+            return known_popularity  # Assign the closest popularity rank
+
+    # If it's lower than all known values, assign the worst rank
+    return max(pop for _, pop in known_popularities)
+
+def estimate_manual_rank(score):
+    """Estimate rank based on score."""
+    if not score:
+        return None # Return N/A if no data is available
+
+    # Load all known anime rank & score
+    known_ranks = []
+    for anime in anime_metadata.values():
+        if anime.get("score") and anime.get("rank") not in ["N/A", None]:
+            known_ranks.append((anime["score"], anime["rank"]))
+
+    if not known_ranks:
+        return None  # If no valid data, return N/A
+
+    # Sort by score to find ranking distribution
+    known_ranks.sort(reverse=True, key=lambda x: x[0])  # Highest score first
+
+    # Find the closest position based on score
+    for index, (known_score, known_rank) in enumerate(known_ranks):
+        if score >= known_score:
+            return known_rank  # Assign the closest rank
+
+    # If it's lower than all known values, assign the worst rank
+    return max(pop for _, pop in known_ranks)
 
 def save_youtube_metadata():
     """Ensures the metadata folder exists before saving metadata file."""
@@ -1319,12 +1443,10 @@ def filter_playlist(filters):
         if not eng_title:
             eng_title = ""
         theme_type = format_slug(data.get("slug"))
-        score = float(data.get("score", 0))
-        rank = data.get("rank")
-        if not rank:
-            rank = 100000
-        members = int(data.get("members", 0))
-        popularity = int(data.get("popularity", float('inf')))
+        score = float(data.get("score") or 0)
+        rank = data.get("rank") or 100000
+        members = int(data.get("members") or 0)
+        popularity = data.get("popularity") or float('inf')
         artists = get_song_by_slug(data, data.get("slug", "")).get("artist", [])
         studios = data.get("studios", [])
         tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))  # Ensure tags are a set for fast lookup
@@ -1350,11 +1472,11 @@ def filter_playlist(filters):
             continue
         if "popularity_max" in filters and popularity < filters["popularity_max"]:
             continue
-        if "artists" in filters and not all(artist in artists for artist in filters["artists"]):
+        if "artists" in filters and not any(artist in artists for artist in filters["artists"]):
             continue
-        if "studios" in filters and not all(studio in studios for studio in filters["studios"]):
+        if "studios" in filters and not any(studio in studios for studio in filters["studios"]):
             continue
-        if "tags_include" in filters and not all(tag in tags for tag in filters["tags_include"]):
+        if "tags_include" in filters and not any(tag in tags for tag in filters["tags_include"]):
             continue
         if "tags_exclude" in filters and any(tag in tags for tag in filters["tags_exclude"]):
             continue
@@ -1437,7 +1559,7 @@ def sort_playlist(index):
     # Sort playlist in-place
     playlist.sort(key=lambda filename: (
         extract_season_data(filename) if key == "season" else
-        float(get_metadata(filename).get(key, float("inf"))) if key in {"members", "score"} else
+        float(get_metadata(filename).get(key, 0) or 0) if key in {"members", "score"} else
         get_metadata(filename).get(key, "").lower() if isinstance(get_metadata(filename).get(key), str) else "",
         filename.lower()  # Secondary sort by filename for consistency
     ), reverse=reverse)
@@ -1493,7 +1615,7 @@ def set_search_queue(index):
             search_queue = None
         else:
             search_queue = filename
-            if not player.get_media():
+            if not player.is_playing():
                 play_video()
                 return
         search(True, False)
@@ -1512,7 +1634,7 @@ def search_playlist(search_term):
     for filename in directory_files:
         metadata = get_metadata(filename)
         filename_trim = filename.replace(".webm", "").lower()
-        title = metadata.get("title").lower()
+        title = metadata.get("title", "").lower()
         english_title = metadata.get("eng_title")
         if english_title:
             english_title = english_title.lower()
@@ -1579,7 +1701,6 @@ speed_round_start_time = None
 speed_round_number = 0
 speed_round_length = 12
 speed_round_answer_length = 8
-blind_censors_enabled = None
 SPEED_MODES = {
     "regular":{
         "toggle":speed_mode_toggle,
@@ -1645,7 +1766,6 @@ def toggle_speed_mode(type):
     if not toggle:
         unselect_SPEED_MODES()
         toggle_coming_up_popup(False)
-        return
     else:
         global speed_mode_enabled, speed_round_length
         unselect_SPEED_MODES()
@@ -1677,15 +1797,21 @@ last_round = -1
 def set_variety_speed_mode():
     global speed_mode_enabled, last_round, speed_round_length
     data = currently_playing.get('data')
-    popularity = data.get('popularity')
+    popularity = data.get('popularity') or 3000
     if popularity <= 100:
-        round_options = [0,1,1,2,2,2,3,3]
+        round_options = [0,1,1,2,2,2,2,2,3,3]
+    elif popularity <= 250:
+        round_options = [0,1,1,1,2,2,2,2,2,3]
     elif popularity <= 500:
-        round_options = [0,0,1,1,1,2,2,3]
+        round_options = [0,0,1,1,1,2,2,2,2,3]
+    elif popularity <= 750:
+        round_options = [0,0,0,1,1,1,1,2,2,2]
     elif popularity <= 1000:
-        round_options = [0,0,0,1,1,1,1,2]
+        round_options = [0,0,0,0,1,1,1,1,2,2]
+    elif popularity <= 1500:
+        round_options = [0,0,0,0,0,1,1,1,1,2]
     else:
-        round_options = [0,0,0,0,0,1,1,1]
+        round_options = [0,0,0,0,0,0,0,1,1,1]
 
     if data.get("mal") in clues_anime_ids:
         round_options = [x for x in round_options if x != 3]
@@ -1719,9 +1845,11 @@ def get_speed_round_time():
     if length < (speed_round_length+speed_round_answer_length+(buffer*2)+1):
         return 1  # If the video is too short, start from 1
     start_time = None
+    try_count = 0
     while start_time is None:
         start_time = random.randrange(buffer, int(length - (speed_round_length+speed_round_answer_length+buffer)))
-        if not blind_speed_mode_enabled:
+        try_count = try_count + 1
+        if try_count < 20 and not blind_speed_mode_enabled:
             file_censors = censor_list.get(currently_playing.get('filename'))
             if file_censors != None:
                 end_time = start_time+speed_round_length
@@ -1734,7 +1862,7 @@ def get_speed_round_time():
 clues_anime_ids = []
 
 def update_speed_round(time):
-    global speed_round_started, speed_round_start_time, blind_censors_enabled, censors_enabled
+    global speed_round_started, speed_round_start_time, censors_enabled
     if not speed_round_start_time and (frame_speed_mode_enabled or frame_speed_round_started):
         if time < 1:
             player.pause()
@@ -1754,9 +1882,6 @@ def update_speed_round(time):
                 toggle_clues_overlay(destroy=True)
                 player.audio_set_mute(False)
                 play_background_music(False)
-                if blind_censors_enabled is not None:
-                    censors_enabled = blind_censors_enabled
-                    blind_censors_enabled = None
             if not speed_mode_enabled:
                 start_str = "end"
             set_countdown(start_str + " in..." + str(round(speed_round_answer_length-(time - (speed_round_start_time+speed_round_length)))))
@@ -1774,16 +1899,13 @@ def update_speed_round(time):
             root.after(500, set_black_screen, False)
         if speed_round_start_time is None:
             speed_round_start_time = get_speed_round_time()
-        if blind_speed_mode_enabled or clues_speed_mode_enabled:
-            if blind_censors_enabled is None:
-               blind_censors_enabled = censors_enabled
-            censors_enabled = False
         if clues_speed_mode_enabled:
             player.audio_set_mute(True)
             play_background_music(True)
             toggle_clues_overlay()
             pass
         player.set_time(int(float(speed_round_start_time))*1000)
+        player.set_fullscreen(True)
         set_countdown(speed_round_length)
         set_speed_round_number("#" + str(speed_round_number))
 
@@ -1814,7 +1936,7 @@ def get_frame_speed_round_frames():
         while frame is None:
             frame = random.randint(start_time, start_time + increment)/1000
             try_count = try_count + 1
-            if try_count < 10:
+            if try_count < 20:
                 if length > 60 and len(frames) > 0 and (frame - frames[len(frames)-1]) <= 5:
                     frame = None
                 else:
@@ -1852,9 +1974,15 @@ def update_frame_speed_round(currently_playing_filename):
 
     show_frame_length = (speed_round_length/4)*1000
     if not frame_speed_round_pause:
+        if not player.is_playing():
+            time = int(frame_speed_round_frames[frame_speed_round_frame_index]*1000)
+            length = player.get_length()
+            apply_censors(time/1000,length/1000)
         frame_speed_round_frame_time = frame_speed_round_frame_time + SEEK_POLLING
         if frame_speed_round_frame_index < 4:
             play_background_music(True)
+            if player.is_playing():
+                player.pause()
         else:
             player.play()
     else:
@@ -1882,6 +2010,7 @@ def update_frame_speed_round(currently_playing_filename):
                 length = player.get_length()
                 apply_censors(time/1000,length/1000)
                 player.set_time(time)
+                player.set_fullscreen(True)
                 update_progress_bar(time, length)
                 set_frame_number(str(frame_speed_round_frame_index+1) + "/" + str(len(frame_speed_round_frames)))
             elif not is_title_window_up():
@@ -1958,15 +2087,15 @@ def toggle_clues_overlay(destroy=False):
             value_label = tk.Label(frame, text=value, font=("Arial", val_size), fg="white", bg="black", wraplength=650, justify="center")
             value_label.pack(fill="both", expand=True)
 
-        data = currently_playing.get('data')
+        data = currently_playing.get("data")
         season=data.get('season').replace(" ", "\n")
-        studio="\n".join(data.get('studios'))
+        studio="\n".join(data.get("studios"))
         tags=get_tags_string(data).replace(", ", "\n")
-        score=f"{data.get('score')}\n#{data.get('rank')}"
-        popularity=f"{data.get('members'):,}\n#{data.get('popularity')}"
-        episodes = str(data.get('episodes') or "Airing")
-        type = data.get('type')
-        source = data.get('source')
+        score=f"{data.get("score")}\n#{data.get('rank')}"
+        popularity=f"{data.get("members") or 0:,}\n#{data.get("popularity") or "N/A"}"
+        episodes = str(data.get("episodes") or "Airing")
+        type = data.get("type")
+        source = data.get("source")
 
         # Add metadata boxes
         create_box(0, 0, "Type", type)
@@ -2058,6 +2187,8 @@ def set_floating_text(name, value, position="top right"):
         x, y = positions.get(position, positions["top right"])
         window.update_idletasks()
         window.geometry(f"+{x}+{y}")
+        window.update_idletasks()
+        window.geometry(f"+{x}+{y}")
         window.lift()  # Bring to front
 
     # Ensure window is correctly positioned **after** all updates
@@ -2146,6 +2277,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         move_music_icon(current_time, total_length)
         speed_progress_bar["maximum"] = total_length
         speed_progress_bar["value"] = current_time
+        overlay.wm_attributes("-topmost", True)
 
 pulse_step = 0  # Track animation progress
 move_active = False  # Control movement loop
@@ -2246,7 +2378,7 @@ def play_background_music(toggle):
         return
 
     if music_loaded and not music_changed:
-        if toggle:
+        if toggle and not disable_video_audio:
             pygame.mixer.music.unpause()
         else:
             pygame.mixer.music.pause()
@@ -2364,32 +2496,30 @@ def toggle_title_popup(show):
     data = currently_playing.get("data")
     if data:
         if currently_playing.get("type") == "youtube":
-            title = data.get('title')
-            uploaded = f"{datetime.strptime(data.get('upload_date'), "%Y%m%d").strftime("%Y-%m-%d")}"
-            views = f"{data.get('view_count'):,}"
-            likes = f"{data.get('like_count'):,}"
-            channel = data.get('channel')
-            subscribers = f"{data.get('channel_follower_count'):,}"
+            title = data.get("title")
+            uploaded = f"{datetime.strptime(data.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}"
+            views = f"{data.get("view_count"):,}"
+            likes = f"{data.get("like_count"):,}"
+            channel = data.get("channel")
+            subscribers = f"{data.get("channel_follower_count"):,}"
             duration = str(format_seconds(get_youtube_duration(data))) + " mins"
 
             top_row = f"Uploaded by {channel} ({subscribers} subscribers)"
             title_row = title
             bottom_row = f"Views: {views} | Likes: {likes} | {uploaded} | {duration}"
         else:
-            title = data.get('eng_title')
-            score = f"Score: {data.get('score')} (#{data.get('rank')})"
-            members = f"Members: {data.get('members'):,} (#{data.get('popularity')})"
-            japanese_title = data.get('title')
-            aired = data.get('season')
+            japanese_title = data.get("title")
+            title = data.get("eng_title") or (data.get("synonyms", [None]) or [None])[0] or japanese_title
+            score = f"Score: {data.get("score")} (#{data.get("rank")})"
+            members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
+            aired = data.get("season")
             theme = format_slug(data.get("slug"))
-            studio = ", ".join(data.get('studios'))
+            studio = ", ".join(data.get("studios"))
             song = get_song_string(data)
             tags = get_tags_string(data)
-            episodes = str(data.get('episodes')) + " Episodes"
-            type = data.get('type')
-            source = data.get('source')
-            if title is None:
-                title = japanese_title
+            episodes = str(data.get("episodes")) + " Episodes"
+            type = data.get("type")
+            source = data.get("source")
             top_row = f"{theme} | {song} | {aired}"
             title_row = title
             middle_row = f"{studio} | {tags} | {episodes} | {type} | {source}"
@@ -2405,7 +2535,7 @@ def toggle_title_popup(show):
         bottom_row_label.config(text=bottom_row)
     else:
         top_row_label = tk.Label(title_window, text=top_row,
-                                font=("Arial", 20), fg="white", bg="black")
+                                font=("Arial", 20, "bold"), fg="white", bg="black")
         top_row_label.pack(pady=(10, 0), padx = 10)
 
         # Title Label (Large Text)
@@ -2415,10 +2545,10 @@ def toggle_title_popup(show):
         # Info Label (Smaller Text)
         if middle_row:
             middle_row_label = tk.Label(title_window, text=middle_row,
-                                    font=("Arial", 15), fg="white", bg="black")
+                                    font=("Arial", 15, "bold"), fg="white", bg="black")
             middle_row_label.pack(pady=(0, 0), padx = 10)
         bottom_row_label = tk.Label(title_window, text=bottom_row,
-                                font=("Arial", 15), fg="white", bg="black")
+                                font=("Arial", 15, "bold"), fg="white", bg="black")
         bottom_row_label.pack(pady=(0, 10), padx = 10)
 
     # Dynamically adjust font size to fit window width
@@ -2456,21 +2586,19 @@ def get_song_string(data):
 currently_playing = {}
 def play_video(index = current_index):
     """Function to play a specific video by index"""
-    global video_stopped, currently_playing, search_queue, censors_enabled, blind_censors_enabled, frame_speed_round_started, speed_round_start_time, playlist_loaded
+    global video_stopped, currently_playing, search_queue, censors_enabled, frame_speed_round_started, speed_round_start_time, playlist_loaded
     playlist_loaded = False
     speed_round_start_time = None
     video_stopped = True
     toggle_title_popup(False)
     set_progress_overlay(destroy=True)
     toggle_clues_overlay(destroy=True)
+    set_frame_number(-1)
     set_countdown(-1)
     play_background_music(False)
     if not disable_video_audio:
         player.audio_set_mute(False)
     frame_speed_round_started = False
-    if blind_censors_enabled is not None:
-        censors_enabled = blind_censors_enabled
-        blind_censors_enabled = None
     if youtube_queue is not None:
         currently_playing = {
             "type":"youtube",
@@ -2493,16 +2621,17 @@ def play_video(index = current_index):
     root.after(3000, thread_prefetch_metadata)
 
 def play_filename(filename):
-    global currently_playing, video_stopped, total_themes_played, clues_anime_ids
+    global blind_round_toggle, currently_playing, video_stopped, total_themes_played, clues_anime_ids
     filepath = directory_files.get(filename)  # Get file path from playlist
     if not filepath or not os.path.exists(filepath):  # Check if file exists
         print(f"File not found: {filepath}. Skipping...")
+        blind_round_toggle = False
         play_video(current_index + 1)  # Try playing the next video
         return
     currently_playing = {
         "type":"theme",
         "filename":filename,
-        "data":get_metadata(filename)
+        "data":get_metadata(filename, fetch=True)
     }
     update_censor_button_count()
     if variety_speed_mode_enabled:
@@ -2535,12 +2664,21 @@ def play_filename(filename):
         else:
             player.play()
     else:
-        set_black_screen(False)
         speed_round_number = 0
         set_countdown(-1)
         set_speed_round_number(str(speed_round_number))
-        player.play()
-        root.after(2000, play_video_retry, 5)  # Retry playback
+        global manual_blind
+        toggle_coming_up_popup(False)
+        if blind_round_toggle:
+            blind_round_toggle = False
+            button_seleted(blind_round_button, blind_round_toggle)
+            manual_blind = True
+            set_black_screen(True)
+            root.after(500, lambda: player.play())
+        else:
+            set_black_screen(False)
+            player.play()
+        root.after(500, play_video_retry, 5)  # Retry playback
     total_themes_played = total_themes_played + 1
     save_config()
 
@@ -2552,12 +2690,14 @@ def play_video_retry(retries):
     # Check if the video is playing
     if not player.is_playing():
         if retries > 0:
-            print(f"Retrying playback for: {currently_playing.get('filename')}")
-            player.play()
+            if retries < 5:
+                print(f"Retrying playback for: {currently_playing.get('filename')}")
+                player.play()
             root.after(2000, play_video_retry, retries - 1)  # Retry playback
             return
         else:
             play_next()
+    player.set_fullscreen(True)
     video_stopped = False
 
 # Function to play next video
@@ -2590,9 +2730,10 @@ def update_current_index(value = 0):
     current_index = value
     current_entry.delete(0, tk.END)
     current_entry.insert(0, str(current_index+1))
+    playlist_size_label.configure(text = "/" + str(len(playlist)))
     save_config()
 
-def load_youtube_video(index, is_button=False):
+def load_youtube_video(index):
     global youtube_queue
     video = get_youtube_metadata_from_index(int(index))
     if video and youtube_queue != video:
@@ -2601,11 +2742,14 @@ def load_youtube_video(index, is_button=False):
         title = youtube_queue.get('title')
         image = load_image_from_url(youtube_queue.get('thumbnail'))
         details = (
-            "Created by: " + youtube_queue.get('channel') + " (" + str(f"{youtube_queue.get('channel_follower_count'):,}") + " subscribers)" + "\n"
-            "Uploaded: " + str(f"{datetime.strptime(youtube_queue.get('upload_date'), "%Y%m%d").strftime("%Y-%m-%d")}") + " | Duration: " + str(format_seconds(get_youtube_duration(youtube_queue))) + " mins\n\n"
+            "Created by: " + youtube_queue.get("channel") + " (" + str(f"{youtube_queue.get("channel_follower_count"):,}") + " subscribers)" + "\n"
+            "Uploaded: " + str(f"{datetime.strptime(youtube_queue.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}") + " | Duration: " + str(format_seconds(get_youtube_duration(youtube_queue))) + " mins\n\n"
             "1 PT for the first correct answer."
         )
-        toggle_coming_up_popup(True, title, details, image)
+        if player.is_playing():
+            toggle_coming_up_popup(True, title, details, image)
+        else:
+            play_video()
     else:
         unload_youtube_video()
     show_youtube_playlist(True)
@@ -2677,6 +2821,8 @@ def stop():
     player.stop()
     player.set_media(None)  # Reset the media
     currently_playing = {}
+    update_progress_bar(0,1)
+    apply_censors(0, 1)
 
 def seek(value):
     """Function to seek the video"""
@@ -2701,6 +2847,8 @@ def update_seek_bar():
             projected_vlc_time = projected_vlc_time + SEEK_POLLING
         length = player.get_length()/1000
         time = projected_vlc_time/1000
+        if manual_blind:
+            set_progress_overlay(time, length)
         if length > 0:
             global can_seek
             can_seek = False
@@ -2781,7 +2929,7 @@ def toggle_coming_up_popup(show, title="", details="", image=None):
 
     # Details
     rules_label = tk.Label(coming_up_window, text=details,
-                           font=("Arial", 20), fg="white", bg="black", justify="center", wraplength=1000)
+                           font=("Arial", 20, "bold"), fg="white", bg="black", justify="center", wraplength=1000)
     rules_label.pack(pady=(5, 10))
 
     # Position at the bottom center of the screen
@@ -2837,13 +2985,17 @@ def update_progress_bar(current_time, total_time):
         progress_bar.geometry(f"+{0}+{root.winfo_screenheight() - height}")  # Adjust for bottom spacing
 
 black_overlay = None
-def blind():
+manual_blind = False
+def blind(manual = False):
     """Toggle black screen"""
-    global black_overlay
+    global black_overlay, manual_blind
     if black_overlay is None:  # Create black overlay if it doesn't exist
+        manual_blind = manual
         set_black_screen(True)
     else:  # Destroy the black overlay to reveal VLC
+        manual_blind = False
         set_black_screen(False)
+        set_progress_overlay(destroy=True)
 
 def set_black_screen(toggle, smooth=True):
     global black_overlay
@@ -2887,6 +3039,16 @@ def black_while_loading(toggle):
     else:
         set_black_screen(False)
 
+blind_round_toggle = False
+def toggle_blind_round():
+    global blind_round_toggle
+    blind_round_toggle = not blind_round_toggle
+    button_seleted(blind_round_button, blind_round_toggle)
+    if blind_round_toggle:
+        toggle_coming_up_popup(True, "Blind Round", "Guess the anime from just the music.\nNormal rules apply.")
+    else:
+        toggle_coming_up_popup(False)
+
 # =========================================
 #              *CENSOR BOXES
 # =========================================
@@ -2929,7 +3091,7 @@ def apply_censors(time, length):
     global censors_enabled
     screen_width = censor_bar.winfo_screenwidth()
     screen_height = censor_bar.winfo_screenheight()
-    if censors_enabled:
+    if censors_enabled and not black_overlay:
         if check_file_censors(currently_playing.get('filename'), time, False):
             return
         elif length - time <= 1 and current_index+1 < len(playlist) and check_file_censors(os.path.basename(playlist[current_index+1]), time, True):
@@ -2959,9 +3121,11 @@ def check_file_censors(filename, time, video_end):
                         root.lift()
                     if title_window:
                         title_window.lift()
-                censor_bar.configure(bg=get_image_color())
+                    if progress_bar:
+                        progress_bar.lift()
                 censor_bar.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
                 set_window_position(censor_bar, censor['pos_x'], censor['pos_y'])
+                censor_bar.configure(bg=get_image_color())
                 return True
     return False
 
@@ -3118,21 +3282,26 @@ def move_root_to_bottom(toggle=True):
 #                  *LISTS
 # =========================================
 
-last_series_listed = {}
-def show_series(series, update = False):
-    global last_series_listed
-    series_list = get_all_series(series)
-    last_series_listed = series_list
+last_themes_listed = {}
+def show_field_themes(update = False, group=[]):
+    global last_themes_listed
+    if group == []:
+        field_list = last_themes_listed
+    else:
+        field_list = group
+    if last_themes_listed != group:
+        update = True
+    last_themes_listed = field_list
     selected = -1
-    for index, filename in enumerate(series_list):
+    for index, filename in enumerate(field_list):
         if filename == currently_playing.get('filename'):
             selected = index
             break
-    show_list("series", right_column, convert_playlist_to_dict(series_list), get_filename, play_video_from_series, selected, update)
+    show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_filename, play_video_from_last, selected, update)
 
-def play_video_from_series(index):
-    if last_series_listed:
-        play_video_from_filename(last_series_listed[index])
+def play_video_from_last(index):
+    if last_themes_listed:
+        play_video_from_filename(last_themes_listed[index])
 
 def show_playlist(update = False):
     show_list("playlist", right_column, convert_playlist_to_dict(playlist), get_filename, play_video, current_index, update)
@@ -3273,10 +3442,11 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "LIST SELECT", "[ENTER]")
     add_single_line(right_column, "SEARCH/QUEUE", "[S]", False)
     add_single_line(right_column, "CANCEL SEARCH", "[ESC]")
+    add_single_line(right_column, "BLIND ROUND", "[B]", False)
     add_single_line(right_column, "TOGGLE BLIND", "[BACKSPACE]")
     add_single_line(right_column, "START/END LIGHTNING ROUND", "[L]")
     add_single_line(right_column, "FRAME", "[F]", False)
-    add_single_line(right_column, "BLIND", "[B]", False)
+    add_single_line(right_column, "BLIND", "[N]", False)
     add_single_line(right_column, "CLUES", "[U]", False)
     add_single_line(right_column, "VARIETY", "[V]")
     add_single_line(right_column, "TOGGLE CENSOR BAR", "[C]", False)
@@ -3342,6 +3512,7 @@ def toggle_progress_bar():
 
 disable_video_audio = False
 def toggle_mute():
+    global disable_video_audio
     disable_video_audio = not disable_video_audio
     player.audio_set_mute(disable_video_audio)
     button_seleted(mute_button, not disable_video_audio)
@@ -3474,8 +3645,8 @@ def select_directory():
                     directory_files[file] = os.path.join(root, file)
         save_config()
 
-select_button = create_button(first_row_frame, "CHOOSE DIRECTORY:", select_directory,
-                              help_title="CHOOSE VIDEO DIRECTORY",
+select_button = create_button(first_row_frame, "FOLDER:", select_directory,
+                              help_title="CHOOSE VIDEO DIRECTORY FOLDER",
                               help_text="Choose the folder you have all your themes stored "+
                               "in. This application expects files from the AnimeThemes " +
                               "website, either grabbed from the torrent or downloaded from the site. " +
@@ -3552,6 +3723,9 @@ go_button = create_button(first_row_frame, "GO TO:", go_to_index,
                               "It will play it immediately and set the current index."))
 current_entry = tk.Entry(first_row_frame, width=5, bg="black", fg="white", insertbackground="white", justify='center')
 current_entry.pack(side="left")
+
+playlist_size_label = tk.Label(first_row_frame, text="/" + str(len(playlist)), bg=BACKGROUND_COLOR, fg="white")
+playlist_size_label.pack(side="left")
 
 blank_space(first_row_frame)
 
@@ -3637,7 +3811,7 @@ search_button = create_button(first_row_frame, "[S]EARCH", search,
                                          "the search takes all keypresses and refreshes the search with each keypress. "
                                          "You must hit ESC to exit this mode. Lists also function different with shortcuts " 
                                          "enabled. You can read about the controls by hitting the SHORTCUT [K]EYS button."))
-add_search_button = create_button(first_row_frame, "+", search_add, True,
+add_search_button = create_button(first_row_frame, "➕", search_add, True,
                               help_title="SEARCH ADD",
                               help_text=("The same as the SEARCH, but will add the theme to the playlist "
                                          "instead of just queueing it.\n\nThis was more of an after thought feature "
@@ -3652,7 +3826,7 @@ help_button = create_button(first_row_frame, "HELP", lambda:show_button_help("HE
                                                                                "This application was created by Ramun Flame")),
                               help_title="HELP",
                               help_text=("It's just here to let people know you can right click things for explanations.\n\n"
-                              "If you are unsure where to start, go to the CHOOSE DIRECTORY button, and right click it to "
+                              "If you are unsure where to start, go to the FOLDER: button, and right click it to "
                               "see an explanation."))
 
 # Second row
@@ -3721,7 +3895,17 @@ toggle_refresh_metadata_button = create_button(second_row_frame, "♻", toggle_a
                                          "anime_metadata.json file in the metadata/ folder, and fetch "
                                          "all missing metadata again, but I wouldn't recommend that."))
 
-speed_mode_button = create_button(second_row_frame, "[L]IGHTNING ROUND", lambda: toggle_speed_mode("regular"),
+blind_button = create_button(second_row_frame, "BLIND", lambda: blind(True),
+                              help_title="BLIND (Shortcut Key = 'backspace')",
+                              help_text=("Covers the screen. Will be a color matching the average color of the screen. "
+                                         "If a video is playing, it will display a progress bar."))
+blind_round_button = create_button(second_row_frame, "👁", toggle_blind_round, True,
+                              help_title="[B]LIND ROUND (Shortcut Key = 'b')",
+                              help_text=("Enables the next video to play as a 'Blind Round'. A blind round plays normally, "
+                                         "but will cover the screen at the start to make it audio only. This is only lasts "
+                                         "for one video, and the blind can be removed with the normal BLIND toggle."))
+
+speed_mode_button = create_button(second_row_frame, "[L]IGHTNING", lambda: toggle_speed_mode("regular"),
                               help_title="[L]IGHTNING ROUND (Shortcut Key = 'l')",
                               help_text=("Start/End the Lightning Round mode. This mode uses the same playlist as "
                                          "normal, but uses the following rules:\n\n" + SPEED_MODES["regular"]["desc"] +
@@ -3741,7 +3925,7 @@ frame_speed_mode_button = create_button(second_row_frame, "📷", lambda: toggle
                                          "Houseki no Kuni OST - Early Afternoon\n"
                                          "Katanagatari OST - 12 DUB TRIP"))
 blind_speed_mode_button = create_button(second_row_frame, "👁", lambda: toggle_speed_mode("blind"),
-                              help_title="[B]LIND LIGHTNING ROUND (Shortcut Key = 'b')",
+                              help_title="BLI[N]D LIGHTNING ROUND (Shortcut Key = 'n')",
                               help_text=("Lightning Round varient using the following rules:\n\n" + SPEED_MODES["blind"]["desc"] +
                                          "\n\nThis mode doesn't avoid censors, since nothing is shown. Identifying from music "
                                          "only may be hard if you're not an expert or using popular shows. It may be recommended to "
@@ -3789,7 +3973,7 @@ mute_button = create_button(second_row_frame, "[M]UTE", toggle_mute, True,
                               help_title="[M]UTE THEME AUDIO (Shortcut Key = 'm')",
                               help_text=("Toggles muting the video audio."))
 
-toggle_disable_shortcuts_button = create_button(second_row_frame, "ENABLE SHORTCUTS", toggle_disable_shortcuts, True,
+toggle_disable_shortcuts_button = create_button(second_row_frame, "[`]ENABLE SHORTCUTS", toggle_disable_shortcuts,
                               help_title="ENABLE SHORTCUTS (Shortcut Key = '`')",
                               help_text=("Used to toggle shortcut keys.\n\nIn my current setup, I am streaming my desktop to "
                                          "one screen, and do not have access to a second monitor to manage the "
@@ -3800,7 +3984,7 @@ toggle_disable_shortcuts_button = create_button(second_row_frame, "ENABLE SHORTC
                                          "lists greater than 50 items no longer have buttons. The buttons slow down things a bit, and since they "
                                          "aren't needed if I'm using shortcuts, I disabled them."))
 
-list_keyboard_shortcuts_button = create_button(second_row_frame, "SHORTCUT [K]EYS", list_keyboard_shortcuts, True,
+list_keyboard_shortcuts_button = create_button(second_row_frame, "[K]EYS", list_keyboard_shortcuts, True,
                               help_title="LIST SHORTCUT [K]EYS (Shortcut Key = 'k')",
                               help_text=("Lists all shortcut keys on the application.\n\nAlthough all are listed in uppercase for clarity "
                                          "it only accepts inputs in lowercase.\n\nThe scoreboard stuff at the "
@@ -3876,7 +4060,7 @@ right_column.tag_configure("blank", foreground="white", font=("Arial", 6))
 
 list_buttons = [
     {"button":show_playlist_button, "label":"playlist", "func":show_playlist},
-    {"button":show_playlist_button, "label":"series", "func":show_series},
+    {"button":show_playlist_button, "label":"field_list", "func":show_field_themes},
     {"button":remove_button, "label":"remove", "func":remove_theme},
     {"button":load_button, "label":"load_playlist", "func":load},
     {"button":delete_button, "label":"delete_playlist", "func":delete},
@@ -3886,7 +4070,7 @@ list_buttons = [
     {"button":search_button, "label":"search", "func":search},
     {"button":add_search_button, "label":"search_add", "func":search_add},
     {"button":show_youtube_playlist_button, "label":"youtube", "func":show_youtube_playlist}
-]     
+]
 
 # =========================================
 #            *KEYBOARD SHORTCUTS
@@ -3903,12 +4087,15 @@ def on_press(key):
         elif key == key.down:
             list_move(1)
     except AttributeError:
-        if list_loaded == "search":
-            pass
-        elif key.char == '-' or key.char == '_':
-            player.set_time(player.get_time()-1000)
-        elif key.char == '=' or key.char == '+':
-            player.set_time(player.get_time()+1000)
+        try:
+            if list_loaded == "search":
+                pass
+            elif key.char == '-' or key.char == '_':
+                player.set_time(player.get_time()-1000)
+            elif key.char == '=' or key.char == '+':
+                player.set_time(player.get_time()+1000)
+        except AttributeError as e:
+            print(f"Error: {e}")
 
 def on_release(key):
     global disable_shortcuts
@@ -3948,56 +4135,61 @@ def on_release(key):
             elif key == key.tab:
                 player.toggle_fullscreen()
             elif key == key.backspace:
-                blind()
+                blind(True)
             elif key == key.enter:
                 list_select()
         except AttributeError:
-            if key.char == '`':
-                toggle_disable_shortcuts()
-            elif key.char == 'm':
-                toggle_mute()
-            elif key.char == 't':
-                tag()
-            elif key.char == '*':
-                favorite()
-            elif key.char == 'd':
-                dock_player()
-            elif key.char == 'p':
-                show_playlist()
-            elif key.char == 'y':
-                show_youtube_playlist()
-            elif key.char.isdigit():
-                if list_loaded:
-                    global list_index
-                    list_index = int(key.char)-1
-                    list_select()
-                else:
-                    seek_value = player.get_length()-((player.get_length()/10)*(10-int(key.char)))
-                    player.set_time(int(seek_value))
-            elif key.char == 'r':
-                refetch_metadata()
-            elif key.char == 'c':
-                toggle_censor_bar()
-            elif key.char == 'k':
-                list_keyboard_shortcuts()
-            elif key.char == 'l':
-                toggle_speed_mode("regular")
-            elif key.char == 'f':
-                toggle_speed_mode("frame")
-            elif key.char == 'b':
-                toggle_speed_mode("blind")
-            elif key.char == 'u':
-                toggle_speed_mode("clues")
-            elif key.char == 'v':
-                toggle_speed_mode("variety")
-            elif key.char == 'i':
-                toggle_info_popup()
-            elif key.char == 'o':
-                load()
-            elif key.char == 'e':
-                end_session()
-            elif key.char == 's':
-                search()
+            try:
+                if key.char == '`':
+                    toggle_disable_shortcuts()
+                elif key.char == 'm':
+                    toggle_mute()
+                elif key.char == 't':
+                    tag()
+                elif key.char == '*':
+                    favorite()
+                elif key.char == 'd':
+                    dock_player()
+                elif key.char == 'p':
+                    show_playlist()
+                elif key.char == 'y':
+                    show_youtube_playlist()
+                elif key.char.isdigit():
+                    if list_loaded:
+                        global list_index
+                        list_index = int(key.char)-1
+                        list_select()
+                    else:
+                        seek_value = player.get_length()-((player.get_length()/10)*(10-int(key.char)))
+                        player.set_time(int(seek_value))
+                elif key.char == 'r':
+                    refetch_metadata()
+                elif key.char == 'c':
+                    toggle_censor_bar()
+                elif key.char == 'k':
+                    list_keyboard_shortcuts()
+                elif key.char == 'l':
+                    toggle_speed_mode("regular")
+                elif key.char == 'f':
+                    toggle_speed_mode("frame")
+                elif key.char == 'n':
+                    toggle_speed_mode("blind")
+                elif key.char == 'u':
+                    toggle_speed_mode("clues")
+                elif key.char == 'b':
+                    toggle_blind_round()
+                elif key.char == 'v':
+                    toggle_speed_mode("variety")
+                elif key.char == 'i':
+                    toggle_info_popup()
+                elif key.char == 'o':
+                    load()
+                elif key.char == 'e':
+                    end_session()
+                elif key.char == 's':
+                    search()
+            except AttributeError as e:
+                print(f"Error: {e}")
 
 # =========================================
 #                *STARTUP
