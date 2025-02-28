@@ -2433,6 +2433,8 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
                 window.after(delay, lambda: step(i + 1))
             elif destroy and window:
                 window.destroy()  # Call the completion function after animation ends
+            else:
+                window.after(delay*20, lambda: window.geometry(f"+{new_x}+{new_y}"))
 
     step()  # Start animation
 
