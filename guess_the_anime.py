@@ -49,7 +49,6 @@ playlist_name = ""
 current_index = 0
 video_stopped = True
 can_seek = True
-config_file = "files/config.json"
 file_metadata = {}
 file_metadata_file = "metadata/file_metadata.json"
 anime_metadata = {}
@@ -58,6 +57,7 @@ manual_metadata_file = "metadata/manual_metadata.json"
 youtube_metadata = {}
 youtube_metadata_file = "metadata/youtube_metadata.json"
 directory_files = {}
+CONFIG_FILE = "files/config.json"
 YOUTUBE_FOLDER = "youtube"
 ARCHIVE_FILE = "files/youtube_archive.txt"
 PLAYLISTS_FOLDER = "playlists/"
@@ -136,6 +136,8 @@ def fetch_metadata(filename = None, refetch = False):
 
     fetching_metadata[filename] = True
     slug = filename.split("-")[1].split(".")[0].split("v")[0]
+    if "-EN." in filename:
+        slug = slug + "-EN"
     manual_file = False
     mal_id = None
     if (not "[MAL]" in filename) and (not "[ID]" in filename):
@@ -459,9 +461,8 @@ def add_field_total_button(column, group, blank = True):
     count = len(group)
     if count > 0:
         column.insert(tk.END, f" ({count}", "white")
-        if count > 1:
-            btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: show_field_themes(group=group), bg="black", fg="white")
-            column.window_create(tk.END, window=btn)
+        btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: show_field_themes(group=group), bg="black", fg="white")
+        column.window_create(tk.END, window=btn)
         column.insert(tk.END, f")", "white")
     if blank:
         column.insert(tk.END, "\n\n", "blank")
@@ -604,7 +605,16 @@ def load_video_links():
 
     if os.path.exists(YOUTUBE_LINKS_FILE):
         try:
-            with open(YOUTUBE_LINKS_FILE, "r") as file, open(ARCHIVE_FILE, "a") as archive:  # Open archive once for efficiency
+            # Load existing archive entries but store only URLs for comparison
+            archived_urls = set()
+            if os.path.exists(ARCHIVE_FILE):
+                with open(ARCHIVE_FILE, "r") as archive_file:
+                    for line in archive_file:
+                        parts = line.strip().split(",")
+                        if len(parts) > 1:  # Ensure valid format
+                            archived_urls.add(parts[1])  # Store only the URL for checking
+
+            with open(YOUTUBE_LINKS_FILE, "r") as file, open(ARCHIVE_FILE, "a") as archive:
                 for index, line in enumerate(file):
                     url, start, end, title = line.strip().split(",")
                     if url and url != 'url':  # Ensure URL is valid and not a header
@@ -616,13 +626,12 @@ def load_video_links():
                             'title': title
                         }
 
-                        # Format full archive line: [DATE] URL, start, end, title
-                        archive_entry = f"{datetime.now().strftime('%Y-%m-%d')}, {line.strip()}"
-
-                        # Add to archive if not already present
-                        if archive_entry not in archived_lines:
+                        # Check if the URL is already archived (ignoring date)
+                        if url not in archived_urls:
+                            archive_entry = f"{datetime.now().strftime('%Y-%m-%d')},{line.strip()}"
                             archive.write(archive_entry + "\n")
-                            archived_lines.add(archive_entry)
+                            archived_urls.add(url)  # Add the URL to prevent future duplicates
+
             # remove old metadata
             to_delete = []
             for key, value in youtube_metadata.items():
@@ -863,7 +872,7 @@ def weighted_shuffle(playlist):
 
 def save_config():
     """Function to save configuration"""
-    files_folder = os.path.dirname(config_file)  # Get the folder path
+    files_folder = os.path.dirname(CONFIG_FILE)  # Get the folder path
 
     # Create the folder if it does not exist
     if not os.path.exists(files_folder):
@@ -875,15 +884,15 @@ def save_config():
         "directory": directory_entry.get(),
         "directory_files": directory_files
     }
-    with open(config_file, "w") as f:
+    with open(CONFIG_FILE, "w") as f:
         json.dump(config, f)
 
 def load_config():
     """Function to load configuration"""
     global playlist, playlist_name, directory_files
     try:
-        if os.path.exists(config_file):
-            with open(config_file, "r") as f:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r") as f:
                 config = json.load(f)
             directory_files = config.get("directory_files", {})
             update_playlist_name(config.get("playlist_name", ""))
@@ -891,7 +900,7 @@ def load_config():
             directory_entry.insert(0, config.get("directory", ""))
             update_current_index(config.get("current_index", 0))
     except Exception as e:
-        os.remove(config_file)
+        os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
         return False
     return False
@@ -2212,7 +2221,6 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         destroy (bool): If True, the overlay (if present) is destroyed.
     """
     global overlay, speed_progress_bar, music_icon_label
-
     # If asked to destroy, close the overlay and clear globals
     if destroy:
         if overlay is not None:
@@ -2387,7 +2395,7 @@ def play_background_music(toggle):
             music_loaded = True
             pygame.mixer.music.load(music_files[current_music_index])
             pygame.mixer.music.play(-1)  # -1 loops indefinitely
-            pygame.mixer.music.set_volume(0.2)  # Adjust volume
+            pygame.mixer.music.set_volume(0.2*(volume_level/100))  # Adjust volume
             music_changed = False
 
 # =========================================
@@ -2454,16 +2462,6 @@ def adjust_font_size(label, text, max_width, base_size=50, min_size=20):
         font_size -= 2
         label.config(font=("Arial", font_size, "bold"))
 
-def destroy_title_popup():
-    global title_window, title_row_label, top_row_label, middle_row_label, bottom_row_label
-    if title_window:
-        title_window.destroy()
-        title_window = None
-        title_row_label = None
-        top_row_label = None
-        middle_row_label = None
-        bottom_row_label = None
-
 def is_title_window_up():
     return not (title_window is None or title_window.attributes("-alpha") == 0)
 
@@ -2499,6 +2497,7 @@ def toggle_title_popup(show):
     if data:
         if currently_playing.get("type") == "youtube":
             title = data.get("title")
+            full_title = data.get("full_title")
             uploaded = f"{datetime.strptime(data.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}"
             views = f"{data.get("view_count"):,}"
             likes = f"{data.get("like_count"):,}"
@@ -2508,6 +2507,7 @@ def toggle_title_popup(show):
 
             top_row = f"Uploaded by {channel} ({subscribers} subscribers)"
             title_row = title
+            middle_row = f"{full_title}"
             bottom_row = f"Views: {views} | Likes: {likes} | {uploaded} | {duration}"
         else:
             japanese_title = data.get("title")
@@ -2524,8 +2524,8 @@ def toggle_title_popup(show):
             source = data.get("source")
             top_row = f"{theme} | {song} | {aired}"
             title_row = title
-            middle_row = f"{studio} | {tags} | {episodes} | {type} | {source}"
-            bottom_row = f"{score} | {japanese_title} | {members}"
+            middle_row = f"{score} | {japanese_title} | {members}"
+            bottom_row = f"{studio} | {tags} | {episodes} | {type} | {source}"
     else:
         return
 
@@ -2622,8 +2622,9 @@ def play_video(index = current_index):
         messagebox.showinfo("Playlist Error", "Invalid playlist index.")
     root.after(3000, thread_prefetch_metadata)
 
+all_themes_played = []
 def play_filename(filename):
-    global blind_round_toggle, currently_playing, video_stopped, total_themes_played, clues_anime_ids
+    global blind_round_toggle, currently_playing, video_stopped, clues_anime_ids, all_themes_played
     filepath = directory_files.get(filename)  # Get file path from playlist
     if not filepath or not os.path.exists(filepath):  # Check if file exists
         print(f"File not found: {filepath}. Skipping...")
@@ -2678,10 +2679,12 @@ def play_filename(filename):
             set_black_screen(True)
             root.after(500, lambda: player.play())
         else:
+            manual_blind = False
             set_black_screen(False)
             player.play()
         root.after(500, play_video_retry, 5)  # Retry playback
-    total_themes_played = total_themes_played + 1
+    if filename not in all_themes_played:
+        all_themes_played.append(filename)
     save_config()
 
 def thread_prefetch_metadata():
@@ -2884,57 +2887,50 @@ def format_seconds(seconds):
 # =========================================
 
 coming_up_window = None  # Store the speed round window
-coming_up_label = None  # Store the label for the speed round message
-
-def destory_coming_up_popup():
-    global coming_up_window, coming_up_label, image_label
-    if coming_up_window and not youtube_queue:
-        coming_up_window.destroy()
-        coming_up_window = None
-        coming_up_label = None
-        image_label = None
-
+coming_up_title_label = None  # Store the label for the speed round message
+coming_up_rules_label = None
 
 def toggle_coming_up_popup(show, title="", details="", image=None):
     """Creates or destroys the speed round announcement popup with an optional image."""
-    global coming_up_window, coming_up_label, speed_round_length, image_label
+    global coming_up_window, coming_up_title_label, coming_up_rules_label, speed_round_length, image_label
 
     if coming_up_window:
-        if show:
-            destory_coming_up_popup()
-        else:
-            root.after(500, destory_coming_up_popup)
-            screen_width = coming_up_window.winfo_screenwidth()
-            window_width = coming_up_window.winfo_reqwidth()
-            animate_window(coming_up_window, (screen_width - window_width) // 2, -coming_up_window.winfo_reqheight())
+        screen_width = coming_up_window.winfo_screenwidth()
+        window_width = coming_up_window.winfo_reqwidth()
+        window_height = coming_up_window.winfo_reqheight()
+        if not show:
+            animate_window(coming_up_window, (screen_width - window_width) // 2, -window_height)
 
     if not show:
         return
 
-    coming_up_window = tk.Toplevel()
-    coming_up_window.title("SPEED ROUND UP NEXT!")
-    coming_up_window.overrideredirect(True)  # Remove window borders
-    coming_up_window.attributes("-topmost", True)  # Keep it on top
-    coming_up_window.wm_attributes("-alpha", 0.8)  # Semi-transparent background
-    coming_up_window.configure(bg="black")
+    if not coming_up_window:
+        coming_up_window = tk.Toplevel()
+        coming_up_window.title("SPEED ROUND UP NEXT!")
+        coming_up_window.overrideredirect(True)  # Remove window borders
+        coming_up_window.attributes("-topmost", True)  # Keep it on top
+        coming_up_window.wm_attributes("-alpha", 0.8)  # Semi-transparent background
+        coming_up_window.configure(bg="black")
 
     # Title
-    coming_up_label = tk.Label(coming_up_window, text="UP NEXT: " + title + "!",
-                               font=("Arial", 40, "bold", "underline"), fg="white", bg="black")
-    coming_up_label.pack(pady=(10, 0), padx=10)
-
-    # If an image is provided, display it at the top
-    if image:
-        image_label = tk.Label(coming_up_window, image=image, bg="black")
-        image_label.image = image  # Prevent garbage collection
-        image_label.pack(pady=(10, 0))
+    if not coming_up_title_label:
+        coming_up_title_label = tk.Label(coming_up_window, font=("Arial", 40, "bold", "underline"), fg="white", bg="black")
+        coming_up_title_label.pack(pady=(10, 0), padx=10)
+    coming_up_title_label.configure(text="UP NEXT: " + title + "! ")
 
     # Details
-    rules_label = tk.Label(coming_up_window, text=details,
-                           font=("Arial", 20, "bold"), fg="white", bg="black", justify="center", wraplength=1000)
-    rules_label.pack(pady=(5, 10))
+    if not coming_up_rules_label:
+        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", 20, "bold"), fg="white", bg="black", justify="center", wraplength=1000)
+        coming_up_rules_label.pack(pady=(5, 10))
+    if image:
+        coming_up_rules_label.configure(image=image, compound="top")
+        coming_up_rules_label.image = image
+    else:
+        coming_up_rules_label.configure(image="")
+        coming_up_rules_label.image = None
+    coming_up_rules_label.configure(text=details)
 
-    # Position at the bottom center of the screen
+    # Position at the top center of the screen
     coming_up_window.update_idletasks()
     screen_width = coming_up_window.winfo_screenwidth()
     window_width = coming_up_window.winfo_reqwidth()
@@ -2987,6 +2983,7 @@ def update_progress_bar(current_time, total_time):
         progress_bar.geometry(f"+{0}+{root.winfo_screenheight() - height}")  # Adjust for bottom spacing
 
 black_overlay = None
+blind_enabled = False
 manual_blind = False
 def blind(manual = False):
     """Toggle black screen"""
@@ -3001,7 +2998,7 @@ def blind(manual = False):
 
 def set_black_screen(toggle, smooth=True):
     global black_overlay
-
+    button_seleted(blind_button, toggle)
     if toggle:
         if black_overlay is None:  # Create black overlay if it doesn't exist
             black_overlay = tk.Toplevel()
@@ -3021,17 +3018,26 @@ def set_black_screen(toggle, smooth=True):
                 black_overlay.geometry(f"{screen_width}x{screen_height}+{-screen_width}+0")
                 black_overlay.update_idletasks()  
                 animate_window(black_overlay, 0, 0, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
+                root.after(600, set_blind_enabled, toggle)
             else:
                 black_overlay.geometry(f"{screen_width}x{screen_height}+0+0")
+                set_blind_enabled(True)
+    else:
+        if black_overlay:  # Destroy the black overlay smoothly
+            if smooth:
+                screen_width = black_overlay.winfo_screenwidth()
+                screen_height = black_overlay.winfo_screenheight()
+                animate_window(black_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+            else:
+                black_overlay.destroy()
+            black_overlay = None
+        set_blind_enabled(False)
 
-    elif black_overlay:  # Destroy the black overlay smoothly
-        if smooth:
-            screen_width = black_overlay.winfo_screenwidth()
-            screen_height = black_overlay.winfo_screenheight()
-            animate_window(black_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
-        else:
-            black_overlay.destroy()
-        black_overlay = None
+def set_blind_enabled(toggle):
+    global blind_enabled, manual_blind
+    blind_enabled = toggle
+    if not toggle:
+        manual_blind = False
 
 def black_while_loading(toggle):
     if toggle:
@@ -3057,6 +3063,14 @@ def toggle_blind_round():
 
 censor_list = {}
 censors_enabled = True
+censor_bar = None
+def create_censor_bar():
+    global censor_bar
+    censor_bar = tk.Toplevel()
+    censor_bar.configure(bg="black")
+    censor_bar.geometry("5000x2500")
+    censor_bar.overrideredirect(True)
+    censor_bar.lower()
 
 def load_censors():
     global censor_list
@@ -3091,9 +3105,11 @@ def apply_censors(time, length):
     global censor_used
     global censor_list
     global censors_enabled
+    if censor_bar is None:
+        create_censor_bar()
     screen_width = censor_bar.winfo_screenwidth()
     screen_height = censor_bar.winfo_screenheight()
-    if censors_enabled and not black_overlay:
+    if censors_enabled and not blind_enabled:
         if check_file_censors(currently_playing.get('filename'), time, False):
             return
         elif length - time <= 1 and current_index+1 < len(playlist) and check_file_censors(os.path.basename(playlist[current_index+1]), time, True):
@@ -3125,6 +3141,8 @@ def check_file_censors(filename, time, video_end):
                         title_window.lift()
                     if progress_bar:
                         progress_bar.lift()
+                    if coming_up_window:
+                        coming_up_window.lift()
                 censor_bar.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
                 set_window_position(censor_bar, censor['pos_x'], censor['pos_y'])
                 censor_bar.configure(bg=get_image_color())
@@ -3170,9 +3188,10 @@ def update_censor_button_count():
 #            *TAG/FAVORITE FILES
 # =========================================
 
-def toggle_theme(playlist_name, button):
+def toggle_theme(playlist_name, button, filename=None):
+    if not filename:
+        filename = currently_playing.get("filename")
     """Toggles a theme in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
-    filename = currently_playing.get("filename")
     playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
 
     # Load or initialize the playlist
@@ -3201,6 +3220,7 @@ def toggle_theme(playlist_name, button):
 
     with open(playlist_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
+        print(f"{filename} saved to playlist '{playlist_path}'.")
 
 def check_theme(filename, playlist_name):
     """Checks if a theme exists in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
@@ -3226,6 +3246,19 @@ def favorite():
 def check_favorited(filename):
     """Checks if a filename is in the 'Favorite Themes' playlist."""
     return check_theme(filename, "Favorite Themes")
+
+def check_missing_artists():
+    playlist_name = "Missing Artists"
+    try:
+        os.remove(os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json"))
+    except Exception as e:
+        print(e)
+        pass
+    for filename in directory_files:
+        data = get_metadata(filename)
+        for theme in data.get("songs",[]):
+            if theme.get("slug") == data.get("slug") and theme.get("artist") == []:
+                toggle_theme(playlist_name, favorite_button, filename)
 
 # =========================================
 #               *DOCK PLAYER
@@ -3517,13 +3550,12 @@ def toggle_mute():
     global disable_video_audio
     disable_video_audio = not disable_video_audio
     player.audio_set_mute(disable_video_audio)
-    button_seleted(mute_button, not disable_video_audio)
+    button_seleted(mute_button, disable_video_audio)
 
 # =========================================
 #              *END SESSION
 # =========================================
 
-total_themes_played = 0
 def end_session():
     global video_stopped
     if not end_message_window:
@@ -3538,6 +3570,7 @@ def toggle_end_message(speed=500):
     """Toggles the 'Thanks for playing!' message. Spawns it if not active, removes it if called again."""
     global end_message_window
     try:
+        button_seleted(end_button, not end_message_window)
         # If the message is already displayed, remove it
         if end_message_window:
             end_message_window.destroy()
@@ -3553,7 +3586,7 @@ def toggle_end_message(speed=500):
         end_message_window.configure(bg="black")
 
         # Create the message label
-        message_text = "THANKS\nFOR\nPLAYING!\n\nTOTAL\nTHEMES\nPLAYED:\n" + str(total_themes_played)
+        message_text = "THANKS\nFOR\nPLAYING!\n\nTOTAL\nTHEMES\nPLAYED:\n" + str(len(all_themes_played))
         label = tk.Label(end_message_window, text=message_text, font=("Arial", 90, "bold"),
                         fg="white", bg="black", justify="right", anchor="e")  # Right-align text
         label.pack(padx=20, pady=20)
@@ -3570,7 +3603,9 @@ def toggle_end_message(speed=500):
         end_y = 10  # Move near the top-right
 
         # Animate window from bottom-right to top-right
+        root.update_idletasks()
         end_message_window.geometry(f"+{start_x}+{start_y}")  # Adjust for bottom spacing
+        root.update_idletasks()
         root.after(1, lambda: animate_window(end_message_window, end_x, end_y, delay=5, steps=2000, fade=None))
     except AttributeError:
         pass
@@ -3646,6 +3681,7 @@ def select_directory():
                 if file.endswith((".mp4", ".webm", ".mkv")):
                     directory_files[file] = os.path.join(root, file)
         save_config()
+        check_missing_artists()
 
 select_button = create_button(first_row_frame, "FOLDER:", select_directory,
                               help_title="CHOOSE VIDEO DIRECTORY FOLDER",
@@ -4022,6 +4058,20 @@ right_column.pack(side="left", fill="both", expand=True)
 controls_frame = tk.Frame(root, bg="black")
 controls_frame.pack(pady=0)
 
+# Volume Control
+volume_level = 100
+def set_volume(value):
+    """Sets the volume based on slider input (0 to 100)."""
+    global volume_level
+    volume_level = int(value)
+    player.audio_set_volume(volume_level)  # Adjust VLC volume
+    if music_loaded:
+        pygame.mixer.music.set_volume(0.2*(volume_level/100))  # Adjust volume
+
+volume_slider = tk.Scale(controls_frame, from_=200, to=0, orient=tk.VERTICAL, command=set_volume, label="🔊", length=50, bg="black", fg="white", border=0, font=("Arial", 12, "bold"))
+volume_slider.set(100)  # Default volume at 50%
+volume_slider.pack(side="left", padx=(10))
+
 play_pause_button = tk.Button(controls_frame, text="⏯", command=play_pause, bg="black", fg="white", font=("Arial", 30, "bold"), border=0, width=2)
 play_pause_button.pack(side="left", padx=5)
 
@@ -4038,12 +4088,6 @@ next_button.pack(side="left", padx=5)
 seek_bar = tk.Scale(controls_frame, from_=0, to=1000, orient=tk.HORIZONTAL, command=seek, length=2000, resolution=0.1, bg="black", fg="white")
 seek_bar.pack(side="left", fill="x", padx=10)
 
-# Censor box
-censor_bar = tk.Toplevel()
-censor_bar.configure(bg="black")
-censor_bar.geometry("5000x2500")
-censor_bar.overrideredirect(True)
-censor_bar.lower()
 
 # Text formatting tags
 left_column.tag_configure("bold", font=("Arial", 12, "bold"), foreground="white")
