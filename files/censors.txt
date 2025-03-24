@@ -31,7 +31,7 @@ YGO5DS-ED5.webm,75x80,0x0,10,16
 AkatsukiNoYona-OP2.webm,10x10,69x65,14,21.5
 Kokkoku-OP1v2-BD1080.webm,50x15,52x90,41,47
 GundamTheWitchFromMercury-OP1v2-NCBD1080.webm,50x20,50x50,11.5,13
-SwordArtOnline-OP2.webm,60x7,50x58,15,23.5
+SwordArtOnline-OP2.webm,60x7,50x58,15,24
 ReCreators-OP1.webm,80x80,50x50,4,9
 NanatsuNoTaizaiImashimeNoFukkatsu-OP1-NCBD1080.webm,30x10,66x66,10,15
 BlackClover-OP4-NCBD1080.webm,50x10,50x50,23,28
@@ -52,7 +52,7 @@ YoukosoZitsuS2-OP1-NCBD1080.webm,40x11,88x28,14,19
 BananaFish-OP1-NCBD1080.webm,80x25,50x47,15,22
 ShingekiNoKyojinS2-OP1-NCBD1080.webm,40x30,50x80,3,7
 JoshikouseiNoMudazukai-OP1-NCBD1080.webm,80x20,95x95,6,8
-JoshikouseiNoMudazukai-OP1-NCBD1080.webm,51x6,50x82,8,10
+JoshikouseiNoMudazukai-OP1-NCBD1080.webm,51x6,50x82,8,10.75
 JoshikouseiNoMudazukai-OP1-NCBD1080.webm,80x20,50x95,10.75,11
 MagicKaito1412-OP1.webm,50x25,0x85,8,10
 MagicKaito1412-OP1.webm,40x20,10x75,12,15
@@ -135,7 +135,7 @@ TenkyouNoAlderamin-OP1-NCBD.webm,46.05x5.90,47.94x59.70,11,16.5
 IsekaiQuartetS2-OP1v2-NCBD1080.webm,74.34x48.47,61.04x80.73,7,11
 Ajin-OP1-Lyrics.webm,10.62x89.24,50.00x53.55,23,25
 NarutoShippuuden-OP6.webm,93.48x79.65,47.31x45.73,23.5,26
-Pet-OP1-NCBD1080.webm,26.29x28.19,49.18x50.68,18.5,21
+Pet-OP1-NCBD1080.webm,51.17x34.03,47.12x46.84,18.5,21
 DeathNote-OP2.webm,99.96x49.51,0.00x40.44,8,13
 BallroomEYoukoso-OP2-BD1080.webm,66.02x63.19,56.32x43.77,22,27
 Nana-OP1.webm,47.19x35.69,84.25x54.00,23,31.5
@@ -296,7 +296,7 @@ NarutoShippuuden-OP5.webm,82.19x73.12,56.80x52.71,17,24.5
 DarkerThanBlack-OP1.webm,100.00x100.00,0.00x0.00,4,22
 NarutoShippuuden-OP9.webm,82.19x73.12,56.80x52.71,17,24.5
 MiraiNikki-OP2.webm,67.15x76.11,52.32x52.33,8,14
-TokyoGhoulRES2-OP1-NCBD1080.webm,77.66x27.43,45.45x38.47,20,27
+TokyoGhoulRES2-OP1-NCBD1080.webm,77.66x27.43,45.45x38.47,20,28
 SakurakoSan-OP1.webm,26.88x90.14,0.00x100.00,10,17.5
 KonosubaS2-OP1.webm,83.20x100.00,100.00x0.00,0,1.2
 KonosubaS2-OP1.webm,72.11x88.68,0.00x0.00,1.4,2.7
@@ -324,7 +324,7 @@ AssassinsPride-OP1-NCBD1080.webm,81.29x32.50,48.43x100.00,11,14.3
 DeathParade-OP1.webm,86.17x27.36,77.97x72.75,5,13
 ShingekiNoBahamutVirginSoul-OP2.webm,42.62x16.60,51.67x55.62,4,11
 Ranma2024-OP1.webm,42.34x100.00,100.00x0.00,3,11
-CannonBusters-OP1.webm,83.16x65.83,100.00x38.82,34,39
+CannonBusters-OP1.webm,83.16x65.83,100.00x38.82,34,39.3
 PopTeamEpicS2-OP1.webm,88.95x49.17,100.00x48.36,15,21
 DeathNote-OP1.webm,100.00x100.00,0.00x0.00,12,24
 Bleach-OP13.webm,66.88x44.10,93.99x51.55,14,22
@@ -376,7 +376,7 @@ DanMachiS4Part2-OP1-NCBD1080.webm,100.00x100.00,0.00x0.00,10,15
 ShadowGarden-OP1-NCBD1080.webm,94.88x79.72,71.76x88.01,14,16
 ShadowGarden-OP1-NCBD1080.webm,100.00x66.39,66.67x17.98,19,22
 KanteiSkillS2-OP1.webm,20.98x57.08,72.96x45.63,9,16
-BlackRockShooterDawnFall-OP1.webm,28.40x8.40,13.80x23.96,2,5
+BlackRockShooterDawnFall-OP1.webm,36.29x8.96,11.89x23.65,2,5
 BlackRockShooterDawnFall-OP1.webm,100.00x67.57,80.00x62.53,49,53
 ShingekiNoBahamutVirginSoul-OP1.webm,100.00x77.71,66.67x83.49,16,22.5
 OnePiece-OP5.webm,100.00x91.60,50.00x57.85,20,27
@@ -530,7 +530,7 @@ Ikkitousen-OP1.webm,75.20x100.00,49.92x50.00,9,16
 Ikkitousen-OP1.webm,75.20x100.00,49.92x50.00,23,24
 Ikkitousen-OP1.webm,75.20x100.00,49.92x50.00,27,30.5
 Ikkitousen-OP1.webm,75.20x100.00,49.92x50.00,43.6,44.7
-Ikkitousen-OP1.webm,75.20x100.00,49.92x50.00,83,86
+Ikkitousen-OP1.webm,75.20x100.00,49.92x50.00,83,87
 WolfsRain-OP1.webm,61.25x75.00,50.81x47.78,5,14
 Gankutsuou-ED1.webm,100.00x100.00,0.00x0.00,4,5.5
 SchoolRumble-OP1.webm,75.20x100.00,50.08x0.00,0,6.5
@@ -617,7 +617,7 @@ HighSchoolDxD-OP1.webm,83.12x88.12,44.21x55.56,11,17.5
 HighSchoolDxD-OP1.webm,52.19x100.00,100.00x0.00,27.5,29.3
 HighSchoolDxD-OP1.webm,100.00x100.00,0.00x0.00,34,35.2
 HighSchoolDxD-OP1.webm,100.00x100.00,0.00x0.00,41.2,42
-HighSchoolDxD-OP1.webm,46.48x100.00,100.00x0.00,47.6,52
+HighSchoolDxD-OP1.webm,46.48x100.00,100.00x0.00,47.6,51
 GoldenTime-OP1.webm,82.73x36.88,48.87x47.52,14,18.5
 MachineDollWaKizutsukanai-ED1v3.webm,100.00x100.00,0.00x0.00,23,26.3
 MachineDollWaKizutsukanai-ED1v3.webm,51.60x100.00,46.97x0.00,62.5,65.5
@@ -811,7 +811,7 @@ CowboyBebop-OP1.webm,68.05x17.85,50.98x60.36,43.5,46.5
 CowboyBebop-OP1.webm,63.36x76.53,56.61x13.91,48.5,53
 DetectiveConan-OP13.webm,74.34x100.00,50.38x0.00,13.7,27.4
 DetectiveConan-OP36.webm,96.02x93.06,50.00x58.00,15,21.5
-DragonQuestDaiNoDaibouken-OP1-Lyrics.webm,65.62x46.39,53.64x35.23,3,13.5
+DragonQuestDaiNoDaibouken-OP1-Lyrics.webm,75.16x69.44,50.00x27.50,3,13.5
 GreatTeacherOnizuka-OP1.webm,75.55x100.00,50.48x0.00,10,12.7
 GreatTeacherOnizuka-OP1.webm,75.55x100.00,50.48x0.00,13.3,17
 GreatTeacherOnizuka-OP1.webm,75.55x100.00,50.48x0.00,21,22.8
@@ -856,3 +856,15 @@ IsekaiMaouS2-OP1-NCBD1080.webm,83.91x52.43,52.18x52.99,10.7,14.3
 IsekaiMaouS2-OP1-NCBD1080.webm,100.00x100.00,0.00x0.00,39,43.2
 IsekaiMaouS2-OP1-NCBD1080.webm,100.00x100.00,0.00x0.00,48.5,52
 InuYasha-OP6.webm,54.37x44.38,50.77x49.69,0,5.3
+AcroTrip-OP1.webm,84.84x30.42,0.00x54.89,0.4,7.2
+AcroTrip-OP1.webm,44.02x17.36,50.10x51.01,11,14.2
+GodEater-OP1.webm,46.13x13.47,89.70x63.72,1.5,2.7
+GodEater-OP1.webm,72.42x26.60,50.57x54.12,10.5,15.2
+ShironekoProject-OP1-NCBD1080.webm,78.32x71.67,50.27x52.94,18,21.5
+BleachRebirthofSouls-OP1-[ID]BleachRoS.webm,100.00x95.00,50.00x43.06,0,7.3
+BleachRebirthofSouls-OP1-[ID]BleachRoS.webm,96.05x100.00,43.56x0.00,19.8,20.9
+NeptuniaMK2-ED1-[ID]NeptuniaMK2.webm,45.66x40.97,44.00x37.41,0,8.4
+SakamotoDays-ED2.webm,100.00x42.29,0.00x43.56,62,64.3
+SakamotoDays-ED2.webm,100.00x42.29,0.00x43,67.3,69
+InitialDFourthStage-OP1.webm,55.00x42.92,49.31x50.61,14,17.5
+MahouShoujoMagicalDestroyers-OP1.webm,42.38x7.43,50.31x57.61,25.8,28.3

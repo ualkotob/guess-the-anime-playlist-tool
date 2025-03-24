@@ -452,10 +452,13 @@ def up_next_text():
     right_column.insert(tk.END, "NEXT UP: ", "bold")
     next_up_text = "End of playlist"
     if current_index+1 < len(playlist):
-        next_up_data = get_metadata(playlist[current_index+1])
-        next_up_text = (next_up_data.get("eng_title") or next_up_data.get("title")) + " - " + format_slug(next_up_data.get("slug"))
-    right_column.insert(tk.END, f"{next_up_text}", "white")
-    right_column.insert(tk.END, "\n\n", "blank")
+        try:
+            next_up_data = get_metadata(playlist[current_index+1])
+            next_up_text = (next_up_data.get("eng_title") or next_up_data.get("title")) + " - " + format_slug(next_up_data.get("slug"))
+        except Exception:
+            next_up_text = playlist[current_index+1]
+        right_column.insert(tk.END, f"{next_up_text}", "white")
+        right_column.insert(tk.END, "\n\n", "blank")
 
 def add_field_total_button(column, group, blank = True):
     count = len(group)
@@ -2527,7 +2530,7 @@ def toggle_title_popup(show):
             middle_row = f"{score} | {japanese_title} | {members}"
             bottom_row = f"{studio} | {tags} | {episodes} | {type} | {source}"
     else:
-        return
+        title_row = currently_playing.get("filename")
 
     if title_row_label:
         title_row_label.config(text=title_row)
