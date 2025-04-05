@@ -109,7 +109,7 @@ def get_metadata(filename, refresh = False, refresh_all = False, fetch = False):
         mal_id = file_data.get('mal')
         anime_data = anime_metadata.get(mal_id)
         if anime_data:
-            if mal_id not in fetched_metadata and refresh and (refresh_all or (auto_refresh_toggle and fetch)):
+            if mal_id and mal_id not in fetched_metadata and refresh and (refresh_all or (auto_refresh_toggle and fetch)):
                 fetched_metadata.append(mal_id)
                 refresh_jikan_data(mal_id, anime_data)
             return file_data | anime_data
@@ -136,11 +136,13 @@ def fetch_metadata(filename = None, refetch = False):
 
     fetching_metadata[filename] = True
     slug = filename.split("-")[1].split(".")[0].split("v")[0]
-    if "-EN." in filename:
-        slug = slug + "-EN"
     manual_file = False
     mal_id = None
     if (not "[MAL]" in filename) and (not "[ID]" in filename):
+        if len(filename.split("-")) >= 3:
+            slug_ext = filename.split("-")[2]
+            if "NCBD" not in slug_ext and "NCDVD" not in slug_ext and "BD1080" not in slug_ext:
+                slug = slug + "-" + slug_ext.split(".")[0]
         anime_themes = fetch_animethemes_metadata(filename)
         if anime_themes:
             for resource in anime_themes.get("resources", []):
@@ -214,11 +216,15 @@ def fetch_metadata(filename = None, refetch = False):
             all_songs = {song["slug"]: song for song in existing_songs + new_songs}.values()
             anime_data["songs"] = list(all_songs)
         save_metadata()
-        data = file_data | anime_data
-        if currently_playing.get('filename') == filename:
-            currently_playing["data"] = data
-            update_metadata()
-        print(f"\rFetching metadata for {filename}...COMPLETE")
+        if anime_data:
+            data = file_data | anime_data
+            if currently_playing.get('filename') == filename:
+                currently_playing["data"] = data
+                update_metadata()
+            print(f"\rFetching metadata for {filename}...COMPLETE")
+        else:
+            data = {}
+            print(f"\rFetching metadata for {filename}...FAILED")
     else:
         data = {}
         print(f"\rFetching metadata for {filename}...FAILED")
@@ -736,7 +742,7 @@ def get_youtube_metadata_from_index(index):
             return value
 
 # =========================================
-#           *PLAYLIST CREATION
+#           *CREATE PLAYLIST
 # =========================================
 
 playlist_changed = False
@@ -750,7 +756,7 @@ def generate_playlist():
     return playlist
 
 # =========================================
-#            *PLAYLIST SHUFFLING
+#            *SHUFFLE PLAYLIST
 # =========================================
 
 def randomize_playlist():
@@ -832,15 +838,17 @@ def weighted_shuffle(playlist):
 
     def find_suitable_swap(index):
         """Finds a suitable index to swap to reduce repetition issues."""
+        spacing = min_spacing
         # Check forward first
-        for swap_index in range(index + min_spacing, len(final_playlist)):
+        for swap_index in range(index + spacing, len(final_playlist)):
             if is_safe_swap(index, swap_index):
                 return swap_index
         
         # If no forward swap found, check backward
-        for swap_index in range(index - min_spacing, -1, -1):
+        for swap_index in range(index - spacing, -1, -1):
             if is_safe_swap(index, swap_index):
                 return swap_index
+        spacing = int(spacing * 0.75)
 
         return None  # No good swap found
 
@@ -850,22 +858,27 @@ def weighted_shuffle(playlist):
         title2, series2 = get_metadata(final_playlist[i2]).get("title", ""), get_metadata(final_playlist[i2]).get("series", "")
         return (title1 != title2 and series1 != series2)  # Ensure they are from different series
 
-    
-    min_spacing = max(3, total_entries // 30)  # Dynamic spacing rule
-    # Adjust for spacing issues
-    for i in range(len(final_playlist) - min_spacing):
-        title, series = get_metadata(final_playlist[i]).get("title", ""), get_metadata(final_playlist[i]).get("series", "")
-        total_series = len(get_all_matching_field("series", get_metadata(final_playlist[i]).get("series")))
-        if total_series == 0:
-            total_series = len(get_all_matching_field("title", get_metadata(final_playlist[i]).get("title")))
-        min_spacing = max(3, total_entries // (total_series*2))  # Dynamic spacing rule
-        for j in range(1, min_spacing + 1):
-            if i + j < len(final_playlist):
-                next_title, next_series = get_metadata(final_playlist[i + j]).get("title", ""), get_metadata(final_playlist[i + j]).get("series", "")
-                if title == next_title or (series and series == next_series):
-                    swap_index = find_suitable_swap(i + j)
-                    if swap_index:
-                        final_playlist[i + j], final_playlist[swap_index] = final_playlist[swap_index], final_playlist[i + j]  # Swap to fix spacing
+    swapped_entrys = 1
+    swap_pass = 0
+    while swapped_entrys > 0:
+        swapped_entrys = 0
+        swap_pass = swap_pass + 1
+        # Adjust for spacing issues
+        for i in range(len(final_playlist)):
+            title, series = get_metadata(final_playlist[i]).get("title", ""), get_metadata(final_playlist[i]).get("series", "")
+            total_series = len(get_all_matching_field("series", get_metadata(final_playlist[i]).get("series")))
+            if total_series == 0:
+                total_series = len(get_all_matching_field("title", get_metadata(final_playlist[i]).get("title")))
+            min_spacing = max(3, total_entries // (total_series*(2+(swap_pass-1))))  # Dynamic spacing rule
+            for j in range(1, min_spacing + 1):
+                if i + j < len(final_playlist):
+                    next_title, next_series = get_metadata(final_playlist[i + j]).get("title", ""), get_metadata(final_playlist[i + j]).get("series", "")
+                    if title == next_title or (series and series == next_series):
+                        swap_index = find_suitable_swap(i + j)
+                        if swap_index:
+                            swapped_entrys = swapped_entrys + 1
+                            final_playlist[i + j], final_playlist[swap_index] = final_playlist[swap_index], final_playlist[i + j]  # Swap to fix spacing
+        print("Weighted Shuffle - Spacing same series pass " + str(swap_pass) + ": " + str(swapped_entrys) + " entries swapped.")
 
     return final_playlist
 
@@ -1031,6 +1044,9 @@ def save_playlist(playlist, index, parent, autosave):
         name = simpledialog.askstring("Save Playlist", "Enter playlist name:", initialvalue=playlist_name, parent=parent)
         if not name:
             return  # User canceled
+        elif name.lower() == "missing artists":
+            check_missing_artists()
+            return
 
     filename = os.path.join(PLAYLISTS_FOLDER, f"{name}.json")
 
@@ -3038,6 +3054,8 @@ def set_black_screen(toggle, smooth=True):
 
 def set_blind_enabled(toggle):
     global blind_enabled, manual_blind
+    if toggle and not black_overlay:
+        toggle = False
     blind_enabled = toggle
     if not toggle:
         manual_blind = False
@@ -3223,7 +3241,7 @@ def toggle_theme(playlist_name, button, filename=None):
 
     with open(playlist_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
-        print(f"{filename} saved to playlist '{playlist_path}'.")
+        print(f"{filename} saved to playlist '{playlist_name}'.")
 
 def check_theme(filename, playlist_name):
     """Checks if a theme exists in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
@@ -3684,7 +3702,6 @@ def select_directory():
                 if file.endswith((".mp4", ".webm", ".mkv")):
                     directory_files[file] = os.path.join(root, file)
         save_config()
-        check_missing_artists()
 
 select_button = create_button(first_row_frame, "FOLDER:", select_directory,
                               help_title="CHOOSE VIDEO DIRECTORY FOLDER",
