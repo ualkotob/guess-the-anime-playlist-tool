@@ -177,7 +177,7 @@ MawaruPenguindrum-OP2-Lyrics.webm,26.25x40.49,41.21x99.88,13,14.5
 MawaruPenguindrum-OP2-Lyrics.webm,26.25x4.44,41.00x61.99,14.5,15
 MawaruPenguindrum-OP2-Lyrics.webm,100x70,41.00x61.99,15,16.5
 MawaruPenguindrum-OP2-Lyrics.webm,100x70,0x0,16.5,18
-NisekoiS2-OP1.webm,80.51x85.76,50.30x37.56,1,5
+NisekoiS2-OP1.webm,80.51x85.76,50.30x37.56,1,5.3
 HighCardS2-OP1.webm,68.20x15.90,50.49x64.57,12.5,17.5
 KobayashiSanChiNoMaidDragon-OP1-NCBD1080.webm,67.70x56.53,53.33x59.27,13,24
 KodomoNoOmocha-OP1.webm,75.55x100,50.64x0.00,0.5,3
@@ -429,6 +429,8 @@ OnePiece-OP8.webm,100.00x100.00,0.00x0.00,3,12
 OnePiece-OP8.webm,84.57x67.57,47.34x23.77,12,25
 FairyTail-OP1.webm,87.23x60.28,63.00x19.06,9,16.5
 Totokami-OP1-NCBD1080.webm,100.00x100.00,0.00x0.00,18,25
+Totokami-OP1-NCBD1080.webm,13.20x40.62,41.22x69.12,49,52.2
+Totokami-OP1-NCBD1080.webm,79.77x30.63,100.00x70.37,52.2,53.8
 SwordArtOnlineS2-OP1.webm,81.56x21.67,52.54x48.49,13.5,18
 NarutoShippuuden-OP3.webm,82.03x78.06,48.91x45.89,13,19
 BoushokuNoBerserk-OP1.webm,24.88x6.88,51.17x53.62,36,38.5
@@ -858,7 +860,7 @@ IsekaiMaouS2-OP1-NCBD1080.webm,83.91x52.43,52.18x52.99,10.7,14.3
 IsekaiMaouS2-OP1-NCBD1080.webm,100.00x100.00,0.00x0.00,39,43.2
 IsekaiMaouS2-OP1-NCBD1080.webm,100.00x100.00,0.00x0.00,48.5,52
 InuYasha-OP6.webm,54.37x44.38,50.77x49.69,0,5.3
-AcroTrip-OP1.webm,84.84x30.42,0.00x54.89,0.4,7.2
+AcroTrip-OP1.webm,70.74x5.62,0.00x65.93,0.4,7.2
 AcroTrip-OP1.webm,44.02x17.36,50.10x51.01,11,14.2
 GodEater-OP1.webm,46.13x13.47,89.70x63.72,1.5,2.7
 GodEater-OP1.webm,72.42x26.60,50.57x54.12,10.5,15.2
@@ -927,3 +929,15 @@ OnePiece-OP24.webm,86.64x85.49,56.73x74.16,11,15.6
 OnePiece-OP6.webm,97.85x95.76,50.91x49.18,6,12.5
 OnePiece-OP9.webm,100.00x100.00,0.00x0.00,0,3
 SpyXFamilyPart2-OP1-NCBD1080.webm,73.09x37.36,51.09x47.67,0,3.8
+Bakemonogatari-ED1.webm,46.37x44.65,49.89x50.19,0,5.2
+Bakemonogatari-ED1.webm,37.15x27.64,49.72x52.88,6.1,9.8
+BeybladeX-OP1.webm,93.01x30.35,31.28x44.27,6,10.7
+BeybladeX-OP1.webm,25.90x6.04,19.87x60.01,19.1,23.3
+EnenNoShouboutai-ED1-NCBD1080.webm,51.37x95.62,48.51x0.00,26.4,29.5
+FugouKeiji-ED1-NCBD1080.webm,78.83x25.76,49.63x37.14,7.3,9.3
+GabrielDropout-OP1.webm,93.67x87.01,53.09x48.66,15.7,21.5
+KamiNoTouS2-OP1.webm,53.01x13.89,8.56x89.68,2,4.4
+KamiNoTouS2KoubouSen-OP1.webm,37.19x9.31,50.12x49.85,0.5,5
+KamiNoTouS2KoubouSen-OP1.webm,85.55x76.53,53.24x50.30,15,17.5
+OneOuts-OP1.webm,96.72x89.31,45.24x74.68,0,10.2
+TheGodOfHighSchool-ED1-NCBD1080.webm,38.32x22.01,48.64x50.31,0,5
