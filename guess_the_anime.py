@@ -25,6 +25,7 @@ import yt_dlp
 from pynput import keyboard
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
+import pyperclip
 
 # Explicitly load libvlc.dll and its dependencies
 vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installation path
@@ -38,7 +39,7 @@ except OSError as e:
     exit(1)
 
 # Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance("--no-xlib") #instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
+instance = vlc.Instance("--no-xlib -q") #instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
 player = instance.media_player_new()
 
 # =========================================
@@ -64,7 +65,7 @@ ARCHIVE_FILE = "files/youtube_archive.txt"
 PLAYLISTS_FOLDER = "playlists/"
 FILTERS_FOLDER = "filters"
 YOUTUBE_LINKS_FILE = "files/youtube_links.txt"
-CENSOR_FILE = "files/censors.txt"
+CENSOR_FILE = "files/censors.csv"
 TAGGED_FILE = "files/tagged.txt"
 HIGHLIGHT_COLOR = "gray26"
 
@@ -99,7 +100,7 @@ def fetch_jikan_metadata(mal_id):
 
 fetched_metadata = []
 def pre_fetch_metadata():
-    for i in range(current_index-1, current_index+2):
+    for i in range(current_index-1, current_index+3):
         if i >= 0 and i < len(playlist) and i != current_index and (fetching_metadata.get(playlist[i]) is None):
             get_metadata(playlist[i], True, fetch=True)
 
@@ -110,7 +111,7 @@ def get_metadata(filename, refresh = False, refresh_all = False, fetch = False):
         mal_id = file_data.get('mal')
         anime_data = anime_metadata.get(mal_id)
         if anime_data:
-            if mal_id and mal_id not in fetched_metadata and refresh and (refresh_all or (auto_refresh_toggle and fetch)):
+            if "-[ID]" not in filename and mal_id and mal_id not in fetched_metadata and refresh and (refresh_all or (auto_refresh_toggle and fetch)):
                 fetched_metadata.append(mal_id)
                 refresh_jikan_data(mal_id, anime_data)
             return file_data | anime_data
@@ -192,6 +193,7 @@ def fetch_metadata(filename = None, refetch = False):
                     "eng_title":jikan_data.get("title_english", "N/A"),
                     "synonyms":jikan_data.get("title_synonyms", []),
                     "series":get_name_list(anime_themes, "series"),
+                    "aired": jikan_data.get("aired", []).get("string"),
                     "season":str(jikan_data.get("season") or "N/A") + " " + str(jikan_data.get("year") or "N/A"),
                     "score":jikan_data.get("score", "N/A"),
                     "rank":jikan_data.get("rank", "N/A"),
@@ -207,27 +209,30 @@ def fetch_metadata(filename = None, refetch = False):
                     "synopsis":jikan_data.get('synopsis', "N/A")
                 }
                 if "N/A" in anime_data.get("season"):
-                    anime_data["season"] = str(anime_themes.get("season", "N/A")) + " " + str(anime_themes.get("year", "N/A"))
+                    if anime_themes.get("season"):
+                        anime_data["season"] = str(anime_themes.get("season", "N/A")) + " " + str(anime_themes.get("year", "N/A"))
+                    else:
+                        aired_to_season_year(anime_data.get("aired"))
                 else:
                     anime_data["season"] = anime_data["season"].capitalize()
                 anime_metadata[mal_id] = anime_data
-        # Get new songs from the current fetch
-        new_songs = get_theme_list(anime_themes)
-        # Avoid duplicates by checking slugs (each song has a unique slug)
-        all_songs = {song["slug"]: song for song in old_songs + new_songs}.values()
-        openings = []
-        endings = []
-        other = []
-        for song in all_songs:
-            if "OP" in song["slug"]:
-                openings.append(song)
-            elif "ED" in song["slug"]:
-                endings.append(song)
-            else:
-                other.append(song)
-        anime_data["songs"] = list(openings+endings+other)
-        save_metadata()
         if anime_data:
+            # Get new songs from the current fetch
+            new_songs = get_theme_list(anime_themes)
+            # Avoid duplicates by checking slugs (each song has a unique slug)
+            all_songs = {song["slug"]: song for song in old_songs + new_songs}.values()
+            openings = []
+            endings = []
+            other = []
+            for song in all_songs:
+                if "OP" in song["slug"]:
+                    openings.append(song)
+                elif "ED" in song["slug"]:
+                    endings.append(song)
+                else:
+                    other.append(song)
+            anime_data["songs"] = list(openings+endings+other)
+            save_metadata()
             data = file_data | anime_data
             if currently_playing.get('filename') == filename:
                 currently_playing["data"] = data
@@ -303,6 +308,7 @@ def refresh_jikan_data(mal_id, data):
     if jikan_data:
         data["eng_title"] = jikan_data.get("title_english", "N/A")
         data["synonyms"] = jikan_data.get("title_synonyms", [])
+        data["aired"] = jikan_data.get("aired", []).get("string")
         data["score"] = jikan_data.get("score", "N/A")
         data["rank"] = jikan_data.get("rank", "N/A")
         data["members"] = jikan_data.get("members", "N/A")
@@ -321,11 +327,41 @@ def refresh_jikan_data(mal_id, data):
     else:
         print(f"\rRefreshing Jikan data for {data['title']}...FAILED")
 
+def aired_to_season_year(aired_str):
+    """Converts an aired string to 'Season Year' format based on the first date."""
+    try:
+        # Extract the first part before "to"
+        first_date_str = aired_str.split("to")[0].strip()
+        # Parse it into a datetime object
+        try:
+            aired_date = datetime.strptime(first_date_str, "%b %d, %Y")
+        except:
+            aired_date = datetime.strptime(first_date_str, "%B %d, %Y")
+        month = aired_date.month
+        year = aired_date.year
+
+        # Determine season
+        if month in [1, 2, 3]:
+            season = "Winter"
+        elif month in [4, 5, 6]:
+            season = "Spring"
+        elif month in [7, 8, 9]:
+            season = "Summer"
+        else:
+            season = "Fall"
+
+        return f"{season} {year}"
+    except Exception as e:
+        print(f"Error parsing aired string: {aired_str} -> {e}")
+        return "N/A"
+
 def get_last_two_folders(filepath):
+    print(filepath)
     path_parts = filepath.split(os.sep)
     # Filter out empty strings that might occur due to leading/trailing separators or double separators
     path_parts = list(filter(None, path_parts))
-    if len(path_parts) >= 2:
+    print(path_parts)
+    if len(path_parts) >= 3:
         return [path_parts[-3], path_parts[-2]]
     else:
         return ["",""]
@@ -344,6 +380,7 @@ def fetch_all_metadata(delay=1):
     confirm = messagebox.askyesno("Fetch All Missing Metadata", f"Are you sure you want to fetch all missing metadata?")
     if not confirm:
         return  # User canceled
+    scan_directory()
     def worker():
         total_checked = 0
         total_fetched = 0
@@ -383,7 +420,7 @@ def refresh_all_metadata(delay=1):
 
 
 # =========================================
-#        *UPDATING METADATA DISPLAY
+#        *METADATA DISPLAY
 # =========================================
 
 def clear_metadata():
@@ -402,6 +439,9 @@ def reset_metadata(filename = None):
         filename = currently_playing.get('filename')
     left_column.insert(tk.END, "FILENAME: ", "bold")
     left_column.insert(tk.END, f"{filename}", "white")
+    left_column.window_create(tk.END, window=tk.Button(left_column, text="⎘", borderwidth=0, pady=0, command=lambda: pyperclip.copy(filename), bg="black", fg="white"))
+    if playlist_name == "Tagged Themes":
+        left_column.window_create(tk.END, window=tk.Button(left_column, text="❌", borderwidth=0, pady=0, command=lambda: delete_file_by_filename(filename), bg="black", fg="white"))
     left_column.insert(tk.END, "\n\n", "blank")
  
 def update_metadata_queue(index):
@@ -427,22 +467,33 @@ def update_metadata():
             # Left Column: Filename, Title, English Title, and Large Image
             add_single_data_line(left_column, data, "TITLE: ", 'title', False)
             add_field_total_button(left_column, get_all_matching_field("mal", data.get("mal")))
-            add_single_data_line(left_column, data, "ENGLISH (SYNONYMS): ", 'eng_title', False)
-            left_column.insert(tk.END, f" (", "white")
-            add_multiple_data_line(left_column, data, "", "synonyms", False)
-            left_column.insert(tk.END, f")", "white")
+            add_single_data_line(left_column, data, "ENGLISH: ", 'eng_title', True)
+            if data.get("synonyms"):
+                add_multiple_data_line(left_column, data, "SYNONYMS: ", "synonyms", True)
+            if is_game(data):
+                add_single_data_line(left_column, data, "RELEASE DATE: ", "release", True)
+            else:
+                add_single_data_line(left_column, data, "AIR: ", "aired", False)
+                add_single_data_line(left_column, data, ", ", "season", False, title_font="white")
+                add_field_total_button(left_column, get_all_matching_field("season", data.get("season")), blank=True)
+            add_single_data_line(left_column, data, "SCORE: ", 'score', False)
+            if not is_game(data):
+                add_single_data_line(left_column, data, " (#", 'rank', False, title_font="white")
+            if data.get("platforms"):
+                left_column.insert(tk.END, " REVIEWS: ", "bold")
+                left_column.insert(tk.END, f"{f"{(data.get("reviews", 0) or 0):,}"}", "white")
+            else:
+                left_column.insert(tk.END, ") MEMBERS: ", "bold")
+                left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
-            add_single_data_line(left_column, data, "SEASON AIRED: ", "season", False)
-            add_field_total_button(left_column, get_all_matching_field("season", data.get("season")))
-            left_column.insert(tk.END, "SCORE (RANK): ", "bold")
-            left_column.insert(tk.END, f"{data.get('score')} (#{data.get('rank')})", "white")
-            left_column.insert(tk.END, "\n\n", "blank")
-            left_column.insert(tk.END, "MEMBERS (POPULARITY): ", "bold")
-            left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
-            left_column.insert(tk.END, "\n\n", "blank")
-            left_column.insert(tk.END, "EPISODES (TYPE/SOURCE): ", "bold")
-            left_column.insert(tk.END, f"{data.get("episodes") or "Airing"} ({data.get('type')}/{data.get("source")})", "white")
-            left_column.insert(tk.END, "\n\n", "blank")
+            if data.get("platforms"):
+                add_multiple_data_line(left_column, data, "PLATFORMS: ", 'platforms', True)
+                add_single_data_line(left_column, data, "TYPE: ", 'type', False) 
+            else:
+                left_column.insert(tk.END, "EPISODES: ", "bold")
+                left_column.insert(tk.END, f"{data.get("episodes") or "Airing"}", "white")
+                add_single_data_line(left_column, data, "TYPE: ", 'type', False) 
+            add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
             left_column.insert(tk.END, "TAGS: ", "bold")
             tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
             for index, tag in enumerate(tags):
@@ -483,26 +534,29 @@ def update_metadata():
     updating_metadata = False
 
 def up_next_text():
-    right_column.insert(tk.END, "NEXT UP: ", "bold")
+    right_column.insert(tk.END, "NEXT UP: \n", "bold")
     next_up_text = "End of playlist"
     if current_index+1 < len(playlist):
         try:
             next_up_data = get_metadata(playlist[current_index+1])
-            next_up_text = (next_up_data.get("eng_title") or next_up_data.get("title")) + " - " + format_slug(next_up_data.get("slug"))
+            next_up_text = f"{next_up_data.get("eng_title") or next_up_data.get("title")} - {format_slug(next_up_data.get("slug"))} ({next_up_data.get("members") or 0:,})"
         except Exception:
             next_up_text = playlist[current_index+1]
     right_column.insert(tk.END, f"{next_up_text}", "white")
     right_column.insert(tk.END, "\n\n", "blank")
 
+def is_game(data):
+    return data.get("type") == "Game" or data.get("type") == "Visual Novel" or data.get("platforms")
+
 def add_field_total_button(column, group, blank = True, show_count=True):
     count = len(group)
     if count > 0:
         if show_count:
-            column.insert(tk.END, f" ({count}", "white")
+            column.insert(tk.END, f" [{count}", "white")
         btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: show_field_themes(group=group), bg="black", fg="white")
         column.window_create(tk.END, window=btn)
         if show_count:
-            column.insert(tk.END, f")", "white")
+            column.insert(tk.END, f"]", "white")
     if blank:
         column.insert(tk.END, "\n\n", "blank")
 
@@ -517,13 +571,80 @@ def get_all_matching_field(field, match):
 
     return sorted(filenames)
 
-def get_overall_theme_num(filename, slug):
+def get_overall_theme_number(filename):
+    """Returns the overall opening/ending number across the series based on the filename."""
     data = get_metadata(filename)
-    series = data.get("series")
-    series_list = []
-    for a in anime_metadata:
-        if a.get("series") == series:
-            series_list.append(a)
+    if not data or is_game(data):
+        return None
+
+    target_series = data.get("series")
+    target_slug = data.get("slug")
+    mal_id = file_metadata.get(filename, {}).get("mal")
+
+    if not mal_id or not target_series or not target_slug:
+        return None
+
+    if isinstance(target_series, str):
+        target_series = [target_series]
+
+    theme_type = target_slug[:2]  # "OP" or "ED"
+    if theme_type not in ["OP", "ED"]:
+        return None
+
+    is_parody = "Parody" in data.get("themes")
+    slug_extra = get_slug_extra(target_slug)
+    # Step 1: Find all anime from same series
+    related_anime = []
+    for anime_id, anime in anime_metadata.items():
+        if anime.get("series") == target_series and has_same_start(data.get("title"), anime.get("title"), length=1) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes"))):
+            related_anime.append((anime_id, anime))
+
+    # Step 2: Sort anime by release (season/year)
+    def sort_key(anime):
+        season = anime.get("season", "")
+        year = int(season[-4:]) if season and season[-4:].isdigit() else 9999
+        season_order = ["Winter", "Spring", "Summer", "Fall"]
+        for i, s in enumerate(season_order):
+            if s in season:
+                return (year, i)
+        return (year, 99)
+
+    related_anime.sort(key=lambda x: sort_key(x[1]))
+
+    # Step 3: Count themes of the same type, stopping at the target
+    overall_index = 0
+    base_title = None
+    data_title = data.get("title")
+    for anime_id, anime in related_anime:
+        anime_title = anime.get("title")
+        if not base_title:
+            for end in [" (TV)", " 1st", ":", " no Kajitsu"]:
+                anime_title = anime_title.split(end)[0]
+            if anime_title in data_title:
+                base_title = anime_title
+            else:
+                continue
+        if base_title and base_title in anime_title:
+            for song in anime.get("songs", []):
+                if song["type"] == theme_type:
+                    if song.get("spoiler") or song.get("overlap") or not (slug_extra == get_slug_extra(song.get("slug"))):
+                        continue
+                    overall_index += 1
+                    if anime_id == mal_id and song["slug"] == target_slug:
+                        return overall_index
+
+    return None
+
+def get_slug_extra(slug):
+    slug_extra = ""
+    if "-" in slug:
+        slug_extra = slug.split("-")[1]
+    elif "_" in slug:
+        slug_extra = slug.split("_")[1]
+    return slug_extra
+
+def has_same_start(s1, s2, length=3):
+    return s1[:length].lower() == s2[:length].lower()
 
 def get_filenames_from_artist(match):
     filenames = []
@@ -584,8 +705,8 @@ def add_multiple_data_line(column, data, title, get, blank = True):
     if blank:
         column.insert(tk.END, "\n\n", "blank")
 
-def add_single_data_line(column, data, title, get, blank = True):
-    column.insert(tk.END, title, "bold")
+def add_single_data_line(column, data, title, get, blank = True, title_font="bold"):
+    column.insert(tk.END, title, title_font)
     if data:
         column.insert(tk.END, f"{data.get(get, "N/A")}", "white")
     else:
@@ -593,21 +714,28 @@ def add_single_data_line(column, data, title, get, blank = True):
     if blank:
         column.insert(tk.END, "\n\n", "blank")
 
+def overall_theme_num_display(filename):
+    overall_num = get_overall_theme_number(filename)
+    data = get_metadata(filename)
+    if overall_num and str(overall_num) not in data.get("slug"):
+        return " (" + str(overall_num) + ")"
+    else:
+        return ""
+
 def add_op_ed(theme, column, slug, title):
     theme_slug = theme.get("slug")
     song_title = theme.get("title")
     artist = get_artists_string(theme.get("artist"))
     episodes = theme.get("episodes")
     format = "white"
+    filename = get_theme_filename(title, theme_slug)
     if theme_slug == slug:
         format = "highlight"
-    filename = get_theme_filename(title, theme_slug)
     if filename:
-        btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white")
-        column.window_create(tk.END, window=btn)
+        column.window_create(tk.END, window=tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white"))
     else:
         column.insert(tk.END, ">", format)
-    column.insert(tk.END, f"{theme_slug}: {song_title}\n", format)
+    column.insert(tk.END, f"{theme_slug}{overall_theme_num_display(filename)}: {song_title}\n", format)
     column.insert(tk.END, f"Artist(s): ", format)
     if theme.get("artist") == []:
         column.insert(tk.END, f"N/A", format)
@@ -1077,9 +1205,15 @@ def load_metadata():
             manual_metadata = json.load(m)
             for entry in manual_metadata:
                 anime_metadata[entry] = manual_metadata[entry]
+                if anime_metadata[entry].get("reviews") and (is_game(anime_metadata[entry])):
+                    anime_metadata[entry]["members"] = anime_metadata[entry].get("reviews") * REVIEW_MODIFIER
+                if anime_metadata[entry].get("release"):
+                    anime_metadata[entry]["aired"] = anime_metadata[entry].get("release")
+                    anime_metadata[entry]["season"] = aired_to_season_year(anime_metadata[entry].get("release"))
                 anime_metadata[entry]["popularity"] = estimate_manual_popularity(anime_metadata[entry].get("members"))
                 anime_metadata[entry]["rank"] = estimate_manual_rank(anime_metadata[entry].get("score"))
 
+REVIEW_MODIFIER = 1000
 def estimate_manual_popularity(members):
     """Estimate popularity rank based on member count."""
     if not members:
@@ -1099,7 +1233,7 @@ def estimate_manual_popularity(members):
 
     # Find the closest position based on members
     for index, (known_members, known_popularity) in enumerate(known_popularities):
-        if members >= known_members:
+        if (members) >= known_members:
             return known_popularity  # Assign the closest popularity rank
 
     # If it's lower than all known values, assign the worst rank
@@ -1264,6 +1398,27 @@ def delete_playlist(index):
     # Refresh the list display
     delete(True)
 
+def delete_file_by_filename(filename):
+    """Find the full path from directory_files and delete the file after confirmation."""
+    filepath = directory_files.get(filename)
+    
+    if not filepath or not os.path.exists(filepath):
+        messagebox.showerror("Delete File", f"The file does not exist or is not found:\n{filename}")
+        return
+
+    confirm = messagebox.askyesno("Delete File", f"Are you sure you want to delete this file?\n\n{filename}")
+    if confirm:
+        try:
+            os.remove(filepath)
+            messagebox.showinfo("File Deleted", f"Successfully deleted:\n{filename}")
+            print(f"Deleted file: {filename}")
+            # Optionally, remove from your directory_files dict too:
+            del directory_files[filename]
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not delete file:\n{e}")
+    else:
+        print(f"Deletion canceled for file: {filename}")
+
 # =========================================
 #           *STATS DISPLAY
 # =========================================
@@ -1284,6 +1439,37 @@ def year_stats(column):
         column.insert(tk.END, f"{year_counter[year]} ({(round(year_counter[year]/len(directory_files)*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_filenames_from_year(year), False, False)
         column.insert(tk.END, f"\n")
+    column.config(state=tk.DISABLED)
+
+def season_stats(column):
+    season_year_counter = Counter()
+    for filename in directory_files:
+        data = get_metadata(filename)
+        season_year = data.get("season", "Unknown")
+        if not season_year or season_year == "N/A":
+            season_year = "Unknown"
+        season_year_counter[season_year] += 1
+    column.config(state=tk.NORMAL)
+    column.delete("1.0", tk.END)
+    column.insert(tk.END, "THEMES BY SEASON\n", ("bold", "underline"))
+    def season_sort_key(season_year_str):
+        if season_year_str == "Unknown":
+            return (9999, 4)  # Sort "Unknown" at the bottom
+        try:
+            season, year = season_year_str.split()
+            season_order = {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}
+            return (int(year), season_order.get(season, 4))
+        except:
+            return (9999, 4)
+    for season_year in sorted(season_year_counter, key=season_sort_key, reverse=True):
+        column.insert(tk.END, f"{season_year}: ", "bold")
+        column.insert(
+            tk.END,
+            f"{season_year_counter[season_year]} ({(round(season_year_counter[season_year]/len(directory_files)*100, ndigits=2))}%)",
+            "white",
+        )
+        add_field_total_button(column, get_all_matching_field("season", season_year), False, False)
+        column.insert(tk.END, "\n")
     column.config(state=tk.DISABLED)
 
 def tag_stats(column):
@@ -1364,6 +1550,7 @@ def studio_stats(column):
 
 STAT_TYPES = [
     {"name":"THEMES PER YEAR", "func":year_stats},
+    {"name":"THEMES PER SEASON", "func":season_stats},
     {"name":"TOP ARTISTS", "func":artist_stats},
     {"name":"TOP SERIES", "func":series_stats},
     {"name":"TOP STUDIOS", "func":studio_stats},
@@ -1680,13 +1867,12 @@ def get_all_artists():
                         artists.append(artist)
     return sorted(artists, key=str.lower)
 
-def get_all_tags():
+def get_all_tags(game=True, double=False):
     tags = []
-    for filename in playlist:
-        data = get_metadata(filename)
-        if data:
-            for tag in data.get('genres', []) + data.get('themes', []) + data.get('demographics', []):
-                if tag not in tags:
+    for anime in anime_metadata.values():
+        if game or not is_game(anime):
+            for tag in anime.get('genres', []) + anime.get('themes', []) + anime.get('demographics', []):
+                if double or tag not in tags:
                     tags.append(tag)
     return sorted(tags)
 
@@ -1864,9 +2050,9 @@ def search(update = False, ask = True, add = False):
 
     search_list = {file: file for file in (["SEARCHING: " + search_term] + search_results)}
     if add:
-        show_list("search_add", right_column, search_list, get_filename, add_search_playlist, selected, update)
+        show_list("search_add", right_column, search_list, get_title, add_search_playlist, selected, update)
     else:
-        show_list("search", right_column, search_list, get_filename, set_search_queue, selected, update)
+        show_list("search", right_column, search_list, get_title, set_search_queue, selected, update)
 
 def search_add(update = False, ask = True):
     search(update, ask, True)
@@ -2326,7 +2512,7 @@ def toggle_clues_overlay(destroy=False):
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         overlay_width = round(screen_width*.75)  # Doubled width
-        overlay_height = round(screen_height*.75)   # Doubled height
+        overlay_height = round(screen_height*.80)   # Doubled height
         x = (screen_width - overlay_width) // 2
         y = (screen_height - overlay_height) // 2
         clues_overlay.update_idletasks()
@@ -2341,23 +2527,26 @@ def toggle_clues_overlay(destroy=False):
         clues_overlay.grid_rowconfigure(0, weight=1)
         clues_overlay.grid_rowconfigure(1, weight=1)
         clues_overlay.grid_rowconfigure(2, weight=1)
+        # clues_overlay.grid_rowconfigure(3, weight=3)
 
         # Helper function to create a label box
         def create_box(row, column, title, value, columnspan=1, rowspan=1):
             frame = tk.Frame(clues_overlay, bg="black", padx=20, pady=20, highlightbackground="white", highlightthickness=4)  # Thick borders
             frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan, sticky="nsew", padx=10, pady=10)
             
-            # Title Label (ALL CAPS, Underlined, Bigger)
-            title_label = tk.Label(frame, text=title.upper(), font=("Arial", 70, "bold", "underline"), fg="white", bg="black")
-            title_label.pack(anchor="center")
+            if title:
+                # Title Label (ALL CAPS, Underlined, Bigger)
+                title_label = tk.Label(frame, text=title.upper(), font=("Arial", 70, "bold", "underline"), fg="white", bg="black")
+                title_label.pack(anchor="center")
 
             val_size = 60
             lines = value.count('\n')
             if lines > 5:
                 val_size = val_size - 5*(lines - 5)
             # Value Label
-            value_label = tk.Label(frame, text=value, font=("Arial", val_size), fg="white", bg="black", wraplength=650, justify="center")
+            value_label = tk.Label(frame, text=value, font=("Arial", val_size), fg="white", bg="black", wraplength=650*columnspan, justify="center")
             value_label.pack(fill="both", expand=True)
+            # adjust_font_size(value_label, frame, 650*columnspan)
 
         data = currently_playing.get("data")
         season=data.get('season').replace(" ", "\n")
@@ -2368,6 +2557,8 @@ def toggle_clues_overlay(destroy=False):
         episodes = str(data.get("episodes") or "Airing")
         type = data.get("type")
         source = data.get("source")
+        # theme = format_slug(data.get("slug"))
+        # song = get_song_string(data)
 
         # Add metadata boxes
         create_box(0, 0, "Type", type)
@@ -2378,6 +2569,7 @@ def toggle_clues_overlay(destroy=False):
         create_box(1, 2, "Tags", tags, rowspan=2)  # Tags box spans both rows
         create_box(2, 0, "Score", score)
         create_box(2, 1, "Members", popularity)
+        # create_box(3, 0, None, theme + ": " + song, columnspan=3)
         animate_window(clues_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
 
 def set_countdown(value):
@@ -2612,7 +2804,7 @@ def generate_random_color(min = 0, max = 255):
     return color
 
 # =========================================
-#            *BACKGROUND MUSIC
+#            *MUSIC
 # =========================================
 
 pygame.mixer.init()
@@ -2716,7 +2908,6 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
 title_window = None  # Store the title popup window
 title_row_label = None
 top_row_label = None
-middle_row_label = None
 bottom_row_label = None
 
 def adjust_font_size(label, text, max_width, base_size=50, min_size=20):
@@ -2734,7 +2925,7 @@ def is_title_window_up():
 
 def toggle_title_popup(show):
     """Creates or destroys the title popup at the bottom middle of the screen."""
-    global title_window, title_row_label, top_row_label, middle_row_label, bottom_row_label, info_button, light_mode_enabled
+    global title_window, title_row_label, top_row_label, bottom_row_label, info_button, light_mode_enabled
     if not is_title_window_up() and not show:
         return
     if title_window:
@@ -2761,8 +2952,10 @@ def toggle_title_popup(show):
 
     top_row = ""
     title_row = ""
-    middle_row = ""
     bottom_row = ""
+    top_font = ("Arial", 20, "bold")
+    title_font = ("Arial", 50, "bold")
+    bottom_font = ("Arial", 15, "bold")
     data = currently_playing.get("data")
     if data:
         if currently_playing.get("type") == "youtube":
@@ -2777,55 +2970,60 @@ def toggle_title_popup(show):
 
             top_row = f"Uploaded by {channel} ({subscribers} subscribers)"
             title_row = title
-            middle_row = f"{full_title}"
-            bottom_row = f"Views: {views} | Likes: {likes} | {uploaded} | {duration}"
+            bottom_row = f"{full_title}\nViews: {views} | Likes: {likes} | {uploaded} | {duration}"
         else:
             japanese_title = data.get("title")
-            title = data.get("eng_title") or (data.get("synonyms", [None]) or [None])[0] or japanese_title
-            score = f"Score: {data.get("score")} (#{data.get("rank")})"
-            members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
-            aired = data.get("season")
+            title = data.get("eng_title") or japanese_title or (data.get("synonyms", [None]) or [None])[0]
             theme = format_slug(data.get("slug"))
-            studio = ", ".join(data.get("studios"))
             song = get_song_string(data)
+            if is_game(data):
+                aired = data.get("release")
+            else:
+                aired = data.get("season")
+            studio = ", ".join(data.get("studios"))
             tags = get_tags_string(data)
-            episodes = str(data.get("episodes")) + " Episodes"
             type = data.get("type")
             source = data.get("source")
-            top_row = f"{theme} | {song} | {aired}"
+            if data.get("platforms"):
+                episodes = ", ".join(data.get("platforms"))
+                members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
+                score = f"Score: {data.get("score")}"
+            else:
+                episodes =  data.get("episodes")
+                if not episodes:
+                    episodes = "Airing"
+                else:
+                    episodes = str(episodes) + " Episodes"
+                members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
+                score = f"Score: {data.get("score")} (#{data.get("rank")})"
+            top_row = f"{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
             title_row = title
-            middle_row = f"{score} | {japanese_title} | {members}"
-            bottom_row = f"{studio} | {tags} | {episodes} | {type} | {source}"
+            bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
     else:
-        title_row = currently_playing.get("filename")
+        top_font = ("Arial", 1)
+        bottom_font = ("Arial", 1)
+        title_row = currently_playing.get("filename").split(".")[0]
 
     if title_row_label:
-        title_row_label.config(text=title_row)
-        top_row_label.config(text=top_row)
-        if middle_row:
-            middle_row_label.config(text=middle_row)
-        bottom_row_label.config(text=bottom_row)
+        title_row_label.config(text=title_row, font=title_font)
+        top_row_label.config(text=top_row, font=top_font)
+        bottom_row_label.config(text=bottom_row, font = bottom_font)
     else:
         top_row_label = tk.Label(title_window, text=top_row,
-                                font=("Arial", 20, "bold"), fg="white", bg="black")
+                                font=top_font, fg="white", bg="black")
         top_row_label.pack(pady=(10, 0), padx = 10)
 
         # Title Label (Large Text)
-        title_row_label = tk.Label(title_window, text=title_row, font=("Arial", 50, "bold"), fg="white", bg="black")
+        title_row_label = tk.Label(title_window, text=title_row, font=title_font, fg="white", bg="black")
         title_row_label.pack(pady=(0, 0), padx = 10)
 
-        # Info Label (Smaller Text)
-        if middle_row:
-            middle_row_label = tk.Label(title_window, text=middle_row,
-                                    font=("Arial", 15, "bold"), fg="white", bg="black")
-            middle_row_label.pack(pady=(0, 0), padx = 10)
         bottom_row_label = tk.Label(title_window, text=bottom_row,
-                                font=("Arial", 15, "bold"), fg="white", bg="black")
+                                font=bottom_font, fg="white", bg="black")
         bottom_row_label.pack(pady=(0, 10), padx = 10)
 
     # Dynamically adjust font size to fit window width
     title_window.update_idletasks()
-    max_width = title_window.winfo_screenwidth() - 500  # Leave padding
+    max_width = title_window.winfo_screenwidth() - 550  # Leave padding
     adjust_font_size(title_row_label, title_row, max_width)
     
     # Position at the bottom center of the screen
@@ -2858,7 +3056,7 @@ def get_song_string(data):
 guessing_extra = None
 def guess_extra(extra = None):
     global guessing_extra
-    buttons = [guess_year_button, guess_members_button, guess_score_button]
+    buttons = [guess_year_button, guess_members_button, guess_score_button, guess_tags_button]
     for b in buttons:
         button_seleted(b, False)
     if extra:
@@ -2892,10 +3090,47 @@ def guess_extra(extra = None):
                                 "+1 PT for closest guess. "
                                 "+2 PTs if exact score."),
                                 up_next=False)
+        elif guessing_extra == "tags":
+            button_seleted(guess_tags_button, True)
+            data = currently_playing.get("data")
+            if data:
+                tags = len(data.get('genres', []) + data.get('themes', []) + data.get('demographics', []))
+                if tags > 1:
+                    tags = str(tags) + " Tags"
+                else:
+                    tags = str(tags) + " Tag"
+            else:
+                tags = "Tag(s)"
+            tags_1, tags_2 = split_array_half(get_random_tags())
+            toggle_coming_up_popup(True, 
+                                "Guess The " + tags + " This Anime Has", 
+                                (""
+                                "Guess until you get a tag wrong. +1 PT for each correct tag.\n\n"
+                                "[" + "] [".join(tags_1) + "]\n[" + "] [".join(tags_2)) + "]",
+                                up_next=False)
+            
     else:
         guessing_extra = None
         toggle_coming_up_popup(False)
-    
+
+def get_random_tags():
+    data = currently_playing.get("data")
+    if data:
+        tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
+        tags_len = len(tags)
+        all_tags = get_all_tags(game=False, double=True)
+        all_tags_len = len(get_all_tags(game=False))
+        while len(tags) < 20 and len(tags) < tags_len*4 and len(tags) != all_tags_len:
+            random_tag = random.choice(all_tags)
+            if random_tag not in tags:
+                tags.append(random_tag)
+        return sorted(tags)
+    return []
+
+def split_array_half(arr):
+    mid = len(arr) // 2
+    return arr[:mid], arr[mid:]
+
 # =========================================
 #         *VIDEO PLAYBACK/CONTROLS
 # =========================================
@@ -2957,16 +3192,13 @@ def play_filename(filename):
         set_variety_light_mode()
     if clues_light_mode_enabled:
         mal_id = currently_playing.get("data").get("mal")
-        if mal_id in clues_anime_ids:
+        if mal_id in clues_anime_ids and filename not in all_themes_played:
             play_next()
             return
         else:
             clues_anime_ids.append(mal_id)
     if auto_info_start:
         toggle_title_popup(True)
-    if not root.attributes("-topmost") and not disable_shortcuts:
-        root.lower()
-        root.lower()
     # Update metadata display asynchronously
     update_metadata_queue(current_index)
     media = instance.media_new(filepath)
@@ -3137,13 +3369,15 @@ def play_pause():
 
 def stop():
     """Function to stop the video"""
-    global video_stopped, currently_playing
+    global video_stopped, currently_playing, censor_bar
     video_stopped = True
     player.stop()
     player.set_media(None)  # Reset the media
     currently_playing = {}
     update_progress_bar(0,1)
-    apply_censors(0, 1)
+    if censor_bar:
+        censor_bar.destroy()
+        censor_bar = None
 
 def seek(value):
     """Function to seek the video"""
@@ -3159,38 +3393,41 @@ SEEK_POLLING = 50
 def update_seek_bar():
     """Function to update the seek bar"""
     global last_vlc_time, projected_vlc_time
-    if player.is_playing():
-        vlc_time = player.get_time()
-        if vlc_time != last_vlc_time:
-            last_vlc_time = vlc_time
-            projected_vlc_time = vlc_time
-        else:
-            projected_vlc_time = projected_vlc_time + SEEK_POLLING
-        length = player.get_length()/1000
-        time = projected_vlc_time/1000
-        if manual_blind:
-            set_progress_overlay(time, length)
-        if length > 0:
-            global can_seek
-            can_seek = False
-            seek_bar.config(to=length)
-            seek_bar.set(time)
-            if currently_playing.get("type") == "youtube":
-                start = currently_playing.get("data").get("start")
-                end = currently_playing.get("data").get("end")
-                if time < start:
-                    player.set_time(int(start*1000)+100)
-                elif end != 0 and time >= end:
-                    player.pause()
-                    play_next()
-                else:
-                    set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
+    try:
+        if player.is_playing():
+            vlc_time = player.get_time()
+            if vlc_time != last_vlc_time:
+                last_vlc_time = vlc_time
+                projected_vlc_time = vlc_time
             else:
-                if not light_mode_enabled and not is_title_window_up() and auto_info_end and (length - time) <= 8:
-                    toggle_title_popup(True)
-                update_light_round(time)
-                apply_censors(time, length)
-        update_progress_bar(projected_vlc_time, player.get_length())
+                projected_vlc_time = projected_vlc_time + SEEK_POLLING
+            length = player.get_length()/1000
+            time = projected_vlc_time/1000
+            if manual_blind:
+                set_progress_overlay(time, length)
+            if length > 0:
+                global can_seek
+                can_seek = False
+                seek_bar.config(to=length)
+                seek_bar.set(time)
+                if currently_playing.get("type") == "youtube":
+                    start = currently_playing.get("data").get("start")
+                    end = currently_playing.get("data").get("end")
+                    if time < start:
+                        player.set_time(int(start*1000)+100)
+                    elif end != 0 and time >= end:
+                        player.pause()
+                        play_next()
+                    else:
+                        set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
+                else:
+                    if not light_mode_enabled and not is_title_window_up() and auto_info_end and (length - time) <= 8:
+                        toggle_title_popup(True)
+                    update_light_round(time)
+                    apply_censors(time, length)
+            update_progress_bar(projected_vlc_time, player.get_length())
+    except Exception as e:
+        print("Error: " + str(e))
     root.after(SEEK_POLLING, update_seek_bar)
 
 def format_seconds(seconds):
@@ -3238,7 +3475,7 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True)
 
     # Details
     if not coming_up_rules_label:
-        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", 20, "bold"), fg="white", bg="black", justify="center", wraplength=1000)
+        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", 20, "bold"), fg="white", bg="black", justify="center", wraplength=1700)
         coming_up_rules_label.pack(pady=(5, 10))
     if image:
         coming_up_rules_label.configure(image=image, compound="top")
@@ -3396,27 +3633,42 @@ def load_censors():
     global censor_list
     censor_map = {}
     lines = -1
+
     if os.path.exists(CENSOR_FILE):
         try:
             with open(CENSOR_FILE, "r") as file:
                 for line in file:
-                    lines = lines + 1
-                    filename, size, pos, start, end = line.strip().split(",")  # Split on first comma
-                    if filename != "filename":
+                    lines += 1
+                    parts = [p.strip() for p in line.strip().split(",")]
+
+                    if parts[0] != "filename":  # Skip header
+                        filename = parts[0]
+                        size = parts[1] if len(parts) > 1 else "0x0"
+                        pos = parts[2] if len(parts) > 2 else "0x0"
+                        start = float(parts[3]) if len(parts) > 3 else 0.0
+                        end = float(parts[4]) if len(parts) > 4 else 0.0
+                        color = parts[5] if len(parts) > 5 and parts[5] != "" else None
+                        nsfw = parts[6] if len(parts) > 6 and parts[6] != "" else False
+
                         if censor_map.get(filename) is None:
                             censor_map[filename] = []
+                        
                         censor_map[filename].append({
-                            "size_w":float(size.split("x")[0]),
-                            "size_h":float(size.split("x")[1]),
-                            "pos_x":float(pos.split("x")[0]),
-                            "pos_y":float(pos.split("x")[1]),
-                            "start":float(start),
-                            "end":float(end)
+                            "size_w": float(size.split("x")[0]),
+                            "size_h": float(size.split("x")[1]),
+                            "pos_x": float(pos.split("x")[0]),
+                            "pos_y": float(pos.split("x")[1]),
+                            "start": start,
+                            "end": end,
+                            "color": color,  # Optional field stored if needed
+                            "nsfw": nsfw  # Optional field stored if needed
                         })
         except FileNotFoundError:
             print("Error: " + filename + " not found.")
-        print("Loaded " + str(lines) + " censors for " + str(len(censor_map)) + " files...")
+        
+        print(f"Loaded {lines} censors for {len(censor_map)} files...")
         censor_list = censor_map
+
         if currently_playing and currently_playing.get("filename"):
             update_censor_button_count()
 load_censors()
@@ -3453,7 +3705,7 @@ def check_file_censors(filename, time, video_end):
     file_censors = censor_list.get(filename)
     if file_censors != None:
         for censor in file_censors:
-            if (video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end']):
+            if (not is_title_window_up() or censor.get("nsfw")) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
                 if not censor_used:
                     censor_used = True
                     censor_bar.attributes("-topmost", True)
@@ -3466,8 +3718,8 @@ def check_file_censors(filename, time, video_end):
                     if coming_up_window:
                         coming_up_window.lift()
                 censor_bar.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
+                censor_bar.configure(bg=(censor.get("color") or get_image_color()))
                 set_window_position(censor_bar, censor['pos_x'], censor['pos_y'])
-                censor_bar.configure(bg=get_image_color())
                 return True
     return False
 
@@ -3654,17 +3906,27 @@ def show_field_themes(update = False, group=[]):
         if filename == currently_playing.get('filename'):
             selected = index
             break
-    show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_filename, play_video_from_last, selected, update)
+    show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_title, play_video_from_last, selected, update)
+
+def get_title(key, value):
+    data = get_metadata(value)
+    if data:
+        title = (data.get("eng_title") or data.get("title"))
+        if len(title) > 37:
+            title = title[:35] + "..."
+        return title + " " + data.get("slug")
+    else:
+        return value
 
 def play_video_from_last(index):
     if last_themes_listed:
         play_video_from_filename(last_themes_listed[index])
 
 def show_playlist(update = False):
-    show_list("playlist", right_column, convert_playlist_to_dict(playlist), get_filename, play_video, current_index, update)
+    show_list("playlist", right_column, convert_playlist_to_dict(playlist), get_title, play_video, current_index, update)
 
 def remove(update = False):
-    show_list("remove", right_column, convert_playlist_to_dict(playlist), get_filename, remove_theme, current_index, update)
+    show_list("remove", right_column, convert_playlist_to_dict(playlist), get_title, remove_theme, current_index, update)
 
 def convert_playlist_to_dict(playlist):
     return {f"{video}_{i}": video for i, video in enumerate(playlist)}
@@ -4016,15 +4278,20 @@ dock_button = create_button(first_row_frame, "[D]OCK PLAYER", dock_player, True,
 def select_directory():
     directory = filedialog.askdirectory()
     if directory:
-        global directory_entry, directory_files
-        directory_files = {}
-        directory_entry.delete(0, tk.END)
-        directory_entry.insert(0, directory)
-        for root, _, files in os.walk(directory):
-            for file in files:
-                if file.endswith((".mp4", ".webm", ".mkv")):
-                    directory_files[file] = os.path.join(root, file)
-        save_config()
+        scan_directory(directory)
+
+def scan_directory(directory = None):
+    global directory_entry, directory_files
+    if not directory:
+        directory = directory_entry.get()
+    directory_files = {}
+    directory_entry.delete(0, tk.END)
+    directory_entry.insert(0, directory)
+    for root, _, files in os.walk(directory):
+        for file in files:
+            if file.endswith((".mp4", ".webm", ".mkv")):
+                directory_files[file] = os.path.join(root, file)
+    save_config()
 
 select_button = create_button(first_row_frame, "FOLDER:", select_directory,
                               help_title="CHOOSE VIDEO DIRECTORY FOLDER",
@@ -4045,6 +4312,7 @@ directory_entry.pack(side="left")
 # Generate playlist button
 def generate_playlist_button():
     global playlist
+    scan_directory()
     confirm = messagebox.askyesno("Create Playlist", f"Are you sure you want to create a new playlist with all {len(directory_files)} files in the directory?")
     if not confirm:
         return  # User canceled
@@ -4294,9 +4562,13 @@ guess_members_button = create_button(second_row_frame, "👥", lambda: guess_ext
                               help_title="GUESS MEMBERS([H]EADCOUNT) (Shortcut Key = 'h')",
                               help_text=("Displays a pop-up at the top informing players to guess the members. "
                                          "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
-guess_score_button = create_button(second_row_frame, "🏆", lambda: guess_extra("score"), True,
+guess_score_button = create_button(second_row_frame, "🏆", lambda: guess_extra("score"), False,
                               help_title="GUESS SCORE([J]UDGE) (Shortcut Key = 'j')",
                               help_text=("Displays a pop-up at the top informing players to guess the score. "
+                                         "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
+guess_tags_button = create_button(second_row_frame, "🔖", lambda: guess_extra("tags"), True,
+                              help_title="[G]UESS TAGS (Shortcut Key = 'g','g')",
+                              help_text=("Displays a pop-up at the top informing players to guess the tags. "
                                          "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
 
 light_mode_button = create_button(second_row_frame, "[L]IGHTNING", lambda: toggle_light_mode("regular"),
@@ -4371,7 +4643,7 @@ stats_button = create_button(second_row_frame, "📊", display_theme_stats_in_co
                               help_title="THEME STATS",
                               help_text=("Shows detailed stats of themes in directory."))
 
-toggle_disable_shortcuts_button = create_button(second_row_frame, "[`]SHORTCUTS", toggle_disable_shortcuts,
+toggle_disable_shortcuts_button = create_button(second_row_frame, "[`]ENABLE", toggle_disable_shortcuts,
                               help_title="ENABLE SHORTCUTS (Shortcut Key = '`')",
                               help_text=("Used to toggle shortcut keys.\n\nIn my current setup, I am streaming my desktop to "
                                          "one screen, and do not have access to a second monitor to manage the "
@@ -4597,7 +4869,10 @@ def on_release(key):
                 elif key.char == 's':
                     search()
                 elif key.char == 'g':
-                    guess_extra("year")
+                    if guessing_extra != "year" and guessing_extra != "tags":
+                        guess_extra("year")
+                    else:
+                        guess_extra("tags")
                 elif key.char == 'h':
                     guess_extra("members")
                 elif key.char == 'j':
@@ -4618,6 +4893,7 @@ listener.start()
 load_config()
 load_youtube_metadata()
 load_metadata()
+scan_directory()
 
 # Start downloading videos in the background
 download_thread = threading.Thread(target=download_videos, daemon=True)
