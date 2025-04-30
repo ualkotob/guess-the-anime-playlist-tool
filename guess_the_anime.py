@@ -492,7 +492,7 @@ def update_metadata():
             else:
                 left_column.insert(tk.END, "EPISODES: ", "bold")
                 left_column.insert(tk.END, f"{data.get("episodes") or "Airing"}", "white")
-                add_single_data_line(left_column, data, "TYPE: ", 'type', False) 
+                add_single_data_line(left_column, data, " TYPE: ", 'type', False) 
             add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
             left_column.insert(tk.END, "TAGS: ", "bold")
             tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
