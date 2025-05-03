@@ -483,7 +483,8 @@ def update_metadata():
                 left_column.insert(tk.END, " REVIEWS: ", "bold")
                 left_column.insert(tk.END, f"{f"{(data.get("reviews", 0) or 0):,}"}", "white")
             else:
-                left_column.insert(tk.END, ") MEMBERS: ", "bold")
+                left_column.insert(tk.END, ") ", "white")
+                left_column.insert(tk.END, "MEMBERS: ", "bold")
                 left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
             left_column.insert(tk.END, "\n\n", "blank")
             if data.get("platforms"):
@@ -1201,7 +1202,7 @@ def load_metadata():
             anime_metadata = json.load(a)
             print("Loaded metadata for " + str(len(anime_metadata)) + " entries...")
     if os.path.exists(manual_metadata_file):
-        with open(manual_metadata_file, "r") as m:
+        with open(manual_metadata_file, "r", encoding="utf-8") as m:
             manual_metadata = json.load(m)
             for entry in manual_metadata:
                 anime_metadata[entry] = manual_metadata[entry]
@@ -2116,53 +2117,14 @@ def get_playlists_dict():
 #            *LIGHTNING ROUNDS
 # =========================================
 
-light_mode_enabled = False
-def light_mode_toggle():
-    global light_mode_enabled
-    if blind_light_mode_enabled or frame_light_mode_enabled or clues_light_mode_enabled or variety_light_mode_enabled:
-        light_mode_enabled = True
-    else:
-        light_mode_enabled = not light_mode_enabled
-    button_seleted(light_mode_button, light_mode_enabled)
-    return light_mode_enabled
-
-frame_light_mode_enabled = False
-def frame_light_mode_toggle():
-    global frame_light_mode_enabled
-    frame_light_mode_enabled = not frame_light_mode_enabled
-    button_seleted(frame_light_mode_button, frame_light_mode_enabled)
-    return frame_light_mode_enabled
-
-blind_light_mode_enabled = False
-def blind_light_mode_toggle():
-    global blind_light_mode_enabled
-    blind_light_mode_enabled = not blind_light_mode_enabled
-    button_seleted(blind_light_mode_button, blind_light_mode_enabled)
-    return blind_light_mode_enabled
-
-clues_light_mode_enabled = False
-def clues_light_mode_toggle():
-    global clues_light_mode_enabled
-    clues_light_mode_enabled = not clues_light_mode_enabled
-    button_seleted(clues_light_mode_button, clues_light_mode_button)
-    return clues_light_mode_enabled
-
-variety_light_mode_enabled = False
-def variety_light_mode_toggle():
-    global variety_light_mode_enabled
-    variety_light_mode_enabled = not variety_light_mode_enabled
-    button_seleted(variety_light_mode_button, variety_light_mode_enabled)
-    return variety_light_mode_enabled
-
 light_round_started = False
 light_round_start_time = None
 light_round_number = 0
 light_round_length = 12
 light_round_answer_length = 8
-light_modeS = {
+light_mode = None
+light_modes = {
     "regular":{
-        "toggle":light_mode_toggle,
-        "length":12,
         "title":"Lightning Round",
         "img":"banners/lightning_round.webp",
         "desc":(
@@ -2172,8 +2134,6 @@ light_modeS = {
         )
     },
     "frame":{
-        "toggle":frame_light_mode_toggle,
-        "length":12,
         "title":"Frame Lightning Round",
         "img":"banners/frame_lightning_round.webp",
         "desc":(
@@ -2183,8 +2143,6 @@ light_modeS = {
         )
     },
     "blind":{
-        "toggle":blind_light_mode_toggle,
-        "length":12,
         "title":"Blind Lightning Round",
         "img":"banners/blind_lightning_round.webp",
         "desc":(
@@ -2195,7 +2153,6 @@ light_modeS = {
         )
     },
     "clues":{
-        "toggle":clues_light_mode_toggle,
         "length":20,
         "title":"Clues Lightning Round",
         "img":"banners/clues_lightning_round.webp",
@@ -2205,9 +2162,39 @@ light_modeS = {
             "1 PT for the first to guess the anime!"
         )
     },
+    "song":{
+        "title":"Song Lightning Round",
+        "img":"banners/song_lightning_round.webp",
+        "desc":(
+            "You will be shown song information for the Opening/Ending.\n"
+            "It will be revealed over time, and the song plays the last few seconds.\n"
+            "You have " + str(light_round_length) + " seconds to guess.\n\n"
+            "1 PT for the first to guess the anime!"
+        )
+    },
+    "synopsis":{
+        "title":"Synopsis Lightning Round",
+        "length":20,
+        "img":"banners/synopsis_lightning_round.webp",
+        "desc":(
+            "You will be shown a part of the synopsis for the Anime.\n"
+            "It will be revealed word by word over time.\n"
+            "You have 20 seconds to guess.\n\n"
+            "1 PT for the first to guess the anime!"
+        )
+    },
+    "title":{
+        "title":"Title Lightning Round",
+        "length":20,
+        "img":"banners/title_lightning_round.webp",
+        "desc":(
+            "You will be shown the title with most letters blanked.\n"
+            "Letters will be revealed over time.\n"
+            "You have 20 seconds to guess.\n\n"
+            "1 PT for the first to guess the anime!"
+        )
+    },
     "variety":{
-        "toggle":variety_light_mode_toggle,
-        "length":12,
         "title":"Variety Lightning Round",
         "img":"banners/variety_lightning_round.webp",
         "desc":(
@@ -2219,71 +2206,73 @@ light_modeS = {
 }
 
 def toggle_light_mode(type):
-    mode = light_modeS[type]
-    toggle = mode.get("toggle")()
-    if not toggle:
-        unselect_light_modeS()
+    global light_mode, variety_light_mode_enabled
+    if light_mode == type or (variety_light_mode_enabled and type == 'variety'):
+        unselect_light_modes()
         toggle_coming_up_popup(False)
     else:
-        global light_mode_enabled, light_round_length
-        unselect_light_modeS()
-        mode.get("toggle")()
-        light_mode_enabled = True
-        light_round_length = mode.get("length", 12)
-        image_path = mode.get("img")
-        image_tk = None
-        if os.path.exists(image_path):
-            image = Image.open(image_path)
-            image = image.resize((400, 225), Image.LANCZOS)  # Resize if needed
-            image_tk = ImageTk.PhotoImage(image)  # Convert to Tkinter format
-        toggle_coming_up_popup(True, mode.get("title"), mode.get("desc"), image_tk)
+        unselect_light_modes()
+        mode = light_modes[type]
+        light_mode = type
+        button_seleted(globals()[type + '_light_mode_button'], True)
+        if type == 'variety':
+            variety_light_mode_enabled = True
+        if light_round_number == 0:
+            image_path = mode.get("img")
+            image_tk = None
+            if os.path.exists(image_path):
+                image = Image.open(image_path)
+                image = image.resize((400, 225), Image.LANCZOS)  # Resize if needed
+                image_tk = ImageTk.PhotoImage(image)  # Convert to Tkinter format
+            toggle_coming_up_popup(True, mode.get("title"), mode.get("desc"), image_tk)
 
-def unselect_light_modeS():
-    global light_mode_enabled, blind_light_mode_enabled, frame_light_mode_enabled, clues_light_mode_enabled, variety_light_mode_enabled
-    light_mode_enabled = False
-    button_seleted(light_mode_button, False)
-    frame_light_mode_enabled = False
-    button_seleted(frame_light_mode_button, False)
-    blind_light_mode_enabled = False
-    button_seleted(blind_light_mode_button, False)
-    clues_light_mode_enabled = False
-    button_seleted(clues_light_mode_button, False)
+def unselect_light_modes():
+    global light_mode, variety_light_mode_enabled
+    light_mode = None
     variety_light_mode_enabled = False
-    button_seleted(variety_light_mode_button, False)
+    for key, value in light_modes.items():
+        button_seleted(globals()[key + '_light_mode_button'], False)
 
 last_round = -1
+variety_light_mode_enabled = False
 def set_variety_light_mode():
-    global light_mode_enabled, last_round, light_round_length
+    global light_mode, last_round, variety_light_mode_enabled
     data = currently_playing.get('data')
     popularity = data.get('popularity') or 3000
     if popularity <= 100:
-        round_options = [0,1,1,2,2,2,2,2,3,3]
+        round_options = [1,2,2,2,2,2,3,4,4,5,6,6]
     elif popularity <= 250:
-        round_options = [0,1,1,1,2,2,2,2,2,3]
+        round_options = [0,1,2,2,2,2,3,4,5,5,6,6]
     elif popularity <= 500:
-        round_options = [0,0,1,1,1,2,2,2,2,3]
+        round_options = [0,1,1,1,2,2,2,2,3,5,5,6]
     elif popularity <= 750:
-        round_options = [0,0,0,1,1,1,1,2,2,2]
+        round_options = [0,0,0,1,1,1,1,2,2,2,5,6]
     elif popularity <= 1000:
-        round_options = [0,0,0,0,1,1,1,1,2,2]
+        round_options = [0,0,0,0,1,1,1,1,2,2,5,6]
     elif popularity <= 1500:
-        round_options = [0,0,0,0,0,1,1,1,1,2]
+        round_options = [0,0,0,0,0,1,1,1,1,1,2,6]
     else:
-        round_options = [0,0,0,0,0,0,0,1,1,1]
+        round_options = [0,0,0,0,0,0,0,1,1,1,1,1]
 
+    # Filter list
     if data.get("mal") in clues_anime_ids:
         round_options = [x for x in round_options if x != 3]
+    if get_song_string(data, "artist") == "N/A":
+        round_options = [x for x in round_options if x != 4]
+    if len(data.get("synopsis").split()) <= 40:
+        round_options = [x for x in round_options if x != 5]
+    if len(get_unique_letters(data.get('eng_title') or data.get('title'))) < 9:
+        round_options = [x for x in round_options if x != 6]
+    round_options = [x for x in round_options if x != last_round]
 
-    round_options = [x for x in round_options if x != last_round]  # Filter list
     random.shuffle(round_options)  # Shuffle in place
+
     next_round = round_options[0] if round_options else 0
     last_round = next_round
-    unselect_light_modeS()
-    mode = light_modeS.get(get_light_round_by_index(next_round))
-    mode.get("toggle")()
-    light_round_length = mode.get("length", 12)
-    light_mode_enabled = True
-    variety_light_mode_toggle()
+    unselect_light_modes()
+    toggle_light_mode(get_light_round_by_index(next_round))
+    variety_light_mode_enabled = True
+    button_seleted(variety_light_mode_button, True)
 
 def get_light_round_by_index(index):
     if index == 1:
@@ -2292,13 +2281,19 @@ def get_light_round_by_index(index):
         return "blind"
     elif index == 3:
         return "clues"
+    elif index == 4:
+        return "song"
+    elif index == 5:
+        return "synopsis"
+    elif index == 6:
+        return "title"
     else:
         return "regular"
 
 def get_light_round_time():
     length = player.get_length()/1000
     buffer = 10
-    if blind_light_mode_enabled:
+    if light_mode == 'blind':
         buffer = 1
     if length < (light_round_length+light_round_answer_length+(buffer*2)+1):
         return 1  # If the video is too short, start from 1
@@ -2307,7 +2302,7 @@ def get_light_round_time():
     while start_time is None:
         start_time = random.randrange(buffer, int(length - (light_round_length+light_round_answer_length+buffer)))
         try_count = try_count + 1
-        if try_count < 20 and not blind_light_mode_enabled:
+        if try_count < 20 and not light_mode == 'blind':
             file_censors = censor_list.get(currently_playing.get('filename'))
             if file_censors != None:
                 end_time = start_time+light_round_length
@@ -2318,10 +2313,9 @@ def get_light_round_time():
     return start_time
 
 clues_anime_ids = []
-
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled
-    if not light_round_start_time and (frame_light_mode_enabled or frame_light_round_started):
+    if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
         if time < 1:
             player.pause()
             if not frame_light_round_started:
@@ -2336,42 +2330,70 @@ def update_light_round(time):
             if not is_title_window_up():
                 toggle_title_popup(True)
                 set_black_screen(False)
-                set_progress_overlay(destroy=True)
-                toggle_clues_overlay(destroy=True)
-                player.audio_set_mute(False)
-                play_background_music(False)
-            if not light_mode_enabled:
+                clean_up_light_round()
+            if not light_mode:
                 start_str = "end"
             set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
         else:
             time_left = (light_round_length-(time - light_round_start_time))
-            if blind_light_mode_enabled or light_progress_bar:
-                current_time = round((time - light_round_start_time)*100)
-                length = light_round_length*100
-                set_progress_overlay(current_time, length)
+            if song_overlay_boxes:
+                toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
+                player.audio_set_mute(time_left > 4)
+                play_background_music(time_left > 4)
+            elif synopsis_start_index:
+                toggle_synopsis_overlay(text=get_light_synopsis_string(min(41, (light_round_length*3)-round(time_left*3)+1)))
+            elif light_progress_bar:
+                set_progress_overlay(round((time - light_round_start_time)*100), light_round_length*100)
+            elif title_overlay:
+                word_num = min(7, (int(light_round_length-time_left) // 3)+2)
+                set_frame_number(f"{word_num}/{min(7, len(title_light_letters))}")
+                toggle_title_overlay(get_title_light_string(word_num))
             set_countdown(round(time_left))
-    if light_mode_enabled and time < 1:
+    if light_mode and time < 1:
         toggle_coming_up_popup(False)
         light_round_started = True
-        if not (blind_light_mode_enabled or clues_light_mode_enabled or frame_light_mode_enabled):
+        if light_mode == 'regular':
             root.after(500, set_black_screen, False)
         if light_round_start_time is None:
             light_round_start_time = get_light_round_time()
-        if clues_light_mode_enabled:
+        if light_mode == 'blind':
+            set_progress_overlay(light_round_start_time*100, light_round_length*100)
+        elif light_mode == 'clues' or light_mode == 'song' or light_mode == 'synopsis' or light_mode == 'title':
             player.audio_set_mute(True)
             play_background_music(True)
-            toggle_clues_overlay()
+            if light_mode == 'clues':
+                toggle_clues_overlay()
+            elif light_mode == 'song':
+                toggle_song_overlay(show_title=True, show_artist=False, show_theme=False, show_music=False)
+            elif light_mode == 'synopsis':
+                pick_synopsis()
+                toggle_synopsis_overlay(text=get_light_synopsis_string(words = 1))
+            elif light_mode == 'title':
+                set_title_light_text()
+                toggle_title_overlay(get_title_light_string(2))
+                set_frame_number(f"2/{min(7, len(title_light_string))}")
             pass
         player.set_time(int(float(light_round_start_time))*1000)
         player.set_fullscreen(True)
         set_countdown(light_round_length)
         set_light_round_number("#" + str(light_round_number))
 
+def clean_up_light_round():
+    set_progress_overlay(destroy=True)
+    toggle_clues_overlay(destroy=True)
+    toggle_song_overlay(destroy=True)
+    toggle_synopsis_overlay(destroy=True)
+    toggle_title_overlay(destroy=True)
+    set_frame_number()
+    if not disable_video_audio:
+        player.audio_set_mute(False)
+    play_background_music(False)
+
 def light_round_transition():
     global video_stopped
     video_stopped = True
     player.pause()
-    set_countdown(-1)
+    set_countdown()
     toggle_title_popup(False)
     set_black_screen(True)
     root.after(500, play_next)
@@ -2449,7 +2471,7 @@ def update_frame_light_round(currently_playing_filename):
             player.pause()
     if frame_light_round_frame_index == 4:
         start_str = "next"
-        if not light_mode_enabled:
+        if not light_mode:
             start_str = "end"
         set_countdown(start_str + " in..." + str(round(((light_round_answer_length*1000)-frame_light_round_frame_time)/1000)))
         if frame_light_round_frame_time >= light_round_answer_length*1000:
@@ -2475,13 +2497,12 @@ def update_frame_light_round(currently_playing_filename):
                 frame_light_round_frame_time = 0
                 player.play()
                 toggle_title_popup(True)
-                set_frame_number(-1)
+                set_frame_number()
                 play_background_music(False)
     
     root.after(SEEK_POLLING, update_frame_light_round, currently_playing_filename)
 
 clues_overlay = None  # Store the overlay window
-
 def toggle_clues_overlay(destroy=False):
     """
     Toggles a Clues Lightning Round overlay displaying anime metadata.
@@ -2572,12 +2593,277 @@ def toggle_clues_overlay(destroy=False):
         # create_box(3, 0, None, theme + ": " + song, columnspan=3)
         animate_window(clues_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
 
-def set_countdown(value):
+song_overlay_boxes = {}
+def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show_music=True, destroy=False):
+    """Toggles the Song Lightning Round overlay with three separate boxes."""
+    global song_overlay_boxes, music_icon_label
+    
+    # Destroy everything if requested
+    if destroy:
+        for box in song_overlay_boxes.values():
+            if box:
+                screen_width = root.winfo_screenwidth()
+                animate_window(box, screen_width, box.winfo_y(), steps=20, delay=5, bounce=False, fade=None, destroy=True)
+        song_overlay_boxes = {}
+        return
+
+    # Get screen dimensions
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    box_width = round(screen_width * 0.70)
+
+    center_x = (screen_width - box_width) // 2
+
+    # Load current song data
+    data = currently_playing.get("data", {})
+    slug = format_slug(data.get("slug"))
+    song = get_song_string(data, "title")
+    artist = get_song_string(data, "artist")
+    theme_label = format_slug(slug).upper()  # e.g. "OPENING 2"
+
+    # Each box: { key: (title, text, y_position, show?) }
+    boxes = {
+        "theme":   (theme_label, None, 0, int(screen_height * 0.28), 60, show_theme),
+        "title":   ("SONG TITLE", song, 0, int(screen_height * 0.4), 120, show_title),
+        "artist":  ("SONG ARTIST", artist, 0, int(screen_height * 0.65), 80, show_artist),
+        "music":  ("             \n\n", None, 2, int(screen_height * 0.12), 70, show_music)
+    }
+
+    for key, (title, text, x_offset, y, font_size, show) in boxes.items():
+        if show:
+            if key not in song_overlay_boxes or (key != "music" and not song_overlay_boxes[key].winfo_exists()):
+                box = tk.Toplevel(root)
+                box.overrideredirect(True)
+                box.attributes("-topmost", True)
+                box.attributes("-alpha", 0.85)
+                box.configure(bg="black", padx=20, pady=20)
+
+                song_overlay_boxes[key] = box
+
+                # Title label
+                if key == "music":
+                    title_lbl = tk.Label(box, text=title, font=("Arial", font_size, "bold"), fg="white", bg="black")
+                else:
+                    title_lbl = tk.Label(box, text=title, font=("Arial", 60, "bold", "underline"), fg="white", bg="black")
+                if text:
+                    title_lbl.pack(anchor="center")
+                else:
+                    title_lbl.pack(anchor="center", fill="both", expand=True)
+
+                if key == "music":
+                    text_lbl = tk.Label(box, text="🎵", font=("Arial", 1000), bg="black", fg=generate_random_color(100,255))
+                    text_lbl.place(relx=0.5, rely=0.5, anchor="center")
+                    # Start pulsating the music icon
+                    pulsate_music_icon(text_lbl)
+                elif text:
+                    # Text label (optional)
+                    text_lbl = tk.Label(box, text=text, font=("Arial", font_size), fg="white", bg="black", justify="center")
+                    text_lbl.pack(fill="both", expand=True)
+                    adjust_font_size(text_lbl, text, box_width, base_size=font_size, min_size=20)
+
+                box.update_idletasks()
+                box.geometry(f"+{-screen_width}+{y}")  # Adjust for bottom spacing
+                box.update_idletasks()
+                window_width = box.winfo_reqwidth()
+                if key == "music":
+                    song_overlay_boxes[key].geometry(f"+{((screen_width - window_width) // 2) + round((screen_width//10)*x_offset)}+{y}")
+                else:
+                    animate_window(song_overlay_boxes[key], ((screen_width - window_width) // 2) + round((screen_width//10)*x_offset), y, steps=20, delay=5, bounce=False, fade=None)
+        elif key in song_overlay_boxes:
+            if song_overlay_boxes[key].winfo_x() == center_x:  # Only animate out if it's on screen
+                animate_window(song_overlay_boxes[key], screen_width, y, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+                song_overlay_boxes[key] = None
+
+synopsis_start_index = None
+synopsis_split = None
+def pick_synopsis():
+    global synopsis_start_index, synopsis_split
+    if not synopsis_start_index:
+        synopsis = currently_playing.get("data", {}).get("synopsis","").split("[Written by MAL Rewrite]")[0]
+        synopsis_split = synopsis.split(" ")
+        length = len(synopsis_split)
+        if length <= light_round_length*2:
+            synopsis_start_index = 0
+        else:
+            synopsis_start_index = random.randint(0, length-(light_round_length*2))
+
+TITLE_GENERIC_WORDS = {"the", "a", "an", "and", "of", "in", "on", "to", "with", "for", "by", "at", "from", "no"}
+def get_light_synopsis_string(words = 41):
+    for w in range(0, words):
+        if len(synopsis_split) > (w+synopsis_start_index):
+            word = synopsis_split[synopsis_start_index+w]
+            data = currently_playing.get("data", {})
+            word_check = word.lower().strip(",!." + '"') 
+            if word_check not in TITLE_GENERIC_WORDS and word_check in ((data.get("eng_title") or "") + " " + data.get("title", "")).lower().split():
+                word = '_' * len(word)
+            if w > 0:
+                text = text + " " + word
+            else:
+                text = word
+        if w == 40:
+            text = text + "..."
+    return text
+
+synopsis_overlay = None
+synopsis_label = None
+def toggle_synopsis_overlay(text=None, destroy=False):
+    """
+    Toggles a centered overlay for the Synopsis Lightning Round.
+    
+    Args:
+        text (str): The synopsis text to display.
+        destroy (bool): If True, destroys the overlay.
+    """
+    global synopsis_overlay, synopsis_label, synopsis_start_index
+
+    if destroy:
+        if synopsis_overlay:
+            screen_width = root.winfo_screenwidth()
+            animate_window(synopsis_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+        synopsis_overlay = None
+        return
+
+    if synopsis_start_index > 0:
+        text = "..." + text
+
+    if synopsis_overlay is None and text:
+        synopsis_overlay = tk.Toplevel(root)
+        synopsis_overlay.overrideredirect(True)
+        synopsis_overlay.attributes("-topmost", True)
+        synopsis_overlay.attributes("-alpha", 0.9)
+        synopsis_overlay.configure(bg="black")
+
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        overlay_width = round(screen_width * 0.7)
+        wraplength = overlay_width - 60
+
+        # 📏 Measure how tall the label will need to be
+        content_height = measure_text_height(get_light_synopsis_string(), wraplength-20, font=("Arial", 60))+30
+        overlay_height = content_height + 160  # Add space for padding/title
+
+        x = (screen_width - overlay_width) // 2
+        y = (screen_height - overlay_height) // 2
+
+        synopsis_overlay.geometry(f"{overlay_width}x{overlay_height}+{-screen_width}+{y}")
+        synopsis_overlay.update_idletasks()
+
+        frame = tk.Frame(synopsis_overlay, bg="black", padx=20, pady=20, highlightbackground="white", highlightthickness=4)
+        frame.pack(fill="both", expand=True)
+
+        title_label = tk.Label(frame, text="SYNOPSIS:", font=("Arial", 70, "bold", "underline"),
+                               fg="white", bg="black", anchor="w", justify="left")
+        title_label.pack(anchor="w")
+
+        synopsis_label = tk.Label(frame, text=text, font=("Arial", 60),
+                                  fg="white", bg="black", wraplength=wraplength,
+                                  justify="left", anchor="nw")
+        synopsis_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
+
+        animate_window(synopsis_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)
+
+    elif text is not None and synopsis_label:
+        synopsis_label.config(text=text)
+
+def measure_text_height(text, wraplength, font=("Arial", 60), justify="left"):
+    temp_root = tk.Tk()
+    temp_root.withdraw()
+    label = tk.Label(temp_root, text=text, font=font, wraplength=wraplength, justify=justify)
+    label.update_idletasks()
+    height = label.winfo_reqheight()
+    temp_root.destroy()
+    return height
+
+title_light_letters = None
+title_light_string = None
+def set_title_light_text():
+    global title_light_letters, title_light_string
+    if not title_light_letters:
+        data = currently_playing.get("data", {})
+        title = data.get('eng_title') or data.get("title")
+        title_light_letters = get_unique_letters(title)
+        title_light_string = title
+        random.shuffle(title_light_letters)
+
+def get_unique_letters(title):
+    letters = []
+    for letter in title:
+        if letter.isalnum() and letter.lower() not in letters:
+            letters.append(letter.lower())
+    return letters
+
+def get_title_light_string(letters=0):
+    revealed_title = ""
+    for letter in title_light_string:
+        if letter.isalnum():
+            new_letter = "ˍ"
+            for l in range(0, min(len(title_light_letters), letters)):
+                if title_light_letters[l] == letter.lower():
+                    new_letter = letter
+                    continue
+            revealed_title = revealed_title + new_letter
+        else:
+            revealed_title = revealed_title + letter
+    return revealed_title
+
+title_overlay = None
+title_label_text = None
+def toggle_title_overlay(title_text=None, destroy=False):
+    """Displays an overlay with the blanked or masked anime title."""
+    global title_overlay, title_label_text
+
+    if destroy:
+        if title_overlay:
+            screen_width = root.winfo_screenwidth()
+            animate_window(title_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+        title_overlay = None
+        return
+
+    if title_overlay is None:
+        title_overlay = tk.Toplevel(root)
+        title_overlay.overrideredirect(True)
+        title_overlay.attributes("-topmost", True)
+        title_overlay.attributes("-alpha", 0.9)
+        title_overlay.configure(bg="black")
+
+        title_font = ("Courier New", 80, "bold")
+
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        overlay_width = round(screen_width * 0.7)
+        overlay_height = measure_text_height(title_text, overlay_width - 40, font=title_font, justify="center")+300
+
+        x = (screen_width - overlay_width) // 2
+        y = (screen_height - overlay_height) // 2
+
+        title_overlay.geometry(f"{overlay_width}x{overlay_height}+{-screen_width}+{y}")
+        title_overlay.update_idletasks()
+
+        # Frame with border
+        frame = tk.Frame(title_overlay, bg="black", padx=20, pady=20, highlightbackground="white", highlightthickness=4)
+        frame.pack(fill="both", expand=True)
+
+        # Title
+        title_label = tk.Label(frame, text="TITLE:", font=("Arial", 70, "bold", "underline"),
+                               fg="white", bg="black", anchor="w", justify="left")
+        title_label.pack(anchor="w", pady=(0, 10))
+
+        # Text display
+        title_label_text = tk.Label(frame, text=title_text or "", font=title_font,
+                                    fg="white", bg="black", wraplength=overlay_width - 40,
+                                    justify="center", anchor="center")
+        title_label_text.pack(fill="both", expand=True)
+
+        animate_window(title_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)
+
+    elif title_text is not None and title_label_text:
+        title_label_text.config(text=title_text)
+
+def set_countdown(value=None):
     """Creates, updates, or removes the countdown overlay in a separate always-on-top window with a semi-transparent background."""
     set_floating_text("Countdown", value, position="top right")
 
-
-def set_light_round_number(value):
+def set_light_round_number(value=None):
     size = 80
     if len(value) >= 5:
         size = 48
@@ -2585,7 +2871,7 @@ def set_light_round_number(value):
         size = 62
     set_floating_text("Lightning Round Number", value, position="bottom right", size=size)
 
-def set_frame_number(value):
+def set_frame_number(value=None):
     set_floating_text("Frame Number", value, position="bottom center")
 
 floating_windows = {}  # Dictionary to store windows and labels
@@ -2602,7 +2888,7 @@ def set_floating_text(name, value, position="top right", size=80):
     global floating_windows
 
     # Remove window if value is '0' or negative
-    if isinstance(value, str) and value == '0' or isinstance(value, int) and value < 0:
+    if value is None or isinstance(value, str) and value == '0' or isinstance(value, int) and value < 0:
         if name in floating_windows:
             floating_windows[name]["window"].destroy()
             del floating_windows[name]
@@ -2735,7 +3021,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         music_icon_label.place(relx=0, rely=0.3, anchor="center")
 
         # Start pulsating the music icon
-        pulsate_music_icon()
+        pulsate_music_icon(music_icon_label)
         overlay.update_idletasks()
         animate_window(overlay, x, y, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
 
@@ -2749,11 +3035,11 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
 pulse_step = 0  # Track animation progress
 move_active = False  # Control movement loop
 
-def pulsate_music_icon():
+def pulsate_music_icon(label):
     """Creates a smooth pulsating effect for the music icon using sinusoidal scaling."""
     global music_icon_label, pulse_step
 
-    if music_icon_label is not None:
+    if label.winfo_exists():
         if player.is_playing():
             base_size = 160  # Minimum size
             max_size = 200  # Maximum size
@@ -2764,11 +3050,11 @@ def pulsate_music_icon():
             new_size = int(base_size + (math.sin(pulse_step) * (max_size - base_size) / 2))
 
             # Apply new font size
-            music_icon_label.config(font=("Arial", new_size))
+            label.config(font=("Arial", new_size))
 
         # Loop animation
-        if overlay:
-            overlay.after(5, pulsate_music_icon)  # Smooth update interval (50ms)
+        if label.winfo_exists():
+            root.after(5, pulsate_music_icon, label)  # Smooth update interval (50ms)
 
 def move_music_icon(current_time, total_length):
     """Moves the music icon left to right along the progress bar."""
@@ -2847,15 +3133,23 @@ def play_background_music(toggle):
     if music_loaded and not music_changed:
         if toggle and not disable_video_audio:
             pygame.mixer.music.unpause()
+            now_playing_background_music(music_files[current_music_index])
         else:
             pygame.mixer.music.pause()
+            now_playing_background_music()
     else:
         if toggle:
             music_loaded = True
             pygame.mixer.music.load(music_files[current_music_index])
             pygame.mixer.music.play(-1)  # -1 loops indefinitely
-            pygame.mixer.music.set_volume(0.2*(volume_level/100))  # Adjust volume
+            pygame.mixer.music.set_volume(0.15*(volume_level/100))  # Adjust volume
             music_changed = False
+            now_playing_background_music(music_files[current_music_index])
+
+def now_playing_background_music(track = None):
+    if track:
+        track = "NOW PLAYING: " + os.path.basename(track).split(".")[0]
+    set_floating_text("Now Playing Background Music", track, position="bottom left", size=10)
 
 # =========================================
 #            *INFORMATION POPUP
@@ -2925,7 +3219,7 @@ def is_title_window_up():
 
 def toggle_title_popup(show):
     """Creates or destroys the title popup at the bottom middle of the screen."""
-    global title_window, title_row_label, top_row_label, bottom_row_label, info_button, light_mode_enabled
+    global title_window, title_row_label, top_row_label, bottom_row_label, info_button, light_mode
     if not is_title_window_up() and not show:
         return
     if title_window:
@@ -2935,7 +3229,7 @@ def toggle_title_popup(show):
         window_height = title_window.winfo_reqheight()
         if not show:
             animate_window(title_window, (screen_width - window_width) // 2, screen_height, fade="out")
-    button_seleted(info_button, show and not light_mode_enabled)
+    button_seleted(info_button, show and not light_mode)
     if not show:
         return
 
@@ -3043,10 +3337,16 @@ def get_tags_string(data):
 
     return tags_string
 
-def get_song_string(data):
+def get_song_string(data, type=None):
     for theme in data.get("songs", []):
         if theme.get("slug") == data.get("slug"):
-            return theme.get("title") + " by " + get_artists_string(theme.get("artist"))
+            if type:
+                if type == "artist":
+                    return get_artists_string(theme.get("artist"))
+                else:
+                    return theme.get(type)
+            else:
+                return theme.get("title") + " by " + get_artists_string(theme.get("artist"))
     return ""
     
 # =========================================
@@ -3138,19 +3438,16 @@ def split_array_half(arr):
 currently_playing = {}
 def play_video(index = current_index):
     """Function to play a specific video by index"""
-    global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time, playlist_loaded, guessing_year
+    global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time, synopsis_start_index, title_light_letters, playlist_loaded, guessing_year
     playlist_loaded = False
     light_round_start_time = None
+    synopsis_start_index = None
+    title_light_letters = None
+    clean_up_light_round()
     video_stopped = True
     guess_extra()
     toggle_title_popup(False)
-    set_progress_overlay(destroy=True)
-    toggle_clues_overlay(destroy=True)
-    set_frame_number(-1)
-    set_countdown(-1)
-    play_background_music(False)
-    if not disable_video_audio:
-        player.audio_set_mute(False)
+    set_countdown()
     frame_light_round_started = False
     if youtube_queue is not None:
         currently_playing = {
@@ -3190,7 +3487,7 @@ def play_filename(filename):
     update_censor_button_count()
     if variety_light_mode_enabled:
         set_variety_light_mode()
-    if clues_light_mode_enabled:
+    if light_mode == 'clues':
         mal_id = currently_playing.get("data").get("mal")
         if mal_id in clues_anime_ids and filename not in all_themes_played:
             play_next()
@@ -3203,12 +3500,13 @@ def play_filename(filename):
     update_metadata_queue(current_index)
     media = instance.media_new(filepath)
     player.set_media(media)
-    global light_round_number
-    if light_mode_enabled:
+    global light_round_number, light_round_length
+    if light_mode:
         if light_round_number%10 == 0:
             next_background_track()
         light_round_number = light_round_number + 1
         set_light_round_number("#" + str(light_round_number))
+        light_round_length = light_modes[light_mode].get("length", 12)
         if not black_overlay:
             set_black_screen(True)
             root.after(500, lambda: player.play())
@@ -3216,7 +3514,7 @@ def play_filename(filename):
             player.play()
     else:
         light_round_number = 0
-        set_countdown(-1)
+        set_countdown()
         set_light_round_number(str(light_round_number))
         global manual_blind
         toggle_coming_up_popup(False)
@@ -3293,7 +3591,10 @@ def load_youtube_video(index):
         unload_youtube_video()
         youtube_queue = video
         title = youtube_queue.get('title')
-        image = load_image_from_url(youtube_queue.get('thumbnail'))
+        try:
+            image = load_image_from_url(youtube_queue.get('thumbnail'))
+        except:
+            image = None
         details = (
             "Created by: " + youtube_queue.get("channel") + " (" + str(f"{youtube_queue.get("channel_follower_count"):,}") + " subscribers)" + "\n"
             "Uploaded: " + str(f"{datetime.strptime(youtube_queue.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}") + " | Duration: " + str(format_seconds(get_youtube_duration(youtube_queue))) + " mins\n\n"
@@ -3353,7 +3654,7 @@ def play_pause():
     if frame_light_round_started:
         frame_light_round_pause = not frame_light_round_pause
         return
-    elif clues_light_mode_enabled:
+    elif light_mode == 'clues' or light_mode == 'song' or light_mode == 'synopsis' or light_mode == 'title':
         if player.is_playing():
             pygame.mixer.music.pause()
         elif light_round_start_time and ((player.get_time()/1000) < (light_round_start_time+light_round_length)):
@@ -3421,7 +3722,7 @@ def update_seek_bar():
                     else:
                         set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
                 else:
-                    if not light_mode_enabled and not is_title_window_up() and auto_info_end and (length - time) <= 8:
+                    if not light_mode and not is_title_window_up() and auto_info_end and (length - time) <= 8:
                         toggle_title_popup(True)
                     update_light_round(time)
                     apply_censors(time, length)
@@ -3756,7 +4057,7 @@ def rgbtohex(r,g,b):
     return f'#{r:02x}{g:02x}{b:02x}'
 
 def update_censor_button_count():
-    toggle_censor_bar_button.configure(text="[C]ENSORS(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
+    toggle_censor_bar_button.configure(text="[C]ENSOR(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
     
 # =========================================
 #            *TAG/FAVORITE FILES
@@ -4571,16 +4872,22 @@ guess_tags_button = create_button(second_row_frame, "🔖", lambda: guess_extra(
                               help_text=("Displays a pop-up at the top informing players to guess the tags. "
                                          "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
 
-light_mode_button = create_button(second_row_frame, "[L]IGHTNING", lambda: toggle_light_mode("regular"),
+regular_light_mode_button = create_button(second_row_frame, "🗲", lambda: toggle_light_mode("regular"),
                               help_title="[L]IGHTNING ROUND (Shortcut Key = 'l')",
                               help_text=("Start/End the Lightning Round mode. This mode uses the same playlist as "
-                                         "normal, but uses the following rules:\n\n" + light_modeS["regular"]["desc"] +
+                                         "normal, but uses the following rules:\n\n" + light_modes["regular"]["desc"] +
                                          "\n\nThe round will queue up with a UP NEXT popup and start after the current theme "
                                          "finishes.\n\nNumber of rounds are tracked and you can go on as long as you like "
                                          "until ended.\n\nLightning Rounds also avoid any censors you may have added."))
+title_light_mode_button = create_button(second_row_frame, "🧩", lambda: toggle_light_mode("title"),
+                              help_title="TIT[L]E [L]IGHTNING ROUND (Shortcut Key = 'l', 'l')",
+                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["title"]["desc"] +
+                                         "\n\nOnly alphanumeric characters are hidden, and case doesn't matter."
+                                         "\n\nThe music is the same from the Frame Lightning Round. "
+                                         "You can check that help section for more details."))
 frame_light_mode_button = create_button(second_row_frame, "📷", lambda: toggle_light_mode("frame"),
                               help_title="[F]RAME LIGHTNING ROUND (Shortcut Key = 'f')",
-                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modeS["frame"]["desc"] +
+                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["frame"]["desc"] +
                                          "\n\nFrames are picked randomly from each quarter of the theme. Results can vary "
                                          "in difficulty because of that, but it can still be an entertaining mode. "
                                          "Music will play while the frames are displaying if you put it in the music/ folder. "
@@ -4592,20 +4899,32 @@ frame_light_mode_button = create_button(second_row_frame, "📷", lambda: toggle
                                          "Katanagatari OST - 12 DUB TRIP"))
 blind_light_mode_button = create_button(second_row_frame, "👁", lambda: toggle_light_mode("blind"),
                               help_title="BLI[N]D LIGHTNING ROUND (Shortcut Key = 'n')",
-                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modeS["blind"]["desc"] +
+                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["blind"]["desc"] +
                                          "\n\nThis mode doesn't avoid censors, since nothing is shown. Identifying from music "
                                          "only may be hard if you're not an expert or using popular shows. It may be recommended to "
                                          "use a filtered playlist based on popularity depending on the crowd."))
-clues_light_mode_button = create_button(second_row_frame, "🔍", lambda: toggle_light_mode("clues"),
-                              help_title="CL[U]ES LIGHTNING ROUND (Shortcut Key = 'u')",
-                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modeS["clues"]["desc"] +
+song_light_mode_button = create_button(second_row_frame, "🎵", lambda: toggle_light_mode("song"),
+                              help_title="SONG LIGHTNING ROUND (Shortcut Key = 'b', 'b')",
+                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["song"]["desc"] +
                                          "\n\nThis mode is pretty difficult unless you are quite knowledgable. Probably not recommended "
                                          "on its own unless using a pretty curated playlist.\n\nThe music is the same from the Frame Lightning Round. "
                                          "You can check that help section for more details."))
+clues_light_mode_button = create_button(second_row_frame, "🔍", lambda: toggle_light_mode("clues"),
+                              help_title="CL[U]ES LIGHTNING ROUND (Shortcut Key = 'u')",
+                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["clues"]["desc"] +
+                                         "\n\nThis mode is pretty difficult unless you are quite knowledgable. Probably not recommended "
+                                         "on its own unless using a pretty curated playlist.\n\nThe music is the same from the Frame Lightning Round. "
+                                         "You can check that help section for more details."))
+synopsis_light_mode_button = create_button(second_row_frame, "📰", lambda: toggle_light_mode("synopsis"),
+                              help_title="SYNOPSIS LIGHTNING ROUND (Shortcut Key = 'u', 'u')",
+                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["synopsis"]["desc"] +
+                                         "\n\nWords from the title of the show are blanked out in the synopsis."
+                                         "\n\nThe music is the same from the Frame Lightning Round. "
+                                         "You can check that help section for more details."))
 variety_light_mode_button = create_button(second_row_frame, "🎲", lambda: toggle_light_mode("variety"), True,
                               help_title="[V]ARIETY LIGHTNING ROUND (Shortcut Key = 'v')",
-                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modeS["variety"]["desc"] +
-                                         "\n\nThis mode ensures on round is repeated consecutively, and picks rounds "
+                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["variety"]["desc"] +
+                                         "\n\nThis mode ensures no round is repeated consecutively, and picks rounds "
                                          "taking the shows popularity into account. So you aren't likely to get a Clues round "
                                          "unless a quite popular show appears."))
 
@@ -4618,7 +4937,7 @@ show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE", show
                                          "Videos are queued with a UP NEXT popup when selected, and will play after the current theme. "
                                          "Only one video may be queued at a time, and selecting the same video will unqueue it."))
 
-toggle_censor_bar_button = create_button(second_row_frame, "[C]ENSORS(0)", toggle_censor_bar, True, enabled=censors_enabled,
+toggle_censor_bar_button = create_button(second_row_frame, "[C]ENSOR(0)", toggle_censor_bar, True, enabled=censors_enabled,
                               help_title="TOGGLE [C]ENSOR BARS (Shortcut Key = 'c')",
                               help_text=("Toggle censor bars. These are pulled from the censors.txt file in the files/ "
                                          "folder. These have to be manually added by adding lines to the censors.txt file.\n\n"
@@ -4849,13 +5168,22 @@ def on_release(key):
                 elif key.char == 'k':
                     list_keyboard_shortcuts()
                 elif key.char == 'l':
-                    toggle_light_mode("regular")
+                    if not (light_mode == 'regular' or light_mode == 'title'):
+                        toggle_light_mode("blind")
+                    else:
+                        toggle_light_mode("title")
                 elif key.char == 'f':
                     toggle_light_mode("frame")
                 elif key.char == 'n':
-                    toggle_light_mode("blind")
+                    if not (light_mode == 'blind' or light_mode == 'song'):
+                        toggle_light_mode("blind")
+                    else:
+                        toggle_light_mode("song")
                 elif key.char == 'u':
-                    toggle_light_mode("clues")
+                    if not (light_mode == 'clues' or light_mode == 'synopsis'):
+                        toggle_light_mode("clues")
+                    else:
+                        toggle_light_mode("synopsis")
                 elif key.char == 'b':
                     toggle_blind_round()
                 elif key.char == 'v':
