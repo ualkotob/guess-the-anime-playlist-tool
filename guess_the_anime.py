@@ -2205,9 +2205,9 @@ light_modes = {
     }
 }
 
-def toggle_light_mode(type):
+def toggle_light_mode(type=None):
     global light_mode, variety_light_mode_enabled
-    if light_mode == type or (variety_light_mode_enabled and type == 'variety'):
+    if type == None or light_mode == type or (variety_light_mode_enabled and type == 'variety'):
         unselect_light_modes()
         toggle_coming_up_popup(False)
     else:
@@ -2259,7 +2259,7 @@ def set_variety_light_mode():
         round_options = [x for x in round_options if x != 3]
     if get_song_string(data, "artist") == "N/A":
         round_options = [x for x in round_options if x != 4]
-    if len(data.get("synopsis").split()) <= 40:
+    if len((data.get("synopsis") or "").split()) <= 40:
         round_options = [x for x in round_options if x != 5]
     if len(get_unique_letters(data.get('eng_title') or data.get('title'))) < 9:
         round_options = [x for x in round_options if x != 6]
@@ -2340,7 +2340,7 @@ def update_light_round(time):
                 toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
                 player.audio_set_mute(time_left > 4)
                 play_background_music(time_left > 4)
-            elif synopsis_start_index:
+            elif synopsis_start_index is not None:
                 toggle_synopsis_overlay(text=get_light_synopsis_string(min(41, (light_round_length*3)-round(time_left*3)+1)))
             elif light_progress_bar:
                 set_progress_overlay(round((time - light_round_start_time)*100), light_round_length*100)
@@ -2679,7 +2679,7 @@ synopsis_split = None
 def pick_synopsis():
     global synopsis_start_index, synopsis_split
     if not synopsis_start_index:
-        synopsis = currently_playing.get("data", {}).get("synopsis","").split("[Written by MAL Rewrite]")[0]
+        synopsis = (currently_playing.get("data", {}).get("synopsis") or "No synopsis found.").split("[Written by MAL Rewrite]")[0]
         synopsis_split = synopsis.split(" ")
         length = len(synopsis_split)
         if length <= light_round_length*2:
@@ -2693,7 +2693,7 @@ def get_light_synopsis_string(words = 41):
         if len(synopsis_split) > (w+synopsis_start_index):
             word = synopsis_split[synopsis_start_index+w]
             data = currently_playing.get("data", {})
-            word_check = word.lower().strip(",!." + '"') 
+            word_check = word.lower().strip(",!." + '"')
             if word_check not in TITLE_GENERIC_WORDS and word_check in ((data.get("eng_title") or "") + " " + data.get("title", "")).lower().split():
                 word = '_' * len(word)
             if w > 0:
@@ -2865,10 +2865,11 @@ def set_countdown(value=None):
 
 def set_light_round_number(value=None):
     size = 80
-    if len(value) >= 5:
-        size = 48
-    elif len(value) >= 4:
-        size = 62
+    if value:
+        if len(value) >= 5:
+            size = 48
+        elif len(value) >= 4:
+            size = 62
     set_floating_text("Lightning Round Number", value, position="bottom right", size=size)
 
 def set_frame_number(value=None):
@@ -2989,7 +2990,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         # Set a larger size for the overlay (e.g., 800x200) and center it
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
-        width, height = round((screen_width*.75)*1.05), round((screen_height/15)*6)
+        width, height = round(screen_width*.7), round((screen_height*.5))
 
         x = (screen_width - width) // 2
         y = (screen_height - height) // 2
@@ -3013,12 +3014,12 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         # style.configure("Horizontal.TProgressbar", lightcolor='white', darkcolor='black')
         
         # Create a larger progress bar inside the overlay (length 700 pixels)
-        light_progress_bar = ttk.Progressbar(overlay, orient="horizontal", mode="determinate", length=round(screen_width*.7))
-        light_progress_bar.place(relx=0.5, rely=0.8, anchor="center")
+        light_progress_bar = ttk.Progressbar(overlay, orient="horizontal", mode="determinate", length=round(screen_width*.6))
+        light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
         
         # Add a music icon (using a label with text or an image)
-        music_icon_label = tk.Label(overlay, text="🎵", font=("Arial", 1000), bg="black", fg=generate_random_color(100,255)) #  🎶 🎵  🎶
-        music_icon_label.place(relx=0, rely=0.3, anchor="center")
+        music_icon_label = tk.Label(overlay, text="🎵", font=("Arial", 100), bg="black", fg=generate_random_color(100,255)) #  🎶 🎵  🎶
+        music_icon_label.place(relx=0, rely=0.35, anchor="center")
 
         # Start pulsating the music icon
         pulsate_music_icon(music_icon_label)
@@ -3077,7 +3078,7 @@ def move_music_icon(current_time, total_length):
         new_x = progress_bar_x + (progress_ratio * (progress_bar_width - icon_width))  # Move across bar
 
         # Move the music icon
-        music_icon_label.place(x=new_x, rely=0.3, anchor="center")
+        music_icon_label.place(x=new_x, rely=0.35, anchor="center")
 
 def generate_random_color(min = 0, max = 255):
     # Generate random values for red, green, and blue
@@ -3670,8 +3671,13 @@ def play_pause():
 
 def stop():
     """Function to stop the video"""
-    global video_stopped, currently_playing, censor_bar
+    global video_stopped, currently_playing, censor_bar, light_mode
     video_stopped = True
+    toggle_light_mode()
+    clean_up_light_round()
+    set_countdown()
+    set_light_round_number()
+    set_black_screen(False)
     player.stop()
     player.set_media(None)  # Reset the media
     currently_playing = {}
@@ -3722,8 +3728,10 @@ def update_seek_bar():
                     else:
                         set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
                 else:
-                    if not light_mode and not is_title_window_up() and auto_info_end and (length - time) <= 8:
-                        toggle_title_popup(True)
+                    if (length - time) <= 8:
+                        if not light_mode and not is_title_window_up() and auto_info_end:
+                            toggle_title_popup(True)
+                        blind_round_coming_up()
                     update_light_round(time)
                     apply_censors(time, length)
             update_progress_bar(projected_vlc_time, player.get_length())
@@ -3753,6 +3761,7 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True)
         window_width = coming_up_window.winfo_reqwidth()
         window_height = coming_up_window.winfo_reqheight()
         if not show:
+            root.after(10, lambda: coming_up_title_label.configure(text=""))
             animate_window(coming_up_window, (screen_width - window_width) // 2, -window_height)
 
     if not show:
@@ -3772,6 +3781,8 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True)
         coming_up_title_label.pack(pady=(10, 0), padx=10)
     if up_next:
         title = "UP NEXT: " + title + "!"
+    if title == coming_up_title_label.cget("text"):
+        return
     coming_up_title_label.configure(text=title)
 
     # Details
@@ -3910,6 +3921,8 @@ def toggle_blind_round():
     global blind_round_toggle
     blind_round_toggle = not blind_round_toggle
     button_seleted(blind_round_button, blind_round_toggle)
+
+def blind_round_coming_up():
     if blind_round_toggle:
         toggle_coming_up_popup(True, "Blind Round", "Guess the anime from just the music.\nNormal rules apply.")
     else:
@@ -5169,7 +5182,7 @@ def on_release(key):
                     list_keyboard_shortcuts()
                 elif key.char == 'l':
                     if not (light_mode == 'regular' or light_mode == 'title'):
-                        toggle_light_mode("blind")
+                        toggle_light_mode("regular")
                     else:
                         toggle_light_mode("title")
                 elif key.char == 'f':
