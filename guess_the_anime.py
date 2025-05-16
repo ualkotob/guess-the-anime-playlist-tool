@@ -2981,7 +2981,10 @@ def pick_synopsis():
             synopsis_start_index = random.randint(0, length-(light_round_length*2))
 
 def is_end_of_sentence(word):
-    return word[-1] in ['.','!','?']
+    if word and len(word) > 0:
+        return word[-1] in ['.','!','?']
+    else:
+        True
 
 TITLE_GENERIC_WORDS = {"the", "a", "an", "and", "of", "in", "on", "to", "with", "for", "by", "at", "from", "no"}
 def get_light_synopsis_string(words = 41):
@@ -3966,13 +3969,14 @@ def split_array(arr, parts=2):
 currently_playing = {}
 def play_video(index = current_index):
     """Function to play a specific video by index"""
-    global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time, synopsis_start_index, title_light_letters, playlist_loaded, guessing_year
+    global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time, synopsis_start_index, title_light_letters, playlist_loaded, guessing_year, playing_next_error
     playlist_loaded = False
     light_round_start_time = None
     synopsis_start_index = None
     title_light_letters = None
     clean_up_light_round()
     video_stopped = True
+    playing_next_error = False
     guess_extra()
     toggle_title_popup(False)
     set_countdown()
@@ -4244,9 +4248,10 @@ projected_vlc_time = 0
 SEEK_POLLING = 50
 last_error = None
 last_error_count = 0
+playing_next_error = False
 def update_seek_bar():
     """Function to update the seek bar"""
-    global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue
+    global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error
     try:
         if player.is_playing():
             vlc_time = player.get_time()
@@ -4286,13 +4291,17 @@ def update_seek_bar():
             update_progress_bar(projected_vlc_time, player.get_length())
     except Exception as e:
         error_str = str(e)
-        if error_str == last_error:
-            last_error_count += 1
-            print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
-        else:
-            last_error = error_str
-            last_error_count = 1
-            print(f"\nError: {error_str} x 1", flush=True)
+        if not playing_next_error:
+            if error_str == last_error:
+                last_error_count += 1
+                print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
+            else:
+                last_error = error_str
+                last_error_count = 1
+                if last_error_count > 20:
+                    playing_next_error = True
+                    play_next()
+                print(f"\nError: {error_str} x 1", flush=True)
     root.after(SEEK_POLLING, update_seek_bar)
 
 def format_seconds(seconds):
