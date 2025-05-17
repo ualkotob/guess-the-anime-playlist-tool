@@ -402,8 +402,19 @@ def get_name_list(data, get):
         name_list.append(item.get("name"))
     return name_list
 
-def get_artists_string(artists):
-    return ", ".join(artists) if artists else "N/A"
+def get_artists_string(artists, total = False):
+    artists_string = "N/A"
+    if artists:
+        for artist in artists:
+            if artists_string == "N/A":
+                artists_string = artist
+            else:
+                artists_string = artists_string + ", " + artist
+            if total:
+                artist_count = len(get_filenames_from_artist(artist))
+                if artist_count > 1:
+                    artists_string = f"{artists_string} [{artist_count}]"
+    return artists_string
 
 def fetch_all_metadata(delay=1):
     """Fetches missing metadata for the entire directory, spacing out API calls."""
@@ -1178,17 +1189,22 @@ def weighted_shuffle(playlist):
     # Step 5: Cascade shuffled groups into a final playlist with randomized order per cycle
     shuffled_playlist = []
     groups = [popular_time_splits, mid_time_splits, niche_time_splits]
-    
-    while any(any(group) for group in groups):  # Continue while any group has entries
-        time_order = [0, 1, 2]  # Old, Mid, Recent
-        pop_order = [0, 1, 2]  # Niche, Mid, Popular
+    pool = [0, 1, 2]
 
-        random.shuffle(time_order)  # Shuffle time groups
-        for t in time_order:  # Go through randomized time order
-            random.shuffle(pop_order)  # Shuffle popularity groups
-            for p in pop_order:  # Go through randomized popularity order
-                if p < len(groups) and t < len(groups[p]) and groups[p][t]:  # Ensure list is not empty
-                    shuffled_playlist.append(groups[p][t].pop(0))  # Pull one entry at a time
+    while any(any(group) for group in groups):
+        time_order = []
+        pop_order = []
+
+        # Create three groups, each with [0, 1, 2] shuffled
+        for _ in range(3):
+            time_order.extend(random.sample(pool, 3))
+            pop_order.extend(random.sample(pool, 3))
+
+        for o in range(0,9):
+            t = time_order[o]
+            p = pop_order[o]
+            if p < len(groups) and t < len(groups[p]) and groups[p][t]:  # Ensure list is not empty
+                shuffled_playlist.append(groups[p][t].pop(0))  # Pull one entry at a time
 
         # Remove empty groups
         groups = [group for group in groups if any(group)]
@@ -1243,13 +1259,13 @@ def weighted_shuffle(playlist):
             is_valid_placement(i1, series2)
     )
 
-    get_series_totals()
+    get_series_totals(check_all=False)
     swapped_entrys = 1
     skipped_entries = 0
     swap_pass = 0
 
-    print("Weighted Shuffle - STARTING... (may take some time, 10 pass max)")
-    while (swapped_entrys > 0 or skipped_entries > 0) and swap_pass < 10:
+    print("Weighted Shuffle - STARTING... (may take some time, 15 pass max)")
+    while (swapped_entrys > 0 or skipped_entries > 0) and swap_pass < 15:
         swapped_entrys = 0
         skipped_entries = 0
         swap_pass += 1
@@ -1682,11 +1698,15 @@ def series_stats(column):
     column.config(state=tk.DISABLED)
 
 series_totals = None
-def get_series_totals(refetch=True):
+def get_series_totals(refetch=True, check_all=True):
     global series_totals
+    if check_all:
+        check_list = directory_files
+    else:
+        check_list = playlist
     if refetch or not series_totals:
         series_counter = Counter()
-        for filename in directory_files:
+        for filename in check_list:
             data = get_metadata(filename)
             # Series
             series = data.get("series") or data.get("title", "Unknown")
@@ -3723,11 +3743,12 @@ def toggle_title_popup(show):
         else:
             japanese_title = data.get("title")
             title = data.get("eng_title") or japanese_title or (data.get("synonyms", [None]) or [None])[0]
+            get_series_totals(refetch=False)
+            series_total = series_totals.get((data.get("series") or [data.get("title")])[0], 0)
+            if series_total > 1:
+                japanese_title = f"{japanese_title} [{series_total}]"
             theme = format_slug(data.get("slug"))
-            song = get_song_string(data)
-            artist_count = len(get_filenames_from_artist(get_song_string(data, "artist")))
-            if artist_count > 1:
-                song = f"{song} ({artist_count})"
+            song = get_song_string(data, totals=True)
             if is_game(data):
                 aired = data.get("release")
                 bg_color = "Dark Red"
@@ -3799,16 +3820,16 @@ def get_tags(data):
             tags = tags + data.get(c)
     return tags
 
-def get_song_string(data, type=None):
+def get_song_string(data, type=None, totals=False):
     for theme in data.get("songs", []):
         if theme.get("slug") == data.get("slug"):
             if type:
                 if type == "artist":
-                    return get_artists_string(theme.get("artist"))
+                    return get_artists_string(theme.get("artist"), total=totals)
                 else:
                     return theme.get(type)
             else:
-                return theme.get("title") + " by " + get_artists_string(theme.get("artist"))
+                return theme.get("title") + " by " + get_artists_string(theme.get("artist"), total=totals)
     return ""
     
 # =========================================
