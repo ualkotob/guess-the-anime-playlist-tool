@@ -3894,9 +3894,7 @@ def guess_extra(extra = None):
         elif guessing_extra == "multiple":
             button_seleted(guess_multiple_button, True)
             data = currently_playing.get("data")
-            titles = get_random_titles()+get_random_titles()+get_random_titles()
-            # show_list("multiple_list", right_column, convert_playlist_to_dict(titles), get_title, play_video_from_last, -1, True)
-            show_field_themes(group=titles)
+            titles = get_random_titles()
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Anime", 
                                 ("Only one guess. +2 PTs if correct.\n\n"
@@ -4001,6 +3999,7 @@ def play_video(index = current_index):
     guess_extra()
     toggle_title_popup(False)
     set_countdown()
+    toggle_coming_up_popup(False)
     frame_light_round_started = False
     if youtube_queue is not None:
         currently_playing = {
