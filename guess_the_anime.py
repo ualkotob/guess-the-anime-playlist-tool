@@ -791,15 +791,16 @@ def update_extra_metadata(data):
     ]
     right_column.insert(tk.END, "   ", "blank")
     for e in extra_data:
-        if data.get(e):
-            if selected_extra_metadata == e:
-                bg=HIGHLIGHT_COLOR
-            else:
-                bg="black"
-            right_column.window_create(tk.END, window=tk.Button(right_column, text=(f"{e.upper().replace("_INFO", "S")}"), font=("Arial", 11, "bold", "underline"), command=lambda x=e: select_extra_metadata(x), padx=2, bg=bg, fg="white"))
-            right_column.insert(tk.END, "   ", "blank")
+        if selected_extra_metadata == e:
+            bg=HIGHLIGHT_COLOR
+        else:
+            bg="black"
+        right_column.window_create(tk.END, window=tk.Button(right_column, text=(f"{e.upper().replace("_INFO", "S")}"), font=("Arial", 11, "bold", "underline"), command=lambda x=e: select_extra_metadata(x), padx=2, bg=bg, fg="white"))
+        right_column.insert(tk.END, "   ", "blank")
     right_column.insert(tk.END, "\n\n", "blank")
-    if selected_extra_metadata == "synopsis":
+    if not data.get(selected_extra_metadata):
+        right_column.insert(tk.END, f"No {selected_extra_metadata.capitalize().replace("_info", "s")} data found.", "white")
+    elif selected_extra_metadata == "synopsis":
         add_single_data_line(right_column, data, "", 'synopsis')
     elif selected_extra_metadata == "characters":
         groups = {
@@ -807,7 +808,7 @@ def update_extra_metadata(data):
             "secondary": [],
             "appears": []
         }
-        for char in data["characters"]:
+        for char in data.get("characters", []):
             role = char[0]
             name = char[1]
             image = char[2]
@@ -847,12 +848,12 @@ def update_extra_metadata(data):
                 right_column.insert(tk.END, "\n", "blank")
             right_column.insert(tk.END, "\n", "blank")
     elif selected_extra_metadata == "episode_info":
-        episodes = sorted(data["episode_info"], key=lambda x: x[0])  # Sort by episode number
+        episodes = sorted(data.get("episode_info", []), key=lambda x: x[0])  # Sort by episode number
         for num, title in episodes:
             right_column.insert(tk.END, f"EPISODE {num}: ", "bold")
             right_column.insert(tk.END, f"{title}\n", "white")
     elif selected_extra_metadata == "tags":
-        tags = sorted(data["tags"], key=lambda x: (-x[1], x[0].lower()))  # Sort by score descending, then name
+        tags = sorted(data.get("tags", []), key=lambda x: (-x[1], x[0].lower()))  # Sort by score descending, then name
         display_tags = []
         for tag, score in tags:
             if score > 0:
@@ -3245,16 +3246,16 @@ def update_light_round(time):
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval)+starting_letters)
                 set_frame_number(f"{word_num}/{final_count} REVEALS")
                 toggle_title_overlay(get_title_light_string(word_num))
-            elif peek_overlay != None:
+            elif peek_overlay:
                 data = currently_playing.get("data")
                 gap = 0 + min(9, data.get('popularity')/100)
                 toggle_peek_overlay(direction=peek_light_direction, progress=((light_round_length-time_left)/light_round_length)*100, gap=gap)
                 now_playing_background_music(music_files[current_music_index])
-            elif character_round_characters != []:
-                reveal_num = min(4, (int(light_round_length - (time_left-1)) // (light_round_length // 4)) + 1)
+            elif character_overlay_boxes:
+                reveal_num = min(4, (int(light_round_length - (time_left)) // (light_round_length // 4)) + 1)
                 toggle_character_overlay(num_characters=reveal_num)
                 set_frame_number(f"{reveal_num}/{4}")
-            elif tag_cloud_tags != []:
+            elif tag_cloud_tags:
                 starting_tags = 1
                 final_count = len(tag_cloud_tags)
                 time_left_t = time_left - 5
@@ -4276,6 +4277,33 @@ def check_nsfw(filename):
 
 character_overlay_boxes = {}
 character_round_characters = []
+character_round_image_cache_default = []
+character_round_image_cache_default_urls =[
+    "https://w0.peakpx.com/wallpaper/104/618/HD-wallpaper-anime-error-female-dress-black-cute-hair-windows-girl-anime-page.jpg",
+    "https://i.imgflip.com/1xuu83.jpg",
+    "https://platform.polygon.com/wp-content/uploads/sites/2/chorus/uploads/chorus_asset/file/23653986/20073937.jpeg",
+    "https://cdn.anidb.net/misc/confused.png",
+]
+
+def get_cached_character_round_images(urls, default=False):
+    global character_round_image_cache_default, character_round_characters
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    img_size = int(min(screen_width, screen_height) * 0.35)
+    for index, url in enumerate(urls):
+        tk_img = load_image_from_url(url, size=(img_size, img_size))
+        if tk_img:
+            if default:
+                character_round_image_cache_default.append(tk_img)
+            else:
+                character_round_characters.append(tk_img)
+        else:
+            if not default and index < len(character_round_image_cache_default):
+                character_round_characters.append(character_round_image_cache_default[index])
+
+def load_default_char_images():
+    get_cached_character_round_images(character_round_image_cache_default_urls, default=True)
+
 def get_character_round_characters():
     global character_round_characters
     data = currently_playing.get("data")
@@ -4307,15 +4335,13 @@ def get_character_round_characters():
             remaining = [url for url in (appear + secondary + main) if url not in result]
             result += remaining[:total - len(result)]
         urls = result[:4]
+        character_round_characters = []
+        get_cached_character_round_images([urls[0]])
+        def worker():
+            get_cached_character_round_images(urls[1:4])
+        threading.Thread(target=worker, daemon=True).start()
     else:
-        urls = [
-            "https://w0.peakpx.com/wallpaper/104/618/HD-wallpaper-anime-error-female-dress-black-cute-hair-windows-girl-anime-page.jpg",
-            "https://i.imgflip.com/1xuu83.jpg",
-            "https://platform.polygon.com/wp-content/uploads/sites/2/chorus/uploads/chorus_asset/file/23653986/20073937.jpeg",
-            "https://cdn.anidb.net/misc/confused.png",
-        ]
-    for url in urls:
-        character_round_characters = urls
+        character_round_characters = copy.copy(character_round_image_cache_default)
 
 def toggle_character_overlay(num_characters=4, destroy=False):
     """Toggles the Character Lightning Round overlay in a 2x2 grid."""
@@ -4358,8 +4384,11 @@ def toggle_character_overlay(num_characters=4, destroy=False):
         character_overlay_boxes[key] = box
 
         # Load and resize image
-        # tk_img = character_round_characters[i]
-        tk_img = load_image_from_url(character_round_characters[i], size=(img_size, img_size))
+        if i < len(character_round_characters):
+            tk_img = character_round_characters[i]
+        else:
+            tk_img = character_round_image_cache_default[i]
+        # tk_img = load_image_from_url(character_round_characters[i], size=(img_size, img_size))
 
         # Set image and label
         label = tk.Label(box, image=tk_img, bg="black")
@@ -7858,6 +7887,7 @@ load_youtube_metadata()
 load_metadata()
 scan_directory()
 create_first_row_buttons()
+threading.Thread(target=load_default_char_images, daemon=True).start()
 
 # Start downloading videos in the background
 download_thread = threading.Thread(target=download_videos, daemon=True)
