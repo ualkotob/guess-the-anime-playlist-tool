@@ -909,7 +909,7 @@ def up_next_text():
     right_top.config(state=tk.NORMAL, height=0, wrap="word")
     right_top.delete(1.0, tk.END)
     if not is_docked():
-        if playlist.get("infinite", False):
+        if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"])-2:
             right_top.window_create(tk.END, window=tk.Button(right_top, text="🔄", font=("Arial", 11, "bold"), borderwidth=0, pady=0, command=refetch_next_track, bg="black", fg="white"))
         right_top.insert(tk.END, "NEXT: ", "bold")
         next_up_text = "End of playlist"
@@ -3155,7 +3155,8 @@ def unselect_light_modes():
 def get_light_round_time():
     length = player.get_length()/1000
     buffer = 10
-    need_censors = light_mode == 'regular' or light_mode == 'peek'
+    need_censors = light_mode in ['regular', 'peek']
+    need_mute_censors = light_mode in ['regular', 'blind', 'mismatch', 'song']
     if not need_censors:
         buffer = 1
     if length < (light_round_length+light_round_answer_length+(buffer*2)+1):
@@ -3165,12 +3166,12 @@ def get_light_round_time():
     while start_time is None:
         start_time = random.randrange(buffer, int(length - (light_round_length+light_round_answer_length+buffer)))
         try_count = try_count + 1
-        if try_count < 20 and need_censors:
+        if try_count < 20 and (need_censors or need_mute_censors):
             file_censors = censor_list.get(currently_playing.get('filename'))
             if file_censors != None:
                 end_time = start_time+light_round_length
                 for censor in file_censors:
-                    if not (censor['end'] < start_time or censor['start'] > end_time):
+                    if ((censor.get("mute") and need_mute_censors) or (not censor.get("mute") and need_censors)) and (not (censor['end'] < start_time or censor['start'] > end_time)):
                         start_time = None
                         break
     return start_time
@@ -6010,7 +6011,7 @@ def check_file_censors(filename, time, video_end):
     if not censor_found and censor_editor:
         censor_editor.attributes("-topmost", False)
 
-    if not mute_found:
+    if not mute_found and not light_round_started:
         player.audio_set_mute(disable_video_audio)
 
     return censor_found
@@ -7787,7 +7788,7 @@ def on_release(key):
                         seek_value = player.get_length()-((player.get_length()/10)*(10-int(key.char)))
                         player.set_time(int(seek_value))
                 elif key.char == 'r':
-                    if playlist.get("infinite", False):
+                    if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"])-2:
                         refetch_next_track()
                 elif key.char == 'c':
                     toggle_censor_bar()
