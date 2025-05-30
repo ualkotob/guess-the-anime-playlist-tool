@@ -1185,22 +1185,12 @@
     ],
     "Bleach-OP9.webm": [
         {
-            "size_w": 92.15,
-            "size_h": 39.03,
-            "pos_x": 50.25,
-            "pos_y": 48.97,
+            "size_w": 93.09,
+            "size_h": 80.35,
+            "pos_x": 49.72,
+            "pos_y": 53.71,
             "start": 8.0,
-            "end": 14.2,
-            "color": null,
-            "nsfw": false
-        },
-        {
-            "size_w": 100.0,
-            "size_h": 100.0,
-            "pos_x": 50.0,
-            "pos_y": 50.0,
-            "start": 14.2,
-            "end": 15.5,
+            "end": 15.4,
             "color": null,
             "nsfw": false
         }
@@ -2532,7 +2522,7 @@
             "start": 39.5,
             "end": 46.3,
             "color": null,
-            "nsfw": true
+            "nsfw": false
         },
         {
             "size_w": 100.0,
@@ -2541,8 +2531,8 @@
             "pos_y": 100.0,
             "start": 55.0,
             "end": 62.0,
-            "color": null,
-            "nsfw": false
+            "color": "#000000",
+            "nsfw": true
         },
         {
             "size_w": 100.0,
@@ -2551,7 +2541,7 @@
             "pos_y": 100.0,
             "start": 70.0,
             "end": 75.2,
-            "color": null,
+            "color": "#000000",
             "nsfw": true
         }
     ],
@@ -9079,6 +9069,12 @@
             "end": 2.5,
             "color": null,
             "nsfw": false
+        },
+        {
+            "mute": true,
+            "start": 0.0,
+            "end": 2.0,
+            "nsfw": false
         }
     ],
     "Pokemon-OP3-EN.webm": [
@@ -9090,6 +9086,12 @@
             "start": 1.8,
             "end": 6.2,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "mute": true,
+            "start": 4.4,
+            "end": 5.4,
             "nsfw": false
         }
     ],
@@ -12006,7 +12008,7 @@
     "Vden-OP1.webm": [
         {
             "size_w": 100.0,
-            "size_h": 82.92,
+            "size_h": 100.0,
             "pos_x": 0.0,
             "pos_y": 0.0,
             "start": 0.0,
@@ -15761,6 +15763,444 @@
             "start": 6.8,
             "end": 9.4,
             "color": null,
+            "nsfw": false
+        }
+    ],
+    "Girumasu-OP1.webm": [
+        {
+            "size_w": 53.05,
+            "size_h": 15.83,
+            "pos_x": 49.83,
+            "pos_y": 49.09,
+            "start": 0.0,
+            "end": 2.7,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 43.09,
+            "size_h": 46.81,
+            "pos_x": 50.24,
+            "pos_y": 49.74,
+            "start": 3.0,
+            "end": 9.8,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "VinlandSaga-OP2-NCBD1080.webm": [
+        {
+            "size_w": 63.75,
+            "size_h": 89.17,
+            "pos_x": 50.43,
+            "pos_y": 44.87,
+            "start": 3.6,
+            "end": 9.6,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "PsychoPassS3-OP1-NCBD1080.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 86.11,
+            "pos_x": 0.0,
+            "pos_y": 52.5,
+            "start": 13.7,
+            "end": 16.2,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 91.17,
+            "size_h": 30.28,
+            "pos_x": 43.36,
+            "pos_y": 50.3,
+            "start": 16.2,
+            "end": 29.1,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "SoulEaterNOT-OP1.webm": [
+        {
+            "size_w": 53.75,
+            "size_h": 64.65,
+            "pos_x": 51.1,
+            "pos_y": 43.22,
+            "start": 19.8,
+            "end": 24.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "ShokugekiNoSoumaGouNoSara-OP1-NCBD1080.webm": [
+        {
+            "size_w": 52.46,
+            "size_h": 86.32,
+            "pos_x": 51.03,
+            "pos_y": 29.44,
+            "start": 16.2,
+            "end": 22.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "DarlingInTheFranXX-OP2-NCBD1080.webm": [
+        {
+            "size_w": 79.69,
+            "size_h": 38.06,
+            "pos_x": 52.88,
+            "pos_y": 49.66,
+            "start": 17.6,
+            "end": 22.9,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "HaikyuuS5-OP1.webm": [
+        {
+            "size_w": 92.97,
+            "size_h": 44.1,
+            "pos_x": 47.22,
+            "pos_y": 48.82,
+            "start": 13.0,
+            "end": 20.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "KoroSenseiQuest-OP1.webm": [
+        {
+            "size_w": 92.7,
+            "size_h": 55.28,
+            "pos_x": 52.41,
+            "pos_y": 43.01,
+            "start": 12.1,
+            "end": 16.2,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 17.4,
+            "end": 18.9,
+            "color": "#60DE7A",
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 20.9,
+            "end": 22.1,
+            "color": "#FFFFFF",
+            "nsfw": false
+        }
+    ],
+    "FairyTail2014-OP4.webm": [
+        {
+            "size_w": 91.8,
+            "size_h": 64.86,
+            "pos_x": 40.48,
+            "pos_y": 35.97,
+            "start": 7.0,
+            "end": 13.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "OwariNoSeraphS2-OP1.webm": [
+        {
+            "size_w": 76.33,
+            "size_h": 56.88,
+            "pos_x": 52.48,
+            "pos_y": 57.49,
+            "start": 6.3,
+            "end": 13.1,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "Joshiraku-OP1.webm": [
+        {
+            "size_w": 33.32,
+            "size_h": 89.03,
+            "pos_x": 47.57,
+            "pos_y": 44.94,
+            "start": 5.5,
+            "end": 8.4,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 29.92,
+            "size_h": 92.85,
+            "pos_x": 36.18,
+            "pos_y": 54.37,
+            "start": 10.8,
+            "end": 14.6,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "SaikiKusuoNoPsiNanTV-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 96.5,
+            "pos_x": 0.0,
+            "pos_y": 98.21,
+            "start": 0.0,
+            "end": 11.9,
+            "color": "#E6EEFE",
+            "nsfw": false
+        }
+    ],
+    "SaikiKusuoNoPsiNanS2-OP2-NCBD1080.webm": [
+        {
+            "size_w": 81.56,
+            "size_h": 52.99,
+            "pos_x": 52.75,
+            "pos_y": 45.94,
+            "start": 7.6,
+            "end": 13.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "KekkaiSensenAndBeyond-ED1-NCBD1080.webm": [
+        {
+            "size_w": 71.48,
+            "size_h": 69.03,
+            "pos_x": 49.32,
+            "pos_y": 55.83,
+            "start": 0.4,
+            "end": 4.6,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "HaiyoreNyarukoSan-OP1.webm": [
+        {
+            "size_w": 66.84,
+            "size_h": 69.17,
+            "pos_x": 55.01,
+            "pos_y": 47.07,
+            "start": 3.2,
+            "end": 9.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "UtawarerumonoItsuwariNoKamen-OP2.webm": [
+        {
+            "size_w": 73.98,
+            "size_h": 47.43,
+            "pos_x": 48.2,
+            "pos_y": 47.56,
+            "start": 17.0,
+            "end": 27.5,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "FruitsBasketS2-OP2-NCBD1080.webm": [
+        {
+            "size_w": 76.68,
+            "size_h": 38.82,
+            "pos_x": 51.59,
+            "pos_y": 48.58,
+            "start": 6.2,
+            "end": 12.8,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "ChuukanKanrirokuTonegawa-OP1-NCBD1080.webm": [
+        {
+            "size_w": 78.55,
+            "size_h": 80.62,
+            "pos_x": 49.36,
+            "pos_y": 43.73,
+            "start": 0.4,
+            "end": 10.6,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "EurekaSeven-OP1.webm": [
+        {
+            "size_w": 75.2,
+            "size_h": 100.0,
+            "pos_x": 50.24,
+            "pos_y": 0.0,
+            "start": 46.7,
+            "end": 47.1,
+            "color": "#000000",
+            "nsfw": true
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 48.2,
+            "end": 48.9,
+            "color": "#000000",
+            "nsfw": false
+        }
+    ],
+    "FairyTail-OP6.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 63.26,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 17.4,
+            "end": 25.0,
+            "color": "#41B0FF",
+            "nsfw": false
+        }
+    ],
+    "FairyTail2014-OP6.webm": [
+        {
+            "size_w": 85.55,
+            "size_h": 56.94,
+            "pos_x": 44.86,
+            "pos_y": 35.16,
+            "start": 6.2,
+            "end": 9.4,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 86.68,
+            "size_h": 100.0,
+            "pos_x": 51.91,
+            "pos_y": 0.0,
+            "start": 13.5,
+            "end": 24.3,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "CardcaptorSakuraClearCardHen-OP1-NCBD1080.webm": [
+        {
+            "size_w": 88.79,
+            "size_h": 59.1,
+            "pos_x": 52.61,
+            "pos_y": 33.11,
+            "start": 20.1,
+            "end": 27.5,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "Hibimeshi-OP1.webm": [
+        {
+            "size_w": 44.14,
+            "size_h": 73.33,
+            "pos_x": 50.42,
+            "pos_y": 9.11,
+            "start": 1.5,
+            "end": 8.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "TalesOfArise-OP2-[ID]TalesOfArise.webm": [
+        {
+            "size_w": 62.27,
+            "size_h": 16.94,
+            "pos_x": 51.35,
+            "pos_y": 49.58,
+            "start": 17.3,
+            "end": 22.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "TalesOfArise-OP1-[ID]TalesOfArise.webm": [
+        {
+            "size_w": 59.18,
+            "size_h": 22.92,
+            "pos_x": 49.86,
+            "pos_y": 47.75,
+            "start": 12.7,
+            "end": 16.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "PokemonAdvancedGeneration-OP3-EN.webm": [
+        {
+            "mute": true,
+            "start": 14.5,
+            "end": 15.4,
+            "nsfw": false
+        },
+        {
+            "mute": true,
+            "start": 28.9,
+            "end": 29.8,
+            "nsfw": false
+        },
+        {
+            "size_w": 75.2,
+            "size_h": 45.83,
+            "pos_x": 49.92,
+            "pos_y": 43.21,
+            "start": 29.9,
+            "end": 31.6,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "mute": true,
+            "start": 30.0,
+            "end": 31.6,
+            "nsfw": false
+        }
+    ],
+    "ShamanKing-OP1-EN.webm": [
+        {
+            "mute": true,
+            "start": 24.9,
+            "end": 31.1,
+            "nsfw": false
+        }
+    ],
+    "YGODuelMonsters-OP1-EN.webm": [
+        {
+            "mute": true,
+            "start": 12.2,
+            "end": 14.0,
+            "nsfw": false
+        }
+    ],
+    "DigimonFrontier-OP1-EN.webm": [
+        {
+            "mute": true,
+            "start": 0.7,
+            "end": 2.0,
+            "nsfw": false
+        }
+    ],
+    "DigimonAdventure-OP1-EN.webm": [
+        {
+            "mute": true,
+            "start": 13.7,
+            "end": 16.2,
+            "nsfw": false
+        },
+        {
+            "mute": true,
+            "start": 17.8,
+            "end": 20.4,
             "nsfw": false
         }
     ]
