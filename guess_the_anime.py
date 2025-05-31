@@ -3248,7 +3248,7 @@ def update_light_round(time):
                 toggle_title_overlay(get_title_light_string(word_num))
             elif peek_overlay:
                 data = currently_playing.get("data")
-                gap = 0 + min(9, data.get('popularity')/100)
+                gap = 0 + min(9, (data.get('popularity') or 3000)/100)
                 toggle_peek_overlay(direction=peek_light_direction, progress=((light_round_length-time_left)/light_round_length)*100, gap=gap)
                 now_playing_background_music(music_files[current_music_index])
             elif character_overlay_boxes:
@@ -5706,56 +5706,56 @@ playing_next_error = False
 def update_seek_bar():
     """Function to update the seek bar"""
     global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error
-    # try:
-    if player.is_playing():
-        vlc_time = player.get_time()
-        if vlc_time != last_vlc_time:
-            last_vlc_time = vlc_time
-            projected_vlc_time = vlc_time
-        else:
-            projected_vlc_time = projected_vlc_time + SEEK_POLLING * light_speed_modifier
-        length = player.get_length()/1000
-        time = projected_vlc_time/1000
-        if manual_blind:
-            set_progress_overlay(time, length)
-        if length > 0:
-            global can_seek
-            can_seek = False
-            seek_bar.config(to=length)
-            seek_bar.set(time)
-            if currently_playing.get("type") == "youtube":
-                start = currently_playing.get("data").get("start")
-                end = currently_playing.get("data").get("end")
-                if time < start:
-                    player.set_time(int(start*1000)+100)
-                elif end != 0 and time >= end:
-                    player.pause()
-                    play_next()
-                else:
-                    set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
+    try:
+        if player.is_playing():
+            vlc_time = player.get_time()
+            if vlc_time != last_vlc_time:
+                last_vlc_time = vlc_time
+                projected_vlc_time = vlc_time
             else:
-                if (length - time) <= 8:
-                    if not light_mode and not is_title_window_up() and auto_info_end:
-                        toggle_title_popup(True)
-                    if coming_up_queue:
-                        toggle_coming_up_popup(True, title=coming_up_queue["title"], details=coming_up_queue["details"], image=coming_up_queue["image"], up_next=coming_up_queue["up_next"])
-                        coming_up_queue = None
-                update_light_round(time)
-                apply_censors(time, length)
-        update_progress_bar(projected_vlc_time, player.get_length())
-    # except Exception as e:
-    #     error_str = str(e)
-    #     if not playing_next_error:
-    #         if error_str == last_error:
-    #             last_error_count += 1
-    #             print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
-    #         else:
-    #             last_error = error_str
-    #             last_error_count = 1
-    #             if last_error_count > 20:
-    #                 playing_next_error = True
-    #                 play_next()
-    #             print(f"\nError: {error_str} x 1", flush=True)
+                projected_vlc_time = projected_vlc_time + SEEK_POLLING * light_speed_modifier
+            length = player.get_length()/1000
+            time = projected_vlc_time/1000
+            if manual_blind:
+                set_progress_overlay(time, length)
+            if length > 0:
+                global can_seek
+                can_seek = False
+                seek_bar.config(to=length)
+                seek_bar.set(time)
+                if currently_playing.get("type") == "youtube":
+                    start = currently_playing.get("data").get("start")
+                    end = currently_playing.get("data").get("end")
+                    if time < start:
+                        player.set_time(int(start*1000)+100)
+                    elif end != 0 and time >= end:
+                        player.pause()
+                        play_next()
+                    else:
+                        set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
+                else:
+                    if (length - time) <= 8:
+                        if not light_mode and not is_title_window_up() and auto_info_end:
+                            toggle_title_popup(True)
+                        if coming_up_queue:
+                            toggle_coming_up_popup(True, title=coming_up_queue["title"], details=coming_up_queue["details"], image=coming_up_queue["image"], up_next=coming_up_queue["up_next"])
+                            coming_up_queue = None
+                    update_light_round(time)
+                    apply_censors(time, length)
+            update_progress_bar(projected_vlc_time, player.get_length())
+    except Exception as e:
+        error_str = str(e)
+        if not playing_next_error:
+            if error_str == last_error:
+                last_error_count += 1
+                print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
+            else:
+                last_error = error_str
+                last_error_count = 1
+                if last_error_count > 20:
+                    playing_next_error = True
+                    play_next()
+                print(f"\nError: {error_str} x 1", flush=True)
     root.after(SEEK_POLLING, update_seek_bar)
 
 def format_seconds(seconds):
