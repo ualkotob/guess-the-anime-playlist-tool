@@ -689,6 +689,10 @@ def anime_themes_video(filename):
     url = f"https://v.animethemes.moe/{filename}"
     webbrowser.open(url)
 
+def open_anidb_page(anidb_id):
+    url = f"https://anidb.net/anime/{anidb_id}"
+    webbrowser.open(url)
+
 def reset_metadata(filename = None):
     """Function to reset metadata and add filename"""
     toggleColumnEdit(True)
@@ -727,6 +731,7 @@ def update_metadata():
             add_field_total_button(left_column, get_all_matching_field("mal", data.get("mal")), is_game(data))
             if not is_game(data):
                 left_column.window_create(tk.END, window=tk.Button(left_column, text="[MAL]", borderwidth=0, pady=0, command=lambda: open_mal_page(data.get("mal")), bg="black", fg="white"))
+                left_column.window_create(tk.END, window=tk.Button(left_column, text="[ADB]", borderwidth=0, pady=0, command=lambda: open_anidb_page(data.get("anidb")), bg="black", fg="white"))
                 left_column.insert(tk.END, "\n\n", "blank")
             add_single_data_line(left_column, data, "ENGLISH: ", 'eng_title', True)
             if data.get("synonyms"):
@@ -774,9 +779,8 @@ def update_metadata():
                 left_column.insert(tk.END, "\n\n", "blank")
                 add_multiple_data_line(left_column, data, "SERIES: ", "series", False)
                 add_field_total_button(left_column, get_all_matching_field("series", data.get("series")))
-                update_series_song_information(data)
-            else:
-                update_song_information(data)
+
+            update_series_song_information(data)
 
             update_extra_metadata(data)
             
@@ -872,18 +876,24 @@ def select_extra_metadata(extra_metadata):
     update_extra_metadata(currently_playing.get("data"))
 
 def update_series_song_information(data):
-    all_series_themes = get_all_theme_from_series(data)
-    index = 0
-    for anime_id, anime in all_series_themes:
-        index += 1
-        middle_column.insert(tk.END, f"{get_display_title(anime)} [{anime.get("season")}]:\n", "bold underline")
-        if anime_id == data.get("mal"):
-            slug = data.get("slug")
-        else:
-            slug = "SKIP"
-        update_song_information(anime, slug)
-        if index < len(all_series_themes):
-            middle_column.insert(tk.END, "\n", "blank")
+    middle_column.config(state=tk.NORMAL)
+    middle_column.delete("1.0", tk.END)
+    if not data.get("series"):
+        update_song_information(data)
+    else:
+        all_series_themes = get_all_theme_from_series(data)
+        index = 0
+        for anime_id, anime in all_series_themes:
+            index += 1
+            middle_column.insert(tk.END, f"{get_display_title(anime)} [{anime.get("season")}]:\n", "bold underline")
+            if anime_id == data.get("mal"):
+                slug = data.get("slug")
+            else:
+                slug = "SKIP"
+            update_song_information(anime, slug)
+            if index < len(all_series_themes):
+                middle_column.insert(tk.END, "\n", "blank")
+    middle_column.config(state=tk.DISABLED)
 
 def update_song_information(data, slug=None):
     openingAdded = False
@@ -1145,6 +1155,10 @@ def add_op_ed(theme, column, slug, title, mal_id):
     # ▶ button or fallback
     if filename:
         column.window_create(tk.END, window=tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white"))
+        if check_favorited(filename):
+            column.insert(tk.END, "🤍", format)
+        if check_tagged(filename):
+            column.insert(tk.END, "❌", format)
     else:
         column.insert(tk.END, ">", format)
 
@@ -1193,12 +1207,9 @@ def add_op_ed(theme, column, slug, title, mal_id):
                     s["artist"] = [artist_input]
             save_metadata_overrides()
             save_metadata()
-            middle_column.config(state=tk.NORMAL)
-            middle_column.delete("1.0", tk.END)
             filename = currently_playing.get("filename")
             if filename:
-                update_song_information(get_metadata(filename))
-            middle_column.config(state=tk.DISABLED)
+                update_series_song_information(get_metadata(filename))
 
         column.window_create(tk.END, window=tk.Button(column, text="[ADD ARTIST]", command=prompt_and_add_artist, padx=2, bg="black", fg="white"))
     else:
@@ -2108,7 +2119,7 @@ def save_playlist(playlist, index, parent, autosave):
         elif name.lower() == "missing artists":
             check_missing_artists()
             return
-
+    playlist["name"] = name
     filename = os.path.join(PLAYLISTS_FOLDER, f"{name}.json")
 
     # Save playlist data
@@ -2222,20 +2233,58 @@ def delete_file_by_filename(filename):
 
 def year_stats(column):
     year_counter = Counter()
+    year_to_filenames = {}
+
     for filename in directory_files:
         data = get_metadata(filename)
-        # Year stats
         season = data.get("season", "")
-        year = season[-4:] if season and season[-4:].isdigit() else "Unknown"
-        year_counter[year] += 1
+        year_str = season[-4:] if season and season[-4:].isdigit() else "Unknown"
+
+        # Group into decades
+        if year_str.isdigit():
+            year = int(year_str)
+            if year >= 2000:
+                group = str(year)
+            elif year >= 1990:
+                group = "1990s"
+            elif year >= 1980:
+                group = "1980s"
+            elif year >= 1970:
+                group = "1970s"
+            elif year >= 1960:
+                group = "1960s"
+            else:
+                group = f"Pre-60s"
+        else:
+            group = "Unknown"
+
+        year_counter[group] += 1
+        year_to_filenames.setdefault(group, []).append(filename)
+
+    # Output to text widget
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY YEAR\n", ("bold", "underline"))
-    for year in sorted(year_counter, reverse=True, key=lambda y: int(y) if y.isdigit() else 9999):
-        column.insert(tk.END, f"{year}: ", "bold")
-        column.insert(tk.END, f"{year_counter[year]} ({(round(year_counter[year]/len(directory_files)*100, ndigits=2))}%)", "white")
-        add_field_total_button(column, get_filenames_from_year(year), False, False)
-        column.insert(tk.END, f"\n")
+
+    # Sort order: recent years first, then 90s, 80s, etc.
+    def sort_key(group):
+        if group.isdigit():
+            return -int(group)
+        elif group.endswith("s"):
+            return -int(group[:4])
+        elif group == "Pre-60s":
+            return -1950
+        else:
+            return 9999
+
+    for group in sorted(year_counter, key=sort_key):
+        count = year_counter[group]
+        percent = round(count / len(directory_files) * 100, 2)
+        column.insert(tk.END, f"{group}: ", "bold")
+        column.insert(tk.END, f"{count} ({percent}%)", "white")
+        add_field_total_button(column, year_to_filenames[group], False, False)
+        column.insert(tk.END, "\n")
+
     column.config(state=tk.DISABLED)
 
 def season_stats(column):
@@ -3178,8 +3227,9 @@ def get_light_round_time():
     return start_time
 
 light_speed_modifier = 1
+light_fullscreen_try = False
 def update_light_round(time):
-    global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
+    global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay, light_fullscreen_try
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
         if time < 1:
             player.pause()
@@ -3207,7 +3257,18 @@ def update_light_round(time):
                 start_str = "end"
             set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
         else:
+            if not light_fullscreen_try:
+                light_fullscreen_try = True
+                if light_mode == 'mismatch':
+                    mismatched_player.set_fullscreen(False)
+                    mismatched_player.set_fullscreen(True)
+                else:
+                    player.set_fullscreen(False)
+                    player.set_fullscreen(True)
             time_left = (light_round_length-(time - light_round_start_time))
+            if time_left < 1 and light_speed_modifier != 1:
+                light_speed_modifier = 1
+                player.set_rate(light_speed_modifier)
             if song_overlay_boxes:
                 toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
                 player.audio_set_mute(time_left > 4)
@@ -3335,19 +3396,20 @@ def update_light_round(time):
             mismatched_player.set_media(media)
             mismatched_player.play()
             mismatched_player.set_time(int(float(light_round_start_time))*1000)
-            mismatched_player.set_fullscreen(True)
+            mismatched_player.set_fullscreen(False)
             mismatched_player.set_fullscreen(True)
             top_info("MISMATCHED VISUALS")
             set_frame_number("GUESS BY MUSIC ONLY")
             root.after(700, set_black_screen, False)
         else:
-            player.set_fullscreen(True)
+            player.set_fullscreen(False)
             player.set_fullscreen(True)
         set_countdown(light_round_length)
         set_light_round_number("#" + str(light_round_number))
 
 def clean_up_light_round():
-    global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay
+    global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay, light_fullscreen_try
+    light_fullscreen_try = False
     mismatched_player.stop()
     mismatched_player.set_media(None)  # Reset the media
     mismatch_visuals = None
@@ -3423,7 +3485,7 @@ def check_recent_history(mode):
         else:
             append_check = currently_playing.get("data", {}).get("mal")
         if append_check:
-            return append_check in playlist["lightning_history"].get(mode, [])
+            return append_check in playlist.get("lightning_history", {}).get(mode, [])
     return False
 
 
@@ -4682,36 +4744,51 @@ def set_light_names():
         secondary = []
         appear = []
         for character in data["characters"]:
-            # Assuming character name is at index 1 (adjust if needed)
             name = character[1]
             if character[0] == "m":
-                main.append(name)
+                main.append([character[0], name])
             elif character[0] == "s":
-                secondary.append(name)
+                secondary.append([character[0], name])
             elif character[0] == "a":
-                appear.append(name)
+                appear.append([character[0], name])
 
+        # Shuffle all groups
         random.shuffle(main)
         random.shuffle(secondary)
         random.shuffle(appear)
 
-        # Start building result with 3 appear, 2 secondary, 1 main
+        used_names = set()
         result = []
-        total = 0
-        for group in [[appear, 3],[secondary,2],[main,1]]:
-            result += [url for url in group[0] if url not in result][:group[1]]
-            total += group[1]
-            # If not enough, fill from any remaining (no duplicates)
-            remaining = [url for url in (appear + secondary + main) if url not in result]
-            result += remaining[:total - len(result)]
 
-        results = result[:6]  # Keep only 6 names
-        extra_result = []
-        for res in results:
-            for character in data["characters"]:
-                if character[1] == res:
-                    extra_result.append([character[0], character[1]])
-        light_episode_names = extra_result
+        # Helper to add up to n characters from a group without duplicates
+        def add_unique(group, n):
+            added = 0
+            for char in group:
+                if char[1] not in used_names:
+                    result.append(char)
+                    used_names.add(char[1])
+                    added += 1
+                if added == n:
+                    break
+            return added
+
+        # Attempt to add 3 appear, 2 secondary, 1 main
+        needed = 6
+        needed -= add_unique(appear, 3)
+        needed -= add_unique(secondary, 2)
+        needed -= add_unique(main, 1)
+
+        # Fill any leftovers from all characters
+        remaining = appear + secondary + main
+        for char in remaining:
+            if needed == 0:
+                break
+            if char[1] not in used_names:
+                result.append(char)
+                used_names.add(char[1])
+                needed -= 1
+
+        light_episode_names = result[:6]  # Ensure only 6 are kept
 
 # =========================================
 #          *LIGHTNING ROUND OVERLAYS
@@ -5017,8 +5094,8 @@ def now_playing_background_music(track = None):
         basename = os.path.basename(track)
         for ext in valid_music_ext:
             basename = basename.replace(ext, "")
-        track = "NOW PLAYING: " + basename
-    set_floating_text("Now Playing Background Music", track, position="bottom left", size=10)
+        track = "BGM: " + basename
+    set_floating_text("Now Playing Background Music", track, position="bottom left", size=14)
 
 # =========================================
 #            *INFORMATION POPUP
@@ -5997,7 +6074,6 @@ def apply_censors(time, length):
         elif length - time <= 1 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(os.path.basename(playlist["playlist"][playlist["current_index"]+1]), time, True):
             return
     if censor_used:
-        player.audio_set_mute(disable_video_audio)
         censor_bar.attributes("-topmost", False)
         censor_bar.lower()
         censor_bar.geometry(str(screen_width) + "x" + str(screen_height))
@@ -6442,6 +6518,8 @@ def toggle_theme(playlist_name, button, filename=None):
 
     check_theme(playlist_name=playlist_name, recache=True)
 
+    update_series_song_information(currently_playing.get("data", {}))
+
 check_theme_cache = {}
 def check_theme(filename=None, playlist_name=None, recache=False):
     """Checks if a theme exists in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
@@ -6588,10 +6666,10 @@ def convert_playlist_to_dict(playlis):
 
 def remove_theme(index):
     global playlist
-    confirm = messagebox.askyesno("Remove Theme", f"Are you sure you want to remove '{playlist[index]}' from '{playlist["name"]}'?")
+    confirm = messagebox.askyesno("Remove Theme", f"Are you sure you want to remove '{playlist["playlist"][index]}' from '{playlist["name"]}'?")
     if not confirm:
         return  # User canceled
-    del playlist[index]
+    del playlist["playlist"][index]
     remove(True)
 
 def get_filename(key, value):
@@ -7210,24 +7288,20 @@ def create_first_row_buttons():
         difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
 
     global show_playlist_button
-    if playlist.get("infinite", False):
-        show_playlist_label = "[P]LAY HISTORY"
-    else:
-        show_playlist_label = "[P]LAYLIST"
-    show_playlist_button = create_button(first_row_frame, show_playlist_label, show_playlist, playlist.get("infinite", False),
+    show_playlist_button = create_button(first_row_frame, "[P]LAYLIST", show_playlist, False,
                                 help_title="VIEW [P]LAYLIST/[P]LAY HISTORY (Shortcut Key = 'p')",
                                 help_text=("List all themes in the playlist. It will scroll to whichever "
                                 "theme the current index is at. Select a theme to play it immediately "
                                 "and set the current index to it.\n\nAs with all lists, it loads buttons "
                                 "to select the entry, but for the playlist it may be quite a few buttons. "
                                 "It usually loads quickly, but may take a second to clear."))
-    if not playlist.get("infinite", False):
-        global remove_button
-        remove_button = create_button(first_row_frame, "❌", remove, True,
-                                    help_title="REMOVE THEME",
-                                    help_text=("Remove a theme from the playlist. There is a confirmation "
-                                    "dialogue after selecting.\n\nIt may be a bit slow dpending on how many "
-                                    "themes you have added or want to delete."))
+    # if not playlist.get("infinite", False):
+    global remove_button
+    remove_button = create_button(first_row_frame, "❌", remove, True,
+                                help_title="REMOVE THEME",
+                                help_text=("Remove a theme from the playlist. There is a confirmation "
+                                "dialogue after selecting.\n\nIt may be a bit slow dpending on how many "
+                                "themes you have added or want to delete."))
 
     global go_button
     go_button = create_button(first_row_frame, "GO TO:", go_to_index,
