@@ -681,7 +681,7 @@
             "size_h": 80.56,
             "pos_x": 50.17,
             "pos_y": 41.79,
-            "start": 19.0,
+            "start": 17.3,
             "end": 23.5,
             "color": null,
             "nsfw": false
@@ -16201,6 +16201,28 @@
             "mute": true,
             "start": 17.8,
             "end": 20.4,
+            "nsfw": false
+        }
+    ],
+    "JojoNoKimyouNaBoukenS4-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 45.49,
+            "pos_x": 66.67,
+            "pos_y": 100.0,
+            "start": 0.0,
+            "end": 2.7,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 45.49,
+            "pos_x": 66.67,
+            "pos_y": 100.0,
+            "start": 4.2,
+            "end": 5.7,
+            "color": null,
             "nsfw": false
         }
     ]
