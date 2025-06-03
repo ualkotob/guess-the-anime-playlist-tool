@@ -605,8 +605,10 @@ def fetch_all_metadata(delay=1):
                 anidb_delay = 0
             fetch_metadata(filename)  # Call your existing metadata function
             total_fetched += 1
+            toggle_theme("New Themes", filename=filename, quite=True)
 
         print("Metadata fetching complete! - Checked:" + str(total_checked) + " Missing:" + str(total_fetched+total_skipped) + " Skipped:" + str(total_skipped))
+        print(f"{total_fetched} files saved to playlist '{"New Themes"}'.")
 
     # Run in a separate thread so it doesn’t freeze the UI
     threading.Thread(target=worker, daemon=True).start()
@@ -926,8 +928,9 @@ def up_next_text():
         next_up_text = "End of playlist"
         if playlist["current_index"]+1 < len(playlist["playlist"]):
             try:
-                next_up_data = get_metadata(playlist["playlist"][playlist["current_index"]+1])
-                next_up_text = f"{get_display_title(next_up_data)}\n{format_slug(next_up_data.get("slug"))} | {next_up_data.get("members") or 0:,} (#{next_up_data.get("popularity")}) | {next_up_data.get("season")}"
+                next_filename = playlist["playlist"][playlist["current_index"]+1]
+                next_up_data = get_metadata(next_filename)
+                next_up_text = f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n{format_slug(next_up_data.get("slug"))} | {next_up_data.get("members") or 0:,} (#{next_up_data.get("popularity")}) | {next_up_data.get("season")}"
             except Exception:
                 next_up_text = playlist["playlist"][playlist["current_index"]+1]
         right_top.insert(tk.END, f"{next_up_text}", "white")
@@ -1155,10 +1158,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
     # ▶ button or fallback
     if filename:
         column.window_create(tk.END, window=tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white"))
-        if check_favorited(filename):
-            column.insert(tk.END, "🤍", format)
-        if check_tagged(filename):
-            column.insert(tk.END, "❌", format)
+        column.insert(tk.END, get_file_marks(filename), format)
     else:
         column.insert(tk.END, ">", format)
 
@@ -1231,6 +1231,14 @@ def add_op_ed(theme, column, slug, title, mal_id):
         column.insert(tk.END, f" (SPECIAL)", format)
 
     column.insert(tk.END, f"\n", format)
+
+def get_file_marks(filename):
+    marks = ""
+    if check_favorited(filename):
+        marks = marks + "❤"
+    if check_tagged(filename):
+        marks = marks + "❌"
+    return marks
 
 def get_theme_filename(title, slug):
     for filename in directory_files:
@@ -1770,7 +1778,7 @@ def get_pop_time_groups(refetch=False):
                 
         # Step 2: Within each popularity group, sort by year (oldest to newest)
         def sort_by_year(entries):
-            return sorted(entries, key=lambda x: int(get_metadata(x).get("season", "9999")[-4:]), reverse=True)
+            return sorted(entries, key=lambda x: int(get_metadata(x.replace("[EXTRA]", "")).get("season", "9999")[-4:]), reverse=True)
 
         for i, g in enumerate(sorted_groups):
             sorted_subgroups = split_into_three(sort_by_year(g))
@@ -1955,7 +1963,7 @@ def load_config():
 def update_playlist_name(name=None):
     if name:
         playlist["name"] = name
-    root.title(f"{WINDOW_TITLE} [{len(all_themes_played)}] - {playlist["name"]}")
+    root.title(f"[{len(all_themes_played)}] {WINDOW_TITLE} - {playlist["name"]}")
 
 def save_metadata():
     """Ensures the metadata folder exists before saving metadata files."""
@@ -5223,6 +5231,7 @@ def toggle_title_popup(show):
             if series_total > 1:
                 japanese_title = f"{japanese_title} [{series_total}]"
             theme = format_slug(data.get("slug"))
+            marks = get_file_marks(currently_playing.get("filename", ""))
             song = get_song_string(data, totals=True)
             if is_game(data):
                 aired = data.get("release")
@@ -5245,7 +5254,7 @@ def toggle_title_popup(show):
                     episodes = str(episodes) + " Episodes"
                 members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
                 score = f"Score: {data.get("score")} (#{data.get("rank")})"
-            top_row = f"{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
+            top_row = f"{marks}{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
             title_row = title
             bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
     else:
@@ -5841,7 +5850,7 @@ def format_seconds(seconds):
     return f"{minutes:02}:{remaining_seconds:02}"
 
 # =========================================
-#            *OTHER UI OVERLAYS
+#            *COMING UP UI
 # =========================================
 
 coming_up_window = None  # Store the lightning round window
@@ -5919,6 +5928,10 @@ def format_slug(slug):
         return f"Ending {slug[2:]}"
     return slug  # Return unchanged if it doesn't match
 
+# =========================================
+#            *PROGRESS BAR
+# =========================================
+
 # Global variable for the progress bar
 progress_bar = None
 progress_bar_enabled = True
@@ -5955,6 +5968,10 @@ def update_progress_bar(current_time, total_time):
         height = progress_bar.winfo_height()
         progress_bar.configure(width=progress_width)
         progress_bar.geometry(f"+{0}+{root.winfo_screenheight() - height}")  # Adjust for bottom spacing
+
+# =========================================
+#            *BLIND SCREEN
+# =========================================
 
 black_overlay = None
 blind_enabled = False
@@ -6473,7 +6490,7 @@ def open_censor_editor(refresh=False):
 #            *TAG/FAVORITE FILES
 # =========================================
 
-def toggle_theme(playlist_name, button, filename=None):
+def toggle_theme(playlist_name, button=None, filename=None, quite=False):
     """Toggles a theme in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
     if not filename:
         if currently_playing.get("filename"):
@@ -6496,7 +6513,8 @@ def toggle_theme(playlist_name, button, filename=None):
     if filename in theme_list:
         # Remove theme
         theme_list.remove(filename)
-        button_seleted(button, False)
+        if button:
+            button_seleted(button, False)
         type_string = "removed from"
     else:
         # Add theme
@@ -6504,7 +6522,8 @@ def toggle_theme(playlist_name, button, filename=None):
             theme_list = [filename]
         else:
             theme_list.append(filename)
-        button_seleted(button, True)
+        if button:
+            button_seleted(button, True)
 
     # Save the updated playlist
     data["playlist"] = theme_list
@@ -6514,7 +6533,8 @@ def toggle_theme(playlist_name, button, filename=None):
 
     with open(playlist_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
-        print(f"{filename} {type_string} playlist '{playlist_name}'.")
+        if not quite:
+            print(f"{filename} {type_string} playlist '{playlist_name}'.")
 
     check_theme(playlist_name=playlist_name, recache=True)
 
