@@ -608,7 +608,8 @@ def fetch_all_metadata(delay=1):
             toggle_theme("New Themes", filename=filename, quite=True)
 
         print("Metadata fetching complete! - Checked:" + str(total_checked) + " Missing:" + str(total_fetched+total_skipped) + " Skipped:" + str(total_skipped))
-        print(f"{total_fetched} files saved to playlist '{"New Themes"}'.")
+        if total_fetched > 0:
+            print(f"{total_fetched} files saved to playlist '{"New Themes"}'.")
 
     # Run in a separate thread so it doesn’t freeze the UI
     threading.Thread(target=worker, daemon=True).start()
@@ -782,7 +783,7 @@ def update_metadata():
                 add_multiple_data_line(left_column, data, "SERIES: ", "series", False)
                 add_field_total_button(left_column, get_all_matching_field("series", data.get("series")))
 
-            update_series_song_information(data)
+            update_series_song_information(data, data.get("mal"))
 
             update_extra_metadata(data)
             
@@ -877,11 +878,11 @@ def select_extra_metadata(extra_metadata):
     selected_extra_metadata = extra_metadata
     update_extra_metadata(currently_playing.get("data"))
 
-def update_series_song_information(data):
+def update_series_song_information(data, mal):
     middle_column.config(state=tk.NORMAL)
     middle_column.delete("1.0", tk.END)
     if not data.get("series"):
-        update_song_information(data)
+        update_song_information(data, mal)
     else:
         all_series_themes = get_all_theme_from_series(data)
         index = 0
@@ -892,12 +893,12 @@ def update_series_song_information(data):
                 slug = data.get("slug")
             else:
                 slug = "SKIP"
-            update_song_information(anime, slug)
+            update_song_information(anime, mal, slug)
             if index < len(all_series_themes):
                 middle_column.insert(tk.END, "\n", "blank")
     middle_column.config(state=tk.DISABLED)
 
-def update_song_information(data, slug=None):
+def update_song_information(data, mal, slug=None):
     openingAdded = False
     endingAdded = False
     extra_scroll = 0
@@ -911,7 +912,7 @@ def update_song_information(data, slug=None):
         elif not endingAdded and theme["type"] == "ED":
             endingAdded = True
             middle_column.insert(tk.END, "ENDINGS:\n", "bold")
-        add_op_ed(theme, middle_column, slug, data.get("title"), data.get("mal"))
+        add_op_ed(theme, middle_column, slug, data.get("title"), mal)
         if (extra_scroll and extra_scroll < 3) or theme.get("slug") == slug:
             extra_scroll += 1
             middle_column.see("end-1c")
@@ -1172,12 +1173,14 @@ def add_op_ed(theme, column, slug, title, mal_id):
 
         # Add [+] button to insert missing artist
         def prompt_and_add_artist():
-            artist_input = simpledialog.askstring("Add Artist", "Enter artist name(s):")
+            artist_input = simpledialog.askstring("Add Artist", "Enter artist name(s)(Use '[AND]' to separate multiple artists.):")
             if not artist_input:
                 return
+            
+            artist_input = artist_input.split("[AND]")
 
             # Update original metadata (for display)
-            theme["artist"] = [artist_input]
+            theme["artist"] = artist_input
 
             # Update override metadata
             anime_entry_override = anime_metadata_overrides.setdefault(mal_id, {})
@@ -1190,7 +1193,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
 
             # Copy the original song and override the artist
             new_song = {"slug": theme_slug}
-            new_song["artist"] = [artist_input]
+            new_song["artist"] = artist_input
 
             # Replace or insert the song into the override
             override_songs = anime_entry_override.setdefault("songs", [])
@@ -1209,7 +1212,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
             save_metadata()
             filename = currently_playing.get("filename")
             if filename:
-                update_series_song_information(get_metadata(filename))
+                update_series_song_information(get_metadata(filename), mal_id)
 
         column.window_create(tk.END, window=tk.Button(column, text="[ADD ARTIST]", command=prompt_and_add_artist, padx=2, bg="black", fg="white"))
     else:
@@ -3267,16 +3270,15 @@ def update_light_round(time):
         else:
             if not light_fullscreen_try:
                 light_fullscreen_try = True
-                if light_mode == 'mismatch':
-                    mismatched_player.set_fullscreen(False)
-                    mismatched_player.set_fullscreen(True)
-                else:
-                    player.set_fullscreen(False)
-                    player.set_fullscreen(True)
+                player.set_fullscreen(False)
+                player.set_fullscreen(True)
             time_left = (light_round_length-(time - light_round_start_time))
             if time_left < 1 and light_speed_modifier != 1:
                 light_speed_modifier = 1
                 player.set_rate(light_speed_modifier)
+            if light_mode == 'mismatch' and time_left > 11:
+                mismatched_player.set_fullscreen(False)
+                mismatched_player.set_fullscreen(True)
             if song_overlay_boxes:
                 toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
                 player.audio_set_mute(time_left > 4)
@@ -3352,7 +3354,7 @@ def update_light_round(time):
             if light_mode == 'regular' or light_mode == 'peek':
                 root.after(500, set_black_screen, False)
             if light_mode in ['regular', 'blind'] and light_speed_modifier == 1:
-                popularity = currently_playing.get("data", {}).get("popularity", 1000)
+                popularity = currently_playing.get("data", {}).get("popularity", 1000) or 3000
                 if (popularity <= 100 and random.randint(1, 5) == 1) or (popularity <= 250 and random.randint(1, 10) == 1):
                     light_speed_modifier = 2
                     player.set_rate(light_speed_modifier)
@@ -3966,8 +3968,10 @@ synopsis_split = None
 def pick_synopsis():
     global synopsis_start_index, synopsis_split
     if not synopsis_start_index:
-        synopsis = (currently_playing.get("data", {}).get("synopsis") or "No synopsis found.").split("\n\n[Written by MAL Rewrite]")[0]
-        synopsis_split = synopsis.replace(" \n\n", " ").replace("\n \n", " ").replace("\n\n", " ").replace("\n", " ").split(" ")
+        synopsis = (currently_playing.get("data", {}).get("synopsis") or "No synopsis found.")
+        for extra_characters in ["\n\n[Written by MAL Rewrite]", "\n\n(Source: adapted from ANN)", " \n\n", "\n \n", "\n\n", "\n"]:
+            synopsis = synopsis.replace(extra_characters, " ")
+        synopsis_split = synopsis.split(" ")
         length = len(synopsis_split)
         if length <= light_round_length*2:
             synopsis_start_index = 0
@@ -5589,7 +5593,7 @@ def play_video_retry(retries, fullscreen=True):
         else:
             play_video(playlist["current_index"] + skip_direction)
     if fullscreen and light_mode != 'mismatch':
-        player.set_fullscreen(True)
+        player.set_fullscreen(False)
         player.set_fullscreen(True)
         set_skip_direction(1)
     video_stopped = False
@@ -6538,7 +6542,8 @@ def toggle_theme(playlist_name, button=None, filename=None, quite=False):
 
     check_theme(playlist_name=playlist_name, recache=True)
 
-    update_series_song_information(currently_playing.get("data", {}))
+    if currently_playing.get("data"):
+        update_series_song_information(currently_playing.get("data"), currently_playing.get("data").get("mal"))
 
 check_theme_cache = {}
 def check_theme(filename=None, playlist_name=None, recache=False):
