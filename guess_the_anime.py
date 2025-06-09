@@ -1745,17 +1745,20 @@ def get_pop_time_groups(refetch=False):
         sorted_groups = [[] for _ in range(3)]
         playlist_mal_history = []
         cached_skipped_themes = []
-        for f in playlist:
+        for f in playlist.get("playlist"):
             d = get_metadata(f)
-            playlist_mal_history.append(d.get("mal"))
+            if d:
+                playlist_mal_history.append(d.get("mal"))
 
         for f in directory_files:
             d = get_metadata(f)
-            # p = d.get("popularity", INT_INF) or INT_INF
+            if not d or check_tagged(f) or check_theme(f, "New Themes"):
+                cached_skipped_themes.append(f)
+                continue
             p = get_series_popularity(d)
             mal = d.get("mal")
             for k, l in enumerate(group_limits):
-                if (l == 0 or p <= l) and not check_tagged(f):
+                if (l == 0 or p <= l):
                     boost = 0
                     if not shows_files_map.get(mal):
                         boost += max(0, (d.get("score", 0) or 0) - 7)
@@ -1776,8 +1779,6 @@ def get_pop_time_groups(refetch=False):
                     for _ in range(int(extra_boost)):
                         sorted_groups[k].append(f"{f}[EXTRA]")
                     break
-                elif k == len(group_limits)-1:
-                    cached_skipped_themes.append(f)
                 
         # Step 2: Within each popularity group, sort by year (oldest to newest)
         def sort_by_year(entries):
@@ -3318,8 +3319,7 @@ def update_light_round(time):
                 set_frame_number(f"{word_num}/{final_count} REVEALS")
                 toggle_title_overlay(get_title_light_string(word_num))
             elif peek_overlay:
-                data = currently_playing.get("data")
-                gap = 0 + min(9, (data.get('popularity') or 3000)/100)
+                gap = get_peek_gap(currently_playing.get("data"))
                 toggle_peek_overlay(direction=peek_light_direction, progress=((light_round_length-time_left)/light_round_length)*100, gap=gap)
                 now_playing_background_music(music_files[current_music_index])
             elif character_overlay_boxes:
@@ -4178,6 +4178,40 @@ def toggle_title_overlay(title_text=None, destroy=False):
 #          *PEEK LIGHTNING ROUND
 # =========================================
 
+peek_modifier = 0
+gap_modifier = 0
+def toggle_peek():
+    global peek_modifier, gap_modifier
+    if not peek_overlay:
+        gap_modifier = 0
+        peek_modifier = random.randint(0,24)
+        toggle_peek_overlay()
+        if black_overlay:
+            blind()
+        button_seleted(peek_button, True)
+    else:
+        toggle_peek_overlay(destroy=True)
+
+peek_round_toggle = False
+def toggle_peek_round():
+    global peek_round_toggle
+    peek_round_toggle = not peek_round_toggle
+    button_seleted(peek_round_button, peek_round_toggle)
+    if peek_round_toggle:
+        if blind_round_toggle:
+            toggle_blind_round()
+        toggle_coming_up_popup(True, "Peek Round", "Guess the anime from a small moving window revealing the visuals. \nNormal rules apply.", queue=True)
+    else:
+        toggle_coming_up_popup(False, "Peek Round")
+
+def widen_peek():
+    global gap_modifier
+    gap_modifier += 1
+
+def get_peek_gap(data):
+    gap = (0 + min(9, (data.get('popularity') or 3000)/100))
+    return gap
+
 peek_light_direction = None
 def choose_peek_direction():
     global peek_light_direction
@@ -4187,7 +4221,7 @@ def choose_peek_direction():
     peek_light_direction = new_dir
 
 peek_overlay = None
-def toggle_peek_overlay(destroy=False, direction="left", progress=0, gap=1):
+def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
     """Toggles two fullscreen overlays that reveal the screen in a chosen direction by percentage.
 
     Args:
@@ -4205,6 +4239,7 @@ def toggle_peek_overlay(destroy=False, direction="left", progress=0, gap=1):
             if peek_overlay[1]:
                 peek_overlay[1].destroy()
             peek_overlay = None
+            button_seleted(peek_button, False)
         return
 
     if not 0 <= progress <= 100:
@@ -4214,8 +4249,7 @@ def toggle_peek_overlay(destroy=False, direction="left", progress=0, gap=1):
     screen_height = root.winfo_screenheight()
 
     # Calculate the gap in pixels as a percentage of the screen size
-    gap_pixels = (gap / 100) * screen_width  # Use screen width for gap calculation
-
+    gap_pixels = ((gap / 100) * screen_width) + (gap_modifier*(screen_width/100)) # Use screen width for gap calculation
     # Initialize overlay dimensions and positions
     first_width, first_height, first_x, first_y = 0, 0, 0, 0
     second_width, second_height, second_x, second_y = 0, 0, 0, 0
@@ -4301,17 +4335,26 @@ def toggle_peek_overlay(destroy=False, direction="left", progress=0, gap=1):
         peek_overlay[1].attributes("-topmost", True)
         peek_overlay[1].configure(bg=image_color)
 
-    peek_overlay[0].update()
-    peek_overlay[1].update()
-    # Set geometry for the first overlay
-    peek_overlay[0].geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
-    
-    # Set geometry for the second overlay
-    peek_overlay[1].geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
-    
     # Update both overlays
-    peek_overlay[0].update()
-    peek_overlay[1].update()
+    def update_overlays():
+        for i in range(2):
+            if peek_overlay and peek_overlay[i]:
+                peek_overlay[i].update()
+            else:
+                return False
+        return True
+
+    if update_overlays():
+        if direction == "right":
+            peek_overlay[1].geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
+            peek_overlay[0].geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
+        else:
+            peek_overlay[0].geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
+            peek_overlay[1].geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
+    
+    update_overlays()
+    button_seleted(peek_button, True)
+    lift_windows()
 
 # =========================================
 #          *MISMATCH LIGHTNING ROUND
@@ -4900,7 +4943,7 @@ def set_floating_text(name, value, position="top right", size=80):
     update_position()
     # update_position()
 
-overlay = None
+progress_overlay = None
 light_progress_bar = None
 music_icon_label = None
 
@@ -4916,37 +4959,37 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         total_length: Total length (e.g., total seconds) to set as the maximum of the progress bar.
         destroy (bool): If True, the overlay (if present) is destroyed.
     """
-    global overlay, light_progress_bar, music_icon_label
-    # If asked to destroy, close the overlay and clear globals
+    global progress_overlay, light_progress_bar, music_icon_label
+    # If asked to destroy, close the progress_overlay and clear globals
     if destroy:
-        if overlay is not None:
-            screen_width = overlay.winfo_screenwidth()
-            screen_height = overlay.winfo_screenheight()
+        if progress_overlay is not None:
+            screen_width = progress_overlay.winfo_screenwidth()
+            screen_height = progress_overlay.winfo_screenheight()
             window_height = round((screen_height/15)*6)
-            animate_window(overlay, screen_width, (screen_height - window_height) // 2, steps=20, delay=5, bounce=False, fade=None, destroy=True)
-        overlay = None
+            animate_window(progress_overlay, screen_width, (screen_height - window_height) // 2, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+        progress_overlay = None
         light_progress_bar = None
         return
 
-    # Create overlay if it doesn't exist
-    if overlay is None:
-        overlay = tk.Toplevel(root)
-        overlay.title("Blind Progress Bar")
-        overlay.overrideredirect(True)  # Remove window decorations
-        overlay.attributes("-topmost", True)  # Ensure it stays on top
-        overlay.attributes("-alpha", 0.8)  # Semi-transparent
-        overlay.configure(bg="black")
+    # Create progress_overlay if it doesn't exist
+    if progress_overlay is None:
+        progress_overlay = tk.Toplevel(root)
+        progress_overlay.title("Blind Progress Bar")
+        progress_overlay.overrideredirect(True)  # Remove window decorations
+        progress_overlay.attributes("-topmost", True)  # Ensure it stays on top
+        progress_overlay.attributes("-alpha", 0.8)  # Semi-transparent
+        progress_overlay.configure(bg="black")
         
-        # Set a larger size for the overlay (e.g., 800x200) and center it
+        # Set a larger size for the progress_overlay (e.g., 800x200) and center it
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         width, height = round(screen_width*.7), round((screen_height*.5))
 
         x = (screen_width - width) // 2
         y = (screen_height - height) // 2
-        overlay.update_idletasks()
-        overlay.geometry(f"{width}x{height}+{-screen_width}+{y}")
-        # overlay.geometry(f"{width}x{height}+{x}+{y}")
+        progress_overlay.update_idletasks()
+        progress_overlay.geometry(f"{width}x{height}+{-screen_width}+{y}")
+        # progress_overlay.geometry(f"{width}x{height}+{x}+{y}")
         style = ttk.Style(root)
         style.theme_use('default')
 
@@ -4963,25 +5006,25 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         # To change light and dark color of the bar:
         # style.configure("Horizontal.TProgressbar", lightcolor='white', darkcolor='black')
         
-        # Create a larger progress bar inside the overlay (length 700 pixels)
-        light_progress_bar = ttk.Progressbar(overlay, orient="horizontal", mode="determinate", length=round(screen_width*.6))
+        # Create a larger progress bar inside the progress_overlay (length 700 pixels)
+        light_progress_bar = ttk.Progressbar(progress_overlay, orient="horizontal", mode="determinate", length=round(screen_width*.6))
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
         
         # Add a music icon (using a label with text or an image)
-        music_icon_label = tk.Label(overlay, text="🎵", font=("Arial", 100), bg="black", fg=generate_random_color(100,255)) #  🎶 🎵  🎶
+        music_icon_label = tk.Label(progress_overlay, text="🎵", font=("Arial", 100), bg="black", fg=generate_random_color(100,255)) #  🎶 🎵  🎶
         music_icon_label.place(relx=0, rely=0.35, anchor="center")
 
         # Start pulsating the music icon
         pulsate_music_icon(music_icon_label)
-        overlay.update_idletasks()
-        animate_window(overlay, x, y, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
+        progress_overlay.update_idletasks()
+        animate_window(progress_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
 
     # If current_time and total_length are provided, update the progress bar
     if current_time is not None and total_length is not None:
         move_music_icon(current_time, total_length)
         light_progress_bar["maximum"] = total_length
         light_progress_bar["value"] = current_time
-        overlay.wm_attributes("-topmost", True)
+        progress_overlay.wm_attributes("-topmost", True)
 
 pulse_step = 0  # Track animation progress
 move_active = False  # Control movement loop
@@ -5264,7 +5307,7 @@ def toggle_title_popup(show):
     else:
         top_font = ("Arial", 1)
         bottom_font = ("Arial", 1)
-        title_row = currently_playing.get("filename", "").split(".")[0]
+        title_row = currently_playing.get("filename", "No Media Playing").split(".")[0]
 
     title_window.configure(bg=bg_color)
     if title_row_label:
@@ -5518,11 +5561,12 @@ def play_video(index=playlist["current_index"]):
 
 all_themes_played = []
 def play_filename(filename, fullscreen=True):
-    global blind_round_toggle, currently_playing, video_stopped, all_themes_played, previous_media
+    global blind_round_toggle, peek_round_toggle, currently_playing, video_stopped, all_themes_played, previous_media
     filepath = directory_files.get(filename)  # Get file path from playlist
     if not filepath or not os.path.exists(filepath):  # Check if file exists
         print(f"File not found: {filepath}. Skipping...")
         blind_round_toggle = False
+        peek_round_toggle = False
         play_video(playlist["current_index"] + skip_direction)  # Try playing the next video
         return
     currently_playing = {
@@ -5571,6 +5615,10 @@ def play_filename(filename, fullscreen=True):
             manual_blind = False
             set_black_screen(False)
             player.play()
+        if peek_round_toggle:
+            peek_round_toggle = False
+            button_seleted(peek_round_button, peek_round_toggle)
+            toggle_peek_overlay()
         root.after(500, play_video_retry, 5, fullscreen)  # Retry playback
     if filename not in all_themes_played:
         all_themes_played.append(filename)
@@ -5808,6 +5856,15 @@ def update_seek_bar():
             time = projected_vlc_time/1000
             if manual_blind:
                 set_progress_overlay(time, length)
+            if peek_overlay and not light_round_started:
+                gap = get_peek_gap(currently_playing.get("data"))
+                progress = ((time+peek_modifier)%24/12)*100
+                if progress >= 100:
+                    direction = "right"
+                    progress -= 100
+                else:
+                    direction = "down"
+                toggle_peek_overlay(direction=direction, progress=progress, gap=gap)
             if length > 0:
                 global can_seek
                 can_seek = False
@@ -6050,6 +6107,8 @@ def toggle_blind_round():
     blind_round_toggle = not blind_round_toggle
     button_seleted(blind_round_button, blind_round_toggle)
     if blind_round_toggle:
+        if peek_round_toggle:
+            toggle_peek_round()
         toggle_coming_up_popup(True, "Blind Round", "Guess the anime from just the music.\nNormal rules apply.", queue=True)
     else:
         toggle_coming_up_popup(False, "Blind Round")
@@ -6092,7 +6151,7 @@ def apply_censors(time, length):
     if censors_enabled and not mismatch_visuals:
         if check_file_censors(currently_playing.get('filename'), time, False):
             return
-        elif length - time <= 1 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(os.path.basename(playlist["playlist"][playlist["current_index"]+1]), time, True):
+        elif length - time <= 1.2 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(os.path.basename(playlist["playlist"][playlist["current_index"]+1]), time, True):
             return
     if censor_used:
         censor_bar.attributes("-topmost", False)
@@ -6114,17 +6173,16 @@ def check_file_censors(filename, time, video_end):
     if file_censors != None:
         for censor in file_censors:
             if (not blind_enabled or censor.get("mute")) and (not is_title_window_up() or censor.get("nsfw")) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
-                if not censor_used:
+                if not censor_used and not censor.get("mute"):
                     censor_used = True
-                    if not censor.get("mute"):
-                        censor_bar.attributes("-topmost", True)
-                        if root.attributes("-topmost"):
-                            root.lift()
-                        if censor_editor:
-                            censor_editor.attributes("-topmost", True)
-                        for window in [title_window, progress_bar, coming_up_window, censor_editor]:
-                            if window:
-                                window.lift()
+                    censor_bar.attributes("-topmost", True)
+                    if peek_overlay:
+                        for i in range(2):
+                            if peek_overlay[i]:
+                                peek_overlay[i].lift()
+                    lift_windows()
+                    if censor_editor:
+                        censor_editor.attributes("-topmost", True)
                 if censor.get("mute"):
                     player.audio_set_mute(True)
                     mute_found = True
@@ -6141,6 +6199,13 @@ def check_file_censors(filename, time, video_end):
         player.audio_set_mute(disable_video_audio)
 
     return censor_found
+
+def lift_windows():
+    if root.attributes("-topmost"):
+        root.lift()
+    for window in [title_window, progress_bar, coming_up_window, censor_editor]:
+        if window:
+            window.lift()
 
 def set_window_position(window, pos_x, pos_y):
     """Moves the Tkinter root window to the bottom-left corner with accurate positioning."""
@@ -6542,7 +6607,7 @@ def toggle_theme(playlist_name, button=None, filename=None, quite=False):
 
     check_theme(playlist_name=playlist_name, recache=True)
 
-    if currently_playing.get("data"):
+    if currently_playing.get("data") and currently_playing.get('filename') == filename:
         update_series_song_information(currently_playing.get("data"), currently_playing.get("data").get("mal"))
 
 check_theme_cache = {}
@@ -6804,9 +6869,9 @@ def list_keyboard_shortcuts():
     right_column.config(state=tk.NORMAL, wrap="none")
     right_column.delete(1.0, tk.END)
     add_single_line(right_column, "SHOW KEYBOARD SHORTCUTS", "[K]")
-    add_single_line(right_column, "TOGGLE KEYBOARD SHORTCUTS", "[']")
-    add_single_line(right_column, "TOGGLE INFO", "[I]", False)
-    add_single_line(right_column, "DOCK/UNDOCK", "[D]")
+    add_single_line(right_column, "ENABLE SHORTCUTS", "[']", False)
+    add_single_line(right_column, "INFO", "[I]", False)
+    add_single_line(right_column, "DOCK", "[D]")
     add_single_line(right_column, "PLAY/PAUSE", "[SPACE BAR]", False)
     add_single_line(right_column, "STOP", "[ESC]")
     add_single_line(right_column, "PREVIOUS/NEXT", "[⬅]/[➡]", False)
@@ -6831,8 +6896,10 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "SCORE", "[J]")
     add_single_line(right_column, "TAGS", "                       [N]", False)
     add_single_line(right_column, "MULTIPLE", "[U]")
-    add_single_line(right_column, "BLIND ROUND", "[B]", False)
-    add_single_line(right_column, "TOGGLE BLIND", "[BACKSPACE]")
+    add_single_line(right_column, "TOGGLE BLIND", "[BKSP]", False)
+    add_single_line(right_column, "TOGGLE PEEK", "[=]")
+    add_single_line(right_column, "BLIND/PEEK ROUND", "[B]", False)
+    add_single_line(right_column, "WIDEN PEEK", "[ _ ]")
     add_single_line(right_column, "SHOW YOUTUBE PLAYLIST", "[Y]")
     add_single_line(right_column, "LIGHTNING ROUND CYCLE", "[L]", False)
     add_single_line(right_column, "VARIETY", "[V]")
@@ -7005,22 +7072,25 @@ def create_popout_controls(columns=5, title="Popout Controls"):
     popout_controls = tk.Toplevel()
     popout_controls.title(title)
     popout_controls.configure(bg=BACKGROUND_COLOR)
-    popout_controls.geometry("1000x515")
+    popout_controls.geometry("850x515")
     popout_controls.protocol("WM_DELETE_WINDOW", on_popout_close)
 
     # Group them by category
     button_groups = {
         "POPOUT CONTROLS": [
             (dock_button, "DOCK\nPLAYER", False), 
-            (tag_button, "TAG\nENTRY", False),
-            (favorite_button, "FAVORITE\nENTRY", False),
+            (tag_button, "TAG", True),
+            (favorite_button, "FAVORITE", True),
             (info_button, "INFORMATION\nPOP-UP", False, 2)
         ],
-        "BLIND CONTROLS": [
-            (blind_button, "BLIND\nSCREEN", False, 2), 
-            (blind_round_button, "QUEUE BLIND ROUND", True, 3)
+        "BLIND/PEEK CONTROLS": [
+            (blind_button, "BLIND\nSCREEN", False, 1), 
+            (blind_round_button, "BLIND NEXT", True, 1),
+            (peek_button, "PEEK\nSCREEN", False, 1), 
+            (widen_peek_button, "WIDEN PEEK", True, 1), 
+            (peek_round_button, "PEEK NEXT", True, 1)
         ],
-        "BONUS ROUNDS": [
+        "BONUS QUESTIONS": [
             (guess_year_button, "YEAR", True), 
             (guess_members_button, "MEMBERS", True),
             (guess_score_button, "SCORE", True),
@@ -7034,7 +7104,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         "MISC TOGGLES": [
             (toggle_censor_bar_button, "", True, 2), 
             (mute_button, "MUTE", False),
-            (end_button, "END SESSION", False, 2)]
+            (end_button, "END SESSION STATS", False, 2)]
     }
     button_font = ("Helvetica", 20, "bold")  # Double-size font
 
@@ -7260,14 +7330,14 @@ def create_first_row_buttons():
                                 "button after to create the playlist.")
 
     global directory_entry
-    directory_entry = tk.Entry(first_row_frame, width=37, bg="black", fg="white", insertbackground="white", textvariable=directory)
+    directory_entry = tk.Entry(first_row_frame, width=33, bg="black", fg="white", insertbackground="white", textvariable=directory)
     directory_entry.pack(side="left")
     directory_entry.insert(0, directory)
 
     global generate_button
     generate_button = create_button(first_row_frame, "CREATE", generate_playlist_button,
                                 help_title="CREATE PLAYLIST",
-                                help_text=("This created a playlist using all videos "
+                                help_text=("This creates a playlist using all videos "
                                 "found in the directory.\n\nIf this is your first time "
                                 "creating a playlist with these files, and you want "
                                 "to be able to use all the other playlist functions, "
@@ -7290,7 +7360,7 @@ def create_first_row_buttons():
                                 help_text="When enabled, will allow the playlist to play infinitely. Tracks are chosen from all tracks in directory "
                                 "based on popularity and season groups. Favorited tracks get a boost, and tagged tracks will not be picked. "
                                 "Tracks from the last 3 seasons also get a boost.\n\n"
-                                "Filters cannot be used(yet) and sorting/huffling is disabled.\n\n"
+                                "Filters cannot be used(yet) and sorting/shuffling is disabled.\n\n"
                                 "Difficulty can be chosen, limiting the groups to certain popularity levels. For example, 'VERY EASY' will only "
                                 "pick tracks from MALs top 500 anime, rotating from the top 100, 100-250, and 250-500 every 3 entries. "
                                 "'NORMAL' will pick from the top 250, 250-750, then 1000+ every 3 entries.")
@@ -7452,6 +7522,11 @@ def create_first_row_buttons():
                                             "later. It would be kinda slow with the dialogue popping up each time, but it "
                                             "may be fast with shortcuts enabled, as described on the SEARCH button. You could "
                                             "also use this to add tracks to an empty playlist to create your own from scratch."))
+    
+    global stats_button
+    stats_button = create_button(first_row_frame, "📊", display_theme_stats_in_columns, True,
+                                help_title="THEME DIRECTORY/STATS",
+                                help_text=("Shows detailed stats of themes in directory."))
 
     global help_button
     help_button = create_button(first_row_frame, "HELP", lambda:show_button_help("HELP", 
@@ -7483,14 +7558,14 @@ end_info_button = create_button(second_row_frame, "⏩", toggle_auto_info_end, T
                               help_text=("When enabled, will show the theme's info popup during the last 8 seconds.\n\n"
                                          "Useful if you want to go more hands off with the trivia, and just show the answer at the end."))
 
-tag_button = create_button(second_row_frame, "[T]AG", tag, False,
+tag_button = create_button(second_row_frame, "❌", tag, False,
                               help_title="[T]AG THEME (Shortcut Key = 't')",
                               help_text=("Adds the current;y playing theme to a 'Tagged Themes' playlist. Clicking again "
                                          "will remove it from the playlist.\n\nThe purpose is to tag "
                                          "themes you may need to check out later for various reasons. "
                                          "Like adding censors, updating the theme, or even deleting it. "
                                          "Just a reminder."))
-favorite_button = create_button(second_row_frame, "❤️", favorite, True,
+favorite_button = create_button(second_row_frame, "❤", favorite, True,
                               help_title="FAVORITE THEME (Shortcut Key='*')",
                               help_text=("Adds the current;y playing theme to a 'Favorite Themes' playlist. Clicking again "
                                          "will remove it from the playlist.\n\nJust a way to keep track of your favorite themes."))
@@ -7538,6 +7613,18 @@ blind_round_button = create_button(second_row_frame, "👁", toggle_blind_round,
                               help_text=("Enables the next video to play as a 'Blind Round'. A blind round plays normally, "
                                          "but will cover the screen at the start to make it audio only. This is only lasts "
                                          "for one video, and the blind can be removed with the normal BLIND toggle."))
+
+peek_button = create_button(second_row_frame, "PEEK", toggle_peek, False,
+                              help_title="PEEK OVERLAY (Shortcut Key = '=')",
+                              help_text=("Covers the screen except for a small peek window that moves across the screen."))
+widen_peek_button = create_button(second_row_frame, "⇔", widen_peek, False,
+                              help_title="WIDEN PEEK OVERLAY (Shortcut Key = '_')",
+                              help_text=("Widens the gap of the peek window."))
+peek_round_button = create_button(second_row_frame, "👀", toggle_peek_round, True,
+                              help_title="PEEK ROUND (Shortcut Key = 'b','b')",
+                              help_text=("Enables the next video to play as a 'Peek Round'. A peek round plays normally, "
+                                         "but will cover most of the screen at the start, only showing a small moving window. "
+                                         "The peek can be removed with the normal PEEK toggle."))
 
 guess_year_button = create_button(second_row_frame, "📅", lambda: guess_extra("year"), False,
                               help_title="[G]UESS YEAR (Shortcut Key = 'g')",
@@ -7594,7 +7681,7 @@ configure_style()
 light_dropdown = ttk.Combobox(second_row_frame,
                         values=[display for _, display in light_mode_options],
                         textvariable=selected_mode,
-                        width=19,
+                        width=14,
                         height=len(light_mode_options),
                         state="readonly",
                         style="Black.TCombobox")
@@ -7677,11 +7764,7 @@ mute_button = create_button(second_row_frame, "[M]UTE", toggle_mute, True,
                               help_title="[M]UTE THEME AUDIO (Shortcut Key = 'm')",
                               help_text=("Toggles muting the video audio."))
 
-stats_button = create_button(second_row_frame, "📊", display_theme_stats_in_columns, True,
-                              help_title="THEME DIRECTORY/STATS",
-                              help_text=("Shows detailed stats of themes in directory."))
-
-toggle_disable_shortcuts_button = create_button(second_row_frame, "[`]ENABLE", toggle_disable_shortcuts,
+toggle_disable_shortcuts_button = create_button(second_row_frame, "ENABLE", toggle_disable_shortcuts,
                               help_title="ENABLE SHORTCUTS (Shortcut Key = '`')",
                               help_text=("Used to toggle shortcut keys.\n\nIn my current setup, I am streaming my desktop to "
                                          "one screen, and do not have access to a second monitor to manage the "
@@ -7841,9 +7924,9 @@ def on_press(key):
         try:
             if list_loaded == "search":
                 pass
-            elif not playlist.get("infinite", False) and (key.char == '-' or key.char == '_'):
+            elif not playlist.get("infinite", False) and (key.char == '-'):
                 player.set_time(player.get_time()-1000)
-            elif not playlist.get("infinite", False) and (key.char == '=' or key.char == '+'):
+            elif not playlist.get("infinite", False) and (key.char == '+'):
                 player.set_time(player.get_time()+1000)
         except AttributeError as e:
             print(f"Error: {e}")
@@ -7889,7 +7972,10 @@ def on_release(key):
                 elif key == key.tab:
                     player.toggle_fullscreen()
                 elif key == key.backspace:
-                    blind(True)
+                    if peek_overlay:
+                        toggle_peek()
+                    else:
+                        blind(True)
                 elif key == key.enter:
                     list_select()
             except AttributeError:
@@ -7941,7 +8027,14 @@ def on_release(key):
                 elif key.char == 'u':
                     guess_extra("multiple")
                 elif key.char == 'b':
-                    toggle_blind_round()
+                    if not peek_round_toggle and not blind_round_toggle:
+                        toggle_blind_round()
+                    else:
+                        toggle_peek_round()
+                elif key.char == '=':
+                    toggle_peek()
+                elif key.char == '_':
+                    widen_peek()
                 elif key.char == 'v':
                     toggle_light_mode("variety")
                 elif key.char == 'i':
@@ -7958,12 +8051,12 @@ def on_release(key):
                     guess_extra("members")
                 elif key.char == 'j':
                     guess_extra("score")
-                elif playlist.get("infinite", False) and (key.char == '-' or key.char == '_'):
+                elif playlist.get("infinite", False) and (key.char == '-'):
                     if playlist["difficulty"] > 0:
                         playlist["difficulty"] -= 1
                         difficulty_dropdown.current(playlist["difficulty"])
                         select_difficulty()
-                elif playlist.get("infinite", False) and (key.char == '=' or key.char == '+'):
+                elif playlist.get("infinite", False) and (key.char == '+'):
                     if playlist["difficulty"] < len(difficulty_options)-1:
                         playlist["difficulty"] += 1
                         difficulty_dropdown.current(playlist["difficulty"])
