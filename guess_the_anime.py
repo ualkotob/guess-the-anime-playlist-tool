@@ -344,7 +344,7 @@ def fetch_metadata(filename = None, refetch = False):
                 else:
                     anime_data["season"] = anime_data["season"].capitalize()
                 anime_metadata[mal_id] = anime_data
-        if refetch or not anime_data or not anime_data.get("characters") or not anime_data.get("tags") or not anime_data.get("episode_info"):
+        if anime_data and (refetch or not anime_data.get("characters") or not anime_data.get("tags") or not anime_data.get("episode_info")):
             if not anidb_cooldown and anidb_id:
                 anidb = fetch_anidb_metadata(anidb_id)
                 if anidb["tags"] == [] and anidb["characters"] == [] and anidb["episodes"] == []:
@@ -414,26 +414,28 @@ def get_theme_list(data):
     other = []
     for theme in data.get("animethemes", {}):
         artists = []
-        for artist in theme["song"]["artists"]:
-            artists.append(artist["name"])
-        theme_data = {
-            "type":theme["type"],
-            "slug":theme["slug"],
-            "title":theme["song"]["title"],
-            "artist": artists,
-            "episodes": theme["animethemeentries"][0]["episodes"] if theme.get("animethemeentries") else "N/A"
-        }
-        if theme.get("animethemeentries"):
-            if theme["animethemeentries"][0]["spoiler"]:
-                theme_data["spoiler"] = theme["animethemeentries"][0]["spoiler"]
-            if theme["animethemeentries"][0]["videos"] and theme["animethemeentries"][0]["videos"][0]["overlap"] and theme["animethemeentries"][0]["videos"][0]["overlap"] != "None":
-                theme_data["overlap"] = theme["animethemeentries"][0]["videos"][0]["overlap"]
-        if "OP" in theme["slug"]:
-            openings.append(theme_data)
-        elif "ED" in theme["slug"]:
-            endings.append(theme_data)
-        else:
-            other.append(theme_data)
+        song = theme.get("song")
+        if song:
+            for artist in song.get("artists", {}):
+                artists.append(artist["name"])
+            theme_data = {
+                "type":theme["type"],
+                "slug":theme["slug"],
+                "title":song.get("title"),
+                "artist": artists,
+                "episodes": theme["animethemeentries"][0]["episodes"] if theme.get("animethemeentries") else "N/A"
+            }
+            if theme.get("animethemeentries"):
+                if theme["animethemeentries"][0]["spoiler"]:
+                    theme_data["spoiler"] = theme["animethemeentries"][0]["spoiler"]
+                if theme["animethemeentries"][0]["videos"] and theme["animethemeentries"][0]["videos"][0]["overlap"] and theme["animethemeentries"][0]["videos"][0]["overlap"] != "None":
+                    theme_data["overlap"] = theme["animethemeentries"][0]["videos"][0]["overlap"]
+            if "OP" in theme["slug"]:
+                openings.append(theme_data)
+            elif "ED" in theme["slug"]:
+                endings.append(theme_data)
+            else:
+                other.append(theme_data)
     return openings + endings + other
 
 def get_filename_metadata(filename):
