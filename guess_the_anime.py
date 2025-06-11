@@ -248,18 +248,19 @@ def get_external_site_id(anime_themes, site):
 
 anidb_cooldown = False
 fetching_metadata = {}
-def fetch_metadata(filename = None, refetch = False):
+def fetch_metadata(filename = None, refetch = False, label=""):
     global currently_playing, anidb_cooldown, anidb_delay
     if filename is None:
         filename = playlist["playlist"][playlist["current_index"]]
         refetch = True
 
-    print(f"Fetching metadata for {filename}...", end="", flush=True)
+    print(f"{label}Fetching metadata for {filename}...", end="", flush=True)
 
     fetching_metadata[filename] = True
     slug = filename.split("-")[1].split(".")[0].split("v")[0]
     mal_id = None
     anidb_id = None
+    anilist_id = None
     if (not "[MAL]" in filename) and (not "[ID]" in filename):
         if len(filename.split("-")) >= 3:
             slug_ext = filename.split("-")[2]
@@ -268,10 +269,12 @@ def fetch_metadata(filename = None, refetch = False):
         anime_themes = fetch_animethemes_metadata(filename)
         mal_id = get_external_site_id(anime_themes, "MyAnimeList")
         anidb_id = get_external_site_id(anime_themes, "aniDB")
+        anilist_id = get_external_site_id(anime_themes, "AniList")
     elif ("[MAL]" in filename):
         filename_metadata = get_filename_metadata(filename)
         mal_id = filename_metadata.get('mal_id')
         anidb_id = filename_metadata.get('anidb_id')
+        anilist_id = filename_metadata.get('anilist_id')
         anime_themes = fetch_animethemes_metadata(mal_id=mal_id)
         if not anime_themes:
             anime_themes = {
@@ -282,6 +285,7 @@ def fetch_metadata(filename = None, refetch = False):
             if file:
                 anime_themes = fetch_animethemes_metadata(file) or anime_themes
                 anidb_id = anidb_id or get_external_site_id(anime_themes, "aniDB")
+                anilist_id = anilist_id or get_external_site_id(anime_themes, "AniList")
         if filename_metadata.get("song"):
             anime_themes["animethemes"].append({
                 "type": slug[:2],
@@ -303,6 +307,7 @@ def fetch_metadata(filename = None, refetch = False):
         file_data = {
             "mal":mal_id,
             "anidb":anidb_id,
+            "anilist":anilist_id,
             "slug":slug
         }
         anime_data = anime_metadata.get(mal_id)
@@ -357,9 +362,18 @@ def fetch_metadata(filename = None, refetch = False):
                     anime_data["episode_info"] = anidb["episodes"]
                     anime_metadata[mal_id] = anime_data
             if anidb_cooldown:
-                anime_data["tags"] = old_tags
-                anime_data["characters"] = old_characters
-                anime_data["episode_info"] = old_episode_info
+                try:
+                    anime_data["tags"] = old_tags
+                except NameError:
+                    anime_data["tags"] = []
+                try:
+                    anime_data["characters"] = old_characters
+                except NameError:
+                    anime_data["characters"] = []
+                try:
+                    anime_data["episode_info"] = old_episode_info
+                except NameError:
+                    anime_data["episode_info"] = []
                 anime_metadata[mal_id] = anime_data
         if anime_data:
             # Get new songs from the current fetch
@@ -399,13 +413,13 @@ def fetch_metadata(filename = None, refetch = False):
             if currently_playing.get('filename') == filename:
                 currently_playing["data"] = data
                 update_metadata()
-            print(f"\rFetching metadata for {filename}...COMPLETE")
+            print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
         else:
             data = {}
-            print(f"\rFetching metadata for {filename}...FAILED")
+            print(f"\r{label}Fetching metadata for {filename}...FAILED")
     else:
         data = {}
-        print(f"\rFetching metadata for {filename}...FAILED")
+        print(f"\r{label}Fetching metadata for {filename}...FAILED")
     return data
 
 def get_theme_list(data):
@@ -428,6 +442,8 @@ def get_theme_list(data):
             if theme.get("animethemeentries"):
                 if theme["animethemeentries"][0]["spoiler"]:
                     theme_data["spoiler"] = theme["animethemeentries"][0]["spoiler"]
+                if theme["animethemeentries"][0]["nsfw"]:
+                    theme_data["nsfw"] = theme["animethemeentries"][0]["nsfw"]
                 if theme["animethemeentries"][0]["videos"] and theme["animethemeentries"][0]["videos"][0]["overlap"] and theme["animethemeentries"][0]["videos"][0]["overlap"] != "None":
                     theme_data["overlap"] = theme["animethemeentries"][0]["videos"][0]["overlap"]
             if "OP" in theme["slug"]:
@@ -445,6 +461,7 @@ def get_filename_metadata(filename):
     # Define patterns for each tag
     mal_match = re.search(r"\[MAL](\d+)", filename)
     anidb_match = re.search(r"\[ADB](\d+)", filename)
+    anilist_match = re.search(r"\[ALT](\d+)", filename)
     artist_match = re.search(r"\[ART](.*?)(?=\[|$|\.)", filename)
     song_match = re.search(r"\[SNG](.*?)(?=\[|$|\.)", filename)
     
@@ -454,6 +471,9 @@ def get_filename_metadata(filename):
 
     if anidb_match:
         metadata["anidb_id"] = anidb_match.group(1)
+
+    if anilist_match:
+        metadata["anilist_id"] = anilist_match.group(1)
     
     if artist_match:
         metadata["artist"] = artist_match.group(1).strip()
@@ -587,7 +607,7 @@ def fetch_all_metadata(delay=1):
         total_checked = 0
         total_fetched = 0
         total_skipped = 0
-        for filename in directory_files:
+        for index, filename in enumerate(directory_files):
             total_checked += 1
             # Skip if metadata already exists
             if filename in file_metadata:
@@ -605,7 +625,7 @@ def fetch_all_metadata(delay=1):
             if total_fetched > 0: 
                 time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
                 anidb_delay = 0
-            fetch_metadata(filename)  # Call your existing metadata function
+            fetch_metadata(filename, label=f"[{index+1}/{len(directory_files)}]")  # Call your existing metadata function
             total_fetched += 1
             toggle_theme("New Themes", filename=filename, quite=True)
 
@@ -707,7 +727,8 @@ def reset_metadata(filename = None):
     left_column.insert(tk.END, "FILE: ", "bold")
     left_column.insert(tk.END, f"{filename}", "white")
     if "[MAL]" not in filename and "[ID]" not in filename:
-        left_column.window_create(tk.END, window=tk.Button(left_column, text="[AT]", borderwidth=0, pady=0, command=lambda: anime_themes_video(filename), bg="black", fg="white"))
+        if currently_playing.get("type") == "theme":
+            left_column.window_create(tk.END, window=tk.Button(left_column, text="[AT]", borderwidth=0, pady=0, command=lambda: anime_themes_video(filename), bg="black", fg="white"))
     left_column.window_create(tk.END, window=tk.Button(left_column, text="⎘", borderwidth=0, pady=0, command=lambda: pyperclip.copy(filename), bg="black", fg="white"))
     if playlist["name"] == "Tagged Themes":
         left_column.window_create(tk.END, window=tk.Button(left_column, text="❌", borderwidth=0, pady=0, command=lambda: delete_file_by_filename(filename), bg="black", fg="white"))
@@ -793,6 +814,9 @@ def update_metadata():
     updating_metadata = False
 
 def update_extra_metadata(data):
+    if currently_playing.get("type") == "youtube":
+        show_youtube_playlist()
+        return
     right_column.config(state=tk.NORMAL, wrap="word")
     right_column.delete(1.0, tk.END)
     extra_data = [
@@ -1230,8 +1254,12 @@ def add_op_ed(theme, column, slug, title, mal_id):
     column.insert(tk.END, f"(Episodes: {episodes})", format)
     if theme.get("overlap") == "Over":
         column.insert(tk.END, f" (OVERLAP)", format)
+    if theme.get("overlap") == "Transition":
+        column.insert(tk.END, f" (TRANSITION)", format)
     if theme.get("spoiler"):
         column.insert(tk.END, f" (SPOILER)", format)
+    if theme.get("nsfw"):
+        column.insert(tk.END, f" (NSFW)", format)
     if theme.get("special"):
         column.insert(tk.END, f" (SPECIAL)", format)
 
@@ -2100,7 +2128,7 @@ def save_youtube_metadata():
         os.makedirs(metadata_folder)
 
     with open(YOUTUBE_METADATA_FILE, "w") as f:
-        json.dump(youtube_metadata, f)
+        json.dump(youtube_metadata, f, indent=4)
 
 def load_youtube_metadata():
     global youtube_metadata
@@ -2355,11 +2383,14 @@ def series_stats(column):
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY SERIES\n", ("bold", "underline"))
+    count = 0
     for series, count in sorted(series_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{series}: ", "bold")
         column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
-        add_field_total_button(column, get_all_matching_field("series", [series]), False, False)
+        if count < 300:
+            add_field_total_button(column, get_all_matching_field("series", [series]), False, False)
         column.insert(tk.END, f"\n")
+        count += 1
     column.config(state=tk.DISABLED)
 
 series_totals = None
@@ -2396,11 +2427,14 @@ def artist_stats(column):
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY ARTIST\n", ("bold", "underline"))
+    count = 0
     for artist, count in sorted(artist_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{artist}: ", "bold")
         column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
-        add_field_total_button(column, get_filenames_from_artist(artist), False, False)
+        if count < 300:
+            add_field_total_button(column, get_filenames_from_artist(artist), False, False)
         column.insert(tk.END, f"\n")
+        count += 1
     column.config(state=tk.DISABLED)
 
 def studio_stats(column):
@@ -2801,7 +2835,8 @@ def filter_playlist(filters):
     for filename in playlist["playlist"]:
         data = get_metadata(filename)
         # Extract metadata
-        
+        if not data:
+            continue
         title = data.get("title", "").lower()
         eng_title = (data.get("eng_title", "") or "").lower()
         theme_type = format_slug(data.get("slug"))
@@ -2948,7 +2983,6 @@ def search(update = False, ask = True, add = False):
     if search_term == "":
         search_results = []
     else:
-        scan_directory()
         search_results = search_playlist(search_term)
     if search_queue and search_queue in search_results:
         selected = search_results.index(search_queue)+1
@@ -3517,7 +3551,7 @@ def set_variety_light_mode():
     data = currently_playing.get('data', {})
     popularity = ((data.get('popularity') or 3000) + get_series_popularity(data)) / 2
     
-    is_op = data.get('slug').startswith("OP")
+    is_op = data.get('slug', "").startswith("OP")
 
     # Round options by popularity and OP status, now strings instead of numbers
     if popularity <= 100:
@@ -5825,9 +5859,7 @@ def stop():
     player.stop()
     player.set_media(None)  # Reset the media
     update_progress_bar(0,1)
-    if censor_bar:
-        censor_bar.destroy()
-        censor_bar = None
+    create_censor_bar(False)
 
 def seek(value):
     """Function to seek the video"""
@@ -6122,13 +6154,17 @@ def toggle_blind_round():
 censor_list = {}
 censors_enabled = True
 censor_bar = None
-def create_censor_bar():
+def create_censor_bar(create=True):
     global censor_bar
-    censor_bar = tk.Toplevel()
-    censor_bar.configure(bg="black")
-    censor_bar.geometry("5000x2500")
-    censor_bar.overrideredirect(True)
-    censor_bar.lower()
+    if create:
+        censor_bar = tk.Toplevel()
+        censor_bar.configure(bg="black")
+        censor_bar.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}")
+        censor_bar.overrideredirect(True)
+        censor_bar.lower()
+    elif censor_bar:
+        censor_bar.destroy()
+        censor_bar = None
 
 def load_censors():
     global censor_list
@@ -6955,6 +6991,8 @@ def toggle_censor_bar():
     print("Censor Bar Enabled: " + str(censors_enabled))
     apply_censors(player.get_time()/1000, player.get_length()/1000)
     button_seleted(toggle_censor_bar_button, censors_enabled)
+    if not censors_enabled:
+        create_censor_bar(False)
         
 def toggle_progress_bar():
     global progress_bar_enabled
@@ -7256,20 +7294,26 @@ def select_directory():
         directory = directory_path
         scan_directory()
 
-def scan_directory():
-    global directory_entry, directory_files, directory
-    if not directory:
-        return
-    directory_files = {}
-    if globals().get("directory_entry"):
-        directory_entry.delete(0, tk.END)
-        directory_entry.insert(0, directory)
-    for root, _, files in os.walk(directory):
-        for file in files:
-            if file.endswith((".mp4", ".webm", ".mkv")):
-                directory_files[file] = os.path.join(root, file)
-    save_config()
-
+def scan_directory(queue=False):
+    def worker():
+        global directory_entry, directory_files, directory
+        if not directory:
+            return
+        print(f"Scanning Directory...", end="", flush=True)
+        directory_files = {}
+        if globals().get("directory_entry"):
+            directory_entry.delete(0, tk.END)
+            directory_entry.insert(0, directory)
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if file.endswith((".mp4", ".webm", ".mkv")):
+                    directory_files[file] = os.path.join(root, file)
+        save_config()
+        print(f"\rScanning Directory....COMPLETE ({len(directory_files)} files)")
+    if queue:
+        threading.Thread(target=worker, daemon=True).start()
+    else:
+        worker()
 
 def empty_playlist():
     global playlist
@@ -7284,7 +7328,6 @@ def empty_playlist():
 # Generate playlist button
 def generate_playlist_button():
     global playlist
-    scan_directory()
     confirm = messagebox.askyesno("Create Playlist", f"Are you sure you want to create a new playlist with all {len(directory_files)} files in the directory?")
     if not confirm:
         return  # User canceled
@@ -8079,7 +8122,7 @@ listener.start()
 load_config()
 load_youtube_metadata()
 load_metadata()
-scan_directory()
+scan_directory(True)
 create_first_row_buttons()
 threading.Thread(target=load_default_char_images, daemon=True).start()
 
