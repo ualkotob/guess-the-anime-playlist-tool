@@ -92,12 +92,16 @@ HIGHLIGHT_COLOR = "gray26"
 # =========================================
 
 # Function to fetch anime metadata using AnimeThemes.moe API
+animethemes_cache = {}
 def fetch_animethemes_metadata(filename=None, mal_id=None):
     url = "https://api.animethemes.moe/anime"
     if filename:
+        filename = filename.split("-")[0]
+        if animethemes_cache.get(filename):
+            return animethemes_cache.get(filename)
         params = {
             "filter[has]": "animethemes.animethemeentries.videos",
-            "filter[video][basename-like]": filename.split("-")[0] + "-%",
+            "filter[video][basename-like]": filename + "-%",
             "include": "series,resources,images,animethemes.animethemeentries.videos,animethemes.song.artists"
         }
     else:
@@ -111,6 +115,8 @@ def fetch_animethemes_metadata(filename=None, mal_id=None):
     if response.status_code == 200:
         data = response.json()
         if data.get("anime"):
+            if filename:
+                animethemes_cache[filename] = data["anime"][0]
             return data["anime"][0]
     return None
 
@@ -320,6 +326,7 @@ def fetch_metadata(filename = None, refetch = False, label=""):
         file_metadata[filename] = file_data
         if refetch or not anime_data:
             jikan_data = fetch_jikan_metadata(mal_id)
+            print("fetch")
             if jikan_data:
                 anime_data = {
                     "title":jikan_data.get("title"),
@@ -593,7 +600,7 @@ def get_artists_string(artists, total = False):
     return artists_string
 
 anidb_delay = 0
-def fetch_all_metadata(delay=1):
+def fetch_all_metadata(delay=0):
     global cached_pop_time_group, series_cooldowns_cache
     """Fetches missing metadata for the entire directory, spacing out API calls."""
     confirm = messagebox.askyesno("Fetch All Missing Metadata", f"Are you sure you want to fetch all missing metadata?")
@@ -622,7 +629,7 @@ def fetch_all_metadata(delay=1):
                 if anidb_id and not anime_metadata.get(mal_id, {}).get("tags") and anidb_cooldown:
                     total_skipped += 1
                     continue
-            if total_fetched > 0: 
+            if total_fetched > 0 and delay+anidb_delay > 0: 
                 time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
                 anidb_delay = 0
             fetch_metadata(filename, label=f"[{index+1}/{len(directory_files)}]")  # Call your existing metadata function
@@ -5588,7 +5595,10 @@ def play_video(index=playlist["current_index"]):
         update_current_index(index)
         play_filename(playlist["playlist"][playlist["current_index"]], fullscreen=not same_index)
     else:
-        messagebox.showinfo("Playlist Error", "Invalid playlist index.")
+        if index < 0:
+            play_next()
+        else:
+            messagebox.showinfo("Playlist Error", "Invalid playlist index.")
         return
     if playlist["current_index"]+1 >= len(playlist["playlist"]):
         get_next_infinite_track()
