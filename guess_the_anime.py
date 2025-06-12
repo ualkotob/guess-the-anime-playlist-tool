@@ -3500,6 +3500,12 @@ def get_light_round_time():
 
 light_speed_modifier = 1
 light_fullscreen_try = False
+
+def blind_not_top():
+    black_overlay.attributes("-topmost", False)
+    mismatched_player.set_fullscreen(False)
+    mismatched_player.set_fullscreen(True)
+
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay, light_fullscreen_try
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
@@ -3529,7 +3535,7 @@ def update_light_round(time):
                 start_str = "end"
             set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
         else:
-            if not light_fullscreen_try:
+            if light_mode != 'mismatch' and not light_fullscreen_try:
                 light_fullscreen_try = True
                 player.set_fullscreen(False)
                 player.set_fullscreen(True)
@@ -3540,7 +3546,7 @@ def update_light_round(time):
             if light_mode == 'mismatch' and time_left > 11:
                 mismatched_player.set_fullscreen(False)
                 mismatched_player.set_fullscreen(True)
-                root.after(500, set_black_screen, False)
+                root.after(500, blind_not_top)
             if song_overlay_boxes:
                 toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
                 player.audio_set_mute(time_left > 4)
@@ -4631,7 +4637,7 @@ def get_mismatched_theme():
     if match_data:
         is_op = "OP" in match_data.get("slug")
         match_series = (match_data.get("series") or [match_data.get("title")])[0]
-        for filename in directory_files:
+        for filename in mismatch_options:
             if not check_nsfw(filename):
                 data = get_metadata(filename)
                 if data:
