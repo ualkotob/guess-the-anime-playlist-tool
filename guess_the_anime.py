@@ -326,7 +326,6 @@ def fetch_metadata(filename = None, refetch = False, label=""):
         file_metadata[filename] = file_data
         if refetch or not anime_data:
             jikan_data = fetch_jikan_metadata(mal_id)
-            print("fetch")
             if jikan_data:
                 anime_data = {
                     "title":jikan_data.get("title"),
@@ -1747,13 +1746,16 @@ def select_difficulty(event=None):
     for i, d in enumerate(difficulty_options):
         if d == value:
             playlist["difficulty"] = i
-            get_pop_time_groups(refetch=True)
-            update_current_index(save=False)
-            if playlist["current_index"] == len(playlist["playlist"])-2:
-                refetch_next_track()
+            refresh_pop_time_groups()
     difficulty_dropdown.selection_clear()
     difficulty_dropdown.icursor(tk.END)
     save_config()
+
+def refresh_pop_time_groups():
+    get_pop_time_groups(refetch=True)
+    update_current_index(save=False)
+    if playlist["current_index"] == len(playlist["playlist"])-2:
+        refetch_next_track()
 
 def refetch_next_track():
     playlist["playlist"].pop(len(playlist["playlist"])-1)
@@ -1766,8 +1768,9 @@ cached_show_files_map = None
 cached_boosted_show_files_map = None
 cached_pop_time_cooldown = 0
 cached_skipped_themes = []
+total_infinite_files = 0
 def get_pop_time_groups(refetch=False):
-    global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map, cached_pop_time_cooldown, cached_skipped_themes
+    global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map, cached_pop_time_cooldown, cached_skipped_themes, total_infinite_files
     if refetch or not cached_pop_time_group:
         # Step 1: Sort by popularity and split into 3 groups
         difficulty_ranges = [
@@ -1782,12 +1785,17 @@ def get_pop_time_groups(refetch=False):
         sorted_groups = [[] for _ in range(3)]
         playlist_mal_history = []
         cached_skipped_themes = []
+        if playlist.get("filter"):
+            directory_options = filter_playlist(playlist.get("filter"))
+        else:
+            directory_options = copy.deepcopy(directory_files)
+        total_infinite_files = len(directory_options)
         for f in playlist.get("playlist"):
             d = get_metadata(f)
             if d:
                 playlist_mal_history.append(d.get("mal"))
 
-        for f in directory_files:
+        for f in directory_options:
             d = get_metadata(f)
             if not d or check_tagged(f) or check_theme(f, "New Themes"):
                 cached_skipped_themes.append(f)
@@ -1871,17 +1879,24 @@ def get_next_infinite_track(increment=True):
     SERIES_LIMIT, FILE_LIMIT = compute_cooldowns(groups)
 
     p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
-    random.shuffle(groups[p][t])
+    if groups[p][t]:
+        random.shuffle(groups[p][t])
     selected_file = None
     s_limit = SERIES_LIMIT[p]
     f_limit = FILE_LIMIT[p]
     checked_mal_ids = []
+    try_count = 0
     while not selected_file:
         if not groups[p][t]:
+            if try_count > 18:
+                return
             next_playlist_order()
             p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
+            if groups[p][t]:
+                random.shuffle(groups[p][t])
             s_limit = SERIES_LIMIT[p]
             f_limit = FILE_LIMIT[p]
+            try_count += 1
             continue
         file = groups[p][t].pop(0)
         extra_file = False
@@ -1909,7 +1924,8 @@ def get_next_infinite_track(increment=True):
                 boost = get_boost_multiplier(d.get("season", "Fall 2000"))
                 if s_limit > 1 and f_limit > 1:
                     for h, f in enumerate(reversed(playlist["playlist"])):
-                        if f == selected_file or (h < max(SERIES_LIMIT[0], (s_limit/boost)) and series == (get_metadata(f).get("series") or [get_metadata(f).get("title")])):
+                        f_d = get_metadata(f)
+                        if f == selected_file or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (h < max(SERIES_LIMIT[0], (s_limit/boost)) and series == (f_d.get("series") or [f_d.get("title")])):
                             selected_file = None
                             break
                         elif h >= max(FILE_LIMIT[0], ((f_limit)/boost)):
@@ -1925,8 +1941,7 @@ def get_next_infinite_track(increment=True):
                         update_current_index()
                     return selected_file
         if not groups[p][t]:
-            groups = get_pop_time_groups()
-            random.shuffle(groups[p][t])
+            groups, shows_files_map = get_pop_time_groups()
             checked_mal_ids = []
             s_limit = s_limit * 0.9
             f_limit = f_limit * 0.9
@@ -1937,7 +1952,7 @@ def compute_cooldowns(groups):
     global series_cooldowns_cache, file_cooldowns_cache
     if not series_cooldowns_cache:
         POPULARITY_WEIGHTS = [0.5, 0.75, 1.0]  # Lower = more frequent repeats allowed
-        FILE_POPULARITY_WEIGHTS = [0.5, 0.75, 1.0]  # Lower = more frequent repeats allowed
+        FILE_POPULARITY_WEIGHTS = [0.6, 0.9, 1.5]  # Lower = more frequent repeats allowed
         series_cooldowns = []
         file_cooldowns = []
 
@@ -2247,6 +2262,8 @@ def delete_playlist(index):
     # Delete the file
     try:
         os.remove(filename)
+        if check_theme_cache.get("name"):
+            del check_theme_cache["name"]
         print(f"Deleted playlist: {name}")
     except Exception as e:
         print(f"Error deleting playlist: {e}")
@@ -2532,7 +2549,14 @@ def load_filter(index):
     confirm = messagebox.askyesno("Filter Playlist", f"Are you sure you want to apply the filter '{name}'?")
     if not confirm:
         return  # User canceled
-    filter_playlist(filter_data.get("filter"))
+    filters = filter_data.get("filter")
+    if playlist.get("infinite"):
+        playlist["filter"] = filters
+        print("Applied Filters:", filters)
+        refresh_pop_time_groups()
+        save_config()
+    else:
+        filter_playlist(filters)
 
 def delete_filters(update = False):
     filters = get_all_filters()
@@ -2571,192 +2595,272 @@ def filters():
 def show_filter_popup():
     """Opens a properly formatted, scrollable popup for filtering the playlist."""
     if playlist.get("infinite", False):
-        return
+        playlis = copy.deepcopy(directory_files)
+    else:
+        playlis = playlist["playlist"]
 
     def update_score_range(event=None):
-        """Ensures min_score does not exceed max_score."""
         min_score = min_score_slider.get()
         max_score = max_score_slider.get()
-        
         if min_score > max_score:
             if event == min_score:
-                max_score_slider.set(min_score)  # Adjust max if min is moved beyond it
+                max_score_slider.set(min_score)
             else:
-                min_score_slider.set(max_score)  # Adjust min if max is moved below it
-    
+                min_score_slider.set(max_score)
+
     def filter_entry_range(title, root_frame, start, end):
         frame = tk.Frame(root_frame, bg=BACKGROUND_COLOR)
         frame.pack(fill="x", pady=5)
-
-        tk.Label(frame, text=title + " RANGE", bg=BACKGROUND_COLOR, fg="white").pack(side="left", pady=(0, 0))
-
+        tk.Label(frame, text=title + " RANGE:", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
         min_entry = tk.Entry(frame, bg="black", fg="white", justify="center", width=8)
-        min_entry.pack(side="left", pady=0)
-        min_entry.delete(0, tk.END)
-        min_entry.insert(0, start)
-
-        tk.Label(frame, text=" TO ", bg=BACKGROUND_COLOR, fg="white").pack(side="left", pady=(0, 0))
-
+        min_entry.pack(side="left")
+        tk.Label(frame, text=" TO ", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
         max_entry = tk.Entry(frame, bg="black", fg="white", justify="center", width=8)
-        max_entry.pack(side="left", pady=0)
-        max_entry.delete(0, tk.END)
-        max_entry.insert(0, end)
+        max_entry.pack(side="left")
+        return {"min": min_entry, "max": max_entry}
 
-        return {
-            "min":min_entry,
-            "max":max_entry
-        }
-    
     def filter_entry_listbox(title, root_frame, data):
         frame = tk.Frame(root_frame, bg=BACKGROUND_COLOR)
         frame.pack(fill="x", pady=5)
-
-        tk.Label(frame, text=title, bg=BACKGROUND_COLOR, fg="white").pack(side="left", pady=(0, 0))
-
-        listbox = tk.Listbox(frame, selectmode=tk.MULTIPLE, height=6, width=20, exportselection=False, bg="black", fg="white")
+        label_and_list = tk.Frame(frame, bg=BACKGROUND_COLOR)
+        label_and_list.pack(fill="x")
+        tk.Label(label_and_list, text=title, bg=BACKGROUND_COLOR, fg="white").pack(side="left")
+        listbox = tk.Listbox(label_and_list, selectmode=tk.MULTIPLE, height=6, width=28, exportselection=False, bg="black", fg="white")
         listbox.pack(side="left", fill="x", expand=True)
-        
-        scrollbar = tk.Scrollbar(frame, command=listbox.yview, bg="black")
+        scrollbar = tk.Scrollbar(label_and_list, command=listbox.yview, bg="black")
         scrollbar.pack(side="right", fill="y")
-        
         listbox.config(yscrollcommand=scrollbar.set)
-
         for item in data:
             listbox.insert(tk.END, item)
-
         return listbox
+
     popup = tk.Toplevel(bg="black")
     popup.title("Filter Playlist")
-    popup.geometry("250x750")  # Ensures a good starting size
+    popup.geometry("550x500")  # Double width
 
-    # Create a frame inside the popup to hold everything
     main_frame = tk.Frame(popup, bg=BACKGROUND_COLOR)
     main_frame.pack(fill="both", expand=True)
 
-    # Create a canvas with scrollbar
     canvas = tk.Canvas(main_frame, bg=BACKGROUND_COLOR)
     scrollbar = tk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
     scrollable_frame = tk.Frame(canvas, bg=BACKGROUND_COLOR)
-
     scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
     canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
     canvas.configure(yscrollcommand=scrollbar.set)
-
     canvas.pack(side="left", fill="both", expand=True)
     scrollbar.pack(side="right", fill="y")
 
-    tk.Label(scrollable_frame, text="KEYWORDS (separated by commas):", bg=BACKGROUND_COLOR, fg="white").pack(anchor="w", pady=(5, 0))
-    keywords_entry = tk.Entry(scrollable_frame, width=40, bg="black", fg="white")
-    keywords_entry.pack(pady=2)
+    columns_frame = tk.Frame(scrollable_frame, bg=BACKGROUND_COLOR)
+    columns_frame.pack(fill="both", expand=True)
 
-    # Label for Theme Type
+    left_column = tk.Frame(columns_frame, bg=BACKGROUND_COLOR)
+    left_column.pack(side="left", fill="both", expand=True, padx=10)
 
-    # Dropdown (Combobox) for Theme Type Selection
+    right_column = tk.Frame(columns_frame, bg=BACKGROUND_COLOR)
+    right_column.pack(side="right", fill="both", expand=True, padx=10)
 
-    theme_type_frame = tk.Frame(scrollable_frame, bg=BACKGROUND_COLOR)
+    tk.Label(left_column, text="KEYWORDS (separated by commas):", bg=BACKGROUND_COLOR, fg="white").pack(anchor="w", pady=(5, 0))
+    keywords_entry = tk.Text(left_column, height=2, width=30, bg="black", fg="white", wrap="word")
+    keywords_entry.pack(pady=(0, 5))
+
+    theme_type_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
     theme_type_frame.pack(fill="x", pady=5)
-
-    tk.Label(theme_type_frame, text="THEME TYPE:", bg=BACKGROUND_COLOR, fg="white").pack(side="left", pady=(0, 0))
-
-    theme_var = tk.StringVar(value="Both")  # Default value
+    tk.Label(theme_type_frame, text="THEME TYPE:", bg=BACKGROUND_COLOR, fg="white").pack(side="left", padx=(0,7))
+    theme_var = tk.StringVar(value="Both")
     theme_type_dropdown = tk.OptionMenu(theme_type_frame, theme_var, "Both", "Opening", "Ending")
-    theme_type_dropdown.config(bg="black", fg="white", width=20)  # Match style
-    theme_type_dropdown.pack(side="left", pady=0)
+    theme_type_dropdown.config(bg="black", fg="white", width=20)
+    theme_type_dropdown.pack(side="left")
 
-    score_frame = tk.Frame(scrollable_frame, bg=BACKGROUND_COLOR)
-    score_frame.pack(fill="x")# Score Range Slider
-
-    tk.Label(score_frame, text="SCORE\nRANGE", bg=BACKGROUND_COLOR, fg="white").pack(side="left", pady=(0, 0))
-
-    lowest_score = get_lowest_parameter("score")
-    highest_score = get_highest_parameter("score")
-
-    min_score_slider = tk.Scale(score_frame, from_=0, to=10, resolution=0.1, borderwidth=0, orient="horizontal", bg="black", fg="white", command=update_score_range)
+    score_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
+    score_frame.pack(fill="x", pady=5)
+    tk.Label(score_frame, text="SCORE\nRANGE", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
+    lowest_score = get_lowest_parameter("score", playlis)
+    highest_score = get_highest_parameter("score", playlis)
+    min_score_slider = tk.Scale(score_frame, from_=0, to=10, resolution=0.1, orient="horizontal", bg="black", fg="white", command=update_score_range)
     min_score_slider.pack(fill="x")
-    min_score_slider.set(lowest_score)
-
     max_score_slider = tk.Scale(score_frame, from_=0, to=10, resolution=0.1, orient="horizontal", bg="black", fg="white", command=update_score_range)
     max_score_slider.pack(fill="x")
-    max_score_slider.set(highest_score)
 
-    rank_entry = filter_entry_range("RANK", scrollable_frame, get_highest_parameter("rank"), get_lowest_parameter("rank"))
+    rank_entry = filter_entry_range("RANK             ", left_column, get_highest_parameter("rank", playlis), get_lowest_parameter("rank", playlis))
+    members_entry = filter_entry_range("MEMBERS     ", left_column, get_lowest_parameter("members", playlis), get_highest_parameter("members", playlis))
+    popularity_entry = filter_entry_range("POPULARITY", left_column, get_highest_parameter("popularity", playlis), get_lowest_parameter("popularity", playlis))
 
-    members_entry = filter_entry_range("MEMBERS", scrollable_frame, get_lowest_parameter("members"), get_highest_parameter("members"))
+    season_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
+    season_frame.pack(fill="x", pady=(5,10))
 
-    popularity_entry = filter_entry_range("POPULARITY", scrollable_frame, get_highest_parameter("popularity"), get_lowest_parameter("popularity"))
+    tk.Label(season_frame, text="AIRED:", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
 
-    artists_listbox = filter_entry_listbox("ARTISTS\nINCLUDE", scrollable_frame, get_all_artists())
+    all_seasons = get_all_seasons(playlis)
 
-    studio_listbox = filter_entry_listbox("STUDIOS\nINCLUDE", scrollable_frame, get_all_studios())
+    season_start_var = tk.StringVar()
+    season_end_var = tk.StringVar()
 
-    all_tags = get_all_tags()
+    season_start_dropdown = ttk.Combobox(season_frame, textvariable=season_start_var, values=all_seasons, height=10, width=12, style="Black.TCombobox", state="readonly")
+    season_start_dropdown.pack(side="left")
 
-    tags_listbox = filter_entry_listbox("TAGS\nINCLUDE", scrollable_frame, all_tags)
+    def unhighlight_season_start_dropdown(event):
+        season_start_dropdown.selection_clear()
+        season_start_dropdown.icursor(tk.END)
+    season_start_dropdown.bind("<<ComboboxSelected>>", unhighlight_season_start_dropdown)
+
+    tk.Label(season_frame, text="TO", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
+
+    season_end_dropdown = ttk.Combobox(season_frame, textvariable=season_end_var, values=list(reversed(all_seasons)), height=10, width=12, style="Black.TCombobox", state="readonly")
+    season_end_dropdown.pack(side="left")
+
+    def unhighlight_season_end_dropdown(event):
+        season_end_dropdown.selection_clear()
+        season_end_dropdown.icursor(tk.END)
+    season_end_dropdown.bind("<<ComboboxSelected>>", unhighlight_season_end_dropdown)
     
-    excluded_tags_listbox = filter_entry_listbox("TAGS\nEXCLUDE", scrollable_frame, all_tags)
+    theme_exclude_options = [
+        "OVERLAP",
+        "NSFW (Without Censors)",
+        "NSFW (With Censors)",
+        "SPOILER",
+        "TRANSITION"
+    ]
+    themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE", left_column, theme_exclude_options)
+    artists_listbox = filter_entry_listbox("ARTISTS\nINCLUDE", right_column, get_all_artists(playlis))
+    studio_listbox = filter_entry_listbox("STUDIOS\nINCLUDE", right_column, get_all_studios(playlis))
+    all_tags = get_all_tags()
+    tags_listbox = filter_entry_listbox("TAGS\nINCLUDE", right_column, all_tags)
+    excluded_tags_listbox = filter_entry_listbox("TAGS\nEXCLUDE", right_column, all_tags)
+
+    def set_default_values(force_defaults=False):
+        filter_data = {} if force_defaults else playlist.get("filter", {})
+
+        # Keywords
+        keywords_entry.delete("1.0", tk.END)
+        keywords_entry.insert("1.0", filter_data.get("keywords", ""))
+
+        # Theme Type
+        theme_var.set(filter_data.get("theme_type", "Both"))
+
+        # Score
+        min_score_slider.set(filter_data.get("score_min", lowest_score))
+        max_score_slider.set(filter_data.get("score_max", highest_score))
+
+        # Rank Range
+        rank_entry["min"].delete(0, tk.END)
+        rank_entry["min"].insert(0, filter_data.get("rank_min", get_highest_parameter("rank", playlis)))
+        rank_entry["max"].delete(0, tk.END)
+        rank_entry["max"].insert(0, filter_data.get("rank_max", get_lowest_parameter("rank", playlis)))
+
+        # Season Range
+        season_start_var.set(filter_data.get("season_min", all_seasons[0] if all_seasons else ""))
+        season_end_var.set(filter_data.get("season_max", all_seasons[-1] if all_seasons else ""))
+
+        # Members
+        members_entry["min"].delete(0, tk.END)
+        members_entry["min"].insert(0, filter_data.get("members_min", get_lowest_parameter("members", playlis)))
+        members_entry["max"].delete(0, tk.END)
+        members_entry["max"].insert(0, filter_data.get("members_max", get_highest_parameter("members", playlis)))
+
+        # Popularity
+        popularity_entry["min"].delete(0, tk.END)
+        popularity_entry["min"].insert(0, filter_data.get("popularity_min", get_highest_parameter("popularity", playlis)))
+        popularity_entry["max"].delete(0, tk.END)
+        popularity_entry["max"].insert(0, filter_data.get("popularity_max", get_lowest_parameter("popularity", playlis)))
+
+        # Listbox selections
+        for listbox, key in [
+            (artists_listbox, "artists"),
+            (studio_listbox, "studios"),
+            (tags_listbox, "tags_include"),
+            (excluded_tags_listbox, "tags_exclude"),
+            (themes_exclude_listbox, "themes_exclude")
+        ]:
+            listbox.selection_clear(0, tk.END)
+            if not force_defaults and key in filter_data:
+                values = filter_data[key]
+                for i in range(listbox.size()):
+                    if listbox.get(i) in values:
+                        listbox.selection_set(i)
+
+    set_default_values()
 
     def extract_filter():
         def assign_filter_range_value(filter, type, entry, start, end):
             if start > end:
-                if int(entry.get('min').get()) < start : filter[type + '_min'] = int(entry.get('min').get())
-                if int(entry.get('max').get()) > end : filter[type + '_max'] = int(entry.get('max').get())
+                if int(entry['min'].get()) < start: filter[type + '_min'] = int(entry['min'].get())
+                if int(entry['max'].get()) > end: filter[type + '_max'] = int(entry['max'].get())
             else:
-                if int(entry.get('min').get()) > start : filter[type + '_min'] = int(entry.get('min').get())
-                if int(entry.get('max').get()) < end : filter[type + '_max'] = int(entry.get('max').get())
+                if int(entry['min'].get()) > start: filter[type + '_min'] = int(entry['min'].get())
+                if int(entry['max'].get()) < end: filter[type + '_max'] = int(entry['max'].get())
             return filter
-        
+
         filters = {}
-        if keywords_entry.get() != "" : filters['keywords'] = str(keywords_entry.get())
-        if theme_var.get() != "Both" : filters['theme_type'] = str(theme_var.get())
-        if float(min_score_slider.get()) != round(lowest_score, 1) : filters['score_min'] = float(min_score_slider.get()) 
-        if float(max_score_slider.get()) != round(highest_score, 1) : filters['score_max'] = float(max_score_slider.get()) 
-        filters = assign_filter_range_value(filters, 'rank', rank_entry, get_highest_parameter("rank"), get_lowest_parameter("rank"))
-        filters = assign_filter_range_value(filters, 'members', members_entry, get_lowest_parameter("members"), get_highest_parameter("members"))
-        filters = assign_filter_range_value(filters, 'popularity', popularity_entry, get_highest_parameter("popularity"), get_lowest_parameter("popularity"))
-        if len([artists_listbox.get(i) for i in artists_listbox.curselection()]) > 0: filters["artists"] = [str(artists_listbox.get(i)) for i in artists_listbox.curselection()]
-        if len([studio_listbox.get(i) for i in studio_listbox.curselection()]) > 0: filters["studios"] = [str(studio_listbox.get(i)) for i in studio_listbox.curselection()]
-        if len([tags_listbox.get(i) for i in tags_listbox.curselection()]) > 0: filters["tags_include"] = [str(tags_listbox.get(i)) for i in tags_listbox.curselection()]
-        if len([excluded_tags_listbox.get(i) for i in excluded_tags_listbox.curselection()]) > 0: filters["tags_exclude"] = [excluded_tags_listbox.get(i) for i in excluded_tags_listbox.curselection()]
+
+        if keywords_entry.get("1.0", "end-1c").strip() != "": filters['keywords'] = str(keywords_entry.get("1.0", "end-1c").strip())
+        if theme_var.get() != "Both": filters['theme_type'] = str(theme_var.get())
+        if float(min_score_slider.get()) != round(lowest_score, 1): filters['score_min'] = float(min_score_slider.get())
+        if float(max_score_slider.get()) != round(highest_score, 1): filters['score_max'] = float(max_score_slider.get())
+        filters = assign_filter_range_value(filters, 'rank', rank_entry, get_highest_parameter("rank", playlis), get_lowest_parameter("rank", playlis))
+        filters = assign_filter_range_value(filters, 'members', members_entry, get_lowest_parameter("members", playlis), get_highest_parameter("members", playlis))
+        filters = assign_filter_range_value(filters, 'popularity', popularity_entry, get_highest_parameter("popularity", playlis), get_lowest_parameter("popularity", playlis))
+        if season_start_var.get() != all_seasons[0]: filters["season_min"] = season_start_var.get()
+        if season_end_var.get() != all_seasons[-1]: filters["season_max"] = season_end_var.get()
+        if themes_exclude_listbox.curselection(): filters["themes_exclude"] = [themes_exclude_listbox.get(i) for i in themes_exclude_listbox.curselection()]
+        if artists_listbox.curselection(): filters["artists"] = [artists_listbox.get(i) for i in artists_listbox.curselection()]
+        if studio_listbox.curselection(): filters["studios"] = [studio_listbox.get(i) for i in studio_listbox.curselection()]
+        if tags_listbox.curselection(): filters["tags_include"] = [tags_listbox.get(i) for i in tags_listbox.curselection()]
+        if excluded_tags_listbox.curselection(): filters["tags_exclude"] = [excluded_tags_listbox.get(i) for i in excluded_tags_listbox.curselection()]
         return filters
 
     def apply_filter():
-        """Applies filters and closes the popup."""
         filters = extract_filter()
-        filter_playlist(filters)
-        popup.destroy()  # Close the filter popup
+        if playlist.get("infinite"):
+            playlist["filter"] = filters
+            print("Applied Filters:", filters)
+            refresh_pop_time_groups()
+            save_config()
+        else:
+            filter_playlist(filters)
+        popup.destroy()
+
+    def reset_filter():
+        set_default_values(True)
 
     def save_filter():
         filters = extract_filter()
-        """Prompts for a filter name and saves the current filter to a JSON file."""
         if not os.path.exists(FILTERS_FOLDER):
-            os.makedirs(FILTERS_FOLDER)  # Ensure the filters folder exists
-
+            os.makedirs(FILTERS_FOLDER)
         filter_name = simpledialog.askstring("Save Filter", "Enter a name for this filter:")
         if not filter_name:
-            return  # User canceled or left it empty
-
+            return
         filter_path = os.path.join(FILTERS_FOLDER, f"{filter_name}.json")
-
         try:
             with open(filter_path, "w") as file:
-                filter_json = {
-                    "name":filter_name,
-                    "filter":filters
-                }
-                json.dump(filter_json, file, indent=4)  # Save the filter as JSON
+                json.dump({"name": filter_name, "filter": filters}, file, indent=4)
             messagebox.showinfo("Success", f"Filter '{filter_name}' saved successfully!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save filter: {e}")
 
-    # Buttons Frame (Always Visible)
     button_frame = tk.Frame(popup, bg="black")
     button_frame.pack(fill="x", pady=10)
+    tk.Button(button_frame, text="APPLY FILTER TO PLAYLIST", bg="black", fg="white", command=apply_filter).pack(side="left", padx=10)
+    tk.Button(button_frame, text="RESET TO DEFAULTS", bg="black", fg="white", command=reset_filter).pack(side="left", padx=10)
+    tk.Button(button_frame, text="SAVE FILTER", bg="black", fg="white", command=save_filter).pack(side="right", padx=10)
 
-    apply_button = tk.Button(button_frame, text="APPLY FILTER", bg="black", fg="white", command=apply_filter)
-    apply_button.pack(side="left", padx=10)
+def get_all_seasons(playlis):
+    seasons = set()
+    for file in playlis:
+        data = get_metadata(file)
+        if data:
+            season = data.get("season")
+            if season:
+                seasons.add(season)
 
-    save_button = tk.Button(button_frame, text="SAVE FILTER", bg="black", fg="white", command=save_filter)
-    save_button.pack(side="right", padx=10)
+    def season_key(season_str):
+        try:
+            part, year = season_str.split()
+            season_order = {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}
+            return (int(year), season_order.get(part, 99))
+        except Exception:
+            return (9999, 99)
+
+    return sorted(seasons, key=season_key)
 
 def get_all_filters():
     """Returns all saved filters as a dictionary."""
@@ -2784,9 +2888,9 @@ def get_playlists_dict():
     playlists = sorted(f for f in os.listdir(PLAYLISTS_FOLDER) if f.endswith(".json"))
     return {i: os.path.splitext(playlis)[0] for i, playlis in enumerate(playlists)}
 
-def get_lowest_parameter(parameter):
+def get_lowest_parameter(parameter, playlis):
     lowest = 10000000
-    for filename in playlist["playlist"]:
+    for filename in playlis:
         data = get_metadata(filename)
         if data:
             item = data.get(parameter, lowest)
@@ -2794,9 +2898,9 @@ def get_lowest_parameter(parameter):
                 lowest = item
     return lowest
 
-def get_highest_parameter(parameter):
+def get_highest_parameter(parameter, playlis):
     highest = 0
-    for filename in playlist["playlist"]:
+    for filename in playlis:
         data = get_metadata(filename)
         if data:
             item = data.get(parameter, highest)
@@ -2804,9 +2908,9 @@ def get_highest_parameter(parameter):
                 highest = item
     return highest
 
-def get_all_artists():
+def get_all_artists(playlis):
     artists = []
-    for filename in playlist["playlist"]:
+    for filename in playlis:
         data = get_metadata(filename)
         if data:
             for song in data.get('songs', []):
@@ -2824,9 +2928,9 @@ def get_all_tags(game=True, double=False):
                     tags.append(tag)
     return sorted(tags)
 
-def get_all_studios():
+def get_all_studios(playlis):
     studios = []
-    for filename in playlist["playlist"]:
+    for filename in playlis:
         data = get_metadata(filename)
         if data:
             for studio in data.get('studios', []):
@@ -2837,9 +2941,14 @@ def get_all_studios():
 def filter_playlist(filters):
     """Filters the playlist based on given criteria."""
     global playlist
+    if playlist.get("infinite", False):
+        playlis = copy.deepcopy(directory_files)
+    else:
+        playlis = playlist["playlist"]
+
     filtered = []
 
-    for filename in playlist["playlist"]:
+    for filename in playlis:
         data = get_metadata(filename)
         # Extract metadata
         if not data:
@@ -2851,7 +2960,17 @@ def filter_playlist(filters):
         rank = data.get("rank") or 100000
         members = int(data.get("members") or 0)
         popularity = data.get("popularity") or float('inf')
-        artists = get_song_by_slug(data, data.get("slug", "")).get("artist", [])
+        season = data.get("season", "")  # Example: "Fall 2020"
+        def season_to_tuple(season_str):
+            try:
+                part, year = season_str.split()
+                season_order = {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}
+                return (int(year), season_order.get(part, -1))
+            except Exception:
+                return (0, -1)  # Very early season so it passes min filters but fails max
+        season_tuple = season_to_tuple(season)
+        theme = get_song_by_slug(data, data.get("slug", ""))
+        artists = theme.get("artist", [])
         studios = data.get("studios", [])
         tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))  # Ensure tags are a set for fast lookup
 
@@ -2876,6 +2995,27 @@ def filter_playlist(filters):
             continue
         if "popularity_max" in filters and popularity < filters["popularity_max"]:
             continue
+        if "season_min" in filters and season_tuple < season_to_tuple(filters["season_min"]):
+            continue
+        if "themes_exclude" in filters:
+            theme_flags = set()
+            if theme:
+                if theme.get("overlap") == "Over":
+                    theme_flags.add("OVERLAP")
+                if theme.get("overlap") == "Transition":
+                    theme_flags.add("TRANSITION")
+                if theme.get("spoiler"):
+                    theme_flags.add("SPOILER")
+                if theme.get("nsfw"):
+                    censors = get_file_censors(filename)
+                    if censors:
+                        theme_flags.add("NSFW (With Censors)")
+                    else:
+                        theme_flags.add("NSFW (Without Censors)")
+            if any(flag in filters["themes_exclude"] for flag in theme_flags):
+                continue  # Exclude this file
+        if "season_max" in filters and season_tuple > season_to_tuple(filters["season_max"]):
+            continue
         if "artists" in filters and not any(artist in artists for artist in filters["artists"]):
             continue
         if "studios" in filters and not any(studio in studios for studio in filters["studios"]):
@@ -2887,11 +3027,13 @@ def filter_playlist(filters):
 
         # If all checks pass, add to filtered list
         filtered.append(filename)
-    playlist["playlist"] = filtered
-    print("Applied Filters:", filters)  # Debugging
-    show_playlist(True)
-    update_current_index(0)
-    messagebox.showinfo("Playlist Filtered", f"Playlist filtered to {len(playlist["playlist"])} videos.")
+    if not playlist.get("infinite"):
+        playlist["playlist"] = filtered
+        print("Applied Filters:", filters)  # Debugging
+        show_playlist(True)
+        update_current_index(0)
+        messagebox.showinfo("Playlist Filtered", f"Playlist filtered to {len(playlist["playlist"])} videos.")
+    return filtered
 
 def get_song_by_slug(data, slug):
     """Returns the list of artists for the song matching the given slug."""
@@ -4135,7 +4277,7 @@ def get_base_title():
     title = data.get('eng_title') or data.get("title")
     for p in [': ',' ']:
         for s in ['Season', 'Series', 'Part']:
-            for n in ['0','1','2','3','4','5','6','7','8','9','I','II','III','IV','V','VI','VII','VIII','VIIII','X']:
+            for n in ['0','1','2','3','4','5','6','7','8','9','III','II','IV','I','VIIII','VIII','VII','VI','V','X']:
                 title = title.replace(f"{p}{s} {n}", "")
     for p in [': ',' ']:
         for n in ['First','Second','Third','Fourth','Fifth','1st','2nd','3rd','4th','5th','6th','Final']:
@@ -4426,7 +4568,7 @@ def get_mismatched_theme():
     return options[0]
 
 def check_nsfw(filename):
-    for censor in censor_list.get(filename, {}):
+    for censor in get_file_censors(filename):
         if censor.get("nsfw"):
             return True
     return False
@@ -5719,7 +5861,7 @@ def update_current_index(value = None, save = True):
         current_entry.delete(0, tk.END)
         if playlist.get("infinite", False):
             current_entry.insert(0, "∞")
-            out_of = len(directory_files) - len(cached_skipped_themes)
+            out_of = total_infinite_files - len(cached_skipped_themes)
         else:
             current_entry.insert(0, str(playlist["current_index"]+1))
             out_of = len(playlist["playlist"])
@@ -6211,14 +6353,18 @@ def apply_censors(time, length):
             root.lower()
         censor_used = False
 
+def get_file_censors(filename):
+    file_censors = censor_list.get(filename)
+    return file_censors or []
+
 def check_file_censors(filename, time, video_end):
     global censor_used
     screen_width = censor_bar.winfo_screenwidth()
     screen_height = censor_bar.winfo_screenheight()
-    file_censors = censor_list.get(filename)
+    file_censors = get_file_censors(filename)
     censor_found = False
     mute_found = False
-    if file_censors != None:
+    if file_censors:
         for censor in file_censors:
             if (not blind_enabled or censor.get("mute")) and (not is_title_window_up() or censor.get("nsfw")) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
                 if not censor_used and not censor.get("mute"):
@@ -6392,7 +6538,7 @@ def open_censor_editor(refresh=False):
 
     filename = currently_playing.get("filename")
     if filename:
-        current_censors = copy.deepcopy(censor_list.get(filename, []))
+        current_censors = copy.deepcopy(get_file_censors(filename))
     button_seleted(edit_censors_button, True)
     edit_censors_button.configure(text="❌")
 
@@ -7468,7 +7614,8 @@ def create_first_row_buttons():
 
     global playlist_size_label
     if playlist.get("infinite", False):
-        out_of = len(directory_files)
+        get_pop_time_groups(refetch=True)
+        out_of = total_infinite_files - len(cached_skipped_themes)
     else:
         out_of = len(playlist["playlist"])
     playlist_size_label = tk.Label(first_row_frame, text="/" + str(out_of), bg=BACKGROUND_COLOR, fg="white")
