@@ -214,6 +214,47 @@ def fetch_anidb_metadata(aid):
 
     return result
 
+def fetch_anilist_user_ids(username):
+    """Fetches a set of AniList anime IDs for a given username."""
+    query = '''
+    query ($name: String) {
+      MediaListCollection(userName: $name, type: ANIME) {
+        lists {
+          entries {
+            media {
+              id
+            }
+          }
+        }
+      }
+    }
+    '''
+    variables = {
+        "name": username
+    }
+
+    response = requests.post(
+        "https://graphql.anilist.co",
+        json={"query": query, "variables": variables}
+    )
+
+    if response.status_code != 200:
+        print("AniList API error:", response.text)
+        return set()
+
+    try:
+        data = response.json()
+        ids = {
+            str(entry["media"]["id"])
+            for lst in data["data"]["MediaListCollection"]["lists"]
+            for entry in lst["entries"]
+            if "media" in entry and entry["media"].get("id")
+        }
+        return ids
+    except Exception as e:
+        print("Failed to parse AniList response:", e)
+        return set()
+
 fetched_metadata = []
 def pre_fetch_metadata():
     for i in range(playlist["current_index"]-1, playlist["current_index"]+3):
@@ -2659,17 +2700,35 @@ def show_filter_popup():
     right_column = tk.Frame(columns_frame, bg=BACKGROUND_COLOR)
     right_column.pack(side="right", fill="both", expand=True, padx=10)
 
+    playlist_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
+    playlist_frame.pack(fill="x", pady=(5,0))
+
+    tk.Label(playlist_frame, text="PLAYLIST:", bg=BACKGROUND_COLOR, fg="white").pack(side="left", padx=(0, 5))
+
+    available_playlists = ["(None)"] + list(get_playlists_dict().values())
+    playlist_var = tk.StringVar(value="(None)")
+    playlist_combobox = ttk.Combobox(playlist_frame, textvariable=playlist_var, values=available_playlists, width=20, style="Black.TCombobox", state="readonly")
+    playlist_combobox.pack(side="left", fill="x", expand=True)
+
     tk.Label(left_column, text="KEYWORDS (separated by commas):", bg=BACKGROUND_COLOR, fg="white").pack(anchor="w", pady=(5, 0))
-    keywords_entry = tk.Text(left_column, height=2, width=30, bg="black", fg="white", wrap="word")
+    keywords_entry = tk.Text(left_column, height=1, width=31, bg="black", fg="white", wrap="word")
     keywords_entry.pack(pady=(0, 5))
 
     theme_type_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
     theme_type_frame.pack(fill="x", pady=5)
-    tk.Label(theme_type_frame, text="THEME TYPE:", bg=BACKGROUND_COLOR, fg="white").pack(side="left", padx=(0,7))
+
+    tk.Label(theme_type_frame, text="THEME TYPE:", bg=BACKGROUND_COLOR, fg="white").pack(side="left", padx=(0, 7))
+
     theme_var = tk.StringVar(value="Both")
-    theme_type_dropdown = tk.OptionMenu(theme_type_frame, theme_var, "Both", "Opening", "Ending")
-    theme_type_dropdown.config(bg="black", fg="white", width=20)
-    theme_type_dropdown.pack(side="left")
+    theme_type_combobox = ttk.Combobox(
+        theme_type_frame,
+        textvariable=theme_var,
+        values=["Both", "Opening", "Ending"],
+        width=20,
+        style="Black.TCombobox",
+        state="readonly"
+    )
+    theme_type_combobox.pack(side="left", fill="x", expand=True)
 
     score_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
     score_frame.pack(fill="x", pady=5)
@@ -2681,14 +2740,14 @@ def show_filter_popup():
     max_score_slider = tk.Scale(score_frame, from_=0, to=10, resolution=0.1, orient="horizontal", bg="black", fg="white", command=update_score_range)
     max_score_slider.pack(fill="x")
 
-    rank_entry = filter_entry_range("RANK             ", left_column, get_highest_parameter("rank", playlis), get_lowest_parameter("rank", playlis))
-    members_entry = filter_entry_range("MEMBERS     ", left_column, get_lowest_parameter("members", playlis), get_highest_parameter("members", playlis))
-    popularity_entry = filter_entry_range("POPULARITY", left_column, get_highest_parameter("popularity", playlis), get_lowest_parameter("popularity", playlis))
+    rank_entry = filter_entry_range("RANK               ", left_column, get_highest_parameter("rank", playlis), get_lowest_parameter("rank", playlis))
+    members_entry = filter_entry_range("MEMBERS       ", left_column, get_lowest_parameter("members", playlis), get_highest_parameter("members", playlis))
+    popularity_entry = filter_entry_range("POPULARITY  ", left_column, get_highest_parameter("popularity", playlis), get_lowest_parameter("popularity", playlis))
 
     season_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
     season_frame.pack(fill="x", pady=(5,10))
 
-    tk.Label(season_frame, text="AIRED:", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
+    tk.Label(season_frame, text="AIRED:   ", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
 
     all_seasons = get_all_seasons(playlis)
 
@@ -2729,6 +2788,13 @@ def show_filter_popup():
 
     def set_default_values(force_defaults=False):
         filter_data = {} if force_defaults else playlist.get("filter", {})
+
+        # Playlist
+        playlist_name = filter_data.get("playlist_filter")
+        if playlist_name in available_playlists:
+            playlist_var.set(playlist_name)
+        else:
+            playlist_var.set("(None)")
 
         # Keywords
         keywords_entry.delete("1.0", tk.END)
@@ -2792,6 +2858,7 @@ def show_filter_popup():
 
         filters = {}
 
+        if playlist_var.get() != "(None)": filters["playlist_filter"] = playlist_var.get()
         if keywords_entry.get("1.0", "end-1c").strip() != "": filters['keywords'] = str(keywords_entry.get("1.0", "end-1c").strip())
         if theme_var.get() != "Both": filters['theme_type'] = str(theme_var.get())
         if float(min_score_slider.get()) != round(lowest_score, 1): filters['score_min'] = float(min_score_slider.get())
@@ -2975,6 +3042,14 @@ def filter_playlist(filters):
         tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))  # Ensure tags are a set for fast lookup
 
         # Apply filters
+        if "playlist_filter" in filters:
+            ref_playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{filters['playlist_filter']}.json")
+            if os.path.exists(ref_playlist_path):
+                with open(ref_playlist_path, "r") as f:
+                    ref_data = json.load(f)
+                    ref_files = set(ref_data.get("playlist", []))
+                if filename not in ref_files:
+                    continue
         if "keywords" in filters and not any(any(keyword.lower() in field.lower() for field in [filename, title, eng_title]) for keyword in filters["keywords"].split(",")):
             continue
         if "theme_type" in filters and filters["theme_type"] not in theme_type:
@@ -7487,15 +7562,45 @@ def generate_playlist_button():
     confirm = messagebox.askyesno("Create Playlist", f"Are you sure you want to create a new playlist with all {len(directory_files)} files in the directory?")
     if not confirm:
         return  # User canceled
+    new_playlist(generate_playlist())
+    if not playlist["playlist"]:
+        messagebox.showwarning("Playlist Error", "No video files found in the directory.")
+
+def generate_anilist_playlist():
+    global playlist
+    user_id = simpledialog.askstring("AniList User ID", "Enter the AniList user ID:")
+    if not user_id:
+        return  # User canceled
+
+    # Fetch AniList data
+    user_anime_ids = fetch_anilist_user_ids(user_id)
+    if not user_anime_ids:
+        messagebox.showerror("Error", "Could not fetch AniList data or no entries found.")
+        return
+
+    matching_files = []
+    for file in directory_files:
+        data = get_metadata(file)
+        if data and str(data.get("anilist")) in user_anime_ids:
+            matching_files.append(file)
+
+    confirm = messagebox.askyesno("Create Playlist", f"{len(matching_files)} matches found. Create playlist?")
+    if not confirm:
+        return
+    new_playlist(matching_files, f"{user_id}'s AniList")
+    if not matching_files:
+        messagebox.showwarning("Playlist Error", "No matching video files found for this AniList user.")
+
+def new_playlist(playlis, name=None):
+    global playlist
     playlist = copy.deepcopy(BLANK_PLAYLIST)
-    playlist["playlist"] = generate_playlist()
+    update_playlist_name(name=name)
+    playlist["playlist"] = playlis
     create_first_row_buttons()
     update_current_index(0)
     update_playlist_name()
     save_config()
     show_playlist(True)
-    if not playlist["playlist"]:
-        messagebox.showwarning("Playlist Error", "No video files found in the directory.")
 
 def create_first_row_buttons():
     for widget in first_row_frame.winfo_children():
@@ -7536,7 +7641,7 @@ def create_first_row_buttons():
     directory_entry.insert(0, directory)
 
     global generate_button
-    generate_button = create_button(first_row_frame, "CREATE", generate_playlist_button,
+    generate_button = create_button(first_row_frame, "➕", generate_playlist_button,
                                 help_title="CREATE PLAYLIST",
                                 help_text=("This creates a playlist using all videos "
                                 "found in the directory.\n\nIf this is your first time "
@@ -7547,6 +7652,12 @@ def create_first_row_buttons():
                                 "RE[F]ETCH button. It may take awhile "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
+
+    global generate_from_anilist_button
+    generate_from_anilist_button = create_button(first_row_frame, "AL", generate_anilist_playlist,
+                                help_title="CREATE PLAYLIST FROM ANILIST ID",
+                                help_text=("This creates a playlist using an AniList ID as a reference and "
+                                           "selecting all themes in the directory that match the user's list."))
     global empty_button
     empty_button = create_button(first_row_frame, "❌", empty_playlist, True,
                                 help_title="EMPTY PLAYLIST",
