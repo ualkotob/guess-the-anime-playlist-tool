@@ -3540,6 +3540,7 @@ def update_light_round(time):
             if light_mode == 'mismatch' and time_left > 11:
                 mismatched_player.set_fullscreen(False)
                 mismatched_player.set_fullscreen(True)
+                root.after(500, set_black_screen, False)
             if song_overlay_boxes:
                 toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
                 player.audio_set_mute(time_left > 4)
@@ -3670,7 +3671,6 @@ def update_light_round(time):
             mismatched_player.set_fullscreen(True)
             top_info("MISMATCHED VISUALS")
             set_frame_number("GUESS BY MUSIC ONLY")
-            root.after(700, set_black_screen, False)
         else:
             player.set_fullscreen(False)
             player.set_fullscreen(True)
@@ -4625,8 +4625,9 @@ mismatched_player = instance2.media_player_new()
 mismatch_visuals = None
 def get_mismatched_theme():
     global mismatch_visuals
-    options = []
     match_data = currently_playing.get("data")
+    mismatch_options = copy.copy(list(directory_files.keys()))
+    random.shuffle(mismatch_options)
     if match_data:
         is_op = "OP" in match_data.get("slug")
         match_series = (match_data.get("series") or [match_data.get("title")])[0]
@@ -4636,11 +4637,9 @@ def get_mismatched_theme():
                 if data:
                     filename_series = (data.get("series") or [data.get("title")])[0]
                     if match_series != filename_series and (is_op == ("OP" in data.get("slug"))):
-                        options.append(filename)
-    random.shuffle(options)
-    mismatch_data = get_metadata(options[0])
-    mismatch_visuals = get_display_title(mismatch_data) + " " + format_slug(mismatch_data.get("slug"))
-    return options[0]
+                        mismatch_data = get_metadata(filename)
+                        mismatch_visuals = get_display_title(mismatch_data) + " " + format_slug(mismatch_data.get("slug"))
+                        return filename
 
 def check_nsfw(filename):
     for censor in get_file_censors(filename):
