@@ -21,8 +21,7 @@ import numpy as np
 from io import BytesIO
 from datetime import datetime
 import tkinter as tk
-import tkinter.font as tkFont
-from tkinter import filedialog, messagebox, simpledialog, ttk, StringVar
+from tkinter import filedialog, messagebox, simpledialog, ttk, StringVar, font
 import webbrowser
 from PIL import Image, ImageTk
 import threading  # For asynchronous metadata loading
@@ -858,7 +857,37 @@ def update_metadata():
             update_extra_metadata(data)
             
             toggleColumnEdit(False)
+
+        if popout_currently_playing:
+            update_popout_currently_playling(data)
     updating_metadata = False
+
+def update_popout_currently_playling(data):
+    # popout_currently_playing.config(state=tk.NORMAL, wrap="word")
+    popout_currently_playing_extra.config(state=tk.NORMAL, wrap="word")
+    # popout_currently_playing.delete(1.0, tk.END)
+    popout_currently_playing_extra.delete(1.0, tk.END)
+    japanese_title = data.get("title")
+    title = get_display_title(data)
+    theme = format_slug(data.get("slug"))
+    song = get_song_string(data)
+    tags = get_tags_string(data)
+    marks = get_file_marks(currently_playing.get("filename", ""))
+    if data.get("platforms"):
+        members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
+        score = f"Score: {data.get("score")}"
+    else:
+        members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
+        score = f"Score: {data.get("score")} (#{data.get("rank")})"
+    if is_game(data):
+        aired = data.get("release")
+    else:
+        aired = data.get("season")
+    # popout_currently_playing.insert(tk.END, f"{title}", "white")
+    popout_currently_playing.configure(text=title)
+    popout_currently_playing_extra.insert(tk.END, f"{marks}{theme} | {song} | {aired}\n{score} | {japanese_title} | {members} | {tags}", "white")
+    # popout_currently_playing.config(state=tk.DISABLED)
+    popout_currently_playing_extra.config(state=tk.DISABLED)
 
 def update_extra_metadata(data):
     if currently_playing.get("type") == "youtube":
@@ -993,25 +1022,67 @@ def update_song_information(data, mal, slug=None):
             middle_column.insert(tk.END, "\n", "blank")
 
 def up_next_text():
-    right_top.config(state=tk.NORMAL, height=0, wrap="word")
-    right_top.delete(1.0, tk.END)
-    if not is_docked():
-        if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"])-2:
-            right_top.window_create(tk.END, window=tk.Button(right_top, text="🔄", font=("Arial", 11, "bold"), borderwidth=0, pady=0, command=refetch_next_track, bg="black", fg="white"))
-        right_top.insert(tk.END, "NEXT: ", "bold")
+    update_up_next_display(right_top)
+    if popout_up_next:
+        update_up_next_display(popout_up_next)
+
+reroll_button = None
+def update_up_next_display(widget):
+    global reroll_button
+    widget.config(state=tk.NORMAL, height=0, wrap="word")
+    widget.delete(1.0, tk.END)
+    is_popout = widget == popout_up_next
+    if not is_docked() or is_popout:
+        if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2:
+            reroll_button = tk.Button(
+                    widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
+                    pady=0, command=refetch_next_track, bg="black", fg="white"
+                )
+            if is_popout:
+                popout_buttons_by_name["reroll"].configure(
+                    text="RE-ROLL\nNEXT 🔄",
+                    command=refetch_next_track
+                )
+            else:
+                widget.window_create(
+                    tk.END,
+                    window=reroll_button
+                )
+        else:
+            if is_popout:
+                popout_buttons_by_name["reroll"].configure(
+                    text="",
+                    command=lambda: None
+                )
+            reroll_button = None
+        if not is_popout:
+            widget.insert(tk.END, "NEXT: ", "bold")
         next_up_text = "End of playlist"
-        if playlist["current_index"]+1 < len(playlist["playlist"]):
+        if playlist["current_index"] + 1 < len(playlist["playlist"]):
             try:
-                next_filename = playlist["playlist"][playlist["current_index"]+1]
+                next_filename = playlist["playlist"][playlist["current_index"] + 1]
                 next_up_data = get_metadata(next_filename)
-                next_up_text = f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n{format_slug(next_up_data.get("slug"))} | {next_up_data.get("members") or 0:,} (#{next_up_data.get("popularity")}) | {next_up_data.get("season")}"
+                next_up_text = (
+                    f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n"
+                    f"{format_slug(next_up_data.get('slug'))} | {next_up_data.get('members') or 0:,} "
+                    f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
+                )
+                if is_popout:
+                    next_up_text = f"NEXT: {next_up_text.replace("\n", " - ")}"
             except Exception:
-                next_up_text = playlist["playlist"][playlist["current_index"]+1]
-        right_top.insert(tk.END, f"{next_up_text}", "white")
-        # Measure line count
-        total_lines = right_top.count("1.0", "end", "displaylines")[0]
-        right_top.config(state=tk.NORMAL, height=total_lines+1, wrap="word")
-    right_top.config(state=tk.DISABLED, wrap="word")
+                next_up_text = playlist["playlist"][playlist["current_index"] + 1]
+        widget.insert(tk.END, f"{next_up_text}", "white")
+        adjust_up_next_height(widget, is_popout)
+        return
+    widget.config(state=tk.DISABLED, wrap="word")
+
+def adjust_up_next_height(widget, is_popout):
+    widget.config(state=tk.NORMAL, wrap="word")
+    total_lines = widget.count("1.0", "end", "displaylines")[0]
+    if is_popout:
+        total_lines = total_lines - 1
+    widget.config(state=tk.NORMAL, height=total_lines + 1, wrap="word")
+    widget.config(state=tk.DISABLED, wrap="word")
 
 def get_display_title(data):
     return data.get("eng_title") or data.get("title")
@@ -4210,7 +4281,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
                     # Text label (optional)
                     text_lbl = tk.Label(box, text=text, font=("Arial", font_size), fg="white", bg="black", justify="center")
                     text_lbl.pack(fill="both", expand=True)
-                    adjust_font_size(text_lbl, text, box_width, base_size=font_size, min_size=20)
+                    adjust_font_size(text_lbl, box_width, base_size=font_size, min_size=20)
 
                 box.update_idletasks()
                 box.geometry(f"+{-screen_width}+{y}")  # Adjust for bottom spacing
@@ -4631,22 +4702,21 @@ mismatched_player = instance2.media_player_new()
 mismatch_visuals = None
 def get_mismatched_theme():
     global mismatch_visuals
-    options = []
     match_data = currently_playing.get("data")
+    mismatch_options = list(directory_files.keys())
+    random.shuffle(mismatch_options)
     if match_data:
         is_op = "OP" in match_data.get("slug")
         match_series = (match_data.get("series") or [match_data.get("title")])[0]
-        for filename in directory_files:
+        for filename in mismatch_options:
             if not check_nsfw(filename):
                 data = get_metadata(filename)
                 if data:
                     filename_series = (data.get("series") or [data.get("title")])[0]
                     if match_series != filename_series and (is_op == ("OP" in data.get("slug"))):
-                        options.append(filename)
-    random.shuffle(options)
-    mismatch_data = get_metadata(options[0])
-    mismatch_visuals = get_display_title(mismatch_data) + " " + format_slug(mismatch_data.get("slug"))
-    return options[0]
+                        mismatch_data = get_metadata(filename)
+                        mismatch_visuals = get_display_title(mismatch_data) + " " + format_slug(mismatch_data.get("slug"))
+                        return filename
 
 def check_nsfw(filename):
     for censor in get_file_censors(filename):
@@ -5016,7 +5086,7 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
             background = {"a":'#374151',"s":'#065F46',"m":'#1E3A8A'}.get(title[0], '#374151')
             title = title[1]
         while font_size >= 10:
-            test_font = tkFont.Font(family="Arial", size=font_size, weight="bold")
+            test_font = font.Font(family="Arial", size=font_size, weight="bold")
             line_count = get_wrapped_line_count(title, test_font, wrap-10)
             if line_count <= 3:
                 break
@@ -5471,7 +5541,7 @@ title_row_label = None
 top_row_label = None
 bottom_row_label = None
 
-def adjust_font_size(label, text, max_width, base_size=50, min_size=20):
+def adjust_font_size(label, max_width, base_size=50, min_size=20):
     """Adjusts the font size dynamically to fit within max_width."""
     font_size = base_size
     label.config(font=("Arial", font_size, "bold"))
@@ -5480,6 +5550,7 @@ def adjust_font_size(label, text, max_width, base_size=50, min_size=20):
     while label.winfo_reqwidth() > max_width and font_size > min_size:
         font_size -= 2
         label.config(font=("Arial", font_size, "bold"))
+    return font_size
 
 def is_title_window_up():
     return not (title_window is None or title_window.attributes("-alpha") == 0)
@@ -5596,7 +5667,7 @@ def toggle_title_popup(show):
     # Dynamically adjust font size to fit window width
     title_window.update_idletasks()
     max_width = title_window.winfo_screenwidth() - 550  # Leave padding
-    adjust_font_size(title_row_label, title_row, max_width)
+    adjust_font_size(title_row_label, max_width)
     
     # Position at the bottom center of the screen
     title_window.update_idletasks()  # Ensure correct size update
@@ -6515,8 +6586,9 @@ def rgbtohex(r,g,b):
     return f'#{r:02x}{g:02x}{b:02x}'
 
 def update_censor_button_count():
-    for button in [toggle_censor_bar_button, popout_buttons_by_name.get(toggle_censor_bar_button, toggle_censor_bar_button)]:
-        button.configure(text="[C]ENSOR(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
+    toggle_censor_bar_button.configure(text="[C]ENSOR(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
+    if popout_buttons_by_name.get(toggle_censor_bar_button):
+        popout_buttons_by_name.get(toggle_censor_bar_button).configure(text="CENSORS(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
 
 class RectangleDrawerOverlay:
     def __init__(self, on_rectangle_picked):
@@ -7331,86 +7403,175 @@ def on_closing():
 #            *POPOUT CONTROLS
 # =========================================
 
-popout_buttons_by_name = {}  # Global mapping
 popout_controls = None
+popout_buttons_by_name = {}
+popout_up_next = None
+popout_up_next_font = None
+popout_currently_playing = None
+popout_currently_playing_extra = None
+popout_button_font = None
+resize_after_id = None
+
 def create_popout_controls(columns=5, title="Popout Controls"):
-    global popout_controls
+    global popout_controls, popout_up_next, popout_up_next_font, popout_button_font, popout_currently_playing, popout_currently_playing_extra
+
     def on_popout_close():
-        global popout_controls
+        global popout_controls, popout_up_next, popout_currently_playing, popout_currently_playing_extra
         button_seleted(popout_controls_button, False)
         popout_buttons_by_name.clear()
         popout_controls.destroy()
         popout_controls = None
-        
+        popout_up_next = None
+        popout_currently_playing = None
+        popout_currently_playing_extra = None
+
+    def on_popout_resize(event):
+        global resize_after_id
+
+        def do_resize():
+            if popout_controls:
+                height = popout_controls.winfo_height()
+
+                new_upnext_size = max(10, int(height / 30))
+                new_button_size = max(10, int(height / 25))
+                new_current_size = max(10, int(height / 25))
+                new_current_extra_size = max(10, int(height / 50))
+                popout_up_next_font.configure(size=new_upnext_size)
+                popout_button_font.configure(size=new_button_size)
+                popout_current_font.configure(size=new_current_size)
+                popout_current_extra_font.configure(size=new_current_extra_size)
+                popout_currently_playing.configure(wraplength=int(popout_controls.winfo_width()*0.95))
+                # Reapply button fonts
+                for widget in popout_buttons_by_name.values():
+                    if isinstance(widget, tk.Button):
+                        widget.configure(font=popout_button_font)
+
+        # Cancel any pending resize jobs
+        if resize_after_id is not None:
+            popout_controls.after_cancel(resize_after_id)
+
+        # Schedule a new resize job 150ms from now
+        resize_after_id = popout_controls.after(150, do_resize)
+
     if popout_controls:
         on_popout_close()
         return
-    
+
     popout_controls = tk.Toplevel()
     popout_controls.title(title)
     popout_controls.configure(bg=BACKGROUND_COLOR)
     popout_controls.geometry("850x515")
     popout_controls.protocol("WM_DELETE_WINDOW", on_popout_close)
+    popout_controls.bind("<Configure>", on_popout_resize)
 
-    # Group them by category
+    # Shared fonts
+    popout_up_next_font = font.Font(family="Helvetica", size=20, weight="bold")
+    popout_current_font = font.Font(family="Helvetica", size=25, weight="bold")
+    popout_current_extra_font = font.Font(family="Helvetica", size=10, weight="bold")
+    popout_button_font = font.Font(family="Helvetica", size=20, weight="bold")
+
+    # Button group structure
     button_groups = {
         "POPOUT CONTROLS": [
-            (dock_button, "DOCK\nPLAYER", False), 
+            (dock_button, "DOCK\nPLAYER", False),
             (tag_button, "TAG", True),
             (favorite_button, "FAVORITE", True),
             (info_button, "INFORMATION\nPOP-UP", False, 2)
         ],
         "BLIND/PEEK CONTROLS": [
-            (blind_button, "BLIND\nSCREEN", False, 1), 
+            (blind_button, "BLIND\nSCREEN", False, 1),
             (blind_round_button, "BLIND NEXT", True, 1),
-            (peek_button, "PEEK\nSCREEN", False, 1), 
-            (widen_peek_button, "WIDEN PEEK", True, 1), 
+            (peek_button, "PEEK\nSCREEN", False, 1),
+            (widen_peek_button, "WIDEN PEEK", True, 1),
             (peek_round_button, "PEEK NEXT", True, 1)
         ],
         "BONUS QUESTIONS": [
-            (guess_year_button, "YEAR", True), 
+            (guess_year_button, "YEAR", True),
             (guess_members_button, "MEMBERS", True),
             (guess_score_button, "SCORE", True),
-            (guess_tags_button, "TAGS", True), 
+            (guess_tags_button, "TAGS", True),
             (guess_multiple_button, "MULTIPLE", True)
         ],
         "LIGHTNING ROUNDS": [
-            ("DROPDOWN", "MODE SELECT", 2),  # ("marker", label, colspan)
+            ("DROPDOWN", "MODE SELECT", 2),
             (start_light_mode_button, "START", True),
-            (variety_light_mode_button, "VARIETY", True, 2)],
+            (variety_light_mode_button, "VARIETY", True, 2)
+        ],
         "MISC TOGGLES": [
-            (toggle_censor_bar_button, "", True, 2), 
+            (toggle_censor_bar_button, "", True, 2),
             (mute_button, "MUTE", False),
-            (end_button, "END SESSION STATS", False, 2)]
+            (end_button, "END SESSION STATS", False, 2)
+        ],
+        "PLAYER CONTROLS": [
+            ("reroll", "", False),
+            (play_pause_button, "PLAY/PAUSE", True),
+            (stop_button, "STOP", True),
+            (previous_button, "PREVIOUS", True),
+            (next_button, "NEXT", True)
+        ]
     }
-    button_font = ("Helvetica", 20, "bold")  # Double-size font
 
     row = 0
+    popout_currently_playing = tk.Label(
+        popout_controls,
+        font=popout_current_font,
+        bg=BACKGROUND_COLOR,
+        fg="white",
+        text="",
+        anchor="center",     # Center vertically
+        justify="center",    # Center multiline text
+        padx=5,
+        pady=5               # Adjust as needed for vertical spacing inside label
+    )
+    popout_currently_playing.grid(
+        row=row,
+        column=0,
+        columnspan=columns,
+        sticky="nsew",
+        padx=5,
+        pady=(10, 10)         # Padding below the label
+    )
+    popout_controls.grid_rowconfigure(row, weight=0)
+
+    row += 1
+
+    popout_currently_playing_extra = tk.Text(
+        popout_controls,
+        font=popout_current_extra_font,
+        bg=BACKGROUND_COLOR,
+        fg="white",
+        bd=0,
+        height=3
+    )
+    popout_currently_playing_extra.grid(row=row, column=0, columnspan=columns, sticky="nsew", padx=5, pady=(0, 0))
+    popout_controls.grid_rowconfigure(row, weight=0)
+    popout_currently_playing_extra.tag_configure("white", foreground="white", justify="center")
+
+    row += 1
+
     for group_name, button_entries in button_groups.items():
         if row > 0:
-            # Group label
-            group_label = tk.Label(popout_controls, text=group_name, font=("Helvetica", 10, "bold"))
-            group_label.grid(row=row, column=0, columnspan=columns, sticky="w", padx=10, pady=(0, 2))
+            # group_label = tk.Label(popout_controls, text=group_name, font=("Helvetica", 10, "bold"))
+            # group_label.grid(row=row, column=0, columnspan=columns, sticky="w", padx=10, pady=(0, 2))
             row += 1
-        col = 0  # Start at column 0
+        col = 0
 
         for entry in button_entries:
             if isinstance(entry[0], str) and entry[0] == "DROPDOWN":
                 _, label_text, colspan = entry
-
                 if col + colspan > columns:
                     row += 1
                     col = 0
 
-                # Create the dropdown here
                 dropdown = ttk.Combobox(
                     popout_controls,
                     values=[display for _, display in light_mode_options],
-                    font=button_font,
+                    font=popout_button_font,
                     height=len(light_mode_options),
                     style="Black.TCombobox",
-                    state='readonly'  # This ensures full-box click behavior
+                    state='readonly'
                 )
+
                 def on_popout_dropdown_change(event):
                     dropdown = popout_buttons_by_name[light_dropdown]
                     value = dropdown.get()
@@ -7427,25 +7588,26 @@ def create_popout_controls(columns=5, title="Popout Controls"):
                 popout_buttons_by_name[light_dropdown] = dropdown
                 continue
 
-            # Unpack entry with default colspan = 1
             if len(entry) == 4:
                 original_button, label_text, show_original, colspan = entry
             else:
                 original_button, label_text, show_original = entry
                 colspan = 1
 
-            # Move to next row if not enough space left in this row
             if col + colspan > columns:
                 row += 1
                 col = 0
+            if original_button and not isinstance(original_button, str):
+                btn_fg = original_button.cget("fg")
+                btn_bg = original_button.cget("bg")
+                btn_cmd = original_button.cget("command")
+                original_text = original_button.cget("text")
+            else:
+                btn_fg = "white"
+                btn_bg = "black"
+                btn_cmd = None
+                original_text = ""
 
-            # Pull original attributes
-            btn_fg = original_button.cget("fg")
-            btn_bg = original_button.cget("bg")
-            btn_cmd = original_button.cget("command")
-            original_text = original_button.cget("text")
-
-            # Compose label
             full_label = ""
             if show_original:
                 full_label += original_text
@@ -7453,29 +7615,47 @@ def create_popout_controls(columns=5, title="Popout Controls"):
                     full_label += "\n"
             full_label += label_text
 
-            # Create and place the button
             clone = tk.Button(
                 popout_controls,
                 text=full_label,
                 fg=btn_fg,
                 bg=btn_bg,
                 command=btn_cmd,
-                font=button_font,
-                wraplength=180 * colspan,
+                font=popout_button_font,
                 justify="center"
             )
             clone.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=2, pady=1)
-
             popout_buttons_by_name[original_button] = clone
 
-            col += colspan  # Now move the column index after placing
+            col += colspan
 
-        row += 1  # Add space between groups
-    button_seleted(popout_controls_button, True)
-    # Allow columns to resize
+        row += 1
+
+    # "Up Next" info area
+    popout_up_next = tk.Text(
+        popout_controls,
+        font=popout_up_next_font,
+        bg=BACKGROUND_COLOR,
+        fg="white",
+        wrap="word",
+        bd=0,
+        height=1
+    )
+    popout_up_next.grid(row=row, column=0, columnspan=columns, sticky="nsew", padx=5, pady=(10, 5))
+    popout_controls.grid_rowconfigure(row, weight=0)
+    popout_up_next.tag_configure("bold", font=popout_up_next_font.copy())
+    popout_up_next.tag_configure("white", foreground="white", justify="center")
+
+    # Enable expansion
     for i in range(columns):
         popout_controls.grid_columnconfigure(i, weight=1)
+    for i in range(row):
+        popout_controls.grid_rowconfigure(i, weight=1)
 
+    button_seleted(popout_controls_button, True)
+    popout_controls.after(500, up_next_text)
+    if currently_playing.get("data"):
+        update_popout_currently_playling(currently_playing.get("data"))
 
 # =========================================
 #                 *GUI SETUP
