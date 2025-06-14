@@ -46,7 +46,7 @@ except OSError as e:
     exit(1)
 
 # Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance("--no-xlib -q") #instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
+instance = vlc.Instance("--no-xlib", "-q") #instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
 player = instance.media_player_new()
 # =========================================
 #       *GLOBAL VARIABLES/CONSTANTS
@@ -4505,7 +4505,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
             if peek_overlay[1]:
                 peek_overlay[1].destroy()
             peek_overlay = None
-            button_seleted(peek_button, False)
+        button_seleted(peek_button, False)
         return
 
     if not 0 <= progress <= 100:
@@ -4618,34 +4618,35 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
             peek_overlay[0].geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
             peek_overlay[1].geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
     
-    update_overlays()
-    button_seleted(peek_button, True)
-    lift_windows()
+    if update_overlays():
+        button_seleted(peek_button, True)
+        lift_windows()
 
 # =========================================
 #          *MISMATCH LIGHTNING ROUND
 # =========================================
 
-instance2 = vlc.Instance("--no-audio", "--fullscreen", "--no-xlib", "-q")
+instance2 = vlc.Instance("--no-audio", "--no-xlib", "-q")
 mismatched_player = instance2.media_player_new()
 mismatch_visuals = None
 def get_mismatched_theme():
     global mismatch_visuals
+    options = []
     match_data = currently_playing.get("data")
-    mismatch_options = copy.copy(list(directory_files.keys()))
-    random.shuffle(mismatch_options)
     if match_data:
         is_op = "OP" in match_data.get("slug")
         match_series = (match_data.get("series") or [match_data.get("title")])[0]
-        for filename in mismatch_options:
+        for filename in directory_files:
             if not check_nsfw(filename):
                 data = get_metadata(filename)
                 if data:
                     filename_series = (data.get("series") or [data.get("title")])[0]
                     if match_series != filename_series and (is_op == ("OP" in data.get("slug"))):
-                        mismatch_data = get_metadata(filename)
-                        mismatch_visuals = get_display_title(mismatch_data) + " " + format_slug(mismatch_data.get("slug"))
-                        return filename
+                        options.append(filename)
+    random.shuffle(options)
+    mismatch_data = get_metadata(options[0])
+    mismatch_visuals = get_display_title(mismatch_data) + " " + format_slug(mismatch_data.get("slug"))
+    return options[0]
 
 def check_nsfw(filename):
     for censor in get_file_censors(filename):
