@@ -213,13 +213,14 @@ def fetch_anidb_metadata(aid):
 
     return result
 
-def fetch_anilist_user_ids(username):
-    """Fetches a set of AniList anime IDs for a given username."""
+def fetch_anilist_user_ids(username, watched_only=False):
+    """Fetches a set of AniList anime IDs for a given username. Can filter for only watched anime."""
     query = '''
     query ($name: String) {
       MediaListCollection(userName: $name, type: ANIME) {
         lists {
           entries {
+            status
             media {
               id
             }
@@ -247,7 +248,13 @@ def fetch_anilist_user_ids(username):
             str(entry["media"]["id"])
             for lst in data["data"]["MediaListCollection"]["lists"]
             for entry in lst["entries"]
-            if "media" in entry and entry["media"].get("id")
+            if (
+                "media" in entry
+                and entry["media"].get("id")
+                and (
+                    not watched_only or entry.get("status") in ("COMPLETED", "REPEATING")
+                )
+            )
         }
         return ids
     except Exception as e:
@@ -775,6 +782,8 @@ def reset_metadata(filename = None):
     if "[MAL]" not in filename and "[ID]" not in filename:
         if currently_playing.get("type") == "theme":
             left_column.window_create(tk.END, window=tk.Button(left_column, text="[AT]", borderwidth=0, pady=0, command=lambda: anime_themes_video(filename), bg="black", fg="white"))
+        elif currently_playing.get("type") == "youtube":
+            left_column.window_create(tk.END, window=tk.Button(left_column, text="[YT]", borderwidth=0, pady=0, command=lambda: webbrowser.open(currently_playing.get("data").get("url")), bg="black", fg="white"))
     left_column.window_create(tk.END, window=tk.Button(left_column, text="⎘", borderwidth=0, pady=0, command=lambda: pyperclip.copy(filename), bg="black", fg="white"))
     if playlist["name"] == "Tagged Themes":
         left_column.window_create(tk.END, window=tk.Button(left_column, text="❌", borderwidth=0, pady=0, command=lambda: delete_file_by_filename(filename), bg="black", fg="white"))
@@ -872,11 +881,20 @@ def update_popout_currently_playling(data):
     theme = format_slug(data.get("slug"))
     song = get_song_string(data)
     tags = get_tags_string(data)
+    studio = ", ".join(data.get("studios"))
+    type = data.get("type")
+    source = data.get("source")
     marks = get_file_marks(currently_playing.get("filename", ""))
     if data.get("platforms"):
+        episodes = ", ".join(data.get("platforms"))
         members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
         score = f"Score: {data.get("score")}"
     else:
+        episodes =  data.get("episodes")
+        if not episodes:
+            episodes = "Airing"
+        else:
+            episodes = str(episodes) + " Episodes"
         members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
         score = f"Score: {data.get("score")} (#{data.get("rank")})"
     if is_game(data):
@@ -885,7 +903,8 @@ def update_popout_currently_playling(data):
         aired = data.get("season")
     # popout_currently_playing.insert(tk.END, f"{title}", "white")
     popout_currently_playing.configure(text=title)
-    popout_currently_playing_extra.insert(tk.END, f"{marks}{theme} | {song} | {aired}\n{score} | {japanese_title} | {members} | {tags}", "white")
+    # popout_currently_playing_extra_top.configure(text=f"{marks}{theme} | {song} | {aired}")
+    popout_currently_playing_extra.insert(tk.END, f"{marks}{theme} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
     # popout_currently_playing.config(state=tk.DISABLED)
     popout_currently_playing_extra.config(state=tk.DISABLED)
 
@@ -1576,6 +1595,7 @@ def get_youtube_duration(data):
 def get_youtube_metadata_from_index(index):
     for idx, (key, value) in enumerate(youtube_metadata.items()):
         if idx == index:
+            value["url"] = key
             return value
 
 # =========================================
@@ -3656,7 +3676,7 @@ def update_light_round(time):
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval)+starting_letters)
                 set_frame_number(f"{word_num}/{final_count} REVEALS")
                 toggle_title_overlay(get_title_light_string(word_num))
-            elif peek_overlay:
+            elif peek_overlay1:
                 gap = get_peek_gap(currently_playing.get("data"))
                 toggle_peek_overlay(direction=peek_light_direction, progress=((light_round_length-time_left)/light_round_length)*100, gap=gap)
                 now_playing_background_music(music_files[current_music_index])
@@ -4519,12 +4539,12 @@ peek_modifier = 0
 gap_modifier = 0
 def toggle_peek():
     global peek_modifier, gap_modifier
-    if not peek_overlay:
+    if not peek_overlay1:
         gap_modifier = 0
         peek_modifier = random.randint(0,24)
         toggle_peek_overlay()
         if black_overlay:
-            blind()
+            root.after(100, blind)
         button_seleted(peek_button, True)
     else:
         toggle_peek_overlay(destroy=True)
@@ -4546,7 +4566,10 @@ def widen_peek():
     gap_modifier += 1
 
 def get_peek_gap(data):
-    gap = (0 + min(9, (data.get('popularity') or 3000)/100))
+    if light_mode == 'peek' or light_round_started:
+        gap = (0 + min(9, (data.get('popularity') or 3000)/100))
+    else:
+        gap = 0
     return gap
 
 peek_light_direction = None
@@ -4557,7 +4580,9 @@ def choose_peek_direction():
         new_dir = random.choice(["right","down"])
     peek_light_direction = new_dir
 
-peek_overlay = None
+peeking = False
+peek_overlay1 = None
+peek_overlay2 = None
 def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
     """Toggles two fullscreen overlays that reveal the screen in a chosen direction by percentage.
 
@@ -4567,131 +4592,133 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
         progress (int): How much to reveal, from 0 (fully covered) to 100 (fully uncovered).
         gap (int): The gap between the two overlays, as a percentage of the screen width/height.
     """
-    global peek_overlay
+    global gap_modifier, peek_overlay1, peek_overlay2, peeking
 
     if destroy:
-        if peek_overlay:
-            if peek_overlay[0]:
-                peek_overlay[0].destroy()
-            if peek_overlay[1]:
-                peek_overlay[1].destroy()
-            peek_overlay = None
+        if peek_overlay1 and peek_overlay1.winfo_exists():
+            peek_overlay1.destroy()
+            peek_overlay1 = None
+        if peek_overlay2 and peek_overlay2.winfo_exists():
+            peek_overlay2.destroy()
+            peek_overlay2 = None
+        gap_modifier = 0
+        peeking = False
         button_seleted(peek_button, False)
         return
 
     if not 0 <= progress <= 100:
         return
 
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    if not peeking:
+        peeking = True
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
 
-    # Calculate the gap in pixels as a percentage of the screen size
-    gap_pixels = ((gap / 100) * screen_width) + (gap_modifier*(screen_width/100)) # Use screen width for gap calculation
-    # Initialize overlay dimensions and positions
-    first_width, first_height, first_x, first_y = 0, 0, 0, 0
-    second_width, second_height, second_x, second_y = 0, 0, 0, 0
+        # Calculate the gap in pixels as a percentage of the screen size
+        gap_pixels = ((gap / 100) * screen_width) + (gap_modifier*(screen_width/100)) # Use screen width for gap calculation
+        # Initialize overlay dimensions and positions
+        first_width, first_height, first_x, first_y = 0, 0, 0, 0
+        second_width, second_height, second_x, second_y = 0, 0, 0, 0
 
-    cover_margin = 20  # pixels to ensure full screen edge coverage
+        cover_margin = 20  # pixels to ensure full screen edge coverage
 
-    if direction == "left":
-        first_width = screen_width * (1 - progress / 100)
-        first_height = screen_height
-        first_x = 0
-        first_y = 0
+        if direction == "left":
+            first_width = screen_width * (1 - progress / 100)
+            first_height = screen_height
+            first_x = 0
+            first_y = 0
 
-        second_width = max(0, screen_width * (progress / 100) - gap_pixels)
-        second_height = screen_height
-        second_x = first_width + gap_pixels
-        second_y = 0
+            second_width = max(0, screen_width * (progress / 100) - gap_pixels)
+            second_height = screen_height
+            second_x = first_width + gap_pixels
+            second_y = 0
 
-    elif direction == "right":
-        first_width = screen_width * (1 - progress / 100)
-        first_height = screen_height
-        first_x = screen_width - first_width + cover_margin  # Extra cover on edge
-        first_y = 0
+        elif direction == "right":
+            first_width = screen_width * (1 - progress / 100)
+            first_height = screen_height
+            first_x = screen_width - first_width + cover_margin  # Extra cover on edge
+            first_y = 0
 
-        second_width = max(0, screen_width * (progress / 100) - gap_pixels)
-        second_height = screen_height
-        second_x = 0
-        second_y = 0
+            second_width = max(0, screen_width * (progress / 100) - gap_pixels)
+            second_height = screen_height
+            second_x = 0
+            second_y = 0
 
-    elif direction == "up":
-        first_width = screen_width
-        first_height = screen_height * (1 - progress / 100)
-        first_x = 0
-        first_y = 0
+        elif direction == "up":
+            first_width = screen_width
+            first_height = screen_height * (1 - progress / 100)
+            first_x = 0
+            first_y = 0
 
-        second_width = screen_width
-        second_height = max(0, screen_height * (progress / 100) - gap_pixels)
-        second_x = 0
-        second_y = first_height + gap_pixels
+            second_width = screen_width
+            second_height = max(0, screen_height * (progress / 100) - gap_pixels)
+            second_x = 0
+            second_y = first_height + gap_pixels
 
-    elif direction == "down":
-        first_width = screen_width
-        first_height = screen_height * (1 - progress / 100)
-        first_x = 0
-        first_y = screen_height - first_height + cover_margin  # Extra cover on edge
+        elif direction == "down":
+            first_width = screen_width
+            first_height = screen_height * (1 - progress / 100)
+            first_x = 0
+            first_y = screen_height - first_height + cover_margin  # Extra cover on edge
 
-        second_width = screen_width
-        second_height = max(0, screen_height * (progress / 100) - gap_pixels)
-        second_x = 0
-        second_y = 0
-    else:
-        print("Invalid direction.")
-        return
-
-
-    # Convert to integers for geometry calculation
-    first_width = int(first_width)
-    first_height = int(first_height)
-    first_x = int(first_x)
-    first_y = int(first_y)
-
-    second_width = int(second_width)
-    second_height = int(second_height)
-    second_x = int(second_x)
-    second_y = int(second_y)
-
-    # Create the peek_overlay list if it hasn't been created yet
-    if peek_overlay is None:
-        peek_overlay = [None, None]
-
-    # image_color = get_image_color()
-    image_color = "Black"
-    # First overlay
-    if peek_overlay[0] is None:
-        peek_overlay[0] = tk.Toplevel(root)
-        peek_overlay[0].overrideredirect(True)
-        peek_overlay[0].attributes("-topmost", True)
-        peek_overlay[0].configure(bg=image_color)
-
-    # Second overlay
-    if peek_overlay[1] is None:
-        peek_overlay[1] = tk.Toplevel(root)
-        peek_overlay[1].overrideredirect(True)
-        peek_overlay[1].attributes("-topmost", True)
-        peek_overlay[1].configure(bg=image_color)
-
-    # Update both overlays
-    def update_overlays():
-        for i in range(2):
-            if peek_overlay and peek_overlay[i]:
-                peek_overlay[i].update()
-            else:
-                return False
-        return True
-
-    if update_overlays():
-        if direction == "right":
-            peek_overlay[1].geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
-            peek_overlay[0].geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
+            second_width = screen_width
+            second_height = max(0, screen_height * (progress / 100) - gap_pixels)
+            second_x = 0
+            second_y = 0
         else:
-            peek_overlay[0].geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
-            peek_overlay[1].geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
-    
-    if update_overlays():
-        button_seleted(peek_button, True)
-        lift_windows()
+            print("Invalid direction.")
+            return
+
+
+        # Convert to integers for geometry calculation
+        first_width = int(first_width)
+        first_height = int(first_height)
+        first_x = int(first_x)
+        first_y = int(first_y)
+
+        second_width = int(second_width)
+        second_height = int(second_height)
+        second_x = int(second_x)
+        second_y = int(second_y)
+
+        # image_color = get_image_color()
+        image_color = "Black"
+        # First overlay
+        if peek_overlay1 is None:
+            peek_overlay1 = tk.Toplevel(root)
+            peek_overlay1.overrideredirect(True)
+            peek_overlay1.attributes("-topmost", True)
+            peek_overlay1.configure(bg=image_color)
+
+        # Second overlay
+        if peek_overlay2 is None:
+            peek_overlay2 = tk.Toplevel(root)
+            peek_overlay2.overrideredirect(True)
+            peek_overlay2.attributes("-topmost", True)
+            peek_overlay2.configure(bg=image_color)
+
+        # Update both overlays
+        def update_overlays():
+            for p in [peek_overlay1, peek_overlay2]:
+                if p:
+                    p.update()
+                else:
+                    return False
+            return True
+
+        if peek_overlay1:
+            if direction == "right":
+                peek_overlay2.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
+                peek_overlay1.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
+            else:
+                peek_overlay1.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
+                peek_overlay2.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
+        
+        if peek_overlay1:
+            button_seleted(peek_button, True)
+            lift_windows()
+
+        peeking = False
 
 # =========================================
 #          *MISMATCH LIGHTNING ROUND
@@ -5897,6 +5924,7 @@ def play_video(index=playlist["current_index"]):
     if playlist["current_index"]+1 >= len(playlist["playlist"]):
         get_next_infinite_track()
     up_next_text()
+    add_session_history()
     root.after(3000, thread_prefetch_metadata)
 
 all_themes_played = []
@@ -5951,19 +5979,56 @@ def play_filename(filename, fullscreen=True):
             manual_blind = True
             set_black_screen(True)
             root.after(500, lambda: player.play())
+        elif peek_round_toggle:
+            manual_blind = False
+            set_black_screen(False)
+            peek_round_toggle = False
+            button_seleted(peek_round_button, peek_round_toggle)
+            toggle_peek_overlay()
+            root.after(500, lambda: player.play())
         else:
             manual_blind = False
             set_black_screen(False)
             player.play()
-        if peek_round_toggle:
-            peek_round_toggle = False
-            button_seleted(peek_round_button, peek_round_toggle)
-            toggle_peek_overlay()
         root.after(500, play_video_retry, 5, fullscreen)  # Retry playback
     if filename not in all_themes_played:
         all_themes_played.append(filename)
         update_playlist_name()
     save_config()
+
+session_history = []
+session_start_time = None
+def add_session_history():
+    global session_history, session_start_time
+    if not session_start_time:
+        session_start_time = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    data = currently_playing.get("data")
+    session_string = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}:"
+    if data:
+        if currently_playing.get("type") == "youtube":
+            session_string = f"{session_string} {data.get("title")} by {data.get("channel")} ({data.get("url")})"
+        else:
+            if light_mode:
+                session_string = f"{session_string} LIGHTNING ROUND #{light_round_number}({light_mode.upper()}) -"
+            session_string = f"{session_string} {get_display_title(data)} - {format_slug(data.get("slug"))} ({get_song_string(data)})"
+    else:
+        session_string = f"{session_string} {currently_playing.get("filename")})"
+    session_history.append(session_string)
+    save_session_history()
+
+def save_session_history():
+    if not session_history or not session_start_time:
+        return  # Nothing to save
+
+    # Ensure the folder exists
+    os.makedirs("sessions", exist_ok=True)
+
+    # Create filename
+    filename = f"sessions/guess_the_anime_{session_start_time}.txt"
+
+    with open(filename, "w", encoding="utf-8") as f:
+        for entry in session_history:
+            f.write(entry + "\n")
 
 def thread_prefetch_metadata():
     threading.Thread(target=pre_fetch_metadata, daemon=True).start()
@@ -6194,7 +6259,7 @@ def update_seek_bar():
             time = projected_vlc_time/1000
             if manual_blind:
                 set_progress_overlay(time, length)
-            if peek_overlay and not light_round_started:
+            if peek_overlay1 and not light_round_started:
                 gap = get_peek_gap(currently_playing.get("data"))
                 progress = ((time+peek_modifier)%24/12)*100
                 if progress >= 100:
@@ -6422,6 +6487,7 @@ def set_black_screen(toggle, smooth=True):
                 black_overlay.destroy()
             black_overlay = None
         set_blind_enabled(False)
+    root.after(100, configure_style)
 
 def set_blind_enabled(toggle):
     global blind_enabled, manual_blind
@@ -6522,10 +6588,9 @@ def check_file_censors(filename, time, video_end):
                 if not censor_used and not censor.get("mute"):
                     censor_used = True
                     censor_bar.attributes("-topmost", True)
-                    if peek_overlay:
-                        for i in range(2):
-                            if peek_overlay[i]:
-                                peek_overlay[i].lift()
+                    for p in [peek_overlay1, peek_overlay2]:
+                        if p:
+                            p.lift()
                     lift_windows()
                     if censor_editor:
                         censor_editor.attributes("-topmost", True)
@@ -6586,9 +6651,10 @@ def rgbtohex(r,g,b):
     return f'#{r:02x}{g:02x}{b:02x}'
 
 def update_censor_button_count():
-    toggle_censor_bar_button.configure(text="[C]ENSOR(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
+    censors_num = len(get_file_censors(currently_playing.get("filename","")))
+    toggle_censor_bar_button.configure(text=f"[C]ENSOR({censors_num})")
     if popout_buttons_by_name.get(toggle_censor_bar_button):
-        popout_buttons_by_name.get(toggle_censor_bar_button).configure(text="CENSORS(" + str(len(censor_list.get(currently_playing.get("filename",""), {}))) +")")
+        popout_buttons_by_name.get(toggle_censor_bar_button).configure(text=f"CENSORS({censors_num})")
 
 class RectangleDrawerOverlay:
     def __init__(self, on_rectangle_picked):
@@ -7227,8 +7293,9 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "SEEK or MODE", "[-]/[+]")
     add_single_line(right_column, "MUTE VIDEO", "[M]", False)
     add_single_line(right_column, "SCROLL UP/DOWN", "[⬆]/[⬇]")
-    add_single_line(right_column, "TAG THEME", "[T]", False)
-    add_single_line(right_column, "FAVORITE THEME", "[*]")
+    add_single_line(right_column, "TAG", "[T]", False)
+    add_single_line(right_column, "FAVORITE", "[*]", False)
+    add_single_line(right_column, "MODE DOWN/UP", "[<]/[>]")
     add_single_line(right_column, "REFETCH METADATA", "[F]", False)
     add_single_line(right_column, "REROLL NEXT", "[R]")
     add_single_line(right_column, "SHOW PLAYLIST", "[P]", False)
@@ -7246,7 +7313,7 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "TOGGLE BLIND", "[BKSP]", False)
     add_single_line(right_column, "TOGGLE PEEK", "[=]")
     add_single_line(right_column, "BLIND/PEEK ROUND", "[B]", False)
-    add_single_line(right_column, "WIDEN PEEK", "[ _ ]")
+    add_single_line(right_column, "WIDEN PEEK", "[ [ ]")
     add_single_line(right_column, "SHOW YOUTUBE PLAYLIST", "[Y]")
     add_single_line(right_column, "LIGHTNING ROUND CYCLE", "[L]", False)
     add_single_line(right_column, "VARIETY", "[V]")
@@ -7460,7 +7527,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
     popout_controls = tk.Toplevel()
     popout_controls.title(title)
     popout_controls.configure(bg=BACKGROUND_COLOR)
-    popout_controls.geometry("850x515")
+    popout_controls.geometry("1440x810")
     popout_controls.protocol("WM_DELETE_WINDOW", on_popout_close)
     popout_controls.bind("<Configure>", on_popout_resize)
 
@@ -7498,7 +7565,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             (variety_light_mode_button, "VARIETY", True, 2)
         ],
         "MISC TOGGLES": [
-            (toggle_censor_bar_button, "", True, 2),
+            (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get("filename","")))})", False, 2),
             (mute_button, "MUTE", False),
             (end_button, "END SESSION STATS", False, 2)
         ],
@@ -7512,6 +7579,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
     }
 
     row = 0
+
     popout_currently_playing = tk.Label(
         popout_controls,
         font=popout_current_font,
@@ -7541,7 +7609,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         bg=BACKGROUND_COLOR,
         fg="white",
         bd=0,
-        height=3
+        height=4
     )
     popout_currently_playing_extra.grid(row=row, column=0, columnspan=columns, sticky="nsew", padx=5, pady=(0, 0))
     popout_controls.grid_rowconfigure(row, weight=0)
@@ -7757,9 +7825,11 @@ def generate_anilist_playlist():
     user_id = simpledialog.askstring("AniList User ID", "Enter the AniList user ID:")
     if not user_id:
         return  # User canceled
+    
+    only_watched = messagebox.askyesno("AniList Only Watched", f"Do you want to limit results to only watched entries?")
 
     # Fetch AniList data
-    user_anime_ids = fetch_anilist_user_ids(user_id)
+    user_anime_ids = fetch_anilist_user_ids(user_id, only_watched)
     if not user_anime_ids:
         messagebox.showerror("Error", "Could not fetch AniList data or no entries found.")
         return
@@ -7770,12 +7840,13 @@ def generate_anilist_playlist():
         if data and str(data.get("anilist")) in user_anime_ids:
             matching_files.append(file)
 
-    confirm = messagebox.askyesno("Create Playlist", f"{len(matching_files)} matches found. Create playlist?")
-    if not confirm:
-        return
-    new_playlist(matching_files, f"{user_id}'s AniList")
     if not matching_files:
         messagebox.showwarning("Playlist Error", "No matching video files found for this AniList user.")
+    else:
+        confirm = messagebox.askyesno("Create Playlist", f"{len(matching_files)} matches found. Create playlist?")
+        if not confirm:
+            return
+        new_playlist(matching_files, f"{user_id}'s AniList")
 
 def new_playlist(playlis, name=None):
     global playlist
@@ -8471,7 +8542,7 @@ def on_release(key):
                 elif key == key.tab:
                     player.toggle_fullscreen()
                 elif key == key.backspace:
-                    if peek_overlay:
+                    if peek_overlay1:
                         toggle_peek()
                     else:
                         blind(True)
@@ -8530,9 +8601,9 @@ def on_release(key):
                         toggle_blind_round()
                     else:
                         toggle_peek_round()
-                elif key.char == '=':
+                elif key.char in ['=', '+']:
                     toggle_peek()
-                elif key.char == '_':
+                elif key.char == '[':
                     widen_peek()
                 elif key.char == 'v':
                     toggle_light_mode("variety")
@@ -8550,12 +8621,12 @@ def on_release(key):
                     guess_extra("members")
                 elif key.char == 'j':
                     guess_extra("score")
-                elif playlist.get("infinite", False) and (key.char == '-'):
+                elif playlist.get("infinite") and (key.char in ['<',',']):
                     if playlist["difficulty"] > 0:
                         playlist["difficulty"] -= 1
                         difficulty_dropdown.current(playlist["difficulty"])
                         select_difficulty()
-                elif playlist.get("infinite", False) and (key.char == '+'):
+                elif playlist.get("infinite") and (key.char in ['>','.']):
                     if playlist["difficulty"] < len(difficulty_options)-1:
                         playlist["difficulty"] += 1
                         difficulty_dropdown.current(playlist["difficulty"])
