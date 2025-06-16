@@ -68,6 +68,8 @@ file_metadata = {}
 FILE_METADATA_FILE = "metadata/file_metadata.json"
 anime_metadata = {}
 ANIME_METADATA_FILE = "metadata/anime_metadata.json"
+anidb_metadata = {}
+ANIDB_METADATA_FILE = "metadata/anidb_metadata.json"
 anime_metadata_overrides = {}
 ANIME_METADATA_OVERRIDES_FILE = "metadata/anime_metadata_overrides.json"
 manual_metadata_file = "metadata/manual_metadata.json"
@@ -272,14 +274,17 @@ def get_metadata(filename, refresh = False, refresh_all = False, fetch = False):
     file_data = file_metadata.get(filename)
     if file_data:
         mal_id = file_data.get('mal')
+        anidb_id = file_data.get('anidb')
         anime_data = anime_metadata.get(mal_id)
+        anidb_data = anidb_metadata.get(anidb_id, {})
         if anime_data:
             if "-[ID]" not in filename and mal_id and mal_id not in fetched_metadata and refresh and (refresh_all or (auto_refresh_toggle and fetch)):
                 fetched_metadata.append(mal_id)
                 refresh_jikan_data(mal_id, anime_data)
-                if not anidb_cooldown and file_data.get('anidb') and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names']):
-                    refresh_anidb_data(file_data.get('anidb'), anime_data)
-            return file_data | anime_data
+                if anidb_id:
+                    if not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names']):
+                        refresh_anidb_data(anidb_id, anidb_data)
+            return file_data | anime_data | anidb_data
     if fetch:
         return fetch_metadata(filename)
     else:
@@ -366,9 +371,9 @@ def fetch_metadata(filename = None, refetch = False, label=""):
         anime_data = anime_metadata.get(mal_id)
         old_songs = []
         if anime_data:
-            old_episode_info = anime_data.get("episode_info", [])
-            old_characters = anime_data.get("characters", [])
-            old_tags = anime_data.get("tags", [])
+            # old_episode_info = anime_data.get("episode_info", [])
+            # old_characters = anime_data.get("characters", [])
+            # old_tags = anime_data.get("tags", [])
             old_songs = anime_data.get("songs", [])
         file_metadata[filename] = file_data
         if refetch or not anime_data:
@@ -402,32 +407,34 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                 else:
                     anime_data["season"] = anime_data["season"].capitalize()
                 anime_metadata[mal_id] = anime_data
-        if anime_data and (refetch or not anime_data.get("characters") or not anime_data.get("tags") or not anime_data.get("episode_info")):
-            if not anidb_cooldown and anidb_id:
-                anidb = fetch_anidb_metadata(anidb_id)
-                if anidb["tags"] == [] and anidb["characters"] == [] and anidb["episodes"] == []:
-                    anidb_cooldown = True
-                    print("[aniDB cooldown reached!]")
-                else:
-                    anidb_delay = 5
-                    anime_data["tags"] = anidb["tags"]
-                    anime_data["characters"] = anidb["characters"]
-                    anime_data["episode_info"] = anidb["episodes"]
-                    anime_metadata[mal_id] = anime_data
-            if anidb_cooldown:
-                try:
-                    anime_data["tags"] = old_tags
-                except NameError:
-                    anime_data["tags"] = []
-                try:
-                    anime_data["characters"] = old_characters
-                except NameError:
-                    anime_data["characters"] = []
-                try:
-                    anime_data["episode_info"] = old_episode_info
-                except NameError:
-                    anime_data["episode_info"] = []
-                anime_metadata[mal_id] = anime_data
+        if anidb_id:
+            anidb_data = anidb_metadata.get(anidb_id, {})
+            if anime_data and (refetch or not anidb_data.get("characters") or not anidb_data.get("tags") or not anidb_data.get("episode_info")):
+                if not anidb_cooldown:
+                    anidb = fetch_anidb_metadata(anidb_id)
+                    if anidb["tags"] == [] and anidb["characters"] == [] and anidb["episodes"] == []:
+                        anidb_cooldown = True
+                        print("[aniDB cooldown reached!]")
+                    else:
+                        anidb_delay = 5
+                        anidb_data["tags"] = anidb["tags"]
+                        anidb_data["characters"] = anidb["characters"]
+                        anidb_data["episode_info"] = anidb["episodes"]
+                        anidb_metadata[anidb_id] = anidb_data
+                # if anidb_cooldown:
+                #     try:
+                #         anime_data["tags"] = old_tags
+                #     except NameError:
+                #         anime_data["tags"] = []
+                #     try:
+                #         anime_data["characters"] = old_characters
+                #     except NameError:
+                #         anime_data["characters"] = []
+                #     try:
+                #         anime_data["episode_info"] = old_episode_info
+                #     except NameError:
+                #         anime_data["episode_info"] = []
+                #     anime_metadata[mal_id] = anime_data
         if anime_data:
             # Get new songs from the current fetch
             new_songs = get_theme_list(anime_themes)
@@ -660,30 +667,51 @@ def fetch_all_metadata(delay=0):
         total_checked = 0
         total_fetched = 0
         total_skipped = 0
-        for index, filename in enumerate(directory_files):
+        total_missing = 0
+
+        refresh_jikan = []
+        fetch_data = []
+        for filename in directory_files:
             total_checked += 1
             # Skip if metadata already exists
             if filename in file_metadata:
                 file_data = file_metadata.get(filename)
                 mal_id = file_data.get('mal')
                 anidb_id = file_data.get('anidb')
-                if mal_id in anime_metadata and (not anidb_id or anime_metadata.get(mal_id, {}).get("tags")):
+                if mal_id in anime_metadata and (not anidb_id or anidb_metadata.get(anidb_id, {}).get("tags")):
                     if not anime_metadata.get(mal_id, {}).get("title"):
-                        refresh_jikan_data(mal_id, anime_metadata.get(mal_id))
-                        total_fetched += 1
-                    continue  
-                if anidb_id and not anime_metadata.get(mal_id, {}).get("tags") and anidb_cooldown:
+                        refresh_jikan.append([mal_id, anime_metadata.get(mal_id)])
+                    continue
+                if anidb_id and not anidb_metadata.get(anidb_id, {}).get("tags") and anidb_cooldown:
                     total_skipped += 1
                     continue
-            if total_fetched > 0 and delay+anidb_delay > 0: 
-                time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
-                anidb_delay = 0
-            fetch_metadata(filename, label=f"[{index+1}/{len(directory_files)}]")  # Call your existing metadata function
-            total_fetched += 1
-            toggle_theme("New Themes", filename=filename, quite=True)
+            fetch_data.append(filename)
+            total_missing += 1
+        if total_missing > 0:
+            if fetch_data:
+                save_new_theme = messagebox.askyesno("Save Missing Entries To New Themes", f"Would you like to save all missing entries to the 'New Themes' playlist? Entries in the 'New Themes' playlist cannot be added to infinite playlists.")
+            for filename in fetch_data:
+                if total_fetched > 0 and delay+anidb_delay > 0: 
+                    time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
+                    anidb_delay = 0
+                try:
+                    fetch_metadata(filename, label=f"[{total_fetched+1}/{total_missing}]")  # Call your existing metadata function
+                    total_fetched += 1
+                except Exception as e:
+                    print(e)
+                    time.sleep(3)  # Delay to avoid API rate limits
+                    total_skipped += 1
+            for file_refresh in refresh_jikan:
+                try:
+                    refresh_jikan_data(file_refresh[0], file_refresh[1])
+                    total_fetched += 1
+                except Exception as e:
+                    print(e)
+                    time.sleep(3)  # Delay to avoid API rate limits
+                    total_skipped += 1
 
         print("Metadata fetching complete! - Checked:" + str(total_checked) + " Missing:" + str(total_fetched+total_skipped) + " Skipped:" + str(total_skipped))
-        if total_fetched > 0:
+        if save_new_theme and total_fetched > 0:
             print(f"{total_fetched} files saved to playlist '{"New Themes"}'.")
 
     # Run in a separate thread so it doesn’t freeze the UI
@@ -1191,7 +1219,7 @@ def get_overall_theme_number(filename):
     for anime_id, anime in related_anime:
         anime_title = clean_title(anime.get("title"))
         anime_display_title = clean_title(get_display_title(anime))
-        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes"))):
+        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes")) and data.get("type") == anime.get("type")):
             if not base_title or not display_base_title:
                 if anime_title in data.get("title"):
                     base_title = anime_title
@@ -2169,20 +2197,30 @@ def save_metadata():
     with open(ANIME_METADATA_FILE, "w") as f:
         json.dump(anime_metadata, f, indent=4)
 
+    with open(ANIDB_METADATA_FILE, "w") as f:
+        json.dump(anidb_metadata, f, indent=4)
+
 def save_metadata_overrides():
     with open(ANIME_METADATA_OVERRIDES_FILE, "w") as f:
         json.dump(anime_metadata_overrides, f, indent=4)
 
 def load_metadata():
-    global file_metadata, anime_metadata, anime_metadata_overrides
+    global file_metadata, anime_metadata, anidb_metadata, anime_metadata_overrides
     if os.path.exists(FILE_METADATA_FILE):
         with open(FILE_METADATA_FILE, "r") as f:
             file_metadata = json.load(f)
-            print("Loaded metadata for " + str(len(file_metadata)) + " files...")
+            print("Loaded file metadata for " + str(len(file_metadata)) + " files...")
     if os.path.exists(ANIME_METADATA_FILE):
         with open(ANIME_METADATA_FILE, "r") as a:
             anime_metadata = json.load(a)
-            print("Loaded metadata for " + str(len(anime_metadata)) + " entries...")
+            print("Loaded anime metadata for " + str(len(anime_metadata)) + " entries...")
+    if os.path.exists(ANIDB_METADATA_FILE):
+        with open(ANIDB_METADATA_FILE, "r") as a:
+            anidb_metadata = json.load(a)
+            print("Loaded anidb metadata for " + str(len(anidb_metadata)) + " entries...")
+    else:
+        split_anime_anidb_metadata()
+
     if os.path.exists(manual_metadata_file):
         with open(manual_metadata_file, "r", encoding="utf-8") as m:
             manual_metadata = json.load(m)
@@ -2200,6 +2238,24 @@ def load_metadata():
             anime_metadata_overrides = json.load(a)
             print("Loaded metadata overrides for " + str(len(anime_metadata_overrides)) + " entries...")
             deep_merge(anime_metadata, anime_metadata_overrides)
+
+def split_anime_anidb_metadata():
+    global anime_metadata, anidb_metadata
+
+    for file, data in file_metadata.items():
+        if data.get("anidb"):
+            anime_data = anime_metadata.get(data.get("mal"))
+            if anime_data:
+                anidb_data = {}
+                for field in ["characters", "episode_info","tags"]:
+                    if anime_data.get(field):
+                        anidb_data[field] = anime_data.get(field)
+                    if field in anime_metadata[data.get("mal")]:
+                        del anime_metadata[data.get("mal")][field]
+                if anidb_data:
+                    anidb_metadata[data.get("anidb")] = anidb_data
+    save_metadata()
+
 
 REVIEW_MODIFIER = 500
 def estimate_manual_popularity(members):
@@ -6972,7 +7028,7 @@ def open_censor_editor(refresh=False):
 #            *TAG/FAVORITE FILES
 # =========================================
 
-def toggle_theme(playlist_name, button=None, filename=None, quite=False):
+def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=False):
     """Toggles a theme in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
     if not filename:
         if currently_playing.get("filename"):
@@ -6993,11 +7049,14 @@ def toggle_theme(playlist_name, button=None, filename=None, quite=False):
 
     type_string = "saved to"
     if filename in theme_list:
-        # Remove theme
-        theme_list.remove(filename)
-        if button:
-            button_seleted(button, False)
-        type_string = "removed from"
+        if not add:
+            # Remove theme
+            theme_list.remove(filename)
+            if button:
+                button_seleted(button, False)
+            type_string = "removed from"
+        else:
+            return
     else:
         # Add theme
         if not theme_list:
@@ -7015,7 +7074,7 @@ def toggle_theme(playlist_name, button=None, filename=None, quite=False):
 
     with open(playlist_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
-        if not quite:
+        if not quiet:
             print(f"{filename} {type_string} playlist '{playlist_name}'.")
 
     check_theme(playlist_name=playlist_name, recache=True)
