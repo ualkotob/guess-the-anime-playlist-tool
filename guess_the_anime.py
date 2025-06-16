@@ -668,6 +668,7 @@ def fetch_all_metadata(delay=0):
         total_fetched = 0
         total_skipped = 0
         total_missing = 0
+        save_new_theme = False
 
         refresh_jikan = []
         fetch_data = []
@@ -678,11 +679,11 @@ def fetch_all_metadata(delay=0):
                 file_data = file_metadata.get(filename)
                 mal_id = file_data.get('mal')
                 anidb_id = file_data.get('anidb')
-                if mal_id in anime_metadata and (not anidb_id or anidb_metadata.get(anidb_id, {}).get("tags")):
+                if mal_id in anime_metadata and (not anidb_id or anidb_id in anidb_metadata):
                     if not anime_metadata.get(mal_id, {}).get("title"):
                         refresh_jikan.append([mal_id, anime_metadata.get(mal_id)])
                     continue
-                if anidb_id and not anidb_metadata.get(anidb_id, {}).get("tags") and anidb_cooldown:
+                if anidb_id and (not anidb_id in anidb_metadata) and anidb_cooldown:
                     total_skipped += 1
                     continue
             fetch_data.append(filename)
@@ -1984,6 +1985,8 @@ def get_pop_time_groups(refetch=False):
                     for _ in range(int(extra_boost)):
                         sorted_groups[k].append(f"{f}[EXTRA]")
                     break
+                if k == len(group_limits) - 1:
+                    cached_skipped_themes.append(f)
                 
         # Step 2: Within each popularity group, sort by year (oldest to newest)
         def sort_by_year(entries):
@@ -2920,6 +2923,8 @@ def show_filter_popup():
     season_end_dropdown.bind("<<ComboboxSelected>>", unhighlight_season_end_dropdown)
     
     theme_exclude_options = [
+        "DUPLICATES (very slow)",
+        "LATER VERSIONS (very slow)",
         "OVERLAP",
         "NSFW (Without Censors)",
         "NSFW (With Censors)",
@@ -3234,6 +3239,11 @@ def filter_playlist(filters):
                         theme_flags.add("NSFW (With Censors)")
                     else:
                         theme_flags.add("NSFW (Without Censors)")
+            if not check_best_duplicate_theme(filename, data):
+                theme_flags.add("DUPLICATES (very slow)")
+            if not check_lowest_version(filename, data):
+                theme_flags.add("LATER VERSIONS (very slow)")
+                    
             if any(flag in filters["themes_exclude"] for flag in theme_flags):
                 continue  # Exclude this file
         if "season_max" in filters and season_tuple > season_to_tuple(filters["season_max"]):
@@ -3263,6 +3273,106 @@ def get_song_by_slug(data, slug):
         if theme["slug"] == slug:  # Find the matching slug
             return theme
     return {}  # Return empty list if no match
+
+cached_best_duplicates = []
+cached_not_best_duplicates = []
+def check_best_duplicate_theme(filename, data):
+    global cached_best_duplicates
+    if filename in cached_best_duplicates:
+        return True
+    elif filename in cached_not_best_duplicates:
+        return False
+    mal = data.get("mal")
+    slug = data.get("slug")
+    ver = extract_version(filename)
+
+    if playlist.get("infinite"):
+        playlis = directory_files
+    else:
+        playlis = playlist.get("playlist")
+
+    best_file = filename
+    try:
+        best_size = os.path.getsize(directory_files.get(filename))
+    except:
+        return False
+    for file in playlis:
+        if file != filename:
+            if file in cached_not_best_duplicates:
+                continue
+            file_data = get_metadata(file)
+            if not file_data:
+                continue
+            
+            if (
+                file_data.get("mal") == mal and
+                file_data.get("slug") == slug and
+                extract_version(file) == ver
+            ):
+                try:
+                    file_size = os.path.getsize(directory_files.get(file))
+                    if file_size > best_size:
+                        best_file = file
+                        best_size = file_size
+                    else:
+                        cached_not_best_duplicates.append(file)
+                except:
+                    continue
+    if best_file == filename:
+        cached_best_duplicates.append(filename)
+    else:
+        cached_not_best_duplicates.append(filename)
+    return best_file == filename  # True if this is the best file (by size) for this version
+
+def extract_version(filename):
+    """
+    Extracts the version number from a filename like:
+    'BlackBullet-OP1v2-NCBD1080.webm' -> returns 2
+    If no version is found, defaults to 1.
+    """
+    match = re.search(r'v(\d+)', filename)
+    if match:
+        return int(match.group(1))
+    return 1
+
+cached_best_versions = []
+cached_not_best_versions = []
+def check_lowest_version(filename, data):
+    global cached_best_versions
+    if filename in cached_best_versions:
+        return True
+    elif filename in cached_not_best_versions:
+        return False
+    mal = data.get("mal")
+    slug = data.get("slug")
+    ver = extract_version(filename)  # e.g., 1 for no suffix, 2 for v2, etc.
+
+    if playlist.get("infinite"):
+        playlis = directory_files
+    else:
+        playlis = playlist.get("playlist")
+
+    for file in playlis:
+        if file in cached_not_best_versions:
+            continue
+        if file == filename:
+            continue
+
+        file_data = get_metadata(file)
+        if not file_data:
+            continue
+
+        if (
+            file_data.get("mal") == mal and
+            file_data.get("slug") == slug
+        ):
+            other_ver = extract_version(file)
+            if other_ver < ver:
+                cached_not_best_versions.append(filename)
+                return False  # A lower version exists
+
+    cached_best_versions.append(filename)
+    return True  # This is the lowest version
 
 # =========================================
 #            *SORTING PLAYLISTS
@@ -6070,9 +6180,10 @@ def add_session_history():
     else:
         session_string = f"{session_string} {currently_playing.get("filename")})"
     session_history.append(session_string)
-    save_session_history()
+    if len(session_history) > 100:
+        save_session_history()
 
-def save_session_history():
+def save_session_history(silent=True):
     if not session_history or not session_start_time:
         return  # Nothing to save
 
@@ -6085,6 +6196,8 @@ def save_session_history():
     with open(filename, "w", encoding="utf-8") as f:
         for entry in session_history:
             f.write(entry + "\n")
+    if not silent:
+        print(f"Session history saved to: {filename}")
 
 def thread_prefetch_metadata():
     threading.Thread(target=pre_fetch_metadata, daemon=True).start()
@@ -7460,6 +7573,7 @@ def end_session():
     else:
         video_stopped = False
     toggle_end_message()
+    save_session_history(False)
 
 end_message_window = None
 
