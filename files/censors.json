@@ -16731,5 +16731,287 @@
             "color": null,
             "nsfw": false
         }
+    ],
+    "HidamariSketchHoshiMittsu-ED1.webm": [
+        {
+            "size_w": 39.53,
+            "size_h": 33.12,
+            "pos_x": 11.89,
+            "pos_y": 83.07,
+            "start": 7.6,
+            "end": 9.3,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 21.21,
+            "size_h": 30.07,
+            "pos_x": 92.36,
+            "pos_y": 14.5,
+            "start": 9.7,
+            "end": 11.3,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 52.85,
+            "size_h": 32.64,
+            "pos_x": 50.62,
+            "pos_y": 47.94,
+            "start": 11.3,
+            "end": 12.5,
+            "color": "#52515A",
+            "nsfw": false
+        }
+    ],
+    "HidamariSketchHoshiMittsu-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 0.0,
+            "end": 2.2,
+            "color": "#FFFBF7",
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 3.5,
+            "end": 3.7,
+            "color": "#00508A",
+            "nsfw": false
+        },
+        {
+            "size_w": 50.2,
+            "size_h": 23.89,
+            "pos_x": 100.0,
+            "pos_y": 0.0,
+            "start": 3.7,
+            "end": 4.6,
+            "color": "#FFF48B",
+            "nsfw": false
+        },
+        {
+            "size_w": 25.04,
+            "size_h": 36.39,
+            "pos_x": 100.0,
+            "pos_y": 0.0,
+            "start": 4.7,
+            "end": 5.8,
+            "color": "#FEE6F3",
+            "nsfw": false
+        },
+        {
+            "size_w": 59.3,
+            "size_h": 77.78,
+            "pos_x": 100.0,
+            "pos_y": 51.88,
+            "start": 7.3,
+            "end": 8.4,
+            "color": "#B0EDDD",
+            "nsfw": false
+        },
+        {
+            "size_w": 38.4,
+            "size_h": 31.53,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 8.6,
+            "end": 9.7,
+            "color": "#ECDEFC",
+            "nsfw": false
+        },
+        {
+            "size_w": 88.4,
+            "size_h": 75.49,
+            "pos_x": 45.12,
+            "pos_y": 28.61,
+            "start": 12.5,
+            "end": 16.4,
+            "color": "#FCFDFB",
+            "nsfw": false
+        },
+        {
+            "size_w": 94.1,
+            "size_h": 26.88,
+            "pos_x": 43.71,
+            "pos_y": 49.48,
+            "start": 36.9,
+            "end": 38.1,
+            "color": "#FAFAFA",
+            "nsfw": false
+        }
+    ],
+    "CardfightVanguardGaidenIf-OP1.webm": [
+        {
+            "size_w": 87.07,
+            "size_h": 65.28,
+            "pos_x": 56.5,
+            "pos_y": 49.8,
+            "start": 7.0,
+            "end": 14.3,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "DigimonAdventure2020-OP1.webm": [
+        {
+            "size_w": 86.25,
+            "size_h": 40.28,
+            "pos_x": 50.0,
+            "pos_y": 42.91,
+            "start": 22.6,
+            "end": 25.9,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "FruitsBasketS2-OP1-NCBD1080.webm": [
+        {
+            "size_w": 80.43,
+            "size_h": 45.9,
+            "pos_x": 55.49,
+            "pos_y": 48.65,
+            "start": 0.1,
+            "end": 9.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "GundamBuildDiversReRiseS2-OP1-NCBD1080.webm": [
+        {
+            "size_w": 77.03,
+            "size_h": 64.65,
+            "pos_x": 53.4,
+            "pos_y": 44.6,
+            "start": 12.0,
+            "end": 19.9,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "Major2ndS2-OP1.webm": [
+        {
+            "size_w": 95.82,
+            "size_h": 48.68,
+            "pos_x": 29.91,
+            "pos_y": 51.29,
+            "start": 7.9,
+            "end": 14.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "Major2ndS2-OP2.webm": [
+        {
+            "size_w": 89.22,
+            "size_h": 40.28,
+            "pos_x": 41.67,
+            "pos_y": 49.19,
+            "start": 7.5,
+            "end": 11.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "Shadowverse-OP2.webm": [
+        {
+            "size_w": 85.59,
+            "size_h": 62.99,
+            "pos_x": 47.43,
+            "pos_y": 0.0,
+            "start": 8.4,
+            "end": 14.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "YGOSEVENS-OP2.webm": [
+        {
+            "size_w": 91.13,
+            "size_h": 90.69,
+            "pos_x": 50.22,
+            "pos_y": 44.78,
+            "start": 15.2,
+            "end": 21.0,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "AshitaNoJoe2-OP2.webm": [
+        {
+            "size_w": 58.59,
+            "size_h": 52.92,
+            "pos_x": 50.75,
+            "pos_y": 13.13,
+            "start": 0.1,
+            "end": 6.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "NodameCantabileFinale-OP1.webm": [
+        {
+            "size_w": 78.98,
+            "size_h": 60.28,
+            "pos_x": 48.33,
+            "pos_y": 57.69,
+            "start": 1.8,
+            "end": 10.0,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "Ookamikakushi-OP1-Lyrics.webm": [
+        {
+            "size_w": 84.77,
+            "size_h": 70.07,
+            "pos_x": 52.56,
+            "pos_y": 100.0,
+            "start": 4.2,
+            "end": 7.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "NamiYoKiitekure-OP1-NCBD1080.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 64.44,
+            "pos_x": 0.0,
+            "pos_y": 46.68,
+            "start": 7.8,
+            "end": 14.6,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "ShinSakuraTaisen-OP1.webm": [
+        {
+            "size_w": 79.02,
+            "size_h": 77.22,
+            "pos_x": 51.58,
+            "pos_y": 59.45,
+            "start": 5.7,
+            "end": 9.0,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "AshitaNoJoe2-OP1.webm": [
+        {
+            "size_w": 75.31,
+            "size_h": 65.07,
+            "pos_x": 50.32,
+            "pos_y": 0.0,
+            "start": 12.9,
+            "end": 19.5,
+            "color": "#151213",
+            "nsfw": false
+        }
     ]
 }
