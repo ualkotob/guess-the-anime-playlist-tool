@@ -266,7 +266,7 @@ def fetch_anilist_user_ids(username, watched_only=False):
 fetched_metadata = []
 def pre_fetch_metadata():
     for i in range(playlist["current_index"]-1, playlist["current_index"]+3):
-        if i >= 0 and i < len(playlist["playlist"]) and i != playlist["current_index"] and (fetching_metadata.get(playlist["playlist"][i]) is None):
+        if i >= 0 and i < len(playlist["playlist"]) and i != playlist["current_index"] and (fetching_metadata.get(playlist["playlist"][i]) is None and playlist["playlist"][i] in directory_files):
             get_metadata(playlist["playlist"][i], True, fetch=True)
 
 def get_metadata(filename, refresh = False, refresh_all = False, fetch = False):
@@ -2923,8 +2923,8 @@ def show_filter_popup():
     season_end_dropdown.bind("<<ComboboxSelected>>", unhighlight_season_end_dropdown)
     
     theme_exclude_options = [
-        "DUPLICATES (very slow)",
-        "LATER VERSIONS (very slow)",
+        "DUPLICATES",
+        "LATER VERSIONS",
         "OVERLAP",
         "NSFW (Without Censors)",
         "NSFW (With Censors)",
@@ -3239,10 +3239,10 @@ def filter_playlist(filters):
                         theme_flags.add("NSFW (With Censors)")
                     else:
                         theme_flags.add("NSFW (Without Censors)")
-            if not check_best_duplicate_theme(filename, data):
-                theme_flags.add("DUPLICATES (very slow)")
-            if not check_lowest_version(filename, data):
-                theme_flags.add("LATER VERSIONS (very slow)")
+            if not check_best_duplicate_theme(filename, data, playlis):
+                theme_flags.add("DUPLICATES")
+            if not check_lowest_version(filename, data, playlis):
+                theme_flags.add("LATER VERSIONS")
                     
             if any(flag in filters["themes_exclude"] for flag in theme_flags):
                 continue  # Exclude this file
@@ -3276,20 +3276,16 @@ def get_song_by_slug(data, slug):
 
 cached_best_duplicates = []
 cached_not_best_duplicates = []
-def check_best_duplicate_theme(filename, data):
+def check_best_duplicate_theme(filename, data, playlis):
     global cached_best_duplicates
     if filename in cached_best_duplicates:
         return True
     elif filename in cached_not_best_duplicates:
         return False
     mal = data.get("mal")
-    slug = data.get("slug")
+    slug = data.get("slug") 
     ver = extract_version(filename)
-
-    if playlist.get("infinite"):
-        playlis = directory_files
-    else:
-        playlis = playlist.get("playlist")
+    base_filename = filename.split("-")[0]
 
     best_file = filename
     try:
@@ -3297,7 +3293,8 @@ def check_best_duplicate_theme(filename, data):
     except:
         return False
     for file in playlis:
-        if file != filename:
+        base_file = file.split("-")[0]
+        if file != filename and base_filename == base_file:
             if file in cached_not_best_duplicates:
                 continue
             file_data = get_metadata(file)
@@ -3337,7 +3334,7 @@ def extract_version(filename):
 
 cached_best_versions = []
 cached_not_best_versions = []
-def check_lowest_version(filename, data):
+def check_lowest_version(filename, data, playlis):
     global cached_best_versions
     if filename in cached_best_versions:
         return True
@@ -3346,16 +3343,13 @@ def check_lowest_version(filename, data):
     mal = data.get("mal")
     slug = data.get("slug")
     ver = extract_version(filename)  # e.g., 1 for no suffix, 2 for v2, etc.
-
-    if playlist.get("infinite"):
-        playlis = directory_files
-    else:
-        playlis = playlist.get("playlist")
+    base_filename = filename.split("-")[0]
 
     for file in playlis:
+        base_file = file.split("-")[0]
         if file in cached_not_best_versions:
             continue
-        if file == filename:
+        if file == filename or base_filename != base_file:
             continue
 
         file_data = get_metadata(file)
