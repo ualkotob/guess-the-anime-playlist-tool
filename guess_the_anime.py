@@ -830,74 +830,77 @@ def update_metadata_queue(index):
 updating_metadata = False
 def update_metadata():
     global updating_metadata
-    filename = currently_playing.get("filename")
-    if filename:
-        button_seleted(tag_button, check_tagged(filename))
-        button_seleted(favorite_button, check_favorited(filename))
-        data = currently_playing.get('data')
-        reset_metadata()
-        if data:
-            add_single_data_line(left_column, data, "TITLE: ", 'title', False)
-            add_field_total_button(left_column, get_all_matching_field("mal", data.get("mal")), is_game(data))
-            if not is_game(data):
-                left_column.window_create(tk.END, window=tk.Button(left_column, text="[MAL]", borderwidth=0, pady=0, command=lambda: open_mal_page(data.get("mal")), bg="black", fg="white"))
-                left_column.window_create(tk.END, window=tk.Button(left_column, text="[ADB]", borderwidth=0, pady=0, command=lambda: open_anidb_page(data.get("anidb")), bg="black", fg="white"))
+    try:
+        filename = currently_playing.get("filename")
+        if filename:
+            button_seleted(tag_button, check_tagged(filename))
+            button_seleted(favorite_button, check_favorited(filename))
+            data = currently_playing.get('data')
+            reset_metadata()
+            if data:
+                add_single_data_line(left_column, data, "TITLE: ", 'title', False)
+                add_field_total_button(left_column, get_all_matching_field("mal", data.get("mal")), is_game(data))
+                if not is_game(data):
+                    left_column.window_create(tk.END, window=tk.Button(left_column, text="[MAL]", borderwidth=0, pady=0, command=lambda: open_mal_page(data.get("mal")), bg="black", fg="white"))
+                    left_column.window_create(tk.END, window=tk.Button(left_column, text="[ADB]", borderwidth=0, pady=0, command=lambda: open_anidb_page(data.get("anidb")), bg="black", fg="white"))
+                    left_column.insert(tk.END, "\n\n", "blank")
+                add_single_data_line(left_column, data, "ENGLISH: ", 'eng_title', True)
+                if data.get("synonyms"):
+                    add_multiple_data_line(left_column, data, "SYNONYMS: ", "synonyms", True)
+                if is_game(data):
+                    add_single_data_line(left_column, data, "RELEASE DATE: ", "release", True)
+                else:
+                    add_single_data_line(left_column, data, "AIR: ", "aired", False)
+                    add_single_data_line(left_column, data, ", ", "season", False, title_font="white")
+                    add_field_total_button(left_column, get_all_matching_field("season", data.get("season")), blank=True)
+                add_single_data_line(left_column, data, "SCORE: ", 'score', False)
+                if not is_game(data):
+                    add_single_data_line(left_column, data, " (#", 'rank', False, title_font="white")
+                if data.get("platforms"):
+                    left_column.insert(tk.END, " REVIEWS: ", "bold")
+                    left_column.insert(tk.END, f"{f"{(data.get("reviews", 0) or 0):,}"} (#{data.get("popularity") or "N/A"})", "white")
+                else:
+                    left_column.insert(tk.END, ") ", "white")
+                    left_column.insert(tk.END, "MEMBERS: ", "bold")
+                    left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
                 left_column.insert(tk.END, "\n\n", "blank")
-            add_single_data_line(left_column, data, "ENGLISH: ", 'eng_title', True)
-            if data.get("synonyms"):
-                add_multiple_data_line(left_column, data, "SYNONYMS: ", "synonyms", True)
-            if is_game(data):
-                add_single_data_line(left_column, data, "RELEASE DATE: ", "release", True)
-            else:
-                add_single_data_line(left_column, data, "AIR: ", "aired", False)
-                add_single_data_line(left_column, data, ", ", "season", False, title_font="white")
-                add_field_total_button(left_column, get_all_matching_field("season", data.get("season")), blank=True)
-            add_single_data_line(left_column, data, "SCORE: ", 'score', False)
-            if not is_game(data):
-                add_single_data_line(left_column, data, " (#", 'rank', False, title_font="white")
-            if data.get("platforms"):
-                left_column.insert(tk.END, " REVIEWS: ", "bold")
-                left_column.insert(tk.END, f"{f"{(data.get("reviews", 0) or 0):,}"} (#{data.get("popularity") or "N/A"})", "white")
-            else:
-                left_column.insert(tk.END, ") ", "white")
-                left_column.insert(tk.END, "MEMBERS: ", "bold")
-                left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
-            left_column.insert(tk.END, "\n\n", "blank")
-            if data.get("platforms"):
-                add_multiple_data_line(left_column, data, "PLATFORMS: ", 'platforms', True)
-                add_single_data_line(left_column, data, "TYPE: ", 'type', False) 
-            else:
-                left_column.insert(tk.END, "EPISODES: ", "bold")
-                left_column.insert(tk.END, f"{data.get("episodes") or "Airing"}", "white")
-                add_single_data_line(left_column, data, " TYPE: ", 'type', False) 
-            add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
-            left_column.insert(tk.END, "TAGS: ", "bold")
-            tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
-            for index, tag in enumerate(tags):
-                left_column.insert(tk.END, f"{tag}", "white")
-                add_field_total_button(left_column, get_filenames_from_tag(tag), blank = False)
-                if index < len(tags)-1:
-                    left_column.insert(tk.END, f", ", "white")
-            left_column.insert(tk.END, "\n\n", "blank")
-            left_column.insert(tk.END, "STUDIOS: ", "bold")
-            for index, studio in enumerate(data.get("studios", [])):
-                left_column.insert(tk.END, f"{studio}", "white")
-                add_field_total_button(left_column, get_filenames_from_studio(studio), blank = False)
-                if index < len(data.get("studios"))-1:
-                    left_column.insert(tk.END, f", ", "white")
-            if data.get("series"):
+                if data.get("platforms"):
+                    add_multiple_data_line(left_column, data, "PLATFORMS: ", 'platforms', True)
+                    add_single_data_line(left_column, data, "TYPE: ", 'type', False) 
+                else:
+                    left_column.insert(tk.END, "EPISODES: ", "bold")
+                    left_column.insert(tk.END, f"{data.get("episodes") or "Airing"}", "white")
+                    add_single_data_line(left_column, data, " TYPE: ", 'type', False) 
+                add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
+                left_column.insert(tk.END, "TAGS: ", "bold")
+                tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
+                for index, tag in enumerate(tags):
+                    left_column.insert(tk.END, f"{tag}", "white")
+                    add_field_total_button(left_column, get_filenames_from_tag(tag), blank = False)
+                    if index < len(tags)-1:
+                        left_column.insert(tk.END, f", ", "white")
                 left_column.insert(tk.END, "\n\n", "blank")
-                add_multiple_data_line(left_column, data, "SERIES: ", "series", False)
-                add_field_total_button(left_column, get_all_matching_field("series", data.get("series")))
+                left_column.insert(tk.END, "STUDIOS: ", "bold")
+                for index, studio in enumerate(data.get("studios", [])):
+                    left_column.insert(tk.END, f"{studio}", "white")
+                    add_field_total_button(left_column, get_filenames_from_studio(studio), blank = False)
+                    if index < len(data.get("studios"))-1:
+                        left_column.insert(tk.END, f", ", "white")
+                if data.get("series"):
+                    left_column.insert(tk.END, "\n\n", "blank")
+                    add_multiple_data_line(left_column, data, "SERIES: ", "series", False)
+                    add_field_total_button(left_column, get_all_matching_field("series", data.get("series")))
 
-            update_series_song_information(data, data.get("mal"))
+                update_series_song_information(data, data.get("mal"))
 
-            update_extra_metadata(data)
-            
-            toggleColumnEdit(False)
+                update_extra_metadata(data)
+                
+                toggleColumnEdit(False)
 
-        if popout_currently_playing:
-            update_popout_currently_playling(data)
+            if popout_currently_playing:
+                update_popout_currently_playling(data)
+    except Exception as e:
+        print("Error updating metadata display: " + str(e))
     updating_metadata = False
 
 def update_popout_currently_playling(data):
@@ -1035,17 +1038,20 @@ def update_series_song_information(data, mal):
         update_song_information(data, mal)
     else:
         all_series_themes = get_all_theme_from_series(data)
-        index = 0
-        for anime_id, anime in all_series_themes:
-            index += 1
-            middle_column.insert(tk.END, f"{get_display_title(anime)} [{anime.get("season")}]:\n", "bold underline")
-            if anime_id == data.get("mal"):
-                slug = data.get("slug")
-            else:
-                slug = "SKIP"
-            update_song_information(anime, mal, slug)
-            if index < len(all_series_themes):
-                middle_column.insert(tk.END, "\n", "blank")
+        if len(all_series_themes) == 1:
+            update_song_information(data, mal)
+        else:
+            index = 0
+            for anime_id, anime in all_series_themes:
+                index += 1
+                middle_column.insert(tk.END, f"{get_display_title(anime)} [{anime.get("season")}]:\n", "bold underline")
+                if anime_id == data.get("mal"):
+                    slug = data.get("slug")
+                else:
+                    slug = "SKIP"
+                update_song_information(anime, mal, slug)
+                if index < len(all_series_themes):
+                    middle_column.insert(tk.END, "\n", "blank")
     middle_column.config(state=tk.DISABLED)
 
 def update_song_information(data, mal, slug=None):
@@ -2049,7 +2055,11 @@ def get_next_infinite_track(increment=True):
     f_limit = FILE_LIMIT[p]
     checked_mal_ids = []
     try_count = 0
+    op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
+
     while not selected_file:
+        group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
+        need_op = ed_count >= op_count and (group_op_count/(group_ed_count+group_ed_count)) > 0.05
         if not groups[p][t]:
             if try_count > 18:
                 return
@@ -2083,6 +2093,9 @@ def get_next_infinite_track(increment=True):
                     continue
                 checked_files.append(selected_file)
                 d = get_metadata(selected_file)
+                if need_op and not is_slug_op(d.get("slug")):
+                    selected_file = None
+                    continue
                 series = d.get("series") or [d.get("title")]
                 boost = get_boost_multiplier(d.get("season", "Fall 2000"))
                 if s_limit > 1 and f_limit > 1:
@@ -3881,7 +3894,7 @@ def update_light_round(time):
             if light_round_start_time is None:
                 light_round_start_time = get_light_round_time()
             if light_mode == 'blind':
-                set_progress_overlay(light_round_start_time*100, light_round_length*100)
+                set_progress_overlay(0, light_round_length*100)
             elif light_mode in ['clues', 'song', 'synopsis', 'title', 'peek', 'character', 'tags', 'episodes', 'names']:
                 player.audio_set_mute(True)
                 play_background_music(True)
@@ -3953,6 +3966,8 @@ def clean_up_light_round():
         info()
     if not disable_video_audio:
         player.audio_set_mute(False)
+    if black_overlay:
+        black_overlay.attributes("-topmost", True)
     play_background_music(False)
 
 def light_round_transition():
@@ -4027,12 +4042,15 @@ def get_series_popularity(data):
                     max_popularity = popularity
     return max_popularity
 
+def is_slug_op(slug):
+    return slug.startswith("OP")
+
 def set_variety_light_mode():
     global last_round, variety_light_mode_enabled, variety_mode_cooldowns
     data = currently_playing.get('data', {})
     popularity = ((data.get('popularity') or 3000) + get_series_popularity(data)) / 2
     
-    is_op = data.get('slug', "").startswith("OP")
+    is_op = is_slug_op(data.get('slug', ""))
 
     # Round options by popularity and OP status, now strings instead of numbers
     if popularity <= 100:
@@ -4884,26 +4902,50 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
 #          *MISMATCH LIGHTNING ROUND
 # =========================================
 
+cached_sfw_themes = {}
+def get_cached_sfw_themes():
+    global cached_sfw_themes
+    cached_sfw_themes = {
+        "ops":[],
+        "eds":[]
+    }
+    for filename in directory_files:
+        if not check_nsfw(filename):
+            data = get_metadata(filename)
+            if data:
+                theme = get_song_by_slug(data, data.get("slug", ""))
+                if not theme.get("nsfw"):
+                    if is_slug_op(data.get("slug")):
+                        cached_sfw_themes["ops"].append(filename)
+                    else:
+                        cached_sfw_themes["eds"].append(filename)
+
 instance2 = vlc.Instance("--no-audio", "--no-xlib", "-q")
 mismatched_player = instance2.media_player_new()
 mismatch_visuals = None
 def get_mismatched_theme():
     global mismatch_visuals
     match_data = currently_playing.get("data")
-    mismatch_options = list(directory_files.keys())
-    random.shuffle(mismatch_options)
     if match_data:
-        is_op = "OP" in match_data.get("slug")
+        is_op = is_slug_op(match_data.get("slug"))
         match_series = (match_data.get("series") or [match_data.get("title")])[0]
-        for filename in mismatch_options:
-            if not check_nsfw(filename):
-                data = get_metadata(filename)
-                if data:
-                    filename_series = (data.get("series") or [data.get("title")])[0]
-                    if match_series != filename_series and (is_op == ("OP" in data.get("slug"))):
-                        mismatch_data = get_metadata(filename)
-                        mismatch_visuals = get_display_title(mismatch_data) + " " + format_slug(mismatch_data.get("slug"))
-                        return filename
+        mismatch_filename = None
+        tries = 0
+        while tries <= 10 and not mismatch_filename:
+            if is_op and len(cached_sfw_themes["ops"]) > 1:
+                mismatch_filename = random.choice(cached_sfw_themes["ops"])
+            elif not is_op and len(cached_sfw_themes["eds"]) > 1:
+                mismatch_filename = random.choice(cached_sfw_themes["eds"])
+            else:
+                mismatch_filename = random.choice(cached_sfw_themes["ops"] + cached_sfw_themes["eds"])
+            file_data = get_metadata(mismatch_filename)
+            file_series = (file_data.get("series") or [file_data.get("title")])[0]
+            if match_series != file_series:
+                return mismatch_filename
+            else:
+                mismatch_filename = None
+                tries += 1
+    return None
 
 def check_nsfw(filename):
     for censor in get_file_censors(filename):
@@ -5464,136 +5506,128 @@ def set_floating_text(name, value, position="top right", size=80):
 
     # Ensure window is correctly positioned **after** all updates
     update_position()
-    # update_position()
 
 progress_overlay = None
 light_progress_bar = None
 music_icon_label = None
+pulse_step = 0
+progress_bar_ready = False  # Tracks when progress bar is fully initialized
 
 def set_progress_overlay(current_time=None, total_length=None, destroy=False):
-    """
-    Creates/updates or destroys an overlay with a large progress bar.
-    
-    The overlay is a frameless, semi-transparent window centered on the screen.
-    It displays only a progress bar that you update manually.
-    
-    Args:
-        current_time: Current progress (e.g., seconds elapsed) to set the progress bar value.
-        total_length: Total length (e.g., total seconds) to set as the maximum of the progress bar.
-        destroy (bool): If True, the overlay (if present) is destroyed.
-    """
-    global progress_overlay, light_progress_bar, music_icon_label
-    # If asked to destroy, close the progress_overlay and clear globals
+    global progress_overlay, light_progress_bar, music_icon_label, progress_bar_ready
+
     if destroy:
         if progress_overlay is not None:
             screen_width = progress_overlay.winfo_screenwidth()
             screen_height = progress_overlay.winfo_screenheight()
-            window_height = round((screen_height/15)*6)
-            animate_window(progress_overlay, screen_width, (screen_height - window_height) // 2, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+            window_height = round((screen_height / 15) * 6)
+            animate_window(progress_overlay, screen_width, (screen_height - window_height) // 2,
+                           steps=20, delay=5, bounce=False, fade=None, destroy=True)
         progress_overlay = None
         light_progress_bar = None
+        music_icon_label = None
+        progress_bar_ready = False
         return
 
-    # Create progress_overlay if it doesn't exist
     if progress_overlay is None:
         progress_overlay = tk.Toplevel(root)
         progress_overlay.title("Blind Progress Bar")
-        progress_overlay.overrideredirect(True)  # Remove window decorations
-        progress_overlay.attributes("-topmost", True)  # Ensure it stays on top
-        progress_overlay.attributes("-alpha", 0.8)  # Semi-transparent
+        progress_overlay.overrideredirect(True)
+        progress_overlay.attributes("-topmost", True)
+        progress_overlay.attributes("-alpha", 0.8)
         progress_overlay.configure(bg="black")
-        
-        # Set a larger size for the progress_overlay (e.g., 800x200) and center it
+
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
-        width, height = round(screen_width*.7), round((screen_height*.5))
-
+        width, height = round(screen_width * 0.7), round(screen_height * 0.5)
         x = (screen_width - width) // 2
         y = (screen_height - height) // 2
-        progress_overlay.update_idletasks()
+
+        # Initially place off-screen
         progress_overlay.geometry(f"{width}x{height}+{-screen_width}+{y}")
-        # progress_overlay.geometry(f"{width}x{height}+{x}+{y}")
+        progress_overlay.update_idletasks()
+
+        # Style configuration
         style = ttk.Style(root)
         style.theme_use('default')
+        style.configure("Horizontal.TProgressbar",
+                        thickness=round(screen_height / 15),
+                        background=generate_random_color(0, 200),
+                        bordercolor='black',
+                        borderwidth=10,
+                        relief="solid")
 
-        # To change the background color (trough color):
-        # style.configure("Horizontal.TProgressbar", troughcolor=generate_random_color(), thickness=50)
-        style.configure("Horizontal.TProgressbar", thickness=round(screen_height/15))
-
-        # # To change the foreground color (bar color):
-        style.configure("Horizontal.TProgressbar", background=generate_random_color(0,200))
-
-        # # To change the border color:
-        style.configure("Horizontal.TProgressbar", bordercolor='black', borderwidth=10, relief="solid")
-
-        # To change light and dark color of the bar:
-        # style.configure("Horizontal.TProgressbar", lightcolor='white', darkcolor='black')
-        
-        # Create a larger progress bar inside the progress_overlay (length 700 pixels)
-        light_progress_bar = ttk.Progressbar(progress_overlay, orient="horizontal", mode="determinate", length=round(screen_width*.6))
+        light_progress_bar = ttk.Progressbar(progress_overlay, orient="horizontal", mode="determinate",
+                                             length=round(screen_width * 0.6))
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
-        
-        # Add a music icon (using a label with text or an image)
-        music_icon_label = tk.Label(progress_overlay, text="🎵", font=("Arial", 100), bg="black", fg=generate_random_color(100,255)) #  🎶 🎵  🎶
-        music_icon_label.place(relx=0, rely=0.35, anchor="center")
 
-        # Start pulsating the music icon
+        music_icon_label = tk.Label(progress_overlay, text="🎵", font=("Segoe UI Emoji", 100),
+                                    bg="black", fg=generate_random_color(100, 255))
+
+        music_icon_label.place(x=0, rely=0.35, anchor="center")  # Temporarily place far left
+
         pulsate_music_icon(music_icon_label)
-        progress_overlay.update_idletasks()
-        animate_window(progress_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
 
-    # If current_time and total_length are provided, update the progress bar
-    if current_time is not None and total_length is not None:
-        move_music_icon(current_time, total_length)
+        # Animate to center, then mark ready and move icon
+        def finish_animation():
+            nonlocal current_time, total_length
+            progress_overlay.update_idletasks()
+            move_music_icon(current_time, total_length)
+            global progress_bar_ready
+            progress_bar_ready = True
+
+        animate_window(progress_overlay, x, y, steps=20, delay=5, bounce=False, fade=None,
+                       callback=finish_animation)
+
+    elif current_time is not None and total_length is not None:
+        # Wait until layout is complete
+        if progress_bar_ready:
+            move_music_icon(current_time, total_length)
         light_progress_bar["maximum"] = total_length
         light_progress_bar["value"] = current_time
         progress_overlay.wm_attributes("-topmost", True)
 
-pulse_step = 0  # Track animation progress
-move_active = False  # Control movement loop
-
 def pulsate_music_icon(label):
-    """Creates a smooth pulsating effect for the music icon using sinusoidal scaling."""
-    global music_icon_label, pulse_step
+    global pulse_step
 
-    if label.winfo_exists():
-        if player.is_playing():
-            base_size = 160  # Minimum size
-            max_size = 200  # Maximum size
-            speed = 0.1  # Speed of pulsation (lower is slower, higher is faster)
+    # Retry until the label exists
+    if not label.winfo_exists():
+        return  # Stop if truly gone
 
-            # Use sine wave for smooth size transition
-            pulse_step += speed
-            new_size = int(base_size + (math.sin(pulse_step) * (max_size - base_size) / 2))
-
-            # Apply new font size
-            label.config(font=("Arial", new_size))
-
-        # Loop animation
-        if label.winfo_exists():
-            root.after(5, pulsate_music_icon, label)  # Smooth update interval (50ms)
-
-def move_music_icon(current_time, total_length):
-    """Moves the music icon left to right along the progress bar."""
-    global music_icon_label, light_progress_bar, move_active
-
-    if music_icon_label is None or light_progress_bar is None:
-        move_active = False  # Stop if elements are missing
+    if not label.winfo_ismapped():
+        root.after(100, pulsate_music_icon, label)  # Wait and retry
         return
 
-    if not move_active:
-        move_active = True  # Mark the movement loop as active
+    if not player.is_playing():
+        root.after(500, pulsate_music_icon, label)  # Check again later if paused
+        return
 
-    # Calculate horizontal position based on progress
-    progress_bar_x = light_progress_bar.winfo_x()  # X position of progress bar
-    progress_bar_width = light_progress_bar.winfo_width()  # Width of progress bar
-    icon_width = 40  # Approximate width of the music icon
+    base_size = 160
+    max_size = 200
+    speed = 0.5
 
-    if total_length > 0:  # Avoid division by zero
-        progress_ratio = min(max(current_time / total_length, 0), 1)  # Clamp between 0-1
-        new_x = progress_bar_x + (progress_ratio * (progress_bar_width - icon_width))  # Move across bar
+    pulse_step += speed
+    new_size = int(base_size + (math.sin(pulse_step) * (max_size - base_size) / 2))
+    label.config(font=("Arial", new_size))
 
-        # Move the music icon
+    root.after(50, pulsate_music_icon, label)
+
+def move_music_icon(current_time, total_length):
+    if music_icon_label is None or light_progress_bar is None:
+        return
+
+    progress_overlay.update_idletasks()
+
+    progress_bar_x = light_progress_bar.winfo_x()
+    progress_bar_width = light_progress_bar.winfo_width()
+    if progress_bar_width <= 1:
+        return  # Avoid division by zero or incomplete layout
+
+    icon_width = 40  # Estimated width
+
+    if total_length > 0:
+        progress_ratio = min(max(current_time / total_length, 0), 1)
+        new_x = progress_bar_x + (progress_ratio * (progress_bar_width - icon_width))
         music_icon_label.place(x=new_x, rely=0.35, anchor="center")
 
 def generate_random_color(min = 0, max = 255):
@@ -5682,7 +5716,7 @@ def now_playing_background_music(track = None):
 def toggle_info_popup():
     toggle_title_popup(not is_title_window_up())
 
-def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, fade="in", destroy=False):
+def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, fade="in", destroy=False, callback=None):
     """Smoothly moves a Tkinter window to a new position with optional bounce, fade effects, and a completion callback."""
     if not window:
         return
@@ -5699,14 +5733,12 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
 
     def step(i=0):
         if i <= steps and window:
-            # Bounce effect (stronger overshoot near the end of movement)
             bounce_strength = math.sin((i / steps) * math.pi) * 5 if bounce and i > steps * 0.7 else 0
 
             new_x = int(start_x + delta_x * i + bounce_strength)
             new_y = int(start_y + delta_y * i + bounce_strength)
             window.geometry(f"+{new_x}+{new_y}")
 
-            # Fade-in effect from 0 to original_alpha
             if fade == "in":
                 alpha = min(original_alpha, (i / steps) * original_alpha)
                 window.attributes("-alpha", alpha)
@@ -5717,11 +5749,17 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
             if i < steps:
                 window.after(delay, lambda: step(i + 1))
             elif destroy and window:
-                window.destroy()  # Call the completion function after animation ends
+                window.destroy()
+                if callback:
+                    callback()
             else:
-                window.after(delay*20, lambda: window.geometry(f"+{new_x}+{new_y}"))
+                # Final geometry and callback after a short delay
+                window.after(delay * 2, lambda: (
+                    window.geometry(f"+{new_x}+{new_y}"),
+                    callback() if callback else None
+                ))
 
-    step()  # Start animation
+    step()
 
 title_window = None  # Store the title popup window
 title_row_label = None
@@ -6420,7 +6458,7 @@ def update_seek_bar():
                 projected_vlc_time = projected_vlc_time + SEEK_POLLING * light_speed_modifier
             length = player.get_length()/1000
             time = projected_vlc_time/1000
-            if manual_blind:
+            if manual_blind and not light_round_started:
                 set_progress_overlay(time, length)
             if peek_overlay1 and not light_round_started:
                 gap = get_peek_gap(currently_playing.get("data"))
@@ -7571,6 +7609,18 @@ def end_session():
 
 end_message_window = None
 
+def get_op_ed_counts(themes):
+    opening_count = 0
+    ending_count = 0
+
+    for filename in themes:
+        slug = filename.split("-")[1].split(".")[0].split("v")[0]
+        if is_slug_op(slug):
+            opening_count += 1
+        else:
+            ending_count += 1
+    return opening_count, ending_count
+
 def toggle_end_message(speed=500):
     """Toggles the 'Thanks for playing!' message with detailed stats."""
     global end_message_window
@@ -7589,21 +7639,7 @@ def toggle_end_message(speed=500):
         end_message_window.configure(bg="black")
 
         total_played = len(all_themes_played)
-        opening_count = 0
-        ending_count = 0
-        artist_counter = Counter()
-
-        for filename in all_themes_played:
-            data = get_metadata(filename)
-            slug = filename.split("-")[1].split(".")[0].split("v")[0]
-            matching_song = next((song for song in data.get("songs", []) if song.get("slug") == slug), None)
-
-            if matching_song:
-                theme_type = matching_song.get("type", "")
-                if "OP" in theme_type:
-                    opening_count += 1
-                elif "ED" in theme_type:
-                    ending_count += 1
+        opening_count, ending_count = get_op_ed_counts(all_themes_played)
 
         stats_text = (
             "THANKS FOR\nPLAYING!🤍\n\n"
@@ -7961,6 +7997,7 @@ def scan_directory(queue=False):
                 if file.endswith((".mp4", ".webm", ".mkv")):
                     directory_files[file] = os.path.join(root, file)
         save_config()
+        get_cached_sfw_themes()
         print(f"\rScanning Directory....COMPLETE ({len(directory_files)} files)")
     if queue:
         threading.Thread(target=worker, daemon=True).start()
