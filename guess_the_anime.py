@@ -681,7 +681,7 @@ def fetch_all_metadata(delay=0):
                 anidb_id = file_data.get('anidb')
                 if mal_id in anime_metadata and (not anidb_id or anidb_id in anidb_metadata):
                     if not anime_metadata.get(mal_id, {}).get("title"):
-                        refresh_jikan.append([mal_id, anime_metadata.get(mal_id)])
+                        refresh_jikan.append([mal_id, anime_metadata.get(mal_id)], filename)
                     continue
                 if anidb_id and (not anidb_id in anidb_metadata) and anidb_cooldown:
                     total_skipped += 1
@@ -690,13 +690,15 @@ def fetch_all_metadata(delay=0):
             total_missing += 1
         if total_missing > 0:
             if fetch_data:
-                save_new_theme = messagebox.askyesno("Save Missing Entries To New Themes", f"Would you like to save all missing entries to the 'New Themes' playlist? Entries in the 'New Themes' playlist cannot be added to infinite playlists.")
+                save_new_theme = messagebox.askyesno("Save Missing Entries To New Themes", f"Would you like to save all missing entries to the 'New Themes' playlist? Entries in the 'New Themes' will not appear in infinite playlists until removed from the 'New Themes' playlist. (Select 'NO' if unsure)")
             for filename in fetch_data:
                 if total_fetched > 0 and delay+anidb_delay > 0: 
                     time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
                     anidb_delay = 0
                 try:
                     fetch_metadata(filename, label=f"[{total_fetched+1}/{total_missing}]")  # Call your existing metadata function
+                    if save_new_theme:
+                        toggle_theme("New Themes", filename=filename, quiet=True)
                     total_fetched += 1
                 except Exception as e:
                     print(e)
@@ -705,6 +707,8 @@ def fetch_all_metadata(delay=0):
             for file_refresh in refresh_jikan:
                 try:
                     refresh_jikan_data(file_refresh[0], file_refresh[1])
+                    if save_new_theme:
+                        toggle_theme("New Themes", filename=file_refresh[2], quiet=True)
                     total_fetched += 1
                 except Exception as e:
                     print(e)
@@ -3246,15 +3250,15 @@ def filter_playlist(filters):
                     theme_flags.add("TRANSITION")
                 if theme.get("spoiler"):
                     theme_flags.add("SPOILER")
-                if theme.get("nsfw"):
+                if ("NSFW (With Censors)" in filters["themes_exclude"] or "NSFW (Without Censors)" in filters["themes_exclude"]) and theme.get("nsfw"):
                     censors = get_file_censors(filename)
                     if censors:
                         theme_flags.add("NSFW (With Censors)")
                     else:
                         theme_flags.add("NSFW (Without Censors)")
-            if not check_best_duplicate_theme(filename, data, playlis):
+            if "DUPLICATES" in filters["themes_exclude"] and not check_best_duplicate_theme(filename, data, playlis):
                 theme_flags.add("DUPLICATES")
-            if not check_lowest_version(filename, data, playlis):
+            if "LATER VERSIONS" in filters["themes_exclude"] and not check_lowest_version(filename, data, playlis):
                 theme_flags.add("LATER VERSIONS")
                     
             if any(flag in filters["themes_exclude"] for flag in theme_flags):
@@ -3931,16 +3935,17 @@ def update_light_round(time):
                     toggle_episode_overlay(1)
                     top_info("CHARACTER NAMES")
                 pass
+            if light_mode == 'mismatch':
+                media = instance.media_new(directory_files.get(get_mismatched_theme()))
+                mismatched_player.set_media(media)
+                mismatched_player.play()
+                top_info("MISMATCHED VISUALS")
+                set_frame_number("GUESS BY MUSIC ONLY")
         player.set_time(int(float(light_round_start_time))*1000)
         if light_mode == 'mismatch':
-            media = instance.media_new(directory_files.get(get_mismatched_theme()))
-            mismatched_player.set_media(media)
-            mismatched_player.play()
             mismatched_player.set_time(int(float(light_round_start_time))*1000)
             mismatched_player.set_fullscreen(False)
             mismatched_player.set_fullscreen(True)
-            top_info("MISMATCHED VISUALS")
-            set_frame_number("GUESS BY MUSIC ONLY")
         else:
             player.set_fullscreen(False)
             player.set_fullscreen(True)
@@ -4941,6 +4946,7 @@ def get_mismatched_theme():
             file_data = get_metadata(mismatch_filename)
             file_series = (file_data.get("series") or [file_data.get("title")])[0]
             if match_series != file_series:
+                mismatch_visuals = get_display_title(file_data) + " " + format_slug(file_data.get("slug"))
                 return mismatch_filename
             else:
                 mismatch_filename = None
@@ -5841,7 +5847,7 @@ def toggle_title_popup(show):
                 japanese_title = f"{japanese_title} [{series_total}]"
             theme = format_slug(data.get("slug"))
             marks = get_file_marks(currently_playing.get("filename", ""))
-            song = get_song_string(data, totals=True)
+            song = get_song_string(data)
             if is_game(data):
                 aired = data.get("release")
                 bg_color = "Dark Red"
@@ -5863,7 +5869,7 @@ def toggle_title_popup(show):
                     episodes = str(episodes) + " Episodes"
                 members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
                 score = f"Score: {data.get("score")} (#{data.get("rank")})"
-            top_row = f"{marks}{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
+            top_row = f"{marks}{theme} | {song} | {aired}"
             title_row = title
             bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
     else:
