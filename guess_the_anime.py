@@ -263,32 +263,43 @@ def fetch_anilist_user_ids(username, watched_only=False):
         print("Failed to parse AniList response:", e)
         return set()
 
-fetched_metadata = []
 def pre_fetch_metadata():
     for i in range(playlist["current_index"]-1, playlist["current_index"]+3):
         if i >= 0 and i < len(playlist["playlist"]) and i != playlist["current_index"] and (fetching_metadata.get(playlist["playlist"][i]) is None and playlist["playlist"][i] in directory_files):
             get_metadata(playlist["playlist"][i], True, fetch=True)
 
-def get_metadata(filename, refresh = False, refresh_all = False, fetch = False):
+# Global cache for merged metadata
+_metadata_cache = {}
+# Make sure this is initialized as a set!
+fetched_metadata = set()
+
+def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     global fetched_metadata
+
+    # Fast return if already cached and no refresh/fetch needed
+    if not (refresh or fetch) and filename in _metadata_cache:
+        return _metadata_cache[filename]
+
     file_data = file_metadata.get(filename)
-    if file_data:
-        mal_id = file_data.get('mal')
-        anidb_id = file_data.get('anidb')
-        anime_data = anime_metadata.get(mal_id)
-        anidb_data = anidb_metadata.get(anidb_id, {})
-        if anime_data:
-            if "-[ID]" not in filename and mal_id and mal_id not in fetched_metadata and refresh and (refresh_all or (auto_refresh_toggle and fetch)):
-                fetched_metadata.append(mal_id)
-                refresh_jikan_data(mal_id, anime_data)
-                if anidb_id:
-                    if not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names']):
-                        refresh_anidb_data(anidb_id, anidb_data)
-            return file_data | anime_data | anidb_data
-    if fetch:
-        return fetch_metadata(filename)
-    else:
-        return {}
+    if not file_data:
+        return fetch_metadata(filename) if fetch else {}
+
+    mal_id = file_data.get('mal')
+    anidb_id = file_data.get('anidb')
+    anime_data = anime_metadata.get(mal_id) or {}
+    anidb_data = anidb_metadata.get(anidb_id, {}) if anidb_id else {}
+
+    if anime_data and "-[ID]" not in filename and mal_id:
+        if refresh and mal_id not in fetched_metadata and (refresh_all or (auto_refresh_toggle and fetch)):
+            fetched_metadata.add(mal_id)
+            refresh_jikan_data(mal_id, anime_data)
+            if anidb_id and not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names']):
+                refresh_anidb_data(anidb_id, anime_data)
+
+    result = file_data | anime_data | anidb_data
+    if not (refresh or fetch):
+        _metadata_cache[filename] = result
+    return result
 
 def refetch_metadata():
     if currently_playing and currently_playing.get('type') == 'theme':
@@ -421,20 +432,6 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                         anidb_data["characters"] = anidb["characters"]
                         anidb_data["episode_info"] = anidb["episodes"]
                         anidb_metadata[anidb_id] = anidb_data
-                # if anidb_cooldown:
-                #     try:
-                #         anime_data["tags"] = old_tags
-                #     except NameError:
-                #         anime_data["tags"] = []
-                #     try:
-                #         anime_data["characters"] = old_characters
-                #     except NameError:
-                #         anime_data["characters"] = []
-                #     try:
-                #         anime_data["episode_info"] = old_episode_info
-                #     except NameError:
-                #         anime_data["episode_info"] = []
-                #     anime_metadata[mal_id] = anime_data
         if anime_data:
             # Get new songs from the current fetch
             new_songs = get_theme_list(anime_themes)
@@ -549,9 +546,9 @@ def get_filename_metadata(filename):
         metadata["year"] = year
     return metadata
 
-def refresh_jikan_data(mal_id, data):
+def refresh_jikan_data(mal_id, data, label=""):
     title = data.get('title', f"MAL ID: {mal_id}")
-    print(f"Refreshing Jikan data for {title}...", end="", flush=True)
+    print(f"{label}Refreshing Jikan data for {title}...", end="", flush=True)
     
     jikan_data = fetch_jikan_metadata(mal_id)
     if jikan_data:
@@ -573,13 +570,17 @@ def refresh_jikan_data(mal_id, data):
         data["synopsis"] = jikan_data.get("synopsis", "N/A")
         
         save_metadata()
-        print(f"\rRefreshing Jikan data for {data['title']}...COMPLETE")
+        print(f"\r{label}Refreshing Jikan data for {data['title']}...COMPLETE")
     else:
-        print(f"\rRefreshing Jikan data for {title}...FAILED")
+        print(f"\r{label}Refreshing Jikan data for {title}...FAILED")
 
-def refresh_anidb_data(anidb_id, data):
-    global anidb_cooldown
-    print(f"Refreshing aniDB data for {data['title']}...", end="", flush=True)
+def refresh_anidb_data(anidb_id, data, label=""):
+    global anidb_cooldown, anidb_delay
+
+    fetch_string = "Refreshing"
+    if anidb_id not in anidb_metadata:
+        fetch_string = "Fetching"
+    print(f"{label}{fetch_string} aniDB data for {data['title']}...", end="", flush=True)
     
     anidb = fetch_anidb_metadata(anidb_id)
     if anidb:
@@ -587,13 +588,16 @@ def refresh_anidb_data(anidb_id, data):
             anidb_cooldown = True
             print(f"\rRefreshing aniDB data for {data['title']}...FAILED[aniDB cooldown reached!]")
         else:
-            data["tags"] = anidb["tags"]
-            data["characters"] = anidb["characters"]
-            data["episode_info"] = anidb["episodes"]
+            anidb_metadata[anidb_id] = {
+                "tags": anidb["tags"],
+                "characters": anidb["characters"],
+                "episode_info": anidb["episodes"]
+            }
             save_metadata()
-            print(f"\rRefreshing aniDB data for {data['title']}...COMPLETE")
+            anidb_delay = 5
+            print(f"\r{label}{fetch_string} aniDB data for {data['title']}...COMPLETE")
     else:
-        print(f"\rRefreshing aniDB data for {data['title']}...FAILED")
+        print(f"\r{label}{fetch_string} aniDB data for {data['title']}...FAILED")
 
 def aired_to_season_year(aired_str):
     """Converts an aired string to 'Season Year' format based on the first date."""
@@ -671,6 +675,7 @@ def fetch_all_metadata(delay=0):
         save_new_theme = False
 
         refresh_jikan = []
+        refresh_anidb = []
         fetch_data = []
         for filename in directory_files:
             total_checked += 1
@@ -681,10 +686,19 @@ def fetch_all_metadata(delay=0):
                 anidb_id = file_data.get('anidb')
                 if mal_id in anime_metadata and (not anidb_id or anidb_id in anidb_metadata):
                     if not anime_metadata.get(mal_id, {}).get("title"):
-                        refresh_jikan.append([mal_id, anime_metadata.get(mal_id)], filename)
+                        jikan_append = [mal_id, anime_metadata.get(mal_id)]
+                        if jikan_append not in refresh_jikan:
+                            refresh_jikan.append(jikan_append)
+                            total_missing += 1
                     continue
-                if anidb_id and (not anidb_id in anidb_metadata) and anidb_cooldown:
-                    total_skipped += 1
+                if anidb_id and (not anidb_id in anidb_metadata):
+                    if anidb_cooldown:
+                        total_skipped += 1
+                    else:
+                        anidb_append = [anidb_id, anime_metadata.get(mal_id)]
+                        if anidb_append not in refresh_anidb:
+                            refresh_anidb.append(anidb_append)
+                            total_missing += 1
                     continue
             fetch_data.append(filename)
             total_missing += 1
@@ -706,10 +720,23 @@ def fetch_all_metadata(delay=0):
                     total_skipped += 1
             for file_refresh in refresh_jikan:
                 try:
-                    refresh_jikan_data(file_refresh[0], file_refresh[1])
-                    if save_new_theme:
-                        toggle_theme("New Themes", filename=file_refresh[2], quiet=True)
+                    refresh_jikan_data(file_refresh[0], file_refresh[1], label=f"[{total_fetched+1}/{total_missing}]")
                     total_fetched += 1
+                except Exception as e:
+                    print(e)
+                    time.sleep(3)  # Delay to avoid API rate limits
+                    total_skipped += 1
+            for file_anidb_refresh in refresh_anidb:
+                try:
+                    if total_fetched > 0 and delay+anidb_delay > 0: 
+                        time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
+                        anidb_delay = 0
+                    if not anidb_cooldown:
+                        if file_anidb_refresh[0] not in anidb_metadata:
+                            refresh_anidb_data(file_anidb_refresh[0], file_anidb_refresh[1], label=f"[{total_fetched+1}/{total_missing}]")
+                        total_fetched += 1
+                    else:
+                        total_skipped += 1
                 except Exception as e:
                     print(e)
                     time.sleep(3)  # Delay to avoid API rate limits
@@ -907,41 +934,39 @@ def update_metadata():
         print("Error updating metadata display: " + str(e))
     updating_metadata = False
 
-def update_popout_currently_playling(data):
-    # popout_currently_playing.config(state=tk.NORMAL, wrap="word")
+def update_popout_currently_playling(data, clear=False):
     popout_currently_playing_extra.config(state=tk.NORMAL, wrap="word")
-    # popout_currently_playing.delete(1.0, tk.END)
     popout_currently_playing_extra.delete(1.0, tk.END)
-    japanese_title = data.get("title")
-    title = get_display_title(data)
-    theme = format_slug(data.get("slug"))
-    song = get_song_string(data)
-    tags = get_tags_string(data)
-    studio = ", ".join(data.get("studios"))
-    type = data.get("type")
-    source = data.get("source")
-    marks = get_file_marks(currently_playing.get("filename", ""))
-    if data.get("platforms"):
-        episodes = ", ".join(data.get("platforms"))
-        members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
-        score = f"Score: {data.get("score")}"
-    else:
-        episodes =  data.get("episodes")
-        if not episodes:
-            episodes = "Airing"
+    if not clear and popout_show_metadata:
+        japanese_title = data.get("title")
+        title = get_display_title(data)
+        theme = format_slug(data.get("slug"))
+        song = get_song_string(data)
+        tags = get_tags_string(data)
+        studio = ", ".join(data.get("studios"))
+        type = data.get("type")
+        source = data.get("source")
+        marks = get_file_marks(currently_playing.get("filename", ""))
+        if data.get("platforms"):
+            episodes = ", ".join(data.get("platforms"))
+            members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
+            score = f"Score: {data.get("score")}"
         else:
-            episodes = str(episodes) + " Episodes"
-        members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
-        score = f"Score: {data.get("score")} (#{data.get("rank")})"
-    if is_game(data):
-        aired = data.get("release")
+            episodes =  data.get("episodes")
+            if not episodes:
+                episodes = "Airing"
+            else:
+                episodes = str(episodes) + " Episodes"
+            members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
+            score = f"Score: {data.get("score")} (#{data.get("rank")})"
+        if is_game(data):
+            aired = data.get("release")
+        else:
+            aired = data.get("season")
+        popout_currently_playing.configure(text=title)
+        popout_currently_playing_extra.insert(tk.END, f"{marks}{theme} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
     else:
-        aired = data.get("season")
-    # popout_currently_playing.insert(tk.END, f"{title}", "white")
-    popout_currently_playing.configure(text=title)
-    # popout_currently_playing_extra_top.configure(text=f"{marks}{theme} | {song} | {aired}")
-    popout_currently_playing_extra.insert(tk.END, f"{marks}{theme} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
-    # popout_currently_playing.config(state=tk.DISABLED)
+        popout_currently_playing.configure(text="")
     popout_currently_playing_extra.config(state=tk.DISABLED)
 
 def update_extra_metadata(data):
@@ -1081,57 +1106,58 @@ def update_song_information(data, mal, slug=None):
 
 def up_next_text():
     update_up_next_display(right_top)
-    if popout_up_next:
+    if popout_up_next and popout_show_metadata:
         update_up_next_display(popout_up_next)
 
 reroll_button = None
-def update_up_next_display(widget):
+def update_up_next_display(widget, clear=False):
     global reroll_button
     widget.config(state=tk.NORMAL, height=0, wrap="word")
     widget.delete(1.0, tk.END)
-    is_popout = widget == popout_up_next
-    if not is_docked() or is_popout:
-        if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2:
-            reroll_button = tk.Button(
-                    widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
-                    pady=0, command=refetch_next_track, bg="black", fg="white"
-                )
-            if is_popout:
-                popout_buttons_by_name["reroll"].configure(
-                    text="RE-ROLL\nNEXT 🔄",
-                    command=refetch_next_track
-                )
-            else:
-                widget.window_create(
-                    tk.END,
-                    window=reroll_button
-                )
-        else:
-            if is_popout:
-                popout_buttons_by_name["reroll"].configure(
-                    text="",
-                    command=lambda: None
-                )
-            reroll_button = None
-        if not is_popout:
-            widget.insert(tk.END, "NEXT: ", "bold")
-        next_up_text = "End of playlist"
-        if playlist["current_index"] + 1 < len(playlist["playlist"]):
-            try:
-                next_filename = playlist["playlist"][playlist["current_index"] + 1]
-                next_up_data = get_metadata(next_filename)
-                next_up_text = (
-                    f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n"
-                    f"{format_slug(next_up_data.get('slug'))} | {next_up_data.get('members') or 0:,} "
-                    f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
-                )
+    if not clear:
+        is_popout = widget == popout_up_next
+        if not is_docked() or is_popout:
+            if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2:
+                reroll_button = tk.Button(
+                        widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
+                        pady=0, command=refetch_next_track, bg="black", fg="white"
+                    )
                 if is_popout:
-                    next_up_text = f"NEXT: {next_up_text.replace("\n", " - ")}"
-            except Exception:
-                next_up_text = playlist["playlist"][playlist["current_index"] + 1]
-        widget.insert(tk.END, f"{next_up_text}", "white")
-        adjust_up_next_height(widget, is_popout)
-        return
+                    popout_buttons_by_name["reroll"].configure(
+                        text="RE-ROLL\nNEXT 🔄",
+                        command=refetch_next_track
+                    )
+                else:
+                    widget.window_create(
+                        tk.END,
+                        window=reroll_button
+                    )
+            else:
+                if is_popout:
+                    popout_buttons_by_name["reroll"].configure(
+                        text="",
+                        command=lambda: None
+                    )
+                reroll_button = None
+            if not is_popout:
+                widget.insert(tk.END, "NEXT: ", "bold")
+            next_up_text = "End of playlist"
+            if playlist["current_index"] + 1 < len(playlist["playlist"]):
+                try:
+                    next_filename = playlist["playlist"][playlist["current_index"] + 1]
+                    next_up_data = get_metadata(next_filename)
+                    next_up_text = (
+                        f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n"
+                        f"{format_slug(next_up_data.get('slug'))} | {next_up_data.get('members') or 0:,} "
+                        f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
+                    )
+                    if is_popout:
+                        next_up_text = f"NEXT: {next_up_text.replace("\n", " - ")}"
+                except Exception:
+                    next_up_text = playlist["playlist"][playlist["current_index"] + 1]
+            widget.insert(tk.END, f"{next_up_text}", "white")
+            adjust_up_next_height(widget, is_popout)
+            return
     widget.config(state=tk.DISABLED, wrap="word")
 
 def adjust_up_next_height(widget, is_popout):
@@ -1942,8 +1968,8 @@ cached_skipped_themes = []
 total_infinite_files = 0
 def get_pop_time_groups(refetch=False):
     global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map, cached_pop_time_cooldown, cached_skipped_themes, total_infinite_files
+
     if refetch or not cached_pop_time_group:
-        # Step 1: Sort by popularity and split into 3 groups
         difficulty_ranges = [
             [100, 250, 500],
             [150, 500, 1000],
@@ -1952,31 +1978,30 @@ def get_pop_time_groups(refetch=False):
             [750, 2000, 0]
         ]
         group_limits = difficulty_ranges[playlist["difficulty"]]
-        shows_files_map = {}
         sorted_groups = [[] for _ in range(3)]
-        playlist_mal_history = []
         cached_skipped_themes = []
-        if playlist.get("filter"):
-            directory_options = filter_playlist(playlist.get("filter"))
-        else:
-            directory_options = copy.deepcopy(directory_files)
-        total_infinite_files = len(directory_options)
-        for f in playlist.get("playlist"):
-            d = get_metadata(f)
-            if d:
-                playlist_mal_history.append(d.get("mal"))
 
-        for f in directory_options:
-            d = get_metadata(f)
+        directory_options = filter_playlist(playlist["filter"]) if playlist.get("filter") else copy.deepcopy(directory_files)
+        total_infinite_files = len(directory_options)
+
+        # Preload all metadata once
+        all_metadata = {f: get_metadata(f) for f in directory_options}
+        playlist_mal_history = [get_metadata(f).get("mal") for f in playlist["playlist"] if get_metadata(f)]
+
+        shows_files_map = {}
+        for f, d in all_metadata.items():
             if not d or check_tagged(f) or check_theme(f, "New Themes"):
                 cached_skipped_themes.append(f)
                 continue
+
             p = get_series_popularity(d)
             mal = d.get("mal")
+            placed = False
+
             for k, l in enumerate(group_limits):
-                if (l == 0 or p <= l):
+                if l == 0 or p <= l:
                     boost = 0
-                    if not shows_files_map.get(mal):
+                    if mal not in shows_files_map:
                         boost += max(0, (d.get("score", 0) or 0) - 7)
                         boost += get_boost_multiplier(d.get("season", "Fall 2000"))
                         check_range = len(playlist["playlist"])
@@ -1984,45 +2009,50 @@ def get_pop_time_groups(refetch=False):
                             if mal not in playlist_mal_history[-check_range:]:
                                 boost += 1
                             check_range -= 1000
-                    elif len(shows_files_map[mal]) < [20,5,1][k]:
+                    elif len(shows_files_map[mal]) < [20, 5, 1][k]:
                         boost += 1
-                    for _ in range(int(boost)):
-                        sorted_groups[k].append(f)
+
+                    sorted_groups[k].extend([f] * int(boost))
                     shows_files_map.setdefault(mal, []).append(f)
-                    extra_boost = 0
+
                     if check_favorited(f):
-                        extra_boost += 1
-                    for _ in range(int(extra_boost)):
                         sorted_groups[k].append(f"{f}[EXTRA]")
+
+                    placed = True
                     break
-                if k == len(group_limits) - 1:
-                    cached_skipped_themes.append(f)
-                
-        # Step 2: Within each popularity group, sort by year (oldest to newest)
+
+            if not placed:
+                cached_skipped_themes.append(f)
+
+        # Sort by year (cached)
         def sort_by_year(entries):
-            return sorted(entries, key=lambda x: int(get_metadata(x.replace("[EXTRA]", "")).get("season", "9999")[-4:]), reverse=True)
+            def get_year(entry):
+                meta = all_metadata.get(entry.replace("[EXTRA]", ""), {})
+                return int(meta.get("season", "9999")[-4:])
+            return sorted(entries, key=get_year, reverse=True)
 
         for i, g in enumerate(sorted_groups):
             sorted_subgroups = split_into_three(sort_by_year(g))
             for sublist in sorted_subgroups:
                 random.shuffle(sublist)
             sorted_groups[i] = sorted_subgroups
-        cached_pop_time_group, cached_show_files_map = sorted_groups, shows_files_map
+
+        cached_pop_time_group = sorted_groups
+        cached_show_files_map = shows_files_map
+
     if refetch or not cached_boosted_show_files_map:
-        # Boost files in each group based on how long unplayed
         boosted_show_files_map = {}
-        for key, files in cached_show_files_map.items():
+        for mal_id, files in cached_show_files_map.items():
             for file in files:
                 file_boost = 1
-                check_range = len(playlist["playlist"])
                 boost_multiplier = 0
+                check_range = len(playlist["playlist"])
                 while check_range >= 1000:
                     boost_multiplier += 1
                     if file not in playlist["playlist"][-check_range:]:
                         file_boost += boost_multiplier
                     check_range -= 1000
-                for _ in range(int(file_boost)):
-                    boosted_show_files_map.setdefault(key, []).append(file)
+                boosted_show_files_map.setdefault(mal_id, []).extend([file] * int(file_boost))
         cached_pop_time_cooldown = 0
         cached_boosted_show_files_map = boosted_show_files_map
 
@@ -3184,6 +3214,13 @@ def filter_playlist(filters):
 
     filtered = []
 
+    playlist_filter_files = []
+    if "playlist_filter" in filters:
+        ref_playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{filters['playlist_filter']}.json")
+        if os.path.exists(ref_playlist_path):
+            with open(ref_playlist_path, "r") as f:
+                ref_data = json.load(f)
+                playlist_filter_files = set(ref_data.get("playlist", []))
     for filename in playlis:
         data = get_metadata(filename)
         # Extract metadata
@@ -3211,14 +3248,8 @@ def filter_playlist(filters):
         tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))  # Ensure tags are a set for fast lookup
 
         # Apply filters
-        if "playlist_filter" in filters:
-            ref_playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{filters['playlist_filter']}.json")
-            if os.path.exists(ref_playlist_path):
-                with open(ref_playlist_path, "r") as f:
-                    ref_data = json.load(f)
-                    ref_files = set(ref_data.get("playlist", []))
-                if filename not in ref_files:
-                    continue
+        if "playlist_filter" in filters and filename not in playlist_filter_files:
+            continue
         if "keywords" in filters and not any(any(keyword.lower() in field.lower() for field in [filename, title, eng_title]) for keyword in filters["keywords"].split(",")):
             continue
         if "theme_type" in filters and filters["theme_type"] not in theme_type:
@@ -5720,7 +5751,10 @@ def now_playing_background_music(track = None):
 # =========================================
 
 def toggle_info_popup():
-    toggle_title_popup(not is_title_window_up())
+    toggle_title_popup(not is_title_window_up() or title_info_only)
+
+def toggle_title_info_popup():
+    toggle_title_popup(not is_title_window_up(), title_only=True)
 
 def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, fade="in", destroy=False, callback=None):
     """Smoothly moves a Tkinter window to a new position with optional bounce, fade effects, and a completion callback."""
@@ -5786,10 +5820,13 @@ def adjust_font_size(label, max_width, base_size=50, min_size=20):
 def is_title_window_up():
     return not (title_window is None or title_window.attributes("-alpha") == 0)
 
-def toggle_title_popup(show):
+title_info_only = False
+def toggle_title_popup(show, title_only=False):
     """Creates or destroys the title popup at the bottom middle of the screen."""
-    global title_window, title_row_label, top_row_label, bottom_row_label, info_button, light_mode
+    global title_window, title_row_label, top_row_label, bottom_row_label, info_button, light_mode, title_info_only
+    title_info_only = title_only
     if not is_title_window_up() and not show:
+        title_info_only = False
         return
     if title_window:
         screen_width = title_window.winfo_screenwidth()
@@ -5797,13 +5834,26 @@ def toggle_title_popup(show):
         window_width = title_window.winfo_reqwidth()
         window_height = title_window.winfo_reqheight()
         if not show:
+            title_info_only = False
             animate_window(title_window, (screen_width - window_width) // 2, screen_height, fade="out")
-    button_seleted(info_button, show and not light_mode)
+    if title_only:
+        button_seleted(info_button, False)
+        button_seleted(title_info_button, show)
+    else: 
+        button_seleted(info_button, show and not light_mode)
+        button_seleted(title_info_button, False)
+
     if not show:
         return
 
     if guessing_extra:
         guess_extra()
+
+    if black_overlay:
+        blind()
+    
+    if peek_overlay1:
+        toggle_peek_overlay(destroy=True)
 
     if not title_window:
         title_window = tk.Toplevel()
@@ -5841,10 +5891,6 @@ def toggle_title_popup(show):
         else:
             japanese_title = data.get("title")
             title = data.get("eng_title") or japanese_title or (data.get("synonyms", [None]) or [None])[0]
-            get_series_totals(refetch=False)
-            series_total = series_totals.get((data.get("series") or [data.get("title")])[0], 0)
-            if series_total > 1:
-                japanese_title = f"{japanese_title} [{series_total}]"
             theme = format_slug(data.get("slug"))
             marks = get_file_marks(currently_playing.get("filename", ""))
             song = get_song_string(data)
@@ -5869,9 +5915,13 @@ def toggle_title_popup(show):
                     episodes = str(episodes) + " Episodes"
                 members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
                 score = f"Score: {data.get("score")} (#{data.get("rank")})"
-            top_row = f"{marks}{theme} | {song} | {aired}"
             title_row = title
-            bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
+            if not title_only:
+                top_row = f"{marks}{theme} | {song} | {aired}"
+                bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
+            else:
+                top_font = ("Arial", 1)
+                bottom_row = f"{japanese_title}"
     else:
         top_font = ("Arial", 1)
         bottom_font = ("Arial", 1)
@@ -7494,7 +7544,7 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "SHOW KEYBOARD SHORTCUTS", "[K]")
     add_single_line(right_column, "ENABLE SHORTCUTS", "[']", False)
     add_single_line(right_column, "INFO", "[I]", False)
-    add_single_line(right_column, "DOCK", "[D]")
+    add_single_line(right_column, "TITLE", "[O]")
     add_single_line(right_column, "PLAY/PAUSE", "[SPACE BAR]", False)
     add_single_line(right_column, "STOP", "[ESC]")
     add_single_line(right_column, "PREVIOUS/NEXT", "[⬅]/[➡]", False)
@@ -7509,7 +7559,7 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "REFETCH METADATA", "[F]", False)
     add_single_line(right_column, "REROLL NEXT", "[R]")
     add_single_line(right_column, "SHOW PLAYLIST", "[P]", False)
-    add_single_line(right_column, "LOAD PLAYLIST", "[O]")
+    add_single_line(right_column, "DOCK PLAYER", "[D]")
     add_single_line(right_column, "LIST UP/DOWN", "[⬆]/[⬇]", False)
     add_single_line(right_column, "LIST SELECT", "[ENTER]")
     add_single_line(right_column, "SEARCH/QUEUE", "[S]", False)
@@ -7687,6 +7737,21 @@ popout_currently_playing = None
 popout_currently_playing_extra = None
 popout_button_font = None
 resize_after_id = None
+popout_show_metadata = True
+
+def toggle_show_popout_metadata():
+    global popout_show_metadata
+    popout_show_metadata = not popout_show_metadata
+    button_seleted(popout_buttons_by_name["toggle_metadata"], popout_show_metadata)
+    if popout_show_metadata:
+        if currently_playing.get("data"):
+            update_popout_currently_playling(currently_playing.get("data"))
+        popout_currently_playing.configure(pady=0)
+        update_up_next_display(popout_up_next)
+    else:
+        update_popout_currently_playling(None, clear=True)
+        update_up_next_display(popout_up_next, clear=True)
+    popout_controls.event_generate("<Configure>")
 
 def create_popout_controls(columns=5, title="Popout Controls"):
     global popout_controls, popout_up_next, popout_up_next_font, popout_button_font, popout_currently_playing, popout_currently_playing_extra
@@ -7712,11 +7777,17 @@ def create_popout_controls(columns=5, title="Popout Controls"):
                 new_button_size = max(10, int(height / 25))
                 new_current_size = max(10, int(height / 25))
                 new_current_extra_size = max(10, int(height / 50))
-                popout_up_next_font.configure(size=new_upnext_size)
                 popout_button_font.configure(size=new_button_size)
-                popout_current_font.configure(size=new_current_size)
-                popout_current_extra_font.configure(size=new_current_extra_size)
-                popout_currently_playing.configure(wraplength=int(popout_controls.winfo_width()*0.95))
+                if popout_show_metadata:
+                    popout_up_next_font.configure(size=new_upnext_size)
+                    popout_current_font.configure(size=new_current_size)
+                    popout_current_extra_font.configure(size=new_current_extra_size)
+                    popout_currently_playing.configure(wraplength=int(popout_controls.winfo_width()*0.95))
+                else:
+                    popout_up_next_font.configure(size=1)
+                    popout_current_font.configure(size=1)
+                    popout_current_extra_font.configure(size=1)
+                    popout_currently_playing.configure(wraplength=0)
                 # Reapply button fonts
                 for widget in popout_buttons_by_name.values():
                     if isinstance(widget, tk.Button):
@@ -7752,7 +7823,8 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             (dock_button, "DOCK\nPLAYER", False),
             (tag_button, "TAG", True),
             (favorite_button, "FAVORITE", True),
-            (info_button, "INFORMATION\nPOP-UP", False, 2)
+            (info_button, "INFORMATION\nPOP-UP", False),
+            (title_info_button, "TITLE\nONLY", False)
         ],
         "BLIND/PEEK CONTROLS": [
             (blind_button, "BLIND\nSCREEN", False, 1),
@@ -7774,7 +7846,8 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             (variety_light_mode_button, "VARIETY", True, 2)
         ],
         "MISC TOGGLES": [
-            (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get("filename","")))})", False, 2),
+            ("toggle_metadata", "METADATA", False),
+            (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get("filename","")))})", False),
             (mute_button, "MUTE", False),
             (end_button, "END SESSION STATS", False, 2)
         ],
@@ -7828,8 +7901,6 @@ def create_popout_controls(columns=5, title="Popout Controls"):
 
     for group_name, button_entries in button_groups.items():
         if row > 0:
-            # group_label = tk.Label(popout_controls, text=group_name, font=("Helvetica", 10, "bold"))
-            # group_label.grid(row=row, column=0, columnspan=columns, sticky="w", padx=10, pady=(0, 2))
             row += 1
         col = 0
 
@@ -7884,6 +7955,10 @@ def create_popout_controls(columns=5, title="Popout Controls"):
                 btn_bg = "black"
                 btn_cmd = None
                 original_text = ""
+                if original_button == "toggle_metadata":
+                    if popout_show_metadata:
+                        btn_bg = HIGHLIGHT_COLOR
+                    btn_cmd = toggle_show_popout_metadata
 
             full_label = ""
             if show_original:
@@ -8116,7 +8191,7 @@ def create_first_row_buttons():
                                 "to be able to use all the other playlist functions, "
                                 "you'll need to fetch the metadata for all the files. "
                                 "You can do this by hitting the '?' button next to the "
-                                "RE[F]ETCH button. It may take awhile "
+                                "[F]ETCH button. It may take awhile "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
 
@@ -8211,8 +8286,8 @@ def create_first_row_buttons():
                                 "it will overwrite it without warning. If this playlist was already saved/loaded, the title will be prefilled."
                                 "\n\nThe current index is also stored in the playlist, so you can load where you left off."))
     global load_button
-    load_button = create_button(first_row_frame, "L[O]AD", load,
-                                help_title="L[O]AD PLAYLIST (Shortcut Key = 'o')",
+    load_button = create_button(first_row_frame, "LOAD", load,
+                                help_title="LOAD PLAYLIST",
                                 help_text=("Load a playlist from your list of saved playlists.\n\n"
                                 "This will not interrupt the currently playing theme, but will load the playlist "
                                 "and set the current index.\n\nPlaylists are stored in the playlists/ folder.\n\n"
@@ -8329,6 +8404,9 @@ info_button = create_button(second_row_frame, "[I]NFO", toggle_info_popup,
                                          "During trivia, if someone gets the answer correct or people give up, "
                                          "this can be toggled to let them know the answer/more information.\n\n"
                                          "The popup will automatically close when the theme ends."))
+title_info_button = create_button(second_row_frame, "𝕋", toggle_title_info_popup,
+                              help_title="SHOW/HIDE TITLE POPUP (Shortcut Key = 'o')",
+                              help_text=("Show or hide the title popup at the bottom of the screen."))
 start_info_button = create_button(second_row_frame, "⏪", toggle_auto_info_start,
                               help_title="TOGGLE AUTO INFO POPUP AT START",
                               help_text=("When enabled, will show the theme's info popup at the start.\n\n"
@@ -8350,7 +8428,7 @@ favorite_button = create_button(second_row_frame, "❤", favorite, True,
                               help_text=("Adds the current;y playing theme to a 'Favorite Themes' playlist. Clicking again "
                                          "will remove it from the playlist.\n\nJust a way to keep track of your favorite themes."))
 
-refetch_metadata_button = create_button(second_row_frame, "RE[F]ETCH", refetch_metadata,
+refetch_metadata_button = create_button(second_row_frame, "[F]ETCH", refetch_metadata,
                               help_title="RE[F]ETCH THEME METADATA (Shortcut Key = 'f')",
                               help_text=("Refetch the metadata for the currently playing theme.\n\n"
                                          "You may want to do this if there's mising information that "
@@ -8820,7 +8898,7 @@ def on_release(key):
                 elif key.char == 'i':
                     toggle_info_popup()
                 elif key.char == 'o':
-                    load()
+                    toggle_title_info_popup()
                 elif key.char == 'e':
                     end_session()
                 elif key.char == 's':
