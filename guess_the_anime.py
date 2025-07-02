@@ -3221,6 +3221,13 @@ def filter_playlist(filters):
             with open(ref_playlist_path, "r") as f:
                 ref_data = json.load(f)
                 playlist_filter_files = set(ref_data.get("playlist", []))
+                
+    if "themes_exclude" in filters:
+        if "DUPLICATES" in filters["themes_exclude"]:
+            build_best_duplicate_map(playlis)
+        if "LATER VERSIONS" in filters["themes_exclude"]:
+            build_version_index(playlis)
+
     for filename in playlis:
         data = get_metadata(filename)
         # Extract metadata
@@ -3287,13 +3294,12 @@ def filter_playlist(filters):
                         theme_flags.add("NSFW (With Censors)")
                     else:
                         theme_flags.add("NSFW (Without Censors)")
-            if "DUPLICATES" in filters["themes_exclude"] and not check_best_duplicate_theme(filename, data, playlis):
-                theme_flags.add("DUPLICATES")
-            if "LATER VERSIONS" in filters["themes_exclude"] and not check_lowest_version(filename, data, playlis):
-                theme_flags.add("LATER VERSIONS")
-                    
             if any(flag in filters["themes_exclude"] for flag in theme_flags):
-                continue  # Exclude this file
+                continue 
+            if "DUPLICATES" in filters["themes_exclude"] and not check_best_duplicate_theme(filename, data):
+                continue
+            if "LATER VERSIONS" in filters["themes_exclude"] and not check_lowest_version(filename, data):
+                continue
         if "season_max" in filters and season_tuple > season_to_tuple(filters["season_max"]):
             continue
         if "artists" in filters and not any(artist in artists for artist in filters["artists"]):
@@ -3322,52 +3328,32 @@ def get_song_by_slug(data, slug):
             return theme
     return {}  # Return empty list if no match
 
-cached_best_duplicates = []
-cached_not_best_duplicates = []
-def check_best_duplicate_theme(filename, data, playlis):
-    global cached_best_duplicates
-    if filename in cached_best_duplicates:
-        return True
-    elif filename in cached_not_best_duplicates:
-        return False
-    mal = data.get("mal")
-    slug = data.get("slug") 
-    ver = extract_version(filename)
-    base_filename = filename.split("-")[0]
+_best_duplicate_map = {}
+def build_best_duplicate_map(playlis):
+    global _best_duplicate_map
+    _best_duplicate_map = {}
 
-    best_file = filename
-    try:
-        best_size = os.path.getsize(directory_files.get(filename))
-    except:
-        return False
     for file in playlis:
-        base_file = file.split("-")[0]
-        if file != filename and base_filename == base_file:
-            if file in cached_not_best_duplicates:
-                continue
-            file_data = get_metadata(file)
-            if not file_data:
-                continue
-            
-            if (
-                file_data.get("mal") == mal and
-                file_data.get("slug") == slug and
-                extract_version(file) == ver
-            ):
-                try:
-                    file_size = os.path.getsize(directory_files.get(file))
-                    if file_size > best_size:
-                        best_file = file
-                        best_size = file_size
-                    else:
-                        cached_not_best_duplicates.append(file)
-                except:
-                    continue
-    if best_file == filename:
-        cached_best_duplicates.append(filename)
-    else:
-        cached_not_best_duplicates.append(filename)
-    return best_file == filename  # True if this is the best file (by size) for this version
+        file_path = directory_files.get(file)
+        if not file_path:
+            continue
+        data = get_metadata(file)
+        if not data:
+            continue
+
+        key = (data.get("mal"), data.get("slug"), extract_version(file))
+        try:
+            file_size = os.path.getsize(file_path)
+        except:
+            continue
+
+        if key not in _best_duplicate_map or file_size > _best_duplicate_map[key][1]:
+            _best_duplicate_map[key] = (file, file_size)
+
+def check_best_duplicate_theme(filename, data):
+    key = (data.get("mal"), data.get("slug"), extract_version(filename))
+    best_file, _ = _best_duplicate_map.get(key, (filename, None))
+    return filename == best_file
 
 def extract_version(filename):
     """
@@ -3380,41 +3366,36 @@ def extract_version(filename):
         return int(match.group(1))
     return 1
 
-cached_best_versions = []
-cached_not_best_versions = []
-def check_lowest_version(filename, data, playlis):
-    global cached_best_versions
-    if filename in cached_best_versions:
-        return True
-    elif filename in cached_not_best_versions:
-        return False
-    mal = data.get("mal")
-    slug = data.get("slug")
-    ver = extract_version(filename)  # e.g., 1 for no suffix, 2 for v2, etc.
-    base_filename = filename.split("-")[0]
+_lowest_version_map = {}
+def build_version_index(playlis):
+    global _lowest_version_map
+    _lowest_version_map = {}
 
     for file in playlis:
-        base_file = file.split("-")[0]
-        if file in cached_not_best_versions:
+        data = get_metadata(file)
+        if not data:
             continue
-        if file == filename or base_filename != base_file:
+        mal = data.get("mal")
+        slug = data.get("slug")
+        ver = extract_version(file)
+        key = (mal, slug)
+
+        if not mal or not slug:
             continue
 
-        file_data = get_metadata(file)
-        if not file_data:
-            continue
+        if key not in _lowest_version_map or ver < _lowest_version_map[key][0]:
+            _lowest_version_map[key] = (ver, file)
 
-        if (
-            file_data.get("mal") == mal and
-            file_data.get("slug") == slug
-        ):
-            other_ver = extract_version(file)
-            if other_ver < ver:
-                cached_not_best_versions.append(filename)
-                return False  # A lower version exists
+def check_lowest_version(filename, data):
+    global _lowest_version_map
+    key = (data.get("mal"), data.get("slug"))
+    ver = extract_version(filename)
 
-    cached_best_versions.append(filename)
-    return True  # This is the lowest version
+    if key not in _lowest_version_map:
+        return True  # Unknown, assume it's the only one
+
+    lowest_ver, best_file = _lowest_version_map[key]
+    return ver <= lowest_ver
 
 # =========================================
 #            *SORTING PLAYLISTS
@@ -4066,17 +4047,27 @@ def check_recent_history(mode):
             return append_check in playlist.get("lightning_history", {}).get(mode, [])
     return False
 
-
+_series_popularity_cache = None
 def get_series_popularity(data):
-    max_popularity = data.get('popularity') or 3000
+    global _series_popularity_cache
+
+    if _series_popularity_cache is None:
+        _series_popularity_cache = {}
+        for anime in anime_metadata.values():
+            series = anime.get("series")
+            if isinstance(series, list):
+                series = series[0] if series else None
+            if not series:
+                continue
+            pop = anime.get("popularity") or 3000
+            if series not in _series_popularity_cache or pop < _series_popularity_cache[series]:
+                _series_popularity_cache[series] = pop
+
     series = data.get("series")
-    if series:
-        for key, anime in anime_metadata.items():
-            if anime.get("series") == series:
-                popularity = anime.get('popularity') or 3000
-                if popularity < max_popularity:
-                    max_popularity = popularity
-    return max_popularity
+    if isinstance(series, list):
+        series = series[0] if series else None
+
+    return _series_popularity_cache.get(series, data.get("popularity") or 3000)
 
 def is_slug_op(slug):
     return slug.startswith("OP")
@@ -6329,19 +6320,22 @@ def check_video_end():
 def update_current_index(value = None, save = True):
     """Function to update the current entry text box"""
     global current_entry
-    if value != None:
-        playlist["current_index"] = value
-    if globals().get("current_entry"):
-        current_entry.delete(0, tk.END)
-        if playlist.get("infinite", False):
-            current_entry.insert(0, "∞")
-            out_of = total_infinite_files - len(cached_skipped_themes)
-        else:
-            current_entry.insert(0, str(playlist["current_index"]+1))
-            out_of = len(playlist["playlist"])
-        playlist_size_label.configure(text = "/" + str(out_of))
-    if save:
-        save_config()
+    try:
+        if value != None:
+            playlist["current_index"] = value
+        if globals().get("current_entry"):
+            current_entry.delete(0, tk.END)
+            if playlist.get("infinite", False):
+                current_entry.insert(0, "∞")
+                out_of = total_infinite_files - len(cached_skipped_themes)
+            else:
+                current_entry.insert(0, str(playlist["current_index"]+1))
+                out_of = len(playlist["playlist"])
+            playlist_size_label.configure(text = "/" + str(out_of))
+        if save:
+            save_config()
+    except NameError:
+        pass  # root isn't defined yet — possibly too early in startup
 
 def load_youtube_video(index):
     global youtube_queue
