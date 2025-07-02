@@ -1169,7 +1169,7 @@ def adjust_up_next_height(widget, is_popout):
     widget.config(state=tk.DISABLED, wrap="word")
 
 def get_display_title(data):
-    return data.get("eng_title") or data.get("title")
+    return data.get("eng_title") or data.get("title") or "No Title Found"
 
 def is_game(data):
     return data.get("type") == "Game" or data.get("type") == "Visual Novel" or data.get("platforms")
@@ -2093,7 +2093,11 @@ def get_next_infinite_track(increment=True):
 
     while not selected_file:
         group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
-        need_op = ed_count >= op_count and (group_op_count/(group_ed_count+group_ed_count)) > 0.05
+        if group_ed_count == 0:
+            need_op = False
+        else:
+            need_op = ed_count >= op_count and (group_op_count / (2 * group_ed_count)) > 0.05
+
         if not groups[p][t]:
             if try_count > 18:
                 return
@@ -6536,7 +6540,7 @@ def update_seek_bar():
                         set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
                 else:
                     if (length - time) <= 8:
-                        if not light_mode and not is_title_window_up() and auto_info_end:
+                        if not light_mode and (not is_title_window_up() or title_info_only) and auto_info_end:
                             toggle_title_popup(True)
                         if coming_up_queue:
                             toggle_coming_up_popup(True, title=coming_up_queue["title"], details=coming_up_queue["details"], image=coming_up_queue["image"], up_next=coming_up_queue["up_next"])
@@ -7396,16 +7400,19 @@ def show_field_themes(update = False, group=[]):
     show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_title, play_video_from_last, selected, update)
 
 def get_title(key, value):
-    data = get_metadata(value)
-    if data:
-        title = get_display_title(data)
-        max_length = 38  # includes space before slug
-        if len(title) > 37:
-            keep = 34  # number of characters excluding "..."
-            half = keep // 2
-            title = title[:half] + "..." + title[-(keep - half):]
-        return title + " " + data.get("slug")
-    else:
+    try:
+        data = get_metadata(value)
+        if data:
+            title = get_display_title(data)
+            max_length = 37  # includes space before slug
+            if len(title) > max_length:
+                keep = 34  # number of characters excluding "..."
+                half = keep // 2
+                title = title[:half] + "..." + title[-(keep - half):]
+            return title + " " + data.get("slug")
+        else:
+            return value
+    except:
         return value
 
 def play_video_from_last(index):
@@ -8174,6 +8181,7 @@ def create_first_row_buttons():
     global directory_entry
     directory_entry = tk.Entry(first_row_frame, width=33, bg="black", fg="white", insertbackground="white", textvariable=directory)
     directory_entry.pack(side="left")
+    directory_entry.delete(0, tk.END)
     directory_entry.insert(0, directory)
 
     global generate_button
