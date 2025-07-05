@@ -333,7 +333,7 @@ def fetch_metadata(filename = None, refetch = False, label=""):
     if (not "[MAL]" in filename) and (not "[ID]" in filename):
         if len(filename.split("-")) >= 3:
             slug_ext = filename.split("-")[2]
-            if "NCBD" not in slug_ext and "NCDVD" not in slug_ext and "BD1080" not in slug_ext and "Lyrics" not in slug_ext:
+            if "NCBD" not in slug_ext and "NCDVD" not in slug_ext and "BD1080" not in slug_ext and "Lyrics" not in slug_ext and "1080" not in slug_ext:
                 slug = slug + "-" + slug_ext.split(".")[0]
         anime_themes = fetch_animethemes_metadata(filename)
         mal_id = get_external_site_id(anime_themes, "MyAnimeList")
@@ -382,9 +382,6 @@ def fetch_metadata(filename = None, refetch = False, label=""):
         anime_data = anime_metadata.get(mal_id)
         old_songs = []
         if anime_data:
-            # old_episode_info = anime_data.get("episode_info", [])
-            # old_characters = anime_data.get("characters", [])
-            # old_tags = anime_data.get("tags", [])
             old_songs = anime_data.get("songs", [])
         file_metadata[filename] = file_data
         if refetch or not anime_data:
@@ -465,6 +462,7 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                 sorted(endings, key=slug_sort_key) +
                 sorted(other, key=slug_sort_key)
             )
+            anime_data["series"] = get_name_list(anime_themes, "series")
             save_metadata()
             data = file_data | anime_data
             if currently_playing.get('filename') == filename:
@@ -2233,7 +2231,10 @@ def load_config():
 def update_playlist_name(name=None):
     if name:
         playlist["name"] = name
-    root.title(f"[{len(all_themes_played)}] {WINDOW_TITLE} - {playlist["name"]}")
+    extra_text = ""
+    if playlist.get("infinite"):
+        extra_text = " ∞"
+    root.title(f"[{len(all_themes_played)}] {WINDOW_TITLE} - {playlist["name"]}{extra_text}")
 
 def save_metadata():
     """Ensures the metadata folder exists before saving metadata files."""
@@ -2458,7 +2459,6 @@ def load_playlist(index):
     playlist = data
     update_playlist_name()
     update_current_index()
-    root.title(WINDOW_TITLE + " - " + playlist["name"])
     print(f"Loaded playlist: {name}")
     playlist_loaded = True
     save_config()
@@ -2878,7 +2878,7 @@ def show_filter_popup():
 
     popup = tk.Toplevel(bg="black")
     popup.title("Filter Playlist")
-    popup.geometry("550x500")  # Double width
+    popup.geometry("550x600")  # Double width
 
     main_frame = tk.Frame(popup, bg=BACKGROUND_COLOR)
     main_frame.pack(fill="both", expand=True)
@@ -2982,12 +2982,14 @@ def show_filter_popup():
         "SPOILER",
         "TRANSITION"
     ]
-    themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE", left_column, theme_exclude_options)
-    artists_listbox = filter_entry_listbox("ARTISTS\nINCLUDE", right_column, get_all_artists(playlis))
-    studio_listbox = filter_entry_listbox("STUDIOS\nINCLUDE", right_column, get_all_studios(playlis))
-    all_tags = get_all_tags()
-    tags_listbox = filter_entry_listbox("TAGS\nINCLUDE", right_column, all_tags)
-    excluded_tags_listbox = filter_entry_listbox("TAGS\nEXCLUDE", right_column, all_tags)
+    themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options)
+    themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options)
+    artists_listbox = filter_entry_listbox("ARTISTS\nINCLUDE\n(OR)", right_column, get_all_artists(playlis))
+    studio_listbox = filter_entry_listbox("STUDIOS\nINCLUDE\n(OR)", right_column, get_all_studios(playlis))
+    all_tags = get_all_tags(playlis)
+    tags_listbox = filter_entry_listbox("TAGS\nINCLUDE\n(OR)", right_column, all_tags)
+    tags_and_listbox = filter_entry_listbox("TAGS\nINCLUDE\n(AND)", right_column, all_tags)
+    excluded_tags_listbox = filter_entry_listbox("TAGS\nEXCLUDE\n(OR)", right_column, all_tags)
 
     def set_default_values(force_defaults=False):
         filter_data = {} if force_defaults else playlist.get("filter", {})
@@ -3037,8 +3039,10 @@ def show_filter_popup():
             (artists_listbox, "artists"),
             (studio_listbox, "studios"),
             (tags_listbox, "tags_include"),
+            (tags_and_listbox, "tags_include_and"),
             (excluded_tags_listbox, "tags_exclude"),
-            (themes_exclude_listbox, "themes_exclude")
+            (themes_exclude_listbox, "themes_exclude"),
+            (themes_include_listbox, "themes_include")
         ]:
             listbox.selection_clear(0, tk.END)
             if not force_defaults and key in filter_data:
@@ -3072,9 +3076,11 @@ def show_filter_popup():
         if season_start_var.get() != all_seasons[0]: filters["season_min"] = season_start_var.get()
         if season_end_var.get() != all_seasons[-1]: filters["season_max"] = season_end_var.get()
         if themes_exclude_listbox.curselection(): filters["themes_exclude"] = [themes_exclude_listbox.get(i) for i in themes_exclude_listbox.curselection()]
+        if themes_include_listbox.curselection(): filters["themes_include"] = [themes_include_listbox.get(i) for i in themes_include_listbox.curselection()]
         if artists_listbox.curselection(): filters["artists"] = [artists_listbox.get(i) for i in artists_listbox.curselection()]
         if studio_listbox.curselection(): filters["studios"] = [studio_listbox.get(i) for i in studio_listbox.curselection()]
         if tags_listbox.curselection(): filters["tags_include"] = [tags_listbox.get(i) for i in tags_listbox.curselection()]
+        if tags_and_listbox.curselection(): filters["tags_include_and"] = [tags_and_listbox.get(i) for i in tags_and_listbox.curselection()]
         if excluded_tags_listbox.curselection(): filters["tags_exclude"] = [excluded_tags_listbox.get(i) for i in excluded_tags_listbox.curselection()]
         return filters
 
@@ -3189,13 +3195,21 @@ def get_all_artists(playlis):
                         artists.append(artist)
     return sorted(artists, key=str.lower)
 
-def get_all_tags(game=True, double=False):
+def get_all_tags(playlis=None, game=True, double=False):
     tags = []
-    for anime in anime_metadata.values():
+    def add_tag(anime):
         if game or not is_game(anime):
             for tag in anime.get('genres', []) + anime.get('themes', []) + anime.get('demographics', []):
                 if double or tag not in tags:
                     tags.append(tag)
+    if playlis:
+        for f in playlis:
+            data = get_metadata(f)
+            if data:
+                add_tag(data)
+    else:
+        for anime in anime_metadata.values():
+            add_tag(anime)
     return sorted(tags)
 
 def get_all_studios(playlis):
@@ -3226,11 +3240,10 @@ def filter_playlist(filters):
                 ref_data = json.load(f)
                 playlist_filter_files = set(ref_data.get("playlist", []))
                 
-    if "themes_exclude" in filters:
-        if "DUPLICATES" in filters["themes_exclude"]:
-            build_best_duplicate_map(playlis)
-        if "LATER VERSIONS" in filters["themes_exclude"]:
-            build_version_index(playlis)
+    if ("themes_exclude" in filters and "DUPLICATES" in filters["themes_exclude"]) or ("themes_include" in filters and "DUPLICATES" in filters["themes_include"]):
+        build_best_duplicate_map(playlis)
+    if ("themes_exclude" in filters and "LATER VERSIONS" in filters["themes_exclude"]) or ("themes_include" in filters and "LATER VERSIONS" in filters["themes_include"]):
+        build_version_index(playlis)
 
     for filename in playlis:
         data = get_metadata(filename)
@@ -3283,7 +3296,7 @@ def filter_playlist(filters):
             continue
         if "season_min" in filters and season_tuple < season_to_tuple(filters["season_min"]):
             continue
-        if "themes_exclude" in filters:
+        if "themes_exclude" in filters or "themes_include" in filters:
             theme_flags = set()
             if theme:
                 if theme.get("overlap") == "Over":
@@ -3292,17 +3305,19 @@ def filter_playlist(filters):
                     theme_flags.add("TRANSITION")
                 if theme.get("spoiler"):
                     theme_flags.add("SPOILER")
-                if ("NSFW (With Censors)" in filters["themes_exclude"] or "NSFW (Without Censors)" in filters["themes_exclude"]) and theme.get("nsfw"):
+                if ("NSFW (With Censors)" in (filters.get("themes_exclude", []) + filters.get("themes_include", [])) or "NSFW (Without Censors)" in (filters.get("themes_exclude", []) + filters.get("themes_include", []))) and theme.get("nsfw"):
                     censors = get_file_censors(filename)
                     if censors:
                         theme_flags.add("NSFW (With Censors)")
                     else:
                         theme_flags.add("NSFW (Without Censors)")
-            if any(flag in filters["themes_exclude"] for flag in theme_flags):
+            if "themes_exclude" in filters and any(flag in filters["themes_exclude"] for flag in theme_flags):
                 continue 
-            if "DUPLICATES" in filters["themes_exclude"] and not check_best_duplicate_theme(filename, data):
+            if "themes_include" in filters and not any(flag in filters["themes_include"] for flag in theme_flags):
+                continue 
+            if ("themes_exclude" in filters and "DUPLICATES" in filters["themes_exclude"] and not check_best_duplicate_theme(filename, data)) or ("themes_include" in filters and "DUPLICATES" in filters["themes_include"] and check_best_duplicate_theme(filename, data)):
                 continue
-            if "LATER VERSIONS" in filters["themes_exclude"] and not check_lowest_version(filename, data):
+            if ("themes_exclude" in filters and "LATER VERSIONS" in filters["themes_exclude"] and not check_lowest_version(filename, data)) or ("themes_include" in filters and "LATER VERSIONS" in filters["themes_include"] and check_lowest_version(filename, data)):
                 continue
         if "season_max" in filters and season_tuple > season_to_tuple(filters["season_max"]):
             continue
@@ -3311,6 +3326,8 @@ def filter_playlist(filters):
         if "studios" in filters and not any(studio in studios for studio in filters["studios"]):
             continue
         if "tags_include" in filters and not any(tag in tags for tag in filters["tags_include"]):
+            continue
+        if "tags_include_and" in filters and not all(tag in tags for tag in filters["tags_include_and"]):
             continue
         if "tags_exclude" in filters and any(tag in tags for tag in filters["tags_exclude"]):
             continue
@@ -3550,7 +3567,11 @@ def search_playlist(search_term):
     return results
 
 def get_playlist_name(key, value):
-    return value
+    data = get_playlist(value)
+    if data.get("infinite"):
+        return f"{value}[∞]"
+    else:
+        return f"{value}[{len(data.get("playlist"))}]"
 
 def get_playlists_dict():
     """Returns a dictionary of available playlists indexed numerically."""
@@ -5916,7 +5937,10 @@ def toggle_title_popup(show, title_only=False):
                 bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
             else:
                 top_font = ("Arial", 1)
-                bottom_row = f"{japanese_title}"
+                if japanese_title != title:
+                    bottom_row = f"{japanese_title}"
+                else:
+                    bottom_font = ("Arial", 1)
     else:
         top_font = ("Arial", 1)
         bottom_font = ("Arial", 1)
@@ -7227,6 +7251,16 @@ def open_censor_editor(refresh=False):
 #            *TAG/FAVORITE FILES
 # =========================================
 
+def get_playlist(playlist_name):
+    playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
+    if os.path.exists(playlist_path):
+        with open(playlist_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        new_playlist = copy.deepcopy(BLANK_PLAYLIST)
+        new_playlist["name"] = playlist_name
+        return new_playlist
+
 def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=False):
     """Toggles a theme in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
     if not filename:
@@ -7237,14 +7271,8 @@ def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=Fal
         
     playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
     # Load or initialize the playlist
-    if os.path.exists(playlist_path):
-        with open(playlist_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            theme_list = data.get("playlist", [])
-    else:
-        data = copy.deepcopy(BLANK_PLAYLIST)
-        data["name"] = playlist_name
-        theme_list = data["playlist"]
+    data = get_playlist(playlist_name)
+    theme_list = data["playlist"]
 
     type_string = "saved to"
     if filename in theme_list:
@@ -8145,6 +8173,18 @@ def new_playlist(playlis, name=None):
     save_config()
     show_playlist(True)
 
+def create_infinite_playlist():
+    global playlist
+    confirm = messagebox.askyesno("Create Infinite Playlist", f"Are you sure you want to create a new infinite playlist?")
+    if not confirm:
+        return  # User canceled
+    new_playlist([])
+    playlist["infinite"] = True
+    get_next_infinite_track()
+    create_first_row_buttons()
+    update_playlist_name("")
+    save_config()
+
 def create_first_row_buttons():
     for widget in first_row_frame.winfo_children():
         widget.destroy()
@@ -8196,6 +8236,18 @@ def create_first_row_buttons():
                                 "[F]ETCH button. It may take awhile "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
+    
+    global create_infinite_button
+    create_infinite_button = create_button(first_row_frame, "∞", create_infinite_playlist, 
+                                help_title="CREATE INFINITE PLAYLIST",
+                                help_text="Creates a new infinite playlist. These playlists pull files from the directory, and go on infinitely "
+                                "based on popularity and season groups. Favorited tracks get a boost, and tagged tracks will not be picked. "
+                                "Tracks from the last 3 seasons also get a boost.\n\n"
+                                "Filters can be applied and removed freely. Sorting/shuffling is disabled.\n\n"
+                                "Difficulty can be chosen, limiting the groups to certain popularity levels. For example, 'VERY EASY' will only "
+                                "pick tracks from MALs top 500 anime, rotating from the top 100, 100-250, and 250-500 every 3 entries. "
+                                "'NORMAL' will pick from the top 250, 250-750, then 1000+ every 3 entries.")
+    create_infinite_button.bind("<Button-2>", test_infinite_playlist)
 
     global generate_from_anilist_button
     generate_from_anilist_button = create_button(first_row_frame, "AL", generate_anilist_playlist,
@@ -8210,33 +8262,6 @@ def create_first_row_buttons():
                                 "playlist using the SEARCH+ button. That's not really what "
                                 "this application was made for, so it may be a hassle "
                                 "depending on how many themes you want to add to the list."))
-    global toggle_infinite_button
-    toggle_infinite_button = create_button(first_row_frame, "∞", toggle_infinite_playlist, False, playlist.get("infinite", False), 
-                                help_title="INFINITE PLAYLIST TOGGLE",
-                                help_text="When enabled, will allow the playlist to play infinitely. Tracks are chosen from all tracks in directory "
-                                "based on popularity and season groups. Favorited tracks get a boost, and tagged tracks will not be picked. "
-                                "Tracks from the last 3 seasons also get a boost.\n\n"
-                                "Filters cannot be used(yet) and sorting/shuffling is disabled.\n\n"
-                                "Difficulty can be chosen, limiting the groups to certain popularity levels. For example, 'VERY EASY' will only "
-                                "pick tracks from MALs top 500 anime, rotating from the top 100, 100-250, and 250-500 every 3 entries. "
-                                "'NORMAL' will pick from the top 250, 250-750, then 1000+ every 3 entries.")
-    toggle_infinite_button.bind("<Button-2>", test_infinite_playlist)
-
-    if playlist.get("infinite", False):
-        global selected_difficulty
-
-        selected_difficulty = tk.StringVar()
-        selected_difficulty.set(difficulty_options[playlist["difficulty"]])
-        global difficulty_dropdown
-        difficulty_dropdown = ttk.Combobox(first_row_frame,
-                                values=difficulty_options,
-                                textvariable=selected_difficulty,
-                                width=17,
-                                height=len(difficulty_options),
-                                state="readonly",
-                                style="Black.TCombobox")
-        difficulty_dropdown.pack(side="left")
-        difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
 
     global show_playlist_button
     show_playlist_button = create_button(first_row_frame, "[P]LAYLIST", show_playlist, False,
@@ -8325,7 +8350,23 @@ def create_first_row_buttons():
                                 help_text=("Delete a filter from your list of saved filters.\n\n"
                                 "You will be asked to confirm when deleting."))
 
-    if not playlist.get("infinite", False):
+    if playlist.get("infinite", False):
+            global selected_difficulty
+
+            selected_difficulty = tk.StringVar()
+            selected_difficulty.set(difficulty_options[playlist["difficulty"]])
+            global difficulty_dropdown
+            difficulty_dropdown = ttk.Combobox(first_row_frame,
+                                    values=difficulty_options,
+                                    textvariable=selected_difficulty,
+                                    width=17,
+                                    height=len(difficulty_options),
+                                    state="readonly",
+                                    style="Black.TCombobox")
+            difficulty_dropdown.pack(side="left")
+            difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
+            blank_space(first_row_frame)
+    else:
         global sort_button
         sort_button = create_button(first_row_frame, "SORT", sort, True,
                                     help_title="SORT PLAYLIST",
