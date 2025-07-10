@@ -4680,16 +4680,15 @@ last_round = None
 variety_light_mode_enabled = False
 variety_mode_cooldowns = {
     "song":     {"min": 10, "max": 25, "max_limit": 100, "rnd":10},
-    "clues":    {"min": 10, "max": 20, "max_limit": 250, "repeat":40},
-    "c. name":  {"min": 10, "max": 30, "max_limit": 250, "repeat":40},
-    "tags":     {"min": 15, "max": 25, "max_limit": 500, "repeat":40},
-    "episodes": {"min": 10, "max": 25, "max_limit": 500, "repeat":40},
-    "names":    {"min": 10, "max": 25, "max_limit": 500, "repeat":40},
+    "clues":    {"min": 10, "max": 20, "max_limit": 250, "repeat":40, "rnd":5},
+    "c. name":  {"min": 10, "max": 30, "max_limit": 250, "repeat":40, "rnd":15},
+    "tags":     {"min": 15, "max": 30, "max_limit": 500, "repeat":40, "rnd":5},
+    "episodes": {"min": 15, "max": 30, "max_limit": 500, "repeat":40, "rnd":10},
+    "names":    {"min": 15, "max": 30, "max_limit": 500, "repeat":40, "rnd":0},
     "c. parts": {"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":10},
     "c. pixel": {"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":0},
     "c. reveal":{"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":20},
     "c. profile":{"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":15},
-    "names":    {"min": 10, "max": 20, "max_limit": 500, "repeat":40},
     "blind":    {"min": 3, "max": 8, "max_limit": 750},
     "mismatch": {"min": 3, "max": 8, "max_limit": 750},
     "title":    {"min": 4, "max": 6, "max_limit": 1000, "repeat":80},
@@ -5450,6 +5449,11 @@ def toggle_title_overlay(title_text=None, destroy=False):
     y = (screen_height - overlay_height) // 2
 
     spacing = 64
+    front_color = "white"
+    back_color = "black"
+    if character_round_answer:
+        front_color = "black"
+        back_color = "white"
 
     if title_overlay is None:
         title_overlay_items = []
@@ -5459,7 +5463,7 @@ def toggle_title_overlay(title_text=None, destroy=False):
         title_overlay.overrideredirect(True)
         title_overlay.attributes("-topmost", True)
         title_overlay.attributes("-alpha", 0.9)
-        title_overlay.configure(bg="black")
+        title_overlay.configure(bg=back_color)
         title_overlay.geometry(f"{screen_width}x{screen_height}+0+0")
 
         title_overlay_canvas = tk.Canvas(title_overlay, bg="pink", highlightthickness=0)
@@ -5469,15 +5473,15 @@ def toggle_title_overlay(title_text=None, destroy=False):
         # Box and label
         title_overlay_canvas.create_rectangle(
             x, y, x + overlay_width, y + overlay_height,
-            fill="black", outline="white", width=4
+            fill=back_color, outline=front_color, width=4
         )
-        title_text = "TITLE:"
+        title_txt = "TITLE:"
         if character_round_answer:
-            title_text = "CHARACTER NAME:"
+            title_txt = "CHARACTER NAME:"
         title_overlay_canvas.create_text(
             x + 30, y + 30,
-            text=title_text, font=("Arial", 70, "bold", "underline"),
-            fill="white", anchor="nw"
+            text=title_txt, font=("Arial", 70, "bold", "underline"),
+            fill=front_color, anchor="nw"
         )
 
         line_y = y + 270
@@ -5496,7 +5500,7 @@ def toggle_title_overlay(title_text=None, destroy=False):
                 underscore = title_overlay_canvas.create_text(
                     line_x, line_y,
                     text="_", font=("Courier New", 65),
-                    fill="white", anchor="center"
+                    fill=front_color, anchor="center"
                 )
                 title_overlay_items.append(underscore)
 
@@ -5504,7 +5508,7 @@ def toggle_title_overlay(title_text=None, destroy=False):
                 letter = title_overlay_canvas.create_text(
                     line_x, line_y,
                     text="", font=title_font,
-                    fill="white", anchor="center"
+                    fill=front_color, anchor="center"
                 )
                 title_overlay_letters.append(letter)
 
@@ -5557,6 +5561,12 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_canvas = None
         return
 
+    front_color = "white"
+    back_color = "black"
+    if character_round_answer:
+        front_color = "black"
+        back_color = "white"
+
     if not scramble_overlay_root:
         scramble_title_text = get_base_title()
         screen_w = root.winfo_screenwidth()
@@ -5590,7 +5600,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_canvas.create_rectangle(
             # x, y, x + overlay_width, y + overlay_height,
             x, full_y, x + overlay_width, full_y + full_overlay_height,
-            fill="black", outline="white", width=4
+            fill=back_color, outline=front_color, width=4
         )
         title_text = "TITLE:"
         if character_round_answer:
@@ -5600,7 +5610,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
             x + 30, full_y + 30,
             text=title_text,
             font=("Arial", 70, "bold", "underline"),
-            fill="white",
+            fill=front_color,
             anchor="nw"
         )
 
@@ -5622,7 +5632,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
                     continue
                 text_item = scramble_title_canvas.create_text(
                     line_x, line_y,
-                    text="_", font=("Courier New", 65), fill="white", anchor="center"
+                    text="_", font=("Courier New", 65), fill=front_color, anchor="center"
                 )
                 target_coords[len(scramble_title_text_items)] = (line_x, line_y)
                 scramble_title_text_items.append(text_item)
@@ -5675,7 +5685,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
             # Draw main letter (white) on top
             label = scramble_title_canvas.create_text(
                 start_x, start_y, text=letter["char"],
-                font=title_font, fill="white"
+                font=title_font, fill=front_color
             )
             scramble_title_canvas.tag_raise(label)
 
@@ -5697,10 +5707,6 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         if i < num_letters:
             if letter["index"] not in scramble_letter_placed_indices:
                 scramble_letter_placed_indices.add(letter["index"])
-                # scramble_title_canvas.itemconfig(
-                #     scramble_title_text_items[letter["index"]],
-                #     text="ˍ"
-                # )
             x0, y0 = scramble_title_canvas.coords(letter["item"])
             x1, y1 = letter["target"]
             new_x = x0 + (x1 - x0) * 0.2
@@ -5764,6 +5770,12 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         swap_pairs.clear()
         return
 
+    front_color = "white"
+    back_color = "black"
+    if character_round_answer:
+        front_color = "black"
+        back_color = "white"
+
     if not swap_overlay_root:
         swap_title_text = get_base_title()
         screen_w = root.winfo_screenwidth()
@@ -5787,12 +5799,9 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         swap_overlay_canvas.pack(fill="both", expand=True)
 
         # Draw box and title
-        full_overlay_height = int(screen_h * 0.7)
-        full_y = (screen_h - full_overlay_height) // 2
-
         swap_overlay_canvas.create_rectangle(
             x, y, x + overlay_width, y + overlay_height,
-            fill="black", outline="white", width=4
+            fill=back_color, outline=front_color, width=4
         )
         title_text = "TITLE:"
         if character_round_answer:
@@ -5800,7 +5809,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         swap_overlay_canvas.create_text(
             x + 30, y + 30,
             text=title_text, font=("Arial", 70, "bold", "underline"),
-            fill="white", anchor="nw"
+            fill=front_color, anchor="nw"
         )
 
         swap_title_items.clear()
@@ -5823,7 +5832,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
                 text_item = swap_overlay_canvas.create_text(
                     line_x, line_y,
                     text="_", font=("Courier New", 65),
-                    fill="white", anchor="center"
+                    fill=front_color, anchor="center"
                 )
                 target_coords[idx] = (line_x, line_y)
                 swap_title_items.append(text_item)
@@ -5858,7 +5867,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
                 continue
             tx, ty = target_coords[i]
             letter_item = swap_overlay_canvas.create_text(
-                tx, ty, text=char, font=swap_title_font, fill="white", anchor="center"
+                tx, ty, text=char, font=swap_title_font, fill=front_color, anchor="center"
             )
             swap_overlay_letters.append({
                 "item": letter_item,
@@ -6872,7 +6881,7 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         return
 
     name, img, gender, desc = character_round_answer
-
+    word_count
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     target_width = int(screen_width * 0.7)
@@ -6887,10 +6896,10 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     blurred_img = scaled_img.filter(ImageFilter.GaussianBlur(radius=100))
     tk_blurred_img = ImageTk.PhotoImage(blurred_img)
 
-    half_width = max(target_width // 2, scaled_width)
-
     # Let's say text area should match image width roughly or be slightly narrower
-    wraplength = int(target_width - tk_scaled_img.width()*0.8)
+    desc_width = max(int(target_width - tk_scaled_img.width()), int(target_width // 3))
+    image_width = target_width - desc_width
+    wraplength = desc_width - 20
 
     font_title = ("Arial", 50, "bold", "underline")
     font_body = ("Arial", 40)
@@ -6903,9 +6912,9 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         profile_overlay_window.attributes("-alpha", 0.95)
         profile_overlay_window.configure(bg="black", highlightbackground="white", highlightthickness=4)
 
-        x = (screen_width - (half_width * 2)) // 2
+        x = (screen_width - target_width) // 2
         y = (screen_height - target_height) // 2
-        profile_overlay_window.geometry(f"{half_width*2}x{target_height}+{x}+{y}")
+        profile_overlay_window.geometry(f"{target_width}x{target_height}+{x}+{y}")
 
         # Main layout container
         container = tk.Frame(profile_overlay_window, bg="black")
@@ -6913,17 +6922,12 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
 
         # Split left/right
         left_frame = tk.Frame(container, bg="black")
-        left_frame.pack(side="left", fill="both", expand=False, ipadx=10, ipady=10, padx=10, pady=10)
-        left_frame.config(width=half_width, height=target_height)
+        left_frame.pack(side="left", fill="both", expand=False, ipadx=5, ipady=10, padx=5, pady=10)
+        left_frame.config(width=desc_width, height=target_height)
 
         right_frame = tk.Frame(container, bg="black")
-        right_frame.pack(side="right", fill="both", expand=False, ipadx=10, ipady=10, padx=10, pady=10)
-        right_frame.config(width=half_width, height=target_height)
-
-
-        # Left: Bio area
-        # gender_label = tk.Label(left_frame, text=f"GENDER: {gender.upper()}", font=font_title, bg="black", fg="white", anchor="w")
-        # gender_label.pack(anchor="w", padx=10, pady=(10, 5))
+        right_frame.pack(side="right", fill="both", expand=False, ipadx=5, ipady=5, padx=5, pady=10)
+        right_frame.config(width=image_width, height=target_height)
 
         bio_label = tk.Label(left_frame, text="DESCRIPTION:", font=font_title, bg="black", fg="white",
                              wraplength=wraplength, justify="left", anchor="nw")
@@ -6932,7 +6936,6 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         profile_text_label = tk.Label(left_frame, text="", font=font_body, bg="black", fg="white",
                              wraplength=wraplength, justify="left", anchor="nw")
         profile_text_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
-
 
         # Right: Image or countdown
         profile_image_label = tk.Label(right_frame, bg="black")
@@ -6957,30 +6960,53 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         )
         profile_image_label.image = profile_image_label.scaled_img
 
-    # Word-by-word bio display
+    def update_profile_bio_text(description, word_limit, wraplength, label_font, max_lines=14):
+        global profile_overlay_window
 
-    def update_profile_bio_text(desc, word_count, wraplength, label_font):
-        """
-        Trims the description to fit MAX_LINES, removing full lines from the top if needed.
-        `wraplength` is in pixels, and `label_font` is the font used for the label (can be tuple or tkFont.Font).
-        """
-        # Convert font tuple to tkFont.Font if needed
         if isinstance(label_font, tuple):
             label_font = font.Font(font=label_font)
 
-        avg_char_width = label_font.measure("n")  # Rough average for a mid-size char
-        chars_per_line = max(10, wraplength // avg_char_width)
+        # Lazy init dummy label
+        if not hasattr(update_profile_bio_text, "_dummy_label"):
+            update_profile_bio_text._dummy_label = tk.Label(
+                profile_overlay_window, font=label_font, wraplength=wraplength,
+                justify="left", bg="black", fg="white"
+            )
+            # Place it off-screen so it still renders but doesn’t appear
+            update_profile_bio_text._dummy_label.place(x=-5000, y=-5000)
 
-        words = desc.split()
-        text = " ".join(words[:word_count])
-        lines = textwrap.wrap(text, width=chars_per_line)
+        dummy = update_profile_bio_text._dummy_label
 
-        MAX_LINES = 14
-        if len(lines) > MAX_LINES:
-            lines = lines[-MAX_LINES:]
+        words = description.split()
+        trimmed_text = " ".join(words[:word_limit])
+        dummy.config(text=trimmed_text)
+        dummy.update_idletasks()
 
-        profile_text_label.config(text="\n".join(lines))
-    update_profile_bio_text(f"Gender: {gender.capitalize()}. {desc}", word_count + 2, wraplength, font_body)
+        total_height = dummy.winfo_height()
+        line_height = label_font.metrics("linespace")
+        num_lines = max(1, total_height // line_height)
+
+        if num_lines <= max_lines:
+            profile_text_label.config(text=trimmed_text)
+            return
+
+        # Try trimming from the top word-by-word until it fits
+        for start in range(len(words)):
+            partial = " ".join(words[start:word_limit])
+            dummy.config(text=partial)
+            dummy.update_idletasks()
+            height = dummy.winfo_height()
+            lines = height // line_height
+            if lines <= max_lines:
+                profile_text_label.config(text=partial)
+                return
+
+        # Fallback: last N lines worth of words
+        fallback = " ".join(words[-max_lines:])
+        profile_text_label.config(text=fallback)
+
+
+    update_profile_bio_text(f"Gender: {gender.capitalize()}. {desc}", word_count+2, wraplength, font_body)
 
 # =========================================
 #          *TAGS LIGHTNING ROUND
@@ -6995,7 +7021,7 @@ def set_cloud_tags():
         tags = []
         if data.get("tags"):
             for tag in data.get("tags"):
-                tags.append({"name": tag[0], "weight": tag[1]})
+                tags.append({"name": tag[0].replace(" - to be split and deleted", ""), "weight": tag[1]})
         else:
             for tag in get_tags(data):
                 tags.append({"name": tag, "weight": 600})
@@ -7137,14 +7163,30 @@ light_episode_names = []  # Make sure to populate this elsewhere
 def set_light_episodes():
     global light_episode_names
     data = currently_playing.get("data")
-    episode_names = []
-    episodes = data.get("episode_info")
-    if data and episodes:
-        random.shuffle(episodes)
-        for ep in episodes:
-            episode_names.append(f"{ep[1]}")
-    else:
-        episode_names.append(f"No Episodes Found")
+    episodes = data.get("episode_info", [])
+    base_title = get_base_title().lower()
+    title_words = set(re.findall(r'\w+', base_title))  # Break base title into words
+
+    if not data or not episodes:
+        light_episode_names = ["No Episodes Found"]
+        return
+
+    # Score how many title words appear in each episode name
+    def score_overlap(ep_name):
+        words = set(re.findall(r'\w+', ep_name.lower()))
+        return len(title_words & words)
+
+    # Replace title words in the episode name with underscores
+    def mask_title_words(text):
+        def replace_word(match):
+            word = match.group()
+            return "_" * len(word) if word.lower() in title_words else word
+        return re.sub(r'\w+', replace_word, text)
+
+    # Shuffle and prioritize episodes with lower overlap first
+    scored_episodes = sorted(episodes, key=lambda ep: score_overlap(ep[1]))
+    episode_names = [mask_title_words(ep[1]) for ep in scored_episodes]
+
     light_episode_names = episode_names
 
 def toggle_episode_overlay(num_episodes=6, destroy=False):
@@ -8647,20 +8689,20 @@ def load_censors():
     # Load other censor-related files in the same directory
     folder = os.path.dirname(CENSOR_JSON_FILE)
     basename = os.path.basename(CENSOR_JSON_FILE)
-
-    for fname in os.listdir(folder):
-        if (
-            "censor" in fname.lower()
-            and fname.endswith(".json")
-            and fname != basename
-        ):
-            try:
-                with open(os.path.join(folder, fname), "r") as f:
-                    data = json.load(f)
-                    other_censor_lists.append(data)
-                    print(f"Loaded {len(data)} entries from {fname}")
-            except Exception as e:
-                print(f"Failed to load {fname}: {e}")
+    if os.path.exists(folder):
+        for fname in os.listdir(folder):
+            if (
+                "censor" in fname.lower()
+                and fname.endswith(".json")
+                and fname != basename
+            ):
+                try:
+                    with open(os.path.join(folder, fname), "r") as f:
+                        data = json.load(f)
+                        other_censor_lists.append(data)
+                        print(f"Loaded {len(data)} entries from {fname}")
+                except Exception as e:
+                    print(f"Failed to load {fname}: {e}")
 
 load_censors()
 
