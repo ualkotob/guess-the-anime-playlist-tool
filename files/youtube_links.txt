@@ -1,2 +1,0 @@
-url,start_time,end_time(0 if unchanged),title
-https://www.youtube.com/watch?v=EzozWZRaUFY,6,0,Guess The Anime From The Awful Drawing

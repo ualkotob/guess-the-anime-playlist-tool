@@ -20,18 +20,20 @@ from collections import Counter
 import numpy as np
 from io import BytesIO
 from datetime import datetime
+import textwrap
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk, StringVar, font
 import webbrowser
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageFilter
 import threading  # For asynchronous metadata loading
 import vlc
-import yt_dlp
+from yt_dlp import YoutubeDL
 from pynput import keyboard
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 import pyperclip
 import pyautogui
+import socket
 
 # Explicitly load libvlc.dll and its dependencies
 vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installation path
@@ -77,6 +79,8 @@ youtube_metadata = {}
 YOUTUBE_METADATA_FILE = "metadata/youtube_metadata.json"
 directory = ""
 directory_files = {}
+title_top_info_txt = ""
+end_session_txt = ""
 CONFIG_FILE = "files/config.json"
 YOUTUBE_FOLDER = "youtube"
 ARCHIVE_FILE = "files/youtube_archive.txt"
@@ -178,8 +182,12 @@ def fetch_anidb_metadata(aid):
         name = char.findtext("name")
         char_type = char.get("type")[:1] or "a"
         pic = char.findtext("picture")
+        gender = char.findtext("gender")
+        desc = char.findtext("description")
         if pic and char_type in ['a','s','m']:
-            character = [char_type, name, os.path.basename(pic)]
+            character = [char_type, name, os.path.basename(pic), gender]
+            if desc:
+                character.append(desc.split("\nSource:")[0])
             if max_types[char_type].get("count", 0) < max_types[char_type]["max"]:
                 max_types[char_type]["count"] = max_types[char_type].get("count", 0) + 1
                 characters.append(character)
@@ -193,7 +201,7 @@ def fetch_anidb_metadata(aid):
             continue
 
         epno = epno_elem.text
-        if not epno or not epno.isdigit() or (epno.isdigit() and int(epno) > 25):
+        if not epno or not epno.isdigit() or (epno.isdigit() and int(epno) >= 50):
             continue
 
         number = int(epno)
@@ -293,8 +301,8 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
         if refresh and mal_id not in fetched_metadata and (refresh_all or (auto_refresh_toggle and fetch)):
             fetched_metadata.add(mal_id)
             refresh_jikan_data(mal_id, anime_data)
-            if anidb_id and not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names']):
-                refresh_anidb_data(anidb_id, anime_data)
+        if refresh and fetch and anidb_id and (anidb_id not in anidb_metadata or auto_refresh_toggle) and not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names'] or (light_mode and "c." in light_mode)):
+            refresh_anidb_data(anidb_id, anime_data)
 
     result = file_data | anime_data | anidb_data
     if not (refresh or fetch):
@@ -962,7 +970,7 @@ def update_popout_currently_playling(data, clear=False):
         else:
             aired = data.get("season")
         popout_currently_playing.configure(text=title)
-        popout_currently_playing_extra.insert(tk.END, f"{marks}{theme} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
+        popout_currently_playing_extra.insert(tk.END, f"{marks}{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
     else:
         popout_currently_playing.configure(text="")
     popout_currently_playing_extra.config(state=tk.DISABLED)
@@ -995,28 +1003,48 @@ def update_extra_metadata(data):
             "secondary": [],
             "appears": []
         }
+
         for char in data.get("characters", []):
             role = char[0]
             name = char[1]
             image = char[2]
+            gender = char[3] if len(char) > 3 else "Unknown"
+            desc = char[4] if len(char) > 4 else ""
+
+            # Store full character info
+            entry = (name, image, gender, desc)
 
             if role == "m":
-                groups["main"].append((name, image))
+                groups["main"].append(entry)
             elif role == "s":
-                groups["secondary"].append((name, image))
+                groups["secondary"].append(entry)
             else:
-                groups["appears"].append((name, image))
+                groups["appears"].append(entry)
 
-        def create_image_popup(name, image_filename):
+        def create_image_popup(name, image_filename, gender, desc):
             def _popup():
-                # TODO: Replace this with your actual image retrieval logic
                 popup = tk.Toplevel()
-                popup.title(name)        
-                tk_img = load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(1000, 1000))
-                # Set image and label
+                popup.title(name)
+                popup.configure(bg="black")
+                
+                # Name
+                tk.Label(popup, text=name, font=("Arial", 20, "bold", "underline"), bg="black", fg="white", anchor="center").pack(anchor="center", pady=(0, 0))
+
+                # Load image
+                tk_img = load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(700, 700))
                 label = tk.Label(popup, image=tk_img, bg="black")
                 label.image = tk_img
-                label.pack()
+                label.pack(pady=10)
+
+                # Info section
+                info_frame = tk.Frame(popup, bg="black")
+                info_frame.pack(padx=20, pady=(0, 20), fill="both", expand=True)
+
+                new_desc = f"Gender: {gender.capitalize()}. {desc.strip()}"
+                if new_desc.strip():
+                    tk.Label(info_frame, text="DESCRIPTION:", font=("Arial", 15, "bold", "underline"), bg="black", fg="white", anchor="w").pack(anchor="w", pady=(10, 0))
+                    tk.Label(info_frame, text=new_desc.strip(), font=("Arial", 15), wraplength=700, justify="left", bg="black", fg="white", anchor="w").pack(anchor="w")
+
             return _popup
 
         headers = [
@@ -1029,10 +1057,17 @@ def update_extra_metadata(data):
             if not char_list:
                 continue
             right_column.insert(tk.END, header.upper() + ":\n", "bold")
-            for name, image in sorted(char_list, key=lambda x: x[0].lower()):
-                b = tk.Button(right_column, text=name, command=create_image_popup(name, image), padx=2, pady=1, bg="black", fg="white", font=("Arial", 12))
+            for name, image, gender, desc in sorted(char_list, key=lambda x: x[0].lower()):
+                b = tk.Button(
+                    right_column,
+                    text=name,
+                    command=create_image_popup(name, image, gender, desc),
+                    padx=2, pady=1,
+                    bg="black", fg="white",
+                    font=("Arial", 12)
+                )
                 right_column.window_create(tk.END, window=b)
-                right_column.insert(tk.END, "\n", "blank")
+                right_column.insert(tk.END, " ")
             right_column.insert(tk.END, "\n", "blank")
     elif selected_extra_metadata == "episode_info":
         episodes = sorted(data.get("episode_info", []), key=lambda x: x[0])  # Sort by episode number
@@ -1497,6 +1532,93 @@ def toggleColumnEdit(toggle):
         middle_column.config(state=tk.DISABLED, wrap="word")
         right_column.config(state=tk.DISABLED, wrap="word")
 
+# =========================================
+#            *YOUTUBE VIDEOS
+# =========================================
+
+youtube_queue = None
+def get_youtube_duration(data):
+    start = data.get("start")
+    end = data.get("end")
+    length = data.get('duration')
+    if end == 0:
+        end = length
+    duration = round(end-start)
+    return duration
+
+def get_youtube_metadata_from_index(index=None, key_id=None):
+    for idx, (key, value) in enumerate(youtube_metadata.get("videos", {}).items()):
+        if key_id and key_id == key or idx == index:
+            value["url"] = key
+            channel_info = youtube_metadata.get("channels", {}).get(value.get("channel_id"), {
+                "name": "N/A",
+                "subscriber_count": 0
+            })
+            return value | channel_info
+
+def unload_youtube_video():
+    global youtube_queue
+    if youtube_queue:
+        toggle_coming_up_popup(False, youtube_queue.get("custom_title") or youtube_queue.get('title'))
+    youtube_queue = None
+
+def stream_youtube(youtube_url):
+    """Streams a YouTube video in VLC using yt-dlp to get a direct URL."""
+    media = instance.media_new(youtube_url)
+    player.set_media(media)
+    player.play()
+    check_youtube_video_playing()
+
+def check_youtube_video_playing():
+    if player.is_playing():
+        global video_stopped
+        video_stopped = False
+        player.set_fullscreen(True)
+        player.set_fullscreen(True)
+    else:
+        root.after(1000, check_youtube_video_playing)
+
+def show_youtube_playlist(update = False):
+    downloaded_videos = {}
+    for video_id, video in youtube_metadata.get("videos", {}).items():
+        if os.path.exists(os.path.join("youtube", video["filename"])):
+            downloaded_videos[video_id] = video
+
+    for index, (key, value) in enumerate(downloaded_videos.items()):
+        value['index'] = index
+    if youtube_queue:
+        selected = youtube_queue.get('index')
+    else:
+        selected = -1
+    show_list("youtube", right_column, downloaded_videos, get_youtube_title, load_youtube_video, selected, update)
+
+def get_youtube_title(key, value):
+    return f"[{str(format_seconds(get_youtube_duration(value)))}]{value.get("custom_title") or value.get("title")}"
+
+def load_youtube_video(index):
+    global youtube_queue
+    video = get_youtube_metadata_from_index(int(index))
+    if video and youtube_queue != video:
+        unload_youtube_video()
+        youtube_queue = video
+        title = youtube_queue.get("custom_title") or youtube_queue.get('title')
+        try:
+            image = load_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
+        except:
+            image = None
+        details = (
+            "Created by: " + youtube_queue.get("name") + " (" + str(f"{youtube_queue.get("subscriber_count"):,}") + " subscribers)" + "\n"
+            "Uploaded: " + str(f"{datetime.strptime(youtube_queue.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}") + " | Duration: " + str(format_seconds(get_youtube_duration(youtube_queue))) + " mins\n\n"
+            "1 PT for the first correct answer."
+        )
+        if player.is_playing():
+            toggle_coming_up_popup(True, title, details, image, queue=True)
+        else:
+            play_video()
+    else:
+        unload_youtube_video()
+    show_youtube_playlist(True)
+
 def update_youtube_metadata():
     global youtube_queue
     insert_column_line(left_column, "TITLE: ", youtube_queue.get('title'))
@@ -1504,8 +1626,8 @@ def update_youtube_metadata():
     insert_column_line(left_column, "UPLOAD DATE: ", f"{datetime.strptime(youtube_queue.get('upload_date'), "%Y%m%d").strftime("%Y-%m-%d")}")
     insert_column_line(left_column, "VIEWS: ", f"{youtube_queue.get('view_count'):,}")
     insert_column_line(left_column, "LIKES: ", f"{youtube_queue.get('like_count'):,}")
-    insert_column_line(left_column, "CHANNEL: ", youtube_queue.get('channel'))
-    insert_column_line(left_column, "SUBSCRIBERS: ", f"{youtube_queue.get('channel_follower_count'):,}")
+    insert_column_line(left_column, "CHANNEL: ", youtube_queue.get('name'))
+    insert_column_line(left_column, "SUBSCRIBERS: ", f"{youtube_queue.get('subscriber_count'):,}")
     insert_column_line(left_column, "DURATION: ", str(format_seconds(get_youtube_duration(youtube_queue))) + " mins")
     insert_column_line(middle_column, "DESCRIPTION: ", youtube_queue.get('description'))
     show_youtube_playlist()
@@ -1516,150 +1638,486 @@ def insert_column_line(column, title, data):
     column.insert(tk.END, f"{data}", "white")
     column.insert(tk.END, "\n\n", "blank")
 
-# =========================================
-#        *FETCHING YOTUBE METADATA
-# =========================================
+def save_youtube_metadata():
+    """Ensures the metadata folder exists before saving metadata file."""
+    metadata_folder = os.path.dirname(YOUTUBE_METADATA_FILE)  # Get the folder path
 
-def load_video_links():
-    """Load video links from a text file"""
-    video_map = {}
-    ARCHIVE_FILE = "files/youtube_archive.txt"
+    # Create the folder if it does not exist
+    if not os.path.exists(metadata_folder):
+        os.makedirs(metadata_folder)
 
-    if os.path.exists(YOUTUBE_LINKS_FILE):
-        try:
-            # Load existing archive entries but store only URLs for comparison
-            archived_urls = set()
-            if os.path.exists(ARCHIVE_FILE):
-                with open(ARCHIVE_FILE, "r") as archive_file:
-                    for line in archive_file:
-                        parts = line.strip().split(",")
-                        if len(parts) > 1:  # Ensure valid format
-                            archived_urls.add(parts[1])  # Store only the URL for checking
+    with open(YOUTUBE_METADATA_FILE, "w") as f:
+        json.dump(youtube_metadata, f, indent=4)
 
-            with open(YOUTUBE_LINKS_FILE, "r") as file, open(ARCHIVE_FILE, "a") as archive:
-                for index, line in enumerate(file):
-                    url, start, end, title = line.strip().split(",")
-                    if url and url != 'url':  # Ensure URL is valid and not a header
-                        video_map[url] = {
-                            'index': index,
-                            'url': url,
-                            'start': start,
-                            'end': end,
-                            'title': title
-                        }
-
-                        # Check if the URL is already archived (ignoring date)
-                        if url not in archived_urls:
-                            archive_entry = f"{datetime.now().strftime('%Y-%m-%d')},{line.strip()}"
-                            archive.write(archive_entry + "\n")
-                            archived_urls.add(url)  # Add the URL to prevent future duplicates
-
-            # remove old metadata
-            to_delete = []
-            for key, value in youtube_metadata.items():
-                match = False
-                for k, v in video_map.items():
-                    if key == v.get('url'):
-                        match = True
-                        break
-                if not match:
-                    to_delete.append(key)
-            for d in to_delete:
-                del youtube_metadata[d]
-            save_youtube_metadata()
-            # Delete outdated videos
-            if os.path.exists(YOUTUBE_FOLDER):
-                for filename in os.listdir(YOUTUBE_FOLDER):
-                    if filename != "archive":
-                        match = False
-                        for url, value in youtube_metadata.items():
-                            if value.get('title') + '.webm' == filename:
-                                match = True
-                                break
-                        if not match:
-                            archive_folder = os.path.join(YOUTUBE_FOLDER, "archive")
-                            if not os.path.exists(archive_folder):
-                                os.makedirs(archive_folder)
-                            
-                            # Move the outdated video to the archive folder
-                            shutil.move(os.path.join(YOUTUBE_FOLDER, filename), os.path.join(archive_folder, filename))
-                            print(f"Moved outdated video: {filename} to archive.")
-        except Exception as e:
-            print("Error: " + str(e))
-
-    return video_map
-
-youtube_queue = None
-
-def download_videos():
-    """Downloads all YouTube videos if not already downloaded, without freezing the UI."""
+def load_youtube_metadata():
     global youtube_metadata
-    ydl_opts = {
-        'quiet': True,
-        'format': 'bestvideo[height<=1080]+bestaudio/best',
-        'merge_output_format': 'webm',
-        'outtmpl': os.path.join("youtube", '%(id)s.%(ext)s'),  # Save as YouTube ID
-    }
-    def download_single_video(key, data):
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                url = key
-                info = ydl.extract_info(url, download=False)
-                filename = os.path.join("youtube", data.get('title') + ".webm")
-                youtube_metadata[key] = {
-                    "index":data.get('index'),
-                    "title":data.get('title'),
-                    "start":int(data.get('start')),
-                    "end":int(data.get('end')),
-                    "full_title":info.get('title'),
-                    "filename":filename,
-                    'upload_date':info.get('upload_date'),
-                    'channel':info.get('channel'),
-                    'channel_follower_count':info.get('channel_follower_count'),
-                    'like_count':info.get('like_count'),
-                    'view_count':info.get('view_count'),
-                    'duration':info.get('duration'),
-                    'description':info.get('description'),
-                    'thumbnail':info.get('thumbnail'),
-                }
-                save_youtube_metadata()
-                """Downloads a single video if not already downloaded."""
-                if not os.path.exists(filename):  # Skip if file exists
-                    print(f"Downloading {url} as {filename}...")
-                    info_dict = ydl.extract_info(url, download=True)
-                    downloaded_filename = ydl.prepare_filename(info_dict)  # Get actual filename
-                    os.rename(downloaded_filename, filename)  # Rename to number-based format
-                    print(f"Download complete: {filename}")
-                else:
-                    print(f"Skipping {url}, already downloaded.")# Create a thread for each video download
-        except Exception as e:
-            print(f"Error downloading {url}: {e}")
+    if os.path.exists(YOUTUBE_METADATA_FILE):
+        with open(YOUTUBE_METADATA_FILE, "r") as f:
+            youtube_metadata = json.load(f)
+            print("Loaded metadata for " + str(len(youtube_metadata.get("videos", []))) + " youtube videos...")
+        return True
+    return False
+
+youtube_editor_window = None
+def open_youtube_editor():
+    global youtube_editor_window
     
-    threads = []
-    for key, data in load_video_links().items():
-        if youtube_metadata.get(key) is None or not os.path.exists(youtube_metadata.get(key).get("filename")):
-            thread = threading.Thread(target=download_single_video, args=(key, data))
-            thread.start()
-            threads.append(thread)
+    def youtube_editor_close():
+        global youtube_editor_window
+        button_seleted(manage_youtube_button, False)
+        manage_youtube_button.configure(text="➕")
+        youtube_editor_window.destroy()
+        youtube_editor_window = None
 
-    # Optionally, wait for all downloads to complete
-    for thread in threads:
-        thread.join()
+    button_seleted(manage_youtube_button, True)
+    manage_youtube_button.configure(text="❌")
 
-def get_youtube_duration(data):
-    start = data.get("start")
-    end = data.get("end")
-    length = data.get('duration')
-    if end == 0:
-        end = length
-    duration = round(end-start)
-    return duration
+    if youtube_editor_window:
+        youtube_editor_close()
+        return
+    else:
+        youtube_editor_window = tk.Toplevel()
+        youtube_editor_window.title("YouTube Video Manager")
+        youtube_editor_window.configure(bg=BACKGROUND_COLOR)
+        youtube_editor_window.protocol("WM_DELETE_WINDOW", youtube_editor_close)
+    
+    font_big = ("Arial", 14)
+    fg_color = "white"
 
-def get_youtube_metadata_from_index(index):
-    for idx, (key, value) in enumerate(youtube_metadata.items()):
-        if idx == index:
-            value["url"] = key
-            return value
+    entry_widgets = []
+
+
+    def refresh_ui():
+        for widget in youtube_editor_window.winfo_children():
+            widget.destroy()
+        entry_widgets.clear()
+        
+        headers = ["Video ID", "Title", "Start", "End", "Actions"]
+        for col, header in enumerate(headers):
+            tk.Label(youtube_editor_window, text=header.upper(), font=font_big, bg=BACKGROUND_COLOR, fg=fg_color).grid(row=0, column=col, padx=8, pady=6)
+        active_videos = {k: v for k, v in youtube_metadata.get("videos", {}).items() if not v.get("archived")}
+
+        for idx, (video_id, video) in enumerate(sorted(active_videos.items(), key=lambda x: x[1].get("title", ""))):
+            row_widgets = []
+
+            tk.Label(youtube_editor_window, text=video_id, font=font_big, fg=fg_color, bg=BACKGROUND_COLOR).grid(row=idx+1, column=0, padx=4, pady=4)
+
+            # Title (Entry + Refresh Button)
+            title_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
+
+            title_var = tk.StringVar(value=video.get("custom_title") or video.get("title"))
+            title_entry = tk.Entry(title_frame, textvariable=title_var, font=font_big, width=40, bg="#222", fg=fg_color, insertbackground=fg_color)
+            title_entry.pack(side="left")
+
+            def reset_title(event=None, var=title_var, v=video):
+                var.set(v.get("title"))
+
+            tk.Button(
+                title_frame,
+                text="⟳",  # Unicode refresh icon
+                font=font_big,
+                command=reset_title,
+                bg="black",
+                fg="white"
+            ).pack(side="left", padx=4)
+
+            title_frame.grid(row=idx+1, column=1, padx=4, pady=4)
+
+            start_var = tk.StringVar(value=str(video.get("start", 0)))
+            end_var = tk.StringVar(value=str(video.get("end", 0) or video.get("duration")))
+
+            def set_now(var):
+                var.set(int(projected_vlc_time / 1000))
+
+            # Start time (Entry + NOW + REFRESH)
+            start_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
+            start_entry = tk.Entry(start_frame, textvariable=start_var, font=font_big, width=4, justify="center", bg="#222", fg=fg_color, insertbackground=fg_color)
+            start_entry.pack(side="left")
+
+            tk.Button(
+                start_frame,
+                text="NOW",
+                font=font_big,
+                command=lambda v=start_var: set_now(v),
+                bg="black",
+                fg="white"
+            ).pack(side="left", padx=2)
+
+            tk.Button(
+                start_frame,
+                text="⟳",
+                font=font_big,
+                command=lambda v=start_var: v.set(0),
+                bg="black",
+                fg="white"
+            ).pack(side="left", padx=2)
+
+            start_frame.grid(row=idx+1, column=2, padx=4)
+
+            # End time (Entry + NOW + REFRESH)
+            end_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
+            end_entry = tk.Entry(end_frame, textvariable=end_var, font=font_big, width=4, justify="center", bg="#222", fg=fg_color, insertbackground=fg_color)
+            end_entry.pack(side="left")
+
+            tk.Button(
+                end_frame,
+                text="NOW",
+                font=font_big,
+                command=lambda v=end_var: set_now(v),
+                bg="black",
+                fg="white"
+            ).pack(side="left", padx=2)
+
+            tk.Button(
+                end_frame,
+                text="⟳",
+                font=font_big,
+                command=lambda v=end_var, dur=video.get("duration", 0): v.set(int(dur)),
+                bg="black",
+                fg="white"
+            ).pack(side="left", padx=2)
+
+            end_frame.grid(row=idx+1, column=3, padx=4)
+
+            # Determine if file is downloaded
+            filepath = os.path.join("youtube", video["filename"])
+
+            action_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
+            if os.path.exists(filepath):
+                def play_youtube_video(vid):
+                    save_all()
+                    global youtube_queue
+                    youtube_queue = get_youtube_metadata_from_index(key_id=vid)
+                    play_video()
+
+                # Show Archive/Delete buttons
+                def archive_this(vid=video_id):
+                    video = youtube_metadata["videos"][vid]
+                    video["archived"] = True
+                    video["archived_date"] = datetime.now().strftime("%Y-%m-%d")
+
+                    # Ensure archive folder exists
+                    archive_folder = os.path.join("youtube", "archive")
+                    os.makedirs(archive_folder, exist_ok=True)
+
+                    # Move the file
+                    old_path = os.path.join("youtube", video.get("filename", ""))
+                    new_path = os.path.join(archive_folder, video.get("filename", ""))
+
+                    if os.path.exists(old_path):
+                        try:
+                            shutil.move(old_path, new_path)
+                            print(f"Moved to archive: {new_path}")
+                        except Exception as e:
+                            print(f"Error archiving file: {e}")
+                    save_youtube_metadata()
+                    refresh_ui()
+                # Play button
+                tk.Button(action_frame, text="▶", font=font_big, bg="green", fg="white", command=lambda vid=video_id: play_youtube_video(vid)).pack(side="left", padx=2)
+                tk.Button(action_frame, text="ARCHIVE", font=font_big, bg="#333", fg="white", command=archive_this).pack(side="left", padx=2)
+            else:
+                # Show Download button
+                dl_btn = tk.Button(
+                    action_frame,
+                    text="DOWNLOAD",
+                    font=font_big,
+                    bg="black",
+                    fg="white"
+                )
+                dl_btn.config(command=lambda vid=video_id, b=dl_btn: download_youtube_video(vid, b, refresh_ui))
+                dl_btn.pack(side="left", padx=2)
+
+            def delete_this(vid=video_id):
+                if messagebox.askyesno("Confirm Delete(CANNOT BE UNDONE)", f"Delete video {vid}?"):
+                    # Remove from metadata
+                    video = youtube_metadata["videos"].pop(vid, None)
+
+                    # Attempt to delete the file
+                    if video:
+                        filepath = os.path.join("youtube", video.get("filename", ""))
+                        if os.path.exists(filepath):
+                            try:
+                                os.remove(filepath)
+                                print(f"Deleted file: {filepath}")
+                            except Exception as e:
+                                print(f"Failed to delete file {filepath}: {e}")
+                    save_youtube_metadata()
+                    refresh_ui()
+            tk.Button(action_frame, text="❌", font=font_big, fg="red", bg="black", command=delete_this).pack(side="left", padx=2)
+            action_frame.grid(row=idx+1, column=4, padx=4)
+            row_widgets.append(action_frame)
+            # Store the widget row
+            entry_widgets.append((video_id, [title_entry, start_frame, end_frame]))
+
+        def save_all():
+            for video_id, widgets in entry_widgets:
+                title_entry = widgets[0]
+                start_frame = widgets[1]
+                end_frame = widgets[2]
+
+                # Get values from within the nested frames
+                start_entry = start_frame.winfo_children()[0]  # Entry is the first child
+                end_entry = end_frame.winfo_children()[0]      # Entry is the first child
+
+                title = title_entry.get().strip()
+                start = start_entry.get().strip()
+                end = end_entry.get().strip()
+
+                video = youtube_metadata["videos"][video_id]
+                video["custom_title"] = title if title != video["title"] else ""
+                video["start"] = int(start)
+                video["end"] = int(end)
+
+            save_youtube_metadata()
+            save_youtube_button.configure(text="SAVED!")
+            root.after(300, lambda: save_youtube_button.configure(text="SAVE ALL"))
+
+        def extract_video_id(url):
+            match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11})", url)
+            return match.group(1) if match else None
+
+        def add_video_by_url():
+            add_video_button.configure(text="ADDING...(PLEASE WAIT)")
+            url = simpledialog.askstring("Add YouTube Video", "Enter YouTube video URL:", parent=youtube_editor_window)
+            if not url:
+                add_video_button.configure(text="ADD VIDEO FROM URL")
+                return
+        
+            video_id = extract_video_id(url)
+            if not video_id:
+                messagebox.showerror("Invalid URL", "Could not extract video ID from the URL.")
+                add_video_button.configure(text="ADD VIDEO FROM URL")
+                return
+
+            if video_id in youtube_metadata.get("videos", {}):
+                messagebox.showinfo("Duplicate", "This video already exists in the list.")
+                add_video_button.configure(text="ADD VIDEO FROM URL")
+                return
+            ydl_opts = {
+                'quiet': True,
+                'skip_download': True,
+                'format': 'best',
+            }
+
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+
+                # Ensure data structure is ready
+                if "videos" not in youtube_metadata:
+                    youtube_metadata["videos"] = {}
+                if "channels" not in youtube_metadata:
+                    youtube_metadata["channels"] = {}
+
+                # Add channel info
+                channel_id = info.get("channel_id")
+                if channel_id:
+                    youtube_metadata["channels"][channel_id] = {
+                        "name": info.get("channel"),
+                        "subscriber_count": info.get("channel_follower_count", 0)
+                    }
+
+                # Build filename and store video data
+                sanitized_title = re.sub(r'[^A-Za-z0-9]', '', info["title"])
+                filename = f"{video_id}-{sanitized_title}.webm"
+
+                youtube_metadata["videos"][video_id] = {
+                    "title": info["title"],
+                    "custom_title": "",  # editable title, empty means use default
+                    "start": 0,
+                    "end": 0,
+                    "channel_id": channel_id,
+                    "duration": info.get("duration", 0),
+                    "view_count": info.get("view_count", 0),
+                    "like_count": info.get("like_count", 0),
+                    "upload_date": info.get("upload_date", ""),
+                    "description": info.get("description", ""),
+                    "thumbnail": info.get("thumbnail", ""),
+                    "filename": filename,
+                    "archived": False,
+                    "archived_date": None
+                }
+
+                save_youtube_metadata()
+                refresh_ui()
+
+            except Exception as e:
+                add_video_button.configure(text="ADD VIDEO FROM URL")
+                messagebox.showerror("Error", f"Failed to add video: {e}")
+
+        def open_archived_youtube_view():
+            archive_window = tk.Toplevel()
+            archive_window.title("Archived YouTube Videos")
+            archive_window.configure(bg=BACKGROUND_COLOR)
+
+            # Set size and make resizable with a scrollable region
+            archive_window.geometry("950x600")
+
+            # Scrollable frame setup
+            canvas = tk.Canvas(archive_window, bg=BACKGROUND_COLOR, highlightthickness=0)
+            scrollbar = tk.Scrollbar(archive_window, orient="vertical", command=canvas.yview)
+            scroll_frame = tk.Frame(canvas, bg=BACKGROUND_COLOR)
+
+            scroll_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+
+            canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+
+            canvas.pack(side="left", fill="both", expand=True)
+            scrollbar.pack(side="right", fill="y")
+
+            # Sort and filter archived videos
+            archived_videos = {
+                vid: v for vid, v in youtube_metadata.get("videos", {}).items()
+                if v.get("archived")
+            }
+            sorted_videos = sorted(archived_videos.items(), key=lambda x: x[1].get("archived_date", ""))
+
+            for idx, (video_id, video) in enumerate(sorted_videos):
+                title = video.get("custom_title") or video.get("title")
+                archive_date = video.get("archived_date", "Unknown")
+                filename = video.get("filename", "")
+                filepath = os.path.join("youtube", "archive", filename)
+                size_label = ""
+
+                if os.path.exists(filepath):
+                    try:
+                        size_mb = os.path.getsize(filepath) / 1024 / 1024
+                        size_label = f" ({size_mb:.1f} MB)"
+                    except:
+                        pass
+
+                row_frame = tk.Frame(scroll_frame, bg=BACKGROUND_COLOR)
+                row_frame.grid(row=idx, column=0, sticky="w", padx=8, pady=6)
+
+                # Video ID
+                tk.Label(row_frame, text=video_id, width=12, font=font_big, bg=BACKGROUND_COLOR, fg="gray").pack(side="left", padx=6)
+
+                # Title + Size
+                tk.Label(row_frame, text=title + size_label, font=font_big, bg=BACKGROUND_COLOR, fg=fg_color, width=40, anchor="w").pack(side="left", padx=6)
+
+                # Archive date
+                tk.Label(row_frame, text=archive_date, font=font_big, bg=BACKGROUND_COLOR, fg="#aaa", width=12).pack(side="left", padx=6)
+
+                # Restore Button
+                def restore_this(vid=video_id):
+                    video = youtube_metadata["videos"][vid]
+                    video["archived"] = False
+                    video.pop("archived_date", None)
+
+                    old_path = os.path.join("youtube", "archive", video["filename"])
+                    new_path = os.path.join("youtube", video["filename"])
+                    if os.path.exists(old_path):
+                        try:
+                            shutil.move(old_path, new_path)
+                            print(f"Restored file: {video['filename']}")
+                        except Exception as e:
+                            print(f"Failed to restore file: {e}")
+
+                    archive_window.destroy()
+                    save_youtube_metadata()
+                    refresh_ui()
+
+                tk.Button(row_frame, text="RESTORE", font=font_big, bg="green", fg="white", command=restore_this).pack(side="left", padx=4)
+
+                # Delete Button
+                def delete_this(vid=video_id):
+                    if messagebox.askyesno("Confirm Delete", f"Delete video {vid}?"):
+                        video = youtube_metadata["videos"].pop(vid, None)
+                        archive_path = os.path.join("youtube", "archive", video["filename"])
+                        if os.path.exists(archive_path):
+                            try:
+                                os.remove(archive_path)
+                                print(f"Deleted file: {archive_path}")
+                            except Exception as e:
+                                print(f"Failed to delete file: {e}")
+                        archive_window.destroy()
+                        save_youtube_metadata()
+                        refresh_ui()
+
+                tk.Button(row_frame, text="❌", font=font_big, fg="red", bg="black", command=delete_this).pack(side="left", padx=4)
+
+        add_video_button = tk.Button(
+            youtube_editor_window,
+            text="ADD VIDEO FROM URL",
+            font=font_big,
+            bg="black",
+            fg="white",
+            command=add_video_by_url
+        )
+        add_video_button.grid(row=999, column=0, columnspan=2, pady=10)
+        save_youtube_button = tk.Button(youtube_editor_window, text="SAVE ALL", font=font_big, command=save_all, bg="black", fg="white")
+        save_youtube_button.grid(row=999, column=2, columnspan=2, pady=12)
+        archived_count = sum(1 for v in youtube_metadata.get("videos", {}).values() if v.get("archived"))
+        tk.Button(youtube_editor_window, text=f"SHOW ARCHIVED({archived_count})", font=font_big, command=open_archived_youtube_view, bg="black", fg="white").grid(row=999, column=3, columnspan=3, pady=12)
+
+    refresh_ui()
+
+def download_youtube_video(video_id, button, refresh_ui_callback):
+    from yt_dlp import YoutubeDL
+    import threading, os
+    import re
+
+    video = youtube_metadata["videos"][video_id]
+    filename = os.path.join("youtube", video["filename"])
+    last_percent = {"value": -1}  # Mutable object to track percent between threads
+
+    def update_button(text):
+        if isinstance(button, tk.Button):
+            button.config(text=text)
+
+    last_percent = {"value": -1}
+    max_total = {"bytes": 0}  # Track the largest stable filesize seen
+    def on_progress(d):
+        if d['status'] == 'downloading':
+            downloaded = d.get('downloaded_bytes', 0)
+            reported_total = d.get('total_bytes') or d.get('total_bytes_estimate') or 1
+
+            # Update max_total only if it's significantly larger (5% threshold)
+            if reported_total > max_total["bytes"] * 1.05 or reported_total < max_total["bytes"] * .95:
+                max_total["bytes"] = reported_total
+            elif max_total["bytes"] == 0:
+                max_total["bytes"] = reported_total
+
+            total = max_total["bytes"]
+            percent = int((downloaded / total) * 100)
+
+            last_percent["value"] = percent
+            downloaded_mb = downloaded / 1024 / 1024
+            total_mb = total / 1024 / 1024
+            update_button(f"{downloaded_mb:.1f}/{total_mb:.1f} MB")
+
+        elif d['status'] == 'finished':
+            update_button("Merging...")
+
+    def do_download():
+        update_button("Starting...")
+        try:
+            ydl_opts = {
+                'format': 'bestvideo[height<=1080]+bestaudio/best',
+                'merge_output_format': 'webm',
+                'outtmpl': filename,
+                'quiet': True,
+                'progress_hooks': [on_progress],
+            }
+
+            with YoutubeDL(ydl_opts) as ydl:
+                ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
+
+            save_youtube_metadata()
+            refresh_ui_callback()
+        except Exception as e:
+            update_button("Error")
+            print(f"Download error for {video_id}: {e}")
+
+    if os.path.exists(filename):
+        filesize = os.path.getsize(filename)
+        update_button(f"{round(filesize / 1024 / 1024, 1)} MB")
+    else:
+        threading.Thread(target=do_download, daemon=True).start()
 
 # =========================================
 #           *CREATE PLAYLIST
@@ -1944,6 +2402,9 @@ def select_difficulty(event=None):
             refresh_pop_time_groups()
     difficulty_dropdown.selection_clear()
     difficulty_dropdown.icursor(tk.END)
+    if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
+        value = difficulty_dropdown.get()
+        popout_buttons_by_name["DIFFICULTY DROPDOWN"].set(value)
     save_config()
 
 def refresh_pop_time_groups():
@@ -2202,6 +2663,8 @@ def save_config():
     if not os.path.exists(files_folder):
         os.makedirs(files_folder)
     config = {
+        "title_top_info_txt": title_top_info_txt,
+        "end_session_txt": end_session_txt,
         "playlist": playlist,
         "directory": directory,
         "directory_files": directory_files
@@ -2212,11 +2675,13 @@ def save_config():
 
 def load_config():
     """Function to load configuration"""
-    global directory_files, directory, playlist
+    global directory_files, directory, playlist, title_top_info_txt, end_session_txt
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
                 config = json.load(f)
+            title_top_info_txt = config.get("title_top_info_txt", "")
+            end_session_txt = config.get("end_session_txt", "")
             playlist = config.get("playlist", copy.deepcopy(BLANK_PLAYLIST))
             directory_files = config.get("directory_files", {})
             directory = config.get("directory", "")
@@ -2384,26 +2849,6 @@ def merge_songs_by_slug(base_songs, override_songs):
         else:
             base_songs.append(override_song)  # New song, not found in base
 
-def save_youtube_metadata():
-    """Ensures the metadata folder exists before saving metadata file."""
-    metadata_folder = os.path.dirname(YOUTUBE_METADATA_FILE)  # Get the folder path
-
-    # Create the folder if it does not exist
-    if not os.path.exists(metadata_folder):
-        os.makedirs(metadata_folder)
-
-    with open(YOUTUBE_METADATA_FILE, "w") as f:
-        json.dump(youtube_metadata, f, indent=4)
-
-def load_youtube_metadata():
-    global youtube_metadata
-    if os.path.exists(YOUTUBE_METADATA_FILE):
-        with open(YOUTUBE_METADATA_FILE, "r") as f:
-            youtube_metadata = json.load(f)
-            print("Loaded metadata for " + str(len(youtube_metadata)) + " youtube videos...")
-        return True
-    return False
-
 # =========================================
 #           *SAVE/*LOAD PLAYLISTS
 # =========================================
@@ -2458,11 +2903,13 @@ def load_playlist(index):
     playlist_changed = False
     playlist = data
     update_playlist_name()
-    update_current_index()
     print(f"Loaded playlist: {name}")
     playlist_loaded = True
-    save_config()
     create_first_row_buttons()
+    if playlist.get("infinite"):
+        refresh_pop_time_groups()
+    update_current_index()
+    save_config()
     load(True)
 
 def load(update = False):
@@ -2834,8 +3281,10 @@ def delete_filter(index):
 def filters():
     show_filter_popup()
 
+filter_popup = None
 def show_filter_popup():
     """Opens a properly formatted, scrollable popup for filtering the playlist."""
+    global filter_popup
     if playlist.get("infinite", False):
         playlis = copy.deepcopy(directory_files)
     else:
@@ -2876,9 +3325,23 @@ def show_filter_popup():
             listbox.insert(tk.END, item)
         return listbox
 
+    try:
+        filter_popup.destroy()
+    except:
+        pass
     popup = tk.Toplevel(bg="black")
     popup.title("Filter Playlist")
-    popup.geometry("550x600")  # Double width
+    popup_width = 550
+    popup_height = 600
+    filter_popup = popup
+    # If popout_controls exists, use its position
+    if popout_controls and popout_controls.winfo_exists():
+        popup.update_idletasks()  # Ensure window info is up-to-date
+        x = popout_controls.winfo_x()
+        y = popout_controls.winfo_y()
+        popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+    else:
+        popup.geometry(f"{popup_width}x{popup_height}")
 
     main_frame = tk.Frame(popup, bg=BACKGROUND_COLOR)
     main_frame.pack(fill="both", expand=True)
@@ -3594,7 +4057,6 @@ light_round_answer_length = 8
 light_mode = None
 light_modes = {
     "regular":{
-        "title":"Lightning Round",
         "icon":"🗲",
         "desc":(
             "Opening/Ending starts at a random point.\n"
@@ -3603,19 +4065,18 @@ light_modes = {
         )
     },
     "title":{
-        "title":"Title Lightning Round",
         "icon":"𝕋",
         "length":20,
+        "muted": True,
         "desc":(
-            "You will be shown the title with most letters blanked.\n"
-            "Letters will be revealed over time.\n"
-            "You have 20 seconds to guess.\n\n"
+            "You will need to guess the title as letters are randomly placed in position.\n"
+            "Includes 3 variants. You have 20 seconds to guess.\n\n"
             "1 PT for the first to guess the anime!"
         )
     },
     "frame":{
-        "title":"Frame Lightning Round",
         "icon":"📷",
+        "muted": True,
         "desc":(
             "You will be shown 4 different frames from the Opening/Ending.\n"
             "Each frame will be visible for " + str(light_round_length // 4) + " seconds.\n"
@@ -3624,8 +4085,8 @@ light_modes = {
         )
     },
     "character":{
-        "title":"Character Lightning Round",
         "icon":"👤",
+        "muted": True,
         "desc":(
             "You will be shown 4 characters one by one every " + str(light_round_length // 4) + " seconds.\n"
             "You have " + str(light_round_length) + " seconds to guess.\n\n"
@@ -3633,17 +4094,16 @@ light_modes = {
         )
     },
     "peek":{
-        "title":"Peek Lightning Round",
         "icon":"👀",
+        "muted": True,
         "desc":(
             "Opening/Ending starts at a random point muted.\n"
-            "Only a small part of the screen is shown, and moves over time.\n"
-            "You have " + str(light_round_length) + " seconds to guess.\n\n"
+            "Only a small part of the screen is shown, and changes moves over time.\n"
+            "Includes 3 variants. You have " + str(light_round_length) + " seconds to guess.\n\n"
             "1 PT for the first to guess the anime!"
         )
     },
     "blind":{
-        "title":"Blind Lightning Round",
         "icon":"👁",
         "desc":(
             "Opening/Ending starts at a random point.\n"
@@ -3653,7 +4113,6 @@ light_modes = {
         )
     },
     "mismatch":{
-        "title":"Mismatch Lightning Round",
         "icon":"🔄",
         "desc":(
             "Opening/Ending starts at a random point.\n"
@@ -3663,8 +4122,8 @@ light_modes = {
         )
     },
     "song":{
-        "title":"Song Lightning Round",
         "icon":"🎵",
+        "muted": True,
         "desc":(
             "You will be shown song information for the Opening/Ending.\n"
             "It will be revealed over time, and the song plays the last few seconds.\n"
@@ -3674,8 +4133,8 @@ light_modes = {
     },
     "clues":{
         "length":20,
-        "title":"Clues Lightning Round",
         "icon":"🔍",
+        "muted": True,
         "desc":(
             "You will be shown various stats.\n"
             "You have 20 seconds to guess.\n\n"
@@ -3683,9 +4142,9 @@ light_modes = {
         )
     },
     "synopsis":{
-        "title":"Synopsis Lightning Round",
         "icon":"📰",
         "length":20,
+        "muted": True,
         "desc":(
             "You will be shown a part of the synopsis.\n"
             "It will be revealed word by word over time.\n"
@@ -3695,8 +4154,8 @@ light_modes = {
     },
     "tags":{
         "length":20,
-        "title":"Tags Lightning Round",
         "icon":"🔖",
+        "muted": True,
         "desc":(
             "You will be show detailed tags revealed over time.\n"
             "You have 20 seconds to guess.\n\n"
@@ -3705,8 +4164,8 @@ light_modes = {
     },
     "episodes":{
         "length":20,
-        "title":"Episodes Lightning Round",
         "icon":"📺",
+        "muted": True,
         "desc":(
             "You will be shown 6 episode titles.\n"
             "They will be revealed over time.\n"
@@ -3716,8 +4175,8 @@ light_modes = {
     },
     "names":{
         "length":20,
-        "title":"Names Lightning Round",
         "icon":"🎭",
+        "muted": True,
         "desc":(
             "You will be shown 6 character names.\n"
             "They will be revealed over time.\n"
@@ -3725,8 +4184,60 @@ light_modes = {
             "1 PT for the first to guess the anime!"
         )
     },
+    "c. parts":{
+        "length":12,
+        "icon":"🔧",
+        "muted": True,
+        "desc":(
+            "You will be 4 parts of a character.\n"
+            "They will be revealed over time.\n"
+            "You have " + str(light_round_length) + " seconds to guess.\n\n"
+            "1 PT for the first to guess the character!"
+        )
+    },
+    "c. pixel":{
+        "length":12,
+        "icon":"🟦",
+        "muted": True,
+        "desc":(
+            "You will be a pixelated image of a character.\n"
+            "They will become less pixelated over time.\n"
+            "You have " + str(light_round_length) + " seconds to guess.\n\n"
+            "1 PT for the first to guess the character!"
+        )
+    },
+    "c. reveal":{
+        "length":12,
+        "icon":"🌘",
+        "muted": True,
+        "desc":(
+            "You show a black image of a character.\n"
+            "They will be revealed over time.\n"
+            "You have " + str(light_round_length) + " seconds to guess.\n\n"
+            "1 PT for the first to guess the character!"
+        )
+    },
+    "c. name":{
+        "length":20,
+        "icon":"🔤",
+        "muted": True,
+        "desc":(
+            "You will need to guess the character as letters are randomly placed in position.\n"
+            "Includes 3 variants. You have 20 seconds to guess.\n\n"
+            "1 PT for the first to guess the character!"
+        )
+    },
+    "c. profile":{
+        "length":20,
+        "icon":"📝",
+        "muted": True,
+        "desc":(
+            "You will be shown the gender and description of a character over time.\n"
+            "Image will be revealed in last few seconds. You have 20 seconds to guess.\n\n"
+            "1 PT for the first to guess the character!"
+        )
+    },
     "variety":{
-        "title":"Variety Lightning Round",
         "icon":"🎲",
         "desc":(
             "Plays a dynamic mix of lightning rounds based on popularity.\n"
@@ -3767,7 +4278,7 @@ def toggle_light_mode(type=None):
                 image = Image.open(image_path)
                 image = image.resize((400, 225), Image.LANCZOS)  # Resize if needed
                 image_tk = ImageTk.PhotoImage(image)  # Convert to Tkinter format
-            toggle_coming_up_popup(True, mode.get("title"), mode.get("desc"), image_tk, queue=True)
+            toggle_coming_up_popup(True, f"{light_mode.replace("c.", "Character")} Lightning Round", mode.get("desc"), image_tk, queue=True)
 
 def unselect_light_modes():
     global light_mode, variety_light_mode_enabled, start_light_mode_button
@@ -3827,24 +4338,33 @@ def update_light_round(time):
             start_str = "next"
             if not is_title_window_up():
                 player.set_fullscreen(True)
+                char_answer = copy.copy(character_round_answer)
                 if mismatch_visuals:
                     top_info_data = "MISMATCHED VISUALS:\n" + mismatch_visuals
                 else:
                     top_info_data = None
                 toggle_title_popup(True)
                 set_black_screen(False)
+                set_light_round_number("#" + str(light_round_number))
                 clean_up_light_round()
                 if top_info_data:
                     top_info(top_info_data, 20)
+                if char_answer:
+                    top_info(char_answer[0], width_max=0.55) 
+                    toggle_character_image_overlay(char_answer[1])
             if not light_mode:
                 start_str = "end"
             set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
         else:
-            if light_mode != 'mismatch' and not light_fullscreen_try:
-                light_fullscreen_try = True
-                player.set_fullscreen(False)
-                player.set_fullscreen(True)
             time_left = (light_round_length-(time - light_round_start_time))
+            if time_left <= light_round_length-0.1 and not light_fullscreen_try:
+                light_fullscreen_try = True
+                if light_mode != 'mismatch':
+                    mismatched_player.set_fullscreen(False)
+                    mismatched_player.set_fullscreen(True)
+                else:
+                    player.set_fullscreen(False)
+                    player.set_fullscreen(True)
             if time_left < 1 and light_speed_modifier != 1:
                 light_speed_modifier = 1
                 player.set_rate(light_speed_modifier)
@@ -3890,14 +4410,85 @@ def update_light_round(time):
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval)+starting_letters)
                 set_frame_number(f"{word_num}/{final_count} REVEALS")
                 toggle_title_overlay(get_title_light_string(word_num))
+            elif scramble_overlay_root:
+                interval = len(scramble_overlay_letters) * 0.09
+                final_count = round((5*interval))
+                word_num = min(final_count, int(((light_round_length-time_left)/3)*interval))
+                set_frame_number(f"{word_num}/{final_count} PLACEMENTS")
+                toggle_scramble_overlay(num_letters=word_num)
+            elif swap_overlay_root:
+                interval = len(swap_pairs) * 0.1
+                final_count = round((5*interval))
+                word_num = min(final_count, int(((light_round_length-time_left)/3)*interval))
+                set_frame_number(f"{word_num}/{final_count} SWAPS")
+                toggle_swap_overlay(num_swaps=word_num)
             elif peek_overlay1:
                 gap = get_peek_gap(currently_playing.get("data"))
                 toggle_peek_overlay(direction=peek_light_direction, progress=((light_round_length-time_left)/light_round_length)*100, gap=gap)
+                now_playing_background_music(music_files[current_music_index])
+            elif edge_overlay_box:
+                edge_max = max(15, min(70, (currently_playing.get("data").get('popularity') or 3000)/12))
+                progress = (light_round_length - time_left) / light_round_length
+                block_percent = 100 - (edge_max * progress)  # from 100% to 80%
+                toggle_edge_overlay(block_percent=block_percent)
+            elif grow_overlay_boxes:
+                grow_max = max(20, min(60, (currently_playing.get("data").get('popularity') or 3000)/10))
+                progress = (light_round_length - time_left) / light_round_length
+                block_percent = 100 - (grow_max * progress)  # from 100% to 80%
+                toggle_grow_overlay(block_percent=block_percent, position=grow_position)
                 now_playing_background_music(music_files[current_music_index])
             elif character_overlay_boxes:
                 reveal_num = min(4, (int(light_round_length - (time_left)) // (light_round_length // 4)) + 1)
                 toggle_character_overlay(num_characters=reveal_num)
                 set_frame_number(f"{reveal_num}/{4}")
+            elif character_pixel_overlay:
+                total_steps = len(character_pixel_images)
+                step_num = min(total_steps-1, (int(light_round_length - (time_left)) // (light_round_length // total_steps)))
+                toggle_character_pixel_overlay(step=step_num)
+                set_frame_number(f"{step_num+1}/{total_steps}")
+            elif reveal_image_window:
+                progress = (light_round_length - time_left) / light_round_length
+                progress = min(max(progress, 0.0), 1.0)
+
+                # Define how much each quarter contributes to the total reveal
+                # These should sum to 1.0
+                quarter_weights = [0.1, 0.15, 0.20, 0.50]
+
+                # Determine current quarter and interpolate within it
+                quarter = int(progress * 4)
+                quarter_progress = (progress * 4) - quarter
+
+                if quarter >= 4:
+                    eased = 1.0
+                else:
+                    eased = sum(quarter_weights[:quarter]) + quarter_weights[quarter] * quarter_progress
+
+                # Final block percent (starting at 100%, ending at 50%)
+                block_percent = 100 - (95 * eased)
+                toggle_character_reveal_overlay(percent=block_percent / 100, destroy=False)
+            elif profile_overlay_window:
+                bio_text = character_round_answer[3]
+                total_words = len(bio_text.split())
+
+                progress = (light_round_length - time_left) / light_round_length
+
+                # Reveal bio over the first 10 seconds
+                max_bio_time = 12
+                if time_left > light_round_length - max_bio_time:
+                    partial = 1 - ((time_left - (light_round_length - max_bio_time)) / max_bio_time)
+                    words_to_show = int(partial * total_words)
+                else:
+                    words_to_show = total_words
+
+                # Show image in last 5 seconds
+                image_countdown = max(0, int(time_left - 3))
+
+                # Call the toggle
+                toggle_character_profile_overlay(word_count=words_to_show, image_countdown=image_countdown)
+                if image_countdown > 0:
+                    set_frame_number(f"IMAGE IN {image_countdown}...")
+                else:
+                    set_frame_number()
             elif tag_cloud_tags:
                 starting_tags = 1
                 final_count = len(tag_cloud_tags)
@@ -3918,66 +4509,93 @@ def update_light_round(time):
                 reveal_num = min(6, (int(light_round_length - time_left) // (light_round_length // 6)) + 1)
                 toggle_episode_overlay(reveal_num)
                 set_frame_number(f"{reveal_num}/{6}")
-            set_countdown(round(time_left/light_speed_modifier))
+            if edge_overlay_box:
+                set_countdown(round(time_left/light_speed_modifier), position="center")
+            else:
+                set_countdown(round(time_left/light_speed_modifier))
     if light_mode and time < 1:
         toggle_coming_up_popup(False, "Lightning Round")
         if not light_round_started:
             light_round_started = True
-            if light_mode == 'regular' or light_mode == 'peek':
+            if light_mode in ['regular', 'peek']:
                 root.after(500, set_black_screen, False)
             if light_mode in ['regular', 'blind'] and light_speed_modifier == 1:
                 popularity = currently_playing.get("data", {}).get("popularity", 1000) or 3000
                 if (popularity <= 100 and random.randint(1, 5) == 1) or (popularity <= 250 and random.randint(1, 10) == 1):
                     light_speed_modifier = 2
                     player.set_rate(light_speed_modifier)
-                    light_round_length = light_round_length*light_speed_modifier
+                    light_round_length = light_round_length * light_speed_modifier
                     set_frame_number(f"x{light_speed_modifier} SPEED")
             if light_round_start_time is None:
                 light_round_start_time = get_light_round_time()
+            if light_modes[light_mode].get("muted"):
+                toggle_mute(True)
             if light_mode == 'blind':
                 set_progress_overlay(0, light_round_length*100)
-            elif light_mode in ['clues', 'song', 'synopsis', 'title', 'peek', 'character', 'tags', 'episodes', 'names']:
-                player.audio_set_mute(True)
-                play_background_music(True)
-                if light_mode == 'clues':
-                    toggle_clues_overlay()
-                elif light_mode == 'song':
-                    toggle_song_overlay(show_title=True, show_artist=False, show_theme=False, show_music=False)
-                elif light_mode == 'synopsis':
-                    pick_synopsis()
-                    toggle_synopsis_overlay(text=get_light_synopsis_string(words = 1))
-                elif light_mode == 'title':
-                    set_title_light_text()
-                    toggle_title_overlay(get_title_light_string(min(5, max(1, len(title_light_letters) // 5))))
-                    set_frame_number(f"2/{min(7, len(title_light_string))}")
-                    top_info("MUST SAY FULL TITLE")
-                elif light_mode == 'peek':
+            elif light_mode == 'clues':
+                toggle_clues_overlay()
+            elif light_mode == 'song':
+                toggle_song_overlay(show_title=True, show_artist=False, show_theme=False, show_music=False)
+            elif light_mode == 'synopsis':
+                pick_synopsis()
+                toggle_synopsis_overlay(text=get_light_synopsis_string(words = 1))
+            elif light_mode == 'title':
+                start_title_round()
+                top_info("MUST SAY FULL TITLE")
+            elif light_mode == 'peek':
+                send_scoreboard_command("hide")
+                peek_mode = get_next_peek_mode()
+                if peek_mode == 'edge':
+                    toggle_edge_overlay()
+                elif peek_mode == 'grow':
+                    set_grow_position()
+                    toggle_grow_overlay(position=grow_position)
+                elif peek_mode == 'slice':
                     choose_peek_direction()
                     toggle_peek_overlay()
-                elif light_mode == 'character':
-                    get_character_round_characters()
+            elif light_mode == 'character':
+                get_character_round_characters()
+                toggle_character_overlay(num_characters=1)
+                top_info("CHARACTERS")
+            elif 'c.' in light_mode:
+                top_info("GUESS THE CHARACTER")
+                min_desc = 0
+                if light_mode == 'c. profile':
+                    min_desc = 120
+                get_character_round_image(types=get_char_types_by_popularity(), min_desc_length=min_desc)
+                if light_mode == 'c. parts':
+                    get_char_parts_round_character()
                     toggle_character_overlay(num_characters=1)
-                    top_info("CHARACTERS")
-                elif light_mode == 'tags':
-                    set_cloud_tags()
-                    top_info("TAGS")
-                    toggle_tag_cloud_overlay(1)
-                elif light_mode == 'episodes':
-                    set_light_episodes()
-                    toggle_episode_overlay(1)
-                    top_info("EPISODE TITLES")
-                elif light_mode == 'names':
-                    light_name_overlay = True
-                    set_light_names()
-                    toggle_episode_overlay(1)
-                    top_info("CHARACTER NAMES")
-                pass
+                elif light_mode == 'c. pixel':
+                    generate_pixelation_steps()
+                    toggle_character_pixel_overlay()
+                elif light_mode == 'c. reveal':
+                    toggle_character_reveal_overlay()
+                elif light_mode == 'c. profile':
+                    toggle_character_profile_overlay()
+                elif light_mode == 'c. name':
+                    top_info("MUST SAY FULL NAME")
+                    start_title_round()
+            elif light_mode == 'tags':
+                set_cloud_tags()
+                top_info("TAGS")
+                toggle_tag_cloud_overlay(1)
+            elif light_mode == 'episodes':
+                set_light_episodes()
+                toggle_episode_overlay(1)
+                top_info("EPISODE TITLES")
+            elif light_mode == 'names':
+                light_name_overlay = True
+                set_light_names()
+                toggle_episode_overlay(1)
+                top_info("CHARACTER NAMES")
             if light_mode == 'mismatch':
                 media = instance.media_new(directory_files.get(get_mismatched_theme()))
                 mismatched_player.set_media(media)
                 mismatched_player.play()
                 top_info("MISMATCHED VISUALS")
                 set_frame_number("GUESS BY MUSIC ONLY")
+            append_lightning_history()
         player.set_time(int(float(light_round_start_time))*1000)
         if light_mode == 'mismatch':
             mismatched_player.set_time(int(float(light_round_start_time))*1000)
@@ -3987,30 +4605,57 @@ def update_light_round(time):
             player.set_fullscreen(False)
             player.set_fullscreen(True)
         set_countdown(light_round_length)
-        set_light_round_number("#" + str(light_round_number))
+        if light_mode != 'peek':
+            set_light_round_number("#" + str(light_round_number))
+        else:
+            set_light_round_number()
+
+def start_title_round():
+    title_mode = get_next_title_mode(get_base_title())
+    if title_mode == 'scramble':
+        toggle_scramble_overlay()
+    elif title_mode == 'swap':
+        toggle_swap_overlay()
+    else:
+        set_title_light_text()
+        toggle_title_overlay(get_title_light_string(min(5, max(1, len(title_light_letters) // 5))))
+        set_frame_number(f"2/{min(7, len(title_light_string))}")
+
+def get_char_types_by_popularity():
+    popularity = currently_playing.get("data", {}).get("popularity", 1000) or 3000
+    if popularity <= 100:
+        char_options = ['m','s','a']
+    elif popularity <= 250:
+        char_options = ['m','s']
+    else:
+        char_options = ['m']
+    return char_options
 
 def clean_up_light_round():
-    global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay, light_fullscreen_try
+    global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay, light_muted, light_fullscreen_try, character_round_answer
     light_fullscreen_try = False
     mismatched_player.stop()
     mismatched_player.set_media(None)  # Reset the media
     mismatch_visuals = None
+    character_round_answer = None
     light_name_overlay = False
+    light_muted = False
     character_round_characters = []
     tag_cloud_tags = []
     light_episode_names = []
     light_speed_modifier = 1
     player.set_rate(light_speed_modifier)
-    for overlay in [set_progress_overlay, toggle_clues_overlay, toggle_song_overlay, toggle_synopsis_overlay, toggle_title_overlay, 
-                    toggle_peek_overlay, toggle_character_overlay, toggle_tag_cloud_overlay, toggle_episode_overlay]:
+    for overlay in [set_progress_overlay, toggle_clues_overlay, toggle_song_overlay, toggle_synopsis_overlay, toggle_title_overlay, toggle_scramble_overlay, toggle_swap_overlay, 
+                    toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay, toggle_character_overlay, toggle_tag_cloud_overlay, toggle_episode_overlay, toggle_character_image_overlay, 
+                    toggle_character_pixel_overlay, toggle_character_reveal_overlay, toggle_character_profile_overlay]:
         overlay(destroy=True)
     for info in [set_frame_number, top_info]:
         info()
     if not disable_video_audio:
-        player.audio_set_mute(False)
+        toggle_mute(False, True)
     if black_overlay:
         black_overlay.attributes("-topmost", True)
-    play_background_music(False)
+    send_scoreboard_command("show")
 
 def light_round_transition():
     global video_stopped
@@ -4034,17 +4679,23 @@ def get_light_bg_color():
 last_round = None
 variety_light_mode_enabled = False
 variety_mode_cooldowns = {
-    "song":     {"min": 10, "max": 20, "max_limit": 100},
+    "song":     {"min": 10, "max": 25, "max_limit": 100, "rnd":10},
     "clues":    {"min": 10, "max": 20, "max_limit": 250, "repeat":40},
-    "tags":     {"min": 15, "max": 20, "max_limit": 500, "repeat":40},
-    "episodes": {"min": 10, "max": 20, "max_limit": 500, "repeat":40},
+    "c. name":  {"min": 10, "max": 30, "max_limit": 250, "repeat":40},
+    "tags":     {"min": 15, "max": 25, "max_limit": 500, "repeat":40},
+    "episodes": {"min": 10, "max": 25, "max_limit": 500, "repeat":40},
+    "names":    {"min": 10, "max": 25, "max_limit": 500, "repeat":40},
+    "c. parts": {"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":10},
+    "c. pixel": {"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":0},
+    "c. reveal":{"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":20},
+    "c. profile":{"min": 10, "max": 30, "max_limit": 750, "repeat":40, "rnd":15},
     "names":    {"min": 10, "max": 20, "max_limit": 500, "repeat":40},
     "blind":    {"min": 3, "max": 8, "max_limit": 750},
     "mismatch": {"min": 3, "max": 8, "max_limit": 750},
-    "title":    {"min": 4, "max": 7, "max_limit": 1000, "repeat":80},
-    "synopsis": {"min": 4, "max": 7, "max_limit": 1000, "repeat":80},
+    "title":    {"min": 4, "max": 6, "max_limit": 1000, "repeat":80},
+    "synopsis": {"min": 4, "max": 8, "max_limit": 1000, "repeat":80},
     "character":{"min": 2, "max": 7, "repeat":80},
-    "peek":     {"min": 3, "max": 10},
+    "peek":     {"min": 3, "max": 8},
     "frame":    {"min": 4, "max": 20},
 }
 
@@ -4052,7 +4703,9 @@ def append_lightning_history():
     data = currently_playing.get("data", {})
     mode_limits = variety_mode_cooldowns.get(light_mode)
     if mode_limits and mode_limits.get("repeat"):
-        if light_mode == "title":
+        if "c." in light_mode:
+            append = character_round_answer[0]
+        elif light_mode == "title":
             append = get_base_title()
         else:
             append = data.get("mal")
@@ -4063,11 +4716,22 @@ def append_lightning_history():
 
 def check_recent_history(mode):
     mode_limits = variety_mode_cooldowns.get(mode)
-    if mode_limits.get("repeat"):
-        if light_mode == "title":
+    if mode_limits and mode_limits.get("repeat"):
+        if "c." in mode:
+            data = currently_playing.get("data", {})
+            history = playlist.get("lightning_history", {}).get(mode, [])
+            valid_types = get_char_types_by_popularity()
+            for char in data.get("characters", []):
+                role = char[0]
+                name = char[1]
+                if role in valid_types and name not in history:
+                    return False  # Found a character not in history
+            return True  # All valid characters are in history
+        elif mode == "title":
             append_check = get_base_title()
         else:
             append_check = currently_playing.get("data", {}).get("mal")
+
         if append_check:
             return append_check in playlist.get("lightning_history", {}).get(mode, [])
     return False
@@ -4111,7 +4775,7 @@ def set_variety_light_mode():
                 ["frame"] +
                 ["blind"] * 2 +
                 ["mismatch"] * 2 +
-                ["clues", "song", "character", "synopsis", "title", "tags", "episodes", "names"] +
+                ["clues", "song", "character", "synopsis", "title", "tags", "episodes", "names", "c. pixel", "c. reveal", "c. parts", "c. profile", "c. name"] +
                 ["peek"] * 2
             )
         else:
@@ -4120,12 +4784,12 @@ def set_variety_light_mode():
                 ["blind"] * 2 +
                 ["mismatch"] * 2 +
                 ["clues"] * 2 +
-                ["song", "synopsis", "title", "character", "peek", "tags", "episodes", "names"]
+                ["song", "synopsis", "title", "character", "peek", "tags", "episodes", "names", "c. pixel", "c. reveal", "c. parts", "c. profile", "c. name"]
             )
     elif popularity <= 250:
         if is_op:
             round_options = (
-                ["regular", "frame"] +
+                ["regular", "frame", "c. pixel", "c. reveal", "c. parts", "c. profile", "c. name"] +
                 ["blind"] * 2 +
                 ["mismatch"] * 2 +
                 ["clues", "song", "character", "synopsis", "title", "tags", "episodes", "names"] +
@@ -4133,7 +4797,7 @@ def set_variety_light_mode():
             )
         else:
             round_options = (
-                ["regular", "frame"] +
+                ["regular", "frame", "c. pixel", "c. reveal", "c. parts", "c. profile", "c. name"] +
                 ["frame"] +
                 ["blind", "mismatch"] +
                 ["clues", "synopsis", "character", "tags", "episodes", "names"] +
@@ -4142,7 +4806,7 @@ def set_variety_light_mode():
             )
     elif popularity <= 500:
         round_options = (
-            ["regular"] +
+            ["regular", "c. pixel", "c. reveal", "c. parts", "c. profile", "c. name"] +
             ["frame"] * 2 +
             ["blind"] * 2 +
             ["mismatch"] * 2 +
@@ -4155,7 +4819,7 @@ def set_variety_light_mode():
             ["frame"] * 2 +
             ["blind"] * 3 +
             ["character"] * 2 +
-            ["mismatch", "synopsis", "title", "peek", "tags", "episodes", "names"]
+            ["mismatch", "synopsis", "title", "peek", "tags", "episodes", "names", "c. pixel", "c. reveal", "c. parts", "c. profile", "c. name"]
         )
     elif popularity <= 1000:
         if is_op:
@@ -4176,14 +4840,14 @@ def set_variety_light_mode():
         round_options = (
             ["regular"] * 5 +
             ["frame"] * 3 +
-            ["blind", "title", "peek"] + 
-            ["character"] * 2
+            ["blind", "peek"] + 
+            ["character", "title"] * 2
         )
     else:
         round_options = (
             ["regular"] * 4 +
             ["frame"] * 3 +
-            ["peek"] * 2 +
+            ["peek"] * 3 +
             ["character"] * 2
         )
 
@@ -4204,6 +4868,14 @@ def set_variety_light_mode():
         round_options = [r for r in round_options if r != "episodes"]
     if len(data.get("characters", [])) < 6:
         round_options = [r for r in round_options if r != "names"]
+    if not data.get("characters"):
+        round_options = [r for r in round_options if r != "c. parts"]
+        round_options = [r for r in round_options if r != "c. reveal"]
+        round_options = [r for r in round_options if r != "c. pixel"]
+        round_options = [r for r in round_options if r != "c. profile"]
+        round_options = [r for r in round_options if r != "c. name"]
+    elif not has_char_descriptions(data.get("characters"), 120, types=get_char_types_by_popularity()):
+        round_options = [r for r in round_options if r != "c. profile"]
 
     # Remove last round from options to avoid repeats
     round_options = [r for r in round_options if r != last_round]
@@ -4251,8 +4923,11 @@ def test_variety_distrbution(event=None):
     mode_counts = {}
     testing_variety = True
     while i < 1000 and playlist["current_index"]+i < len(playlist["playlist"]):
-        filename = playlist[playlist["current_index"]+i]
-        data = get_metadata(filename, fetch=True)
+        filename = playlist["playlist"][playlist["current_index"]+i]
+        data = get_metadata(filename)
+        if not data:
+            i += 1
+            continue
         currently_playing = {
             "type":"theme",
             "filename":filename,
@@ -4665,6 +5340,38 @@ def measure_text_height(text, wraplength, font=("Arial", 60), justify="left"):
 #          *TITLE LIGHTNING ROUND
 # =========================================
 
+ALL_TITLE_MODES = ["hangman", "scramble", "swap"]
+available_title_modes = []
+
+def get_next_title_mode(title_text):
+    global available_title_modes
+
+    # Helper: count lines
+    def get_line_count():
+        screen_width = root.winfo_screenwidth()
+        max_width = screen_width * 0.7 - 40
+        lines = get_title_text_lines(title_text, max_width, font=("Courier New", 80, "bold"))
+        return len(lines)
+
+    # If empty, reshuffle
+    if not available_title_modes:
+        available_title_modes = random.sample(ALL_TITLE_MODES, k=len(ALL_TITLE_MODES))
+
+    # Try picking a valid mode
+    for _ in range(len(available_title_modes)):
+        mode = available_title_modes.pop(0)
+
+        # Check if it's allowed
+        if mode == "scramble" and get_line_count() > 2:
+            # Scramble mode disallowed for long titles — skip
+            available_title_modes.append(mode)
+            continue
+
+        return mode
+
+    # Fallback: all modes invalid (e.g., all were scramble and too long)
+    return "hangman"
+
 title_light_letters = None
 title_light_string = None
 def set_title_light_text():
@@ -4675,6 +5382,8 @@ def set_title_light_text():
         random.shuffle(title_light_letters)
 
 def get_base_title():
+    if character_round_answer:
+        return character_round_answer[0]
     data = currently_playing.get("data", {})
     title = data.get('eng_title') or data.get("title")
     for p in [': ',' ']:
@@ -4709,75 +5418,538 @@ def get_title_light_string(letters=0):
     return revealed_title
 
 title_overlay = None
-title_label_text = None
+title_overlay_canvas = None
+title_overlay_items = []
+title_overlay_letters = []
+
 def toggle_title_overlay(title_text=None, destroy=False):
-    """Displays an overlay with the blanked or masked anime title."""
-    global title_overlay, title_label_text
+    """Displays an overlay with the masked anime title using persistent underscores and letter overlays."""
+    global title_overlay, title_overlay_canvas, title_overlay_items, title_overlay_letters
 
     if destroy:
         if title_overlay:
-            screen_width = root.winfo_screenwidth()
-            animate_window(title_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+            title_overlay.destroy()
         title_overlay = None
+        title_overlay_canvas = None
+        title_overlay_items = []
+        title_overlay_letters = []
         return
 
+    if not title_text:
+        return
+
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    overlay_width = round(screen_width * 0.7)
+
+    title_font = ("Courier New", 80, "bold")
+    lines = get_title_text_lines(title_text, overlay_width - 40, font=title_font)
+    overlay_height = len(lines) * 100 + 320
+
+    x = (screen_width - overlay_width) // 2
+    y = (screen_height - overlay_height) // 2
+
+    spacing = 64
+
     if title_overlay is None:
+        title_overlay_items = []
+        title_overlay_letters = []
+
         title_overlay = tk.Toplevel(root)
         title_overlay.overrideredirect(True)
         title_overlay.attributes("-topmost", True)
         title_overlay.attributes("-alpha", 0.9)
         title_overlay.configure(bg="black")
+        title_overlay.geometry(f"{screen_width}x{screen_height}+0+0")
 
+        title_overlay_canvas = tk.Canvas(title_overlay, bg="pink", highlightthickness=0)
+        title_overlay_canvas.pack(fill="both", expand=True)
+        title_overlay.attributes("-transparentcolor", "pink")
+
+        # Box and label
+        title_overlay_canvas.create_rectangle(
+            x, y, x + overlay_width, y + overlay_height,
+            fill="black", outline="white", width=4
+        )
+        title_text = "TITLE:"
+        if character_round_answer:
+            title_text = "CHARACTER NAME:"
+        title_overlay_canvas.create_text(
+            x + 30, y + 30,
+            text=title_text, font=("Arial", 70, "bold", "underline"),
+            fill="white", anchor="nw"
+        )
+
+        line_y = y + 270
+        idx = 0
+        for line in lines:
+            total_width = len(line) * spacing
+            line_x = screen_width // 2 - total_width // 2 + spacing // 2
+            for char in line:
+                if char == " ":
+                    title_overlay_items.append(None)
+                    title_overlay_letters.append(None)
+                    line_x += spacing
+                    continue
+
+                # Underscore (always shown)
+                underscore = title_overlay_canvas.create_text(
+                    line_x, line_y,
+                    text="_", font=("Courier New", 65),
+                    fill="white", anchor="center"
+                )
+                title_overlay_items.append(underscore)
+
+                # Letter (initially empty)
+                letter = title_overlay_canvas.create_text(
+                    line_x, line_y,
+                    text="", font=title_font,
+                    fill="white", anchor="center"
+                )
+                title_overlay_letters.append(letter)
+
+                line_x += spacing
+                idx += 1
+            line_y += 100
+
+    # Update letters on top of underscores
+    flat_chars = [c for c in title_text if c != " "]
+    i = 0
+    for idx, letter_item in enumerate(title_overlay_letters):
+        if letter_item is None:
+            continue
+        char = flat_chars[i] if i < len(flat_chars) else ""
+        if char == 'ˍ':
+            char = " "
+        title_overlay_canvas.itemconfig(letter_item, text=char)
+        i += 1
+
+# =========================================
+#          *SCRAMBLE LIGHTNING ROUND
+# =========================================
+
+scramble_overlay_letters = []
+scramble_overlay_targets = []
+scramble_overlay_root = None
+scramble_title_text = ""
+scramble_title_canvas = None
+scramble_letter_objects = []
+scramble_animating = False
+scramble_title_text_items = []
+scramble_letter_placed_indices = set()
+
+def toggle_scramble_overlay(num_letters=0, destroy=False):
+    global scramble_overlay_letters, scramble_overlay_targets
+    global scramble_overlay_root, scramble_title_text, scramble_title_canvas
+    global scramble_letter_objects, scramble_animating
+    global scramble_title_text_items, scramble_letter_placed_indices
+
+    if destroy:
+        scramble_animating = False
+        if scramble_overlay_root:
+            scramble_overlay_root.destroy()
+        scramble_overlay_letters.clear()
+        scramble_overlay_targets.clear()
+        scramble_letter_objects.clear()
+        scramble_title_text_items.clear()
+        scramble_letter_placed_indices.clear()
+        scramble_overlay_root = None
+        scramble_title_canvas = None
+        return
+
+    if not scramble_overlay_root:
+        scramble_title_text = get_base_title()
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
         title_font = ("Courier New", 80, "bold")
+        # Split title into lines
+        lines = get_title_text_lines(scramble_title_text, screen_w * 0.7 - 40, font=title_font)
+        overlay_width = round(screen_w * 0.7)
+        # Adjust vertical spacing: line height * number of lines + padding
+        overlay_height = len(lines) * 100 + 320
+        x = (screen_w - overlay_width) // 2
+        y = (screen_h - overlay_height) // 2
+        box_top = y
+        box_bottom = y + overlay_height
 
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        overlay_width = round(screen_width * 0.7)
-        overlay_height = measure_text_height(title_text, overlay_width - 40, font=title_font, justify="center")+300
+        # Transparent root
+        scramble_overlay_root = tk.Toplevel()
+        scramble_overlay_root.overrideredirect(True)
+        scramble_overlay_root.attributes("-topmost", True)
+        transparent_color = "pink"
+        scramble_overlay_root.configure(bg=transparent_color)
+        scramble_overlay_root.attributes("-transparentcolor", transparent_color)
+        scramble_overlay_root.geometry(f"{screen_w}x{screen_h}+0+0")
 
-        x = (screen_width - overlay_width) // 2
-        y = (screen_height - overlay_height) // 2
+        scramble_title_canvas = tk.Canvas(scramble_overlay_root, bg=transparent_color, highlightthickness=0)
+        scramble_title_canvas.pack(fill="both", expand=True)
 
-        title_overlay.geometry(f"{overlay_width}x{overlay_height}+{-screen_width}+{y}")
-        title_overlay.update_idletasks()
+        full_overlay_height = int(screen_h*0.7)
+        full_y = (screen_h - full_overlay_height) // 2
+        # Draw box and label
+        scramble_title_canvas.create_rectangle(
+            # x, y, x + overlay_width, y + overlay_height,
+            x, full_y, x + overlay_width, full_y + full_overlay_height,
+            fill="black", outline="white", width=4
+        )
+        title_text = "TITLE:"
+        if character_round_answer:
+            title_text = "CHARACTER NAME:"
+        scramble_title_canvas.create_text(
+            # x + 30, y + 40,
+            x + 30, full_y + 30,
+            text=title_text,
+            font=("Arial", 70, "bold", "underline"),
+            fill="white",
+            anchor="nw"
+        )
 
-        # Frame with border
-        frame = tk.Frame(title_overlay, bg="black", padx=20, pady=20, highlightbackground="white", highlightthickness=4)
-        frame.pack(fill="both", expand=True)
+        scramble_title_text_items.clear()
+        scramble_letter_placed_indices.clear()
 
-        # Title
-        title_label = tk.Label(frame, text="TITLE:", font=("Arial", 70, "bold", "underline"),
-                               fg="white", bg="black", anchor="w", justify="left")
-        title_label.pack(anchor="w", pady=(0, 10))
+        spacing = 64  # Increased spacing to avoid overlap
+        line_y = y + 270  # Moved text start down 20px for better centering
+        target_coords = {}
 
-        # Text display
-        title_label_text = tk.Label(frame, text=title_text or "", font=title_font,
-                                    fg="white", bg="black", wraplength=overlay_width - 40,
-                                    justify="center", anchor="center")
-        title_label_text.pack(fill="both", expand=True)
+        for line in lines:
+            line_chars = [c for c in line]
+            total_width = ((len(line_chars)) * spacing)
+            line_x = screen_w // 2 - total_width // 2
+            line_x += spacing // 2
+            for c in line_chars:
+                if c == " ":
+                    line_x += spacing
+                    continue
+                text_item = scramble_title_canvas.create_text(
+                    line_x, line_y,
+                    text="_", font=("Courier New", 65), fill="white", anchor="center"
+                )
+                target_coords[len(scramble_title_text_items)] = (line_x, line_y)
+                scramble_title_text_items.append(text_item)
+                line_x += spacing
+            line_y += 100
 
-        animate_window(title_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)
+        # Create floating letters
+        margin_x = int(screen_w * 0.18)
+        top_range = (int(screen_h*0.3), box_top + 150)  # start 100px from top, end 150px above box top
+        bottom_range = (box_bottom, screen_h - int(screen_h*0.2))  # start 100px below box bottom, leave 150px at bottom
 
-    elif title_text is not None and title_label_text:
-        title_label_text.config(text=title_text)
+        floating_letters = [{"char": c, "index": i} for i, c in enumerate(scramble_title_text.replace(" ", "")) if c != " " and i in target_coords]
+        random.shuffle(floating_letters)
+
+        scramble_overlay_letters.clear()
+        scramble_overlay_targets.clear()
+        scramble_letter_objects.clear()
+
+        letter_positions = []  # Store positions of already placed letters
+        min_distance = 80      # Minimum allowed distance between letters
+        
+        for i, letter in enumerate(floating_letters):
+            idx = letter["index"]
+            tx, ty = target_coords[idx]
+
+            # Try up to N times to find a non-colliding position
+            for _ in range(50):
+                if i % 2 == 0:
+                    start_y = random.randint(*top_range)
+                else:
+                    start_y = random.randint(*bottom_range)
+                start_x = random.randint(margin_x, screen_w - margin_x)
+
+                # Check if far enough from all others
+                too_close = False
+                for (px, py) in letter_positions:
+                    if abs(start_x - px) < min_distance and abs(start_y - py) < min_distance:
+                        too_close = True
+                        break
+
+                if not too_close:
+                    break  # Found a valid position
+
+            # Save this position to the list
+            letter_positions.append((start_x, start_y))
+
+            wiggle_x = random.choice([-1, 1]) * random.randint(1, 2)
+            wiggle_y = random.choice([-1, 1]) * random.randint(1, 2)
+
+            # Draw main letter (white) on top
+            label = scramble_title_canvas.create_text(
+                start_x, start_y, text=letter["char"],
+                font=title_font, fill="white"
+            )
+            scramble_title_canvas.tag_raise(label)
+
+            scramble_overlay_letters.append({
+                "item": label,
+                "char": letter["char"],
+                "index": idx,
+                "target": (tx, ty),
+                "wiggle": (wiggle_x, wiggle_y)
+            })
+            scramble_overlay_targets.append(idx)
+            scramble_letter_objects.append(label)
+
+        scramble_animating = True
+        animate_scramble_letters()
+
+    # Move into place
+    for i, letter in enumerate(scramble_overlay_letters):
+        if i < num_letters:
+            if letter["index"] not in scramble_letter_placed_indices:
+                scramble_letter_placed_indices.add(letter["index"])
+                # scramble_title_canvas.itemconfig(
+                #     scramble_title_text_items[letter["index"]],
+                #     text="ˍ"
+                # )
+            x0, y0 = scramble_title_canvas.coords(letter["item"])
+            x1, y1 = letter["target"]
+            new_x = x0 + (x1 - x0) * 0.2
+            new_y = y0 + (y1 - y0) * 0.2
+            scramble_title_canvas.coords(letter["item"], new_x, new_y)
+
+def animate_scramble_letters():
+    if not scramble_animating:
+        return
+    for letter in scramble_overlay_letters:
+        if player.is_playing() and letter["index"] not in scramble_letter_placed_indices:
+            wiggle_x, wiggle_y = letter["wiggle"]
+            scramble_title_canvas.move(letter["item"], wiggle_x, wiggle_y)
+            letter["wiggle"] = (-wiggle_x, -wiggle_y)
+    scramble_overlay_root.after(200, animate_scramble_letters)
+
+def get_title_text_lines(text, max_width, font=("Courier New", 80, "bold")):
+    from tkinter.font import Font
+    f = Font(family=font[0], size=font[1], weight=font[2])
+    words = text.split(" ")
+    lines = []
+    current_line = ""
+    for word in words:
+        test_line = f"{current_line} {word}".strip()
+        if f.measure(test_line) <= max_width:
+            current_line = test_line
+        else:
+            lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+# =========================================
+#          *SWAP LIGHTNING ROUND
+# =========================================
+
+swap_overlay_root = None
+swap_overlay_canvas = None
+swap_title_text = ""
+swap_title_items = []
+swap_pairs = []
+swap_animating = False
+swap_completed = 0
+swap_title_font = ("Courier New", 80, "bold")
+swap_overlay_letters = []
+
+def toggle_swap_overlay(num_swaps=0, destroy=False):
+    global swap_overlay_root, swap_overlay_canvas
+    global swap_title_text, swap_title_items, swap_pairs
+    global swap_animating, swap_completed, swap_overlay_letters
+
+    if destroy:
+        swap_animating = False
+        if swap_overlay_root:
+            swap_overlay_root.destroy()
+        swap_overlay_root = None
+        swap_overlay_canvas = None
+        swap_title_items.clear()
+        swap_overlay_letters.clear()
+        swap_pairs.clear()
+        return
+
+    if not swap_overlay_root:
+        swap_title_text = get_base_title()
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+
+        lines = get_title_text_lines(swap_title_text, screen_w * 0.7 - 40, font=swap_title_font)
+        overlay_width = round(screen_w * 0.7)
+        overlay_height = len(lines) * 100 + 320
+        x = (screen_w - overlay_width) // 2
+        y = (screen_h - overlay_height) // 2
+
+        swap_overlay_root = tk.Toplevel()
+        swap_overlay_root.overrideredirect(True)
+        swap_overlay_root.attributes("-topmost", True)
+        transparent_color = "pink"
+        swap_overlay_root.configure(bg=transparent_color)
+        swap_overlay_root.attributes("-transparentcolor", transparent_color)
+        swap_overlay_root.geometry(f"{screen_w}x{screen_h}+0+0")
+
+        swap_overlay_canvas = tk.Canvas(swap_overlay_root, bg=transparent_color, highlightthickness=0)
+        swap_overlay_canvas.pack(fill="both", expand=True)
+
+        # Draw box and title
+        full_overlay_height = int(screen_h * 0.7)
+        full_y = (screen_h - full_overlay_height) // 2
+
+        swap_overlay_canvas.create_rectangle(
+            x, y, x + overlay_width, y + overlay_height,
+            fill="black", outline="white", width=4
+        )
+        title_text = "TITLE:"
+        if character_round_answer:
+            title_text = "CHARACTER NAME:"
+        swap_overlay_canvas.create_text(
+            x + 30, y + 30,
+            text=title_text, font=("Arial", 70, "bold", "underline"),
+            fill="white", anchor="nw"
+        )
+
+        swap_title_items.clear()
+        swap_overlay_letters.clear()
+
+        spacing = 64
+        line_y = y + 270
+        target_coords = {}
+
+        clean_indices = []  # Valid character indices (not spaces)
+
+        for line in lines:
+            total_width = len(line) * spacing
+            line_x = screen_w // 2 - total_width // 2 + spacing // 2
+            for c in line:
+                if c == " ":
+                    line_x += spacing
+                    continue
+                idx = len(swap_title_items)
+                text_item = swap_overlay_canvas.create_text(
+                    line_x, line_y,
+                    text="_", font=("Courier New", 65),
+                    fill="white", anchor="center"
+                )
+                target_coords[idx] = (line_x, line_y)
+                swap_title_items.append(text_item)
+                clean_indices.append(idx)
+                line_x += spacing
+            line_y += 100
+
+        # Generate swap pairs
+        random.shuffle(clean_indices)
+
+        skip_index = None
+        if len(clean_indices) % 2 != 0:
+            skip_index = random.choice(clean_indices)
+            clean_indices.remove(skip_index)
+
+        swap_pairs.clear()
+        for i in range(0, len(clean_indices), 2):
+            swap_pairs.append((clean_indices[i], clean_indices[i + 1]))
+
+        # Create scrambled letters based on swapped pairs
+        scrambled = list("_" * len(swap_title_items))
+        base_chars = [c for c in swap_title_text if c != " "]
+
+        for idx, char in enumerate(base_chars):
+            scrambled[idx] = char
+
+        for a, b in swap_pairs:
+            scrambled[a], scrambled[b] = scrambled[b], scrambled[a]
+
+        for i, char in enumerate(scrambled):
+            if i not in target_coords:
+                continue
+            tx, ty = target_coords[i]
+            letter_item = swap_overlay_canvas.create_text(
+                tx, ty, text=char, font=swap_title_font, fill="white", anchor="center"
+            )
+            swap_overlay_letters.append({
+                "item": letter_item,
+                "char": char,
+                "index": i,
+                "pos": (tx, ty),
+                "moving": False
+            })
+
+        swap_completed = 0
+        swap_animating = True
+
+    # Animate next swap
+    if swap_completed < num_swaps and swap_completed < len(swap_pairs):
+        a, b = swap_pairs[swap_completed]
+        item_a = next(l for l in swap_overlay_letters if l["index"] == a)
+        item_b = next(l for l in swap_overlay_letters if l["index"] == b)
+        animate_swap_letters(item_a, item_b)
+        swap_completed += 1
+
+def animate_swap_letters(letter_a, letter_b):
+    steps = 20
+    arc_height = 40
+    step = 0
+
+    x0, y0 = letter_a["pos"]
+    x1, y1 = letter_b["pos"]
+
+    def get_arc_pos(t, p0, p1, up=True):
+        """Return position along arc."""
+        x = p0[0] + (p1[0] - p0[0]) * t
+        y = p0[1] + (p1[1] - p0[1]) * t
+        curve = arc_height * (1 - (2*t - 1)**2)  # peak at t=0.5
+        y -= curve if up else -curve
+        return x, y
+
+    def animate():
+        nonlocal step
+        t = step / steps
+        if t > 1:
+            swap_overlay_canvas.coords(letter_a["item"], x1, y1)
+            swap_overlay_canvas.coords(letter_b["item"], x0, y0)
+            letter_a["pos"], letter_b["pos"] = (x1, y1), (x0, y0)
+            return
+        ax, ay = get_arc_pos(t, (x0, y0), (x1, y1), up=True)
+        bx, by = get_arc_pos(t, (x1, y1), (x0, y0), up=False)
+        swap_overlay_canvas.coords(letter_a["item"], ax, ay)
+        swap_overlay_canvas.coords(letter_b["item"], bx, by)
+        step += 1
+        swap_overlay_root.after(20, animate)
+
+    animate()
 
 # =========================================
 #          *PEEK LIGHTNING ROUND
 # =========================================
 
+ALL_PEEK_MODES = ["edge", "grow", "slice"]
+available_peek_modes = []
+
+def get_next_peek_mode():
+    global available_peek_modes
+
+    if not available_peek_modes:
+        available_peek_modes = random.sample(ALL_PEEK_MODES, k=len(ALL_PEEK_MODES))
+
+    return available_peek_modes.pop(0)
+
 peek_modifier = 0
 gap_modifier = 0
 def toggle_peek():
     global peek_modifier, gap_modifier
-    if not peek_overlay1:
+    if not (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
         gap_modifier = 0
-        peek_modifier = random.randint(0,24)
-        toggle_peek_overlay()
+        peek_mode = get_next_peek_mode()
+        send_scoreboard_command("hide")
+        if peek_mode == 'edge':
+            toggle_edge_overlay(block_percent=99)
+        elif peek_mode == 'grow':
+            set_grow_position()
+            toggle_grow_overlay(block_percent=96, position=grow_position)
+        elif peek_mode == 'slice':
+            peek_modifier = random.randint(0,24)
+            toggle_peek_overlay()
         if black_overlay:
             root.after(100, blind)
         button_seleted(peek_button, True)
     else:
-        toggle_peek_overlay(destroy=True)
+        send_scoreboard_command("show")
+        for overlay in [toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay]:
+            overlay(destroy=True)
 
 peek_round_toggle = False
 def toggle_peek_round():
@@ -4787,13 +5959,17 @@ def toggle_peek_round():
     if peek_round_toggle:
         if blind_round_toggle:
             toggle_blind_round()
-        toggle_coming_up_popup(True, "Peek Round", "Guess the anime from a small moving window revealing the visuals. \nNormal rules apply.", queue=True)
+        toggle_coming_up_popup(True, "Peek Round", "Guess the anime from a small window revealing the visuals. \nNormal rules apply.", queue=True)
     else:
         toggle_coming_up_popup(False, "Peek Round")
 
 def widen_peek():
     global gap_modifier
     gap_modifier += 1
+    if edge_overlay_box:
+        toggle_edge_overlay(block_percent=99-gap_modifier)
+    elif grow_overlay_boxes:
+        toggle_grow_overlay(block_percent=96-gap_modifier, position=grow_position)
 
 def get_peek_gap(data):
     if light_mode == 'peek' or light_round_started:
@@ -4949,6 +6125,138 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
             lift_windows()
 
         peeking = False
+
+# =========================================
+#          *EDGE LIGHTNING ROUND
+# =========================================
+
+edge_overlay_box = None
+
+def toggle_edge_overlay(block_percent=100, destroy=False):
+    global edge_overlay_box
+
+    if destroy:
+        if edge_overlay_box and edge_overlay_box.winfo_exists():
+            edge_overlay_box.destroy()
+        edge_overlay_box = None
+        button_seleted(peek_button, False)
+        return
+
+    # Clamp block_percent
+    block_percent = max(0, min(100, block_percent))
+
+    # Get screen dimensions
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+
+    # Determine uniform margin based on the smallest screen dimension
+    visible_percent = 100 - block_percent
+    margin = int(min(screen_w, screen_h) * (visible_percent / 100 / 2))
+
+    # Calculate final box size
+    width = screen_w - margin * 2
+    height = screen_h - margin * 2
+
+    x = margin
+    y = margin
+
+    # Create or update overlay
+    if not edge_overlay_box or not edge_overlay_box.winfo_exists():
+        edge_overlay_box = tk.Toplevel()
+        edge_overlay_box.overrideredirect(True)
+        edge_overlay_box.attributes("-topmost", True)
+        edge_overlay_box.configure(bg="black")
+        try:
+            player.set_fullscreen(False)
+            player.set_fullscreen(True)
+        except:
+            pass
+
+    edge_overlay_box.geometry(f"{width}x{height}+{x}+{y}")
+    button_seleted(peek_button, True)
+    lift_windows()
+
+def send_scoreboard_command(cmd):
+    def worker():
+        try:
+            s = socket.socket()
+            s.connect(("localhost", 5555))
+            s.sendall(cmd.encode())
+            s.close()
+        except ConnectionRefusedError:
+            pass
+    threading.Thread(target=worker, daemon=True).start()
+
+# =========================================
+#          *GROW LIGHTNING ROUND
+# =========================================
+
+grow_overlay_boxes = {}
+grow_position = None
+
+def set_grow_position():
+    global grow_position
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+
+    # Use a safe margin so the square never exceeds the screen
+    margin = int(min(screen_w, screen_h) * 0.3)
+
+    cx = random.randint(margin, screen_w - margin)
+    cy = random.randint(margin, screen_h - margin)
+
+    grow_position = (cx, cy)
+
+def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
+    global grow_overlay_boxes
+
+    if destroy:
+        for box in grow_overlay_boxes.values():
+            if box and box.winfo_exists():
+                box.destroy()
+        grow_overlay_boxes.clear()
+        button_seleted(peek_button, False)
+        return
+
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+
+    block_percent = max(0, min(100, block_percent))
+    visible_w = int(screen_w * (1 - block_percent / 100))
+    visible_h = int(screen_h * (1 - block_percent / 100))
+
+    # Determine center position
+    if isinstance(position, tuple):
+        cx, cy = position
+    else:  # center by default
+        cx, cy = screen_w // 2, screen_h // 2
+
+    left = cx - visible_w // 2
+    right = cx + visible_w // 2
+    top = cy - visible_h // 2
+    bottom = cy + visible_h // 2
+
+    def update_or_create(name, x, y, w, h):
+        if name not in grow_overlay_boxes or not grow_overlay_boxes[name].winfo_exists():
+            box = tk.Toplevel()
+            box.overrideredirect(True)
+            box.attributes("-topmost", True)
+            box.configure(bg="black")
+            grow_overlay_boxes[name] = box
+        grow_overlay_boxes[name].geometry(f"{w}x{h}+{x}+{y}")
+
+    # Top
+    update_or_create("top", 0, 0, screen_w, max(0, top))
+    # Bottom
+    update_or_create("bottom", 0, bottom + 5, screen_w, max(0, screen_h - bottom + 20))
+    # Left
+    update_or_create("left", 0, top - 10, max(0, left), max(0, visible_h + 30))
+    # Right
+    update_or_create("right", right, top - 10, max(0, screen_w - right), max(0, visible_h + 30))
+
+    if grow_overlay_boxes:
+        button_seleted(peek_button, True)
+        lift_windows()
 
 # =========================================
 #          *MISMATCH LIGHTNING ROUND
@@ -5146,6 +6454,535 @@ def toggle_character_overlay(num_characters=4, destroy=False):
         box.attributes("-alpha", 0.9)  # Ensure it's visible
 
 # =========================================
+#       *C. PARTS LIGHTNING ROUND
+# =========================================
+
+character_round_answer = None
+def get_character_round_image(types=['m'], min_desc_length=0):
+    """
+    Returns the character image (Tk-compatible), and updates character_round_answer as:
+    [name, image, gender, description]
+    Falls back to secondary characters if no matches found in preferred types.
+    Avoids recently used characters in lightning history, if possible.
+    """
+    global character_round_answer
+
+    data = currently_playing.get("data")
+
+    def return_image(name, img, gender="Unknown", desc="No description available."):
+        global character_round_answer
+        character_round_answer = [name, img, gender, desc]
+        return img
+
+    if not data or not data.get("characters"):
+        return return_image("Unknown", character_round_image_cache_default[0])
+
+    def get_candidates(allowed_types):
+        def clean(text):
+            return text.strip() if text and text.strip() else ""
+
+        return [
+            (
+                c[1],  # name
+                "https://cdn-eu.anidb.net/images/main/" + c[2],  # image URL
+                clean(c[3]) if len(c) > 3 else "Unknown",  # gender
+                clean_character_description(c[1], clean(c[4])) if len(c) > 4 else ""  # description
+            )
+            for c in data["characters"]
+            if c[0] in allowed_types
+        ]
+
+    # Get the current character-based lightning mode history
+    char_history = []
+    if light_mode.startswith("c."):
+        char_history = playlist.get("lightning_history", {}).get(light_mode, [])
+
+    # Try types in priority order, fallback to 's' if not present already
+    search_types = types if 's' in types else types + ['s']
+    candidates = []
+    for t in search_types:
+        candidates = get_candidates([t])
+        if candidates:
+            break
+
+    if not candidates:
+        return return_image("Unknown", character_round_image_cache_default[0])
+
+    # First, try to find a candidate with sufficient description
+    long_desc_candidates = [c for c in candidates if len(c[3]) >= min_desc_length]
+
+    # Try filtering out characters in the history
+    def filter_history(pool):
+        filtered = [c for c in pool if c[0] not in char_history]
+        return filtered if filtered else pool  # fallback to full pool if empty
+
+    filtered_pool = filter_history(long_desc_candidates) if long_desc_candidates else filter_history(candidates)
+
+    random.shuffle(filtered_pool)
+    name, chosen_url, gender, desc = filtered_pool[0]
+
+    # Try loading the image
+    tk_img = load_image_from_url(chosen_url, size=None)
+    if not tk_img:
+        return return_image(name, character_round_image_cache_default[0], gender, desc)
+
+    return return_image(name, tk_img, gender, desc)
+
+character_image_overlay = None
+def toggle_character_image_overlay(character=None, destroy=False):
+    global character_image_overlay
+
+    if destroy or not character:
+        if character_image_overlay and character_image_overlay.winfo_exists():
+            character_image_overlay.destroy()
+        character_image_overlay = None
+        return
+
+    if character_image_overlay and character_image_overlay.winfo_exists():
+        return  # Already shown
+
+    # Screen and scaling setup
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    target_height = int(screen_h * 0.7)
+
+    # Get original image
+    pil_image = ImageTk.getimage(character)
+    img_w, img_h = pil_image.size
+    scale = target_height / img_h
+    new_w = int(img_w * scale)
+    new_h = target_height
+    resized_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
+
+    # White border
+    bordered_image = Image.new("RGB", (new_w + 8, new_h + 8), "black")
+    bordered_image.paste(resized_image, (4, 4))
+
+    tk_img = ImageTk.PhotoImage(bordered_image)
+
+    # Create overlay window
+    character_image_overlay = tk.Toplevel(root)
+    character_image_overlay.overrideredirect(True)
+    character_image_overlay.attributes("-topmost", True)
+    character_image_overlay.attributes("-alpha", 0.95)
+    character_image_overlay.configure(bg="black")
+
+    x = (screen_w - (new_w + 8)) // 2
+    y = (screen_h - (new_h + 8)) // 2 - int(screen_h * 0.015)
+    character_image_overlay.geometry(f"{new_w + 8}x{new_h + 8}+{x}+{y}")
+
+    label = tk.Label(character_image_overlay, image=tk_img, bg="black", borderwidth=0)
+    label.image = tk_img  # Keep a reference
+    label.pack()
+
+def generate_weighted_zoomed_parts(tk_img, num_parts=4, target_size=(400, 400)):
+    """
+    Generate 4 zoomed-in square crops from semantically distinct vertical regions
+    (e.g., head, torso, legs, feet). Ensures cropped areas are distinct enough vertically.
+    """
+    pil_image = ImageTk.getimage(tk_img).convert("RGBA")
+    img_w, img_h = pil_image.size
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    img_size = int(min(screen_width, screen_height) * 0.35)
+    box_w, box_h = img_size, img_size
+
+    chosen_regions = [
+        ("feet", (0.70, 1.0), (2, 4.5)),
+        ("legs", (0.45, 0.8), (2, 4)),
+        ("body", (0.25, 0.55), (1.5, 3.5)),
+        ("head", (0.0, 0.33), (1.5, 3))
+    ]
+
+    zoomed_parts = []
+    used_centers = []
+
+    def is_solid_color(image_crop, tolerance=70):
+        arr = np.array(image_crop.convert("L"))
+        return arr.std() <= tolerance, arr.std()
+
+    for region_name, (rel_start, rel_end), (zoom_min, zoom_max) in chosen_regions:
+        best_attempt, best_amount = None, 0
+
+        for attempt in range(50):
+            zoom_factor = random.uniform(zoom_min, zoom_max)
+            region_h = int(img_h * (rel_end - rel_start))
+            crop_size = int(min(img_w, region_h) / zoom_factor)
+            crop_w, crop_h = crop_size, crop_size
+
+            y_min = int(img_h * rel_start)
+            y_max = int(img_h * rel_end - crop_h)
+            y_max = max(y_min, y_max)
+
+            x_max = img_w - crop_w
+            x_max = max(0, x_max)
+
+            offset_x = random.randint(0, x_max) if x_max > 0 else 0
+            offset_y = random.randint(y_min, y_max) if y_max > y_min else y_min
+
+            vertical_center = (offset_y + crop_h / 2) / img_h
+
+            # Check if too close to existing vertical centers
+            too_close = any(abs(vertical_center - prev) < 0.15 for prev in used_centers)
+            if too_close:
+                continue
+
+            cropped = pil_image.crop((offset_x, offset_y, offset_x + crop_w, offset_y + crop_h))
+            is_solid, amount = is_solid_color(cropped)
+            if not is_solid:
+                used_centers.append(vertical_center)
+                break
+            elif best_amount < amount:
+                best_attempt = cropped
+                best_amount = amount
+
+        else:
+            cropped = best_attempt
+
+        resized = cropped.resize((box_w, box_h), Image.LANCZOS)
+        background = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+        background.paste(resized, (0, 0))
+        zoomed_parts.append(ImageTk.PhotoImage(background))
+
+    return zoomed_parts
+
+def clean_character_description(name, desc):
+    # 1. Replace hyperlinks like: http://... [text] → text
+    desc = re.sub(r'http\S+\s+\[([^\]]+)\]', r'\1', desc)
+
+    # 2. Remove character name (first + last and variants)
+    if name:
+        parts = name.split()
+        for variant in [name, name.replace(" ", ""), *parts]:
+            pattern = re.compile(re.escape(variant), re.IGNORECASE)
+            replacement = "_" * len(variant)
+            desc = pattern.sub(replacement, desc)
+
+    # 3. Normalize whitespace and newlines
+    desc = desc.replace("\n", " ").strip()
+    desc = re.sub(r'\s+', ' ', desc)
+
+    return desc
+
+def get_char_parts_round_character():
+    """Selects one character matching given types and prepares 4 zoomed parts as separate images."""
+    global character_round_characters
+
+    # Generate zoomed-in pieces and store them
+    character_round_characters = generate_weighted_zoomed_parts(character_round_answer[1])
+
+def has_char_descriptions(characters, length, types=None):
+    """
+    Returns True if any character in the list has a description
+    of at least the given length.
+
+    Args:
+        characters: List of character entries, each a list/tuple with:
+            [role, name, image, gender, (optional) description]
+        length: Minimum description length required.
+        types: Optional set or list of character roles to include (e.g., ['m', 's']).
+
+    Returns:
+        True if a matching character exists, False otherwise.
+    """
+    for char in characters:
+        if types and char[0] not in types:
+            continue
+        if len(char) > 4:
+            desc = char[4].strip()
+            if len(desc) >= length:
+                return True
+    return False
+
+
+# =========================================
+#         *C. PIXEL LIGHTNING ROUND
+# =========================================
+
+def generate_pixelation_steps(steps=4, final_pixel_size=7, max_pixel_size=45):
+    """
+    Generates progressively less pixelated versions of the image.
+    Returns a list of Tkinter-compatible images (most pixelated first).
+    """
+    """
+    Generates progressively less pixelated versions of the image using easing.
+    Returns a list of Tkinter-compatible images (most pixelated first).
+    """
+    global character_pixel_images
+    pil_image = ImageTk.getimage(character_round_answer[1]).convert("RGBA")
+    width, height = pil_image.size
+
+    # Ease-out function: starts fast, slows down at the end
+    def ease_out_quad(t):
+        return 1 - (1 - t) ** 2
+
+    # Create pixel sizes using easing
+    pixel_sizes = []
+    for i in range(steps):
+        t = i / (steps - 1)
+        eased = ease_out_quad(t)
+        size = int(max_pixel_size - (max_pixel_size - final_pixel_size) * eased)
+        pixel_sizes.append(max(size, 1))
+
+    pixelated_images = []
+    for px in pixel_sizes:
+        downscaled = pil_image.resize((max(1, width // px), max(1, height // px)), Image.NEAREST)
+        pixelated = downscaled.resize((width, height), Image.NEAREST)
+        pixelated_images.append(ImageTk.PhotoImage(pixelated))
+
+    character_pixel_images = pixelated_images
+
+character_pixel_overlay = None
+character_pixel_label = None
+character_pixel_images = []  # Store precomputed pixelation steps
+
+def toggle_character_pixel_overlay(step=0, destroy=False):
+    """
+    Shows the character image pixelated at the given step (0 = most pixelated).
+    If destroy=True, removes the overlay.
+    """
+    global character_pixel_overlay, character_pixel_label, character_pixel_images
+
+    if destroy:
+        if character_pixel_overlay and character_pixel_overlay.winfo_exists():
+            character_pixel_overlay.destroy()
+        character_pixel_overlay = None
+        character_pixel_label = None
+        return
+
+    if not character_pixel_images or step >= len(character_pixel_images):
+        return
+
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+
+    # Scale to 70% of height, keep aspect ratio
+    img = ImageTk.getimage(character_pixel_images[step])
+    img_w, img_h = img.size
+    scale = (screen_height * 0.7) / img_h
+    new_w, new_h = int(img_w * scale), int(img_h * scale)
+
+    resized_img = img.resize((new_w, new_h), Image.LANCZOS)
+    display_img = ImageTk.PhotoImage(resized_img)
+
+    # Create overlay if needed
+    if not character_pixel_overlay or not character_pixel_overlay.winfo_exists():
+        character_pixel_overlay = tk.Toplevel(root)
+        character_pixel_overlay.overrideredirect(True)
+        character_pixel_overlay.attributes("-topmost", True)
+        character_pixel_overlay.attributes("-alpha", 0.95)
+        character_pixel_overlay.configure(bg="black", highlightbackground="white", highlightthickness=4)
+
+        character_pixel_label = tk.Label(character_pixel_overlay, image=display_img, bg="black", bd=0)
+        character_pixel_label.image = display_img
+        character_pixel_label.pack()
+
+        x = (screen_width - new_w) // 2
+        y = (screen_height - new_h) // 2
+        character_pixel_overlay.geometry(f"{new_w}x{new_h}+{x}+{y}")
+    else:
+        character_pixel_label.configure(image=display_img)
+        character_pixel_label.image = display_img
+
+# =========================================
+#          *C. REVEAL LIGHTNING ROUND
+# =========================================
+
+reveal_image_window = None
+reveal_cover_id = None
+reveal_canvas = None
+
+def toggle_character_reveal_overlay(percent=1.0, destroy=False):
+    """
+    Displays the character image with a black overlay covering a percentage of it from the top.
+    `percent` should be between 0.0 (fully revealed) and 1.0 (fully covered).
+    """
+    global reveal_image_window, reveal_cover_id, reveal_canvas
+
+    if destroy:
+        if reveal_image_window and reveal_image_window.winfo_exists():
+            animate_window(reveal_image_window, root.winfo_screenwidth(), reveal_image_window.winfo_y(), steps=20, destroy=True)
+        reveal_image_window = None
+        reveal_cover_id = None
+        reveal_canvas = None
+        return
+
+    if not character_round_answer:
+        return
+
+    pil_img = ImageTk.getimage(character_round_answer[1]).copy()
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    target_height = int(screen_height * 0.7)
+
+    scale = target_height / pil_img.height
+    new_size = (int(pil_img.width * scale), target_height)
+    pil_img = pil_img.resize(new_size, Image.LANCZOS)
+    tk_img = ImageTk.PhotoImage(pil_img)
+
+    if not reveal_image_window or not reveal_image_window.winfo_exists():
+        # Create window
+        reveal_image_window = tk.Toplevel(root)
+        reveal_image_window.overrideredirect(True)
+        reveal_image_window.attributes("-topmost", True)
+        reveal_image_window.attributes("-alpha", 0.98)
+        reveal_image_window.configure(bg="black", highlightbackground="white", highlightthickness=4)
+
+        x = (screen_width - new_size[0]) // 2
+        y = (screen_height - new_size[1]) // 2
+        reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
+
+        # Create canvas and image
+        reveal_canvas = tk.Canvas(reveal_image_window, width=new_size[0], height=new_size[1], highlightthickness=0)
+        reveal_canvas.pack()
+        reveal_canvas.create_image(0, 0, anchor="nw", image=tk_img)
+        reveal_canvas.image = tk_img
+
+        # Create black cover
+        reveal_cover_id = reveal_canvas.create_rectangle(
+            0, 0, new_size[0], new_size[1],
+            fill="black", outline=""
+        )
+
+    # Update cover size based on percent
+    if reveal_canvas and reveal_cover_id:
+        cover_height = int(new_size[1] * percent)
+        reveal_canvas.coords(reveal_cover_id, 0, 0, new_size[0], cover_height)
+
+# =========================================
+#        *C. PROFILE LIGHTNING ROUND
+# =========================================
+
+profile_overlay_window = None
+profile_text_label = None
+profile_image_label = None
+profile_words_shown = 0
+
+def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=False):
+    """Displays a character profile with gender, a word-by-word BIO, and delayed image reveal."""
+    global profile_overlay_window, profile_text_label, profile_image_label, profile_words_shown
+
+    if destroy:
+        if profile_overlay_window and profile_overlay_window.winfo_exists():
+            animate_window(profile_overlay_window, root.winfo_screenwidth(), profile_overlay_window.winfo_y(), destroy=True)
+        profile_overlay_window = None
+        return
+
+    if not character_round_answer:
+        return
+
+    name, img, gender, desc = character_round_answer
+
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    target_width = int(screen_width * 0.7)
+    target_height = int(screen_height * 0.7)
+
+    # Scale image to fit vertically
+    pil_img = ImageTk.getimage(img).copy()
+    scale = target_height / pil_img.height
+    scaled_width = int(pil_img.width * scale)
+    scaled_img = pil_img.resize((scaled_width, target_height), Image.LANCZOS)
+    tk_scaled_img = ImageTk.PhotoImage(scaled_img)# Create a very blurry version of the image
+    blurred_img = scaled_img.filter(ImageFilter.GaussianBlur(radius=100))
+    tk_blurred_img = ImageTk.PhotoImage(blurred_img)
+
+    half_width = max(target_width // 2, scaled_width)
+
+    # Let's say text area should match image width roughly or be slightly narrower
+    wraplength = int(target_width - tk_scaled_img.width()*0.8)
+
+    font_title = ("Arial", 50, "bold", "underline")
+    font_body = ("Arial", 40)
+
+    if not profile_overlay_window or not profile_overlay_window.winfo_exists():
+        # Create the main window
+        profile_overlay_window = tk.Toplevel(root)
+        profile_overlay_window.overrideredirect(True)
+        profile_overlay_window.attributes("-topmost", True)
+        profile_overlay_window.attributes("-alpha", 0.95)
+        profile_overlay_window.configure(bg="black", highlightbackground="white", highlightthickness=4)
+
+        x = (screen_width - (half_width * 2)) // 2
+        y = (screen_height - target_height) // 2
+        profile_overlay_window.geometry(f"{half_width*2}x{target_height}+{x}+{y}")
+
+        # Main layout container
+        container = tk.Frame(profile_overlay_window, bg="black")
+        container.pack(fill="both", expand=True)
+
+        # Split left/right
+        left_frame = tk.Frame(container, bg="black")
+        left_frame.pack(side="left", fill="both", expand=False, ipadx=10, ipady=10, padx=10, pady=10)
+        left_frame.config(width=half_width, height=target_height)
+
+        right_frame = tk.Frame(container, bg="black")
+        right_frame.pack(side="right", fill="both", expand=False, ipadx=10, ipady=10, padx=10, pady=10)
+        right_frame.config(width=half_width, height=target_height)
+
+
+        # Left: Bio area
+        # gender_label = tk.Label(left_frame, text=f"GENDER: {gender.upper()}", font=font_title, bg="black", fg="white", anchor="w")
+        # gender_label.pack(anchor="w", padx=10, pady=(10, 5))
+
+        bio_label = tk.Label(left_frame, text="DESCRIPTION:", font=font_title, bg="black", fg="white",
+                             wraplength=wraplength, justify="left", anchor="nw")
+        bio_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
+
+        profile_text_label = tk.Label(left_frame, text="", font=font_body, bg="black", fg="white",
+                             wraplength=wraplength, justify="left", anchor="nw")
+        profile_text_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
+
+
+        # Right: Image or countdown
+        profile_image_label = tk.Label(right_frame, bg="black")
+        profile_image_label.pack(expand=True)
+
+        # Store resized image
+        profile_image_label.scaled_img = tk_scaled_img
+
+    # Show the countdown or image
+    if image_countdown > 0:
+        profile_image_label.config(
+            image=tk_blurred_img,
+            text="",
+            bg="black"
+        )
+        profile_image_label.image = tk_blurred_img
+    else:
+        profile_image_label.config(
+            image=profile_image_label.scaled_img,
+            text="",
+            bg="black"
+        )
+        profile_image_label.image = profile_image_label.scaled_img
+
+    # Word-by-word bio display
+
+    def update_profile_bio_text(desc, word_count, wraplength, label_font):
+        """
+        Trims the description to fit MAX_LINES, removing full lines from the top if needed.
+        `wraplength` is in pixels, and `label_font` is the font used for the label (can be tuple or tkFont.Font).
+        """
+        # Convert font tuple to tkFont.Font if needed
+        if isinstance(label_font, tuple):
+            label_font = font.Font(font=label_font)
+
+        avg_char_width = label_font.measure("n")  # Rough average for a mid-size char
+        chars_per_line = max(10, wraplength // avg_char_width)
+
+        words = desc.split()
+        text = " ".join(words[:word_count])
+        lines = textwrap.wrap(text, width=chars_per_line)
+
+        MAX_LINES = 14
+        if len(lines) > MAX_LINES:
+            lines = lines[-MAX_LINES:]
+
+        profile_text_label.config(text="\n".join(lines))
+    update_profile_bio_text(f"Gender: {gender.capitalize()}. {desc}", word_count + 2, wraplength, font_body)
+
+# =========================================
 #          *TAGS LIGHTNING ROUND
 # =========================================
 
@@ -5185,7 +7022,7 @@ def set_cloud_tags():
 
     random.shuffle(tag_cloud_tags)
     if currently_playing.get("data", {}).get("season"):
-        tag_cloud_tags.append({"name": currently_playing.get("data", {}).get("season")[-4:], "weight": 600})
+        tag_cloud_tags.insert(0, {"name": currently_playing.get("data", {}).get("season")[-4:], "weight": 600})
     for t in tag_cloud_tags:
         t["font_size"] = font_size(t["weight"])
 
@@ -5467,9 +7304,9 @@ def set_light_names():
 #          *LIGHTNING ROUND OVERLAYS
 # =========================================
 
-def set_countdown(value=None):
+def set_countdown(value=None, position="top right"):
     """Creates, updates, or removes the countdown overlay in a separate always-on-top window with a semi-transparent background."""
-    set_floating_text("Countdown", value, position="top right")
+    set_floating_text("Countdown", value, position=position)
 
 def set_light_round_number(value=None):
     size = 80
@@ -5483,12 +7320,12 @@ def set_light_round_number(value=None):
 def set_frame_number(value=None):
     set_floating_text("Frame Number", value, position="bottom center")
 
-def top_info(value=None, size=80):
-    set_floating_text("Top Info", value, position="top center", size=size)
+def top_info(value=None, size=80, width_max=0.7):
+    set_floating_text("Top Info", value, position="top center", size=size, width_max=width_max)
 
 floating_windows = {}  # Dictionary to store windows and labels
 
-def set_floating_text(name, value, position="top right", size=80):
+def set_floating_text(name, value, position="top right", size=80, width_max=0.7):
     """
     Creates, updates, or removes a floating overlay window with text.
 
@@ -5527,8 +7364,18 @@ def set_floating_text(name, value, position="top right", size=80):
         window = floating_windows[name]["window"]
         label = floating_windows[name]["label"]
 
+    # Resize font if it's too wide for the screen
+    screen_width = window.winfo_screenwidth()
+    max_width = int(screen_width * width_max)
+
+    current_size = size
+    test_font = font.Font(family="Arial", size=current_size, weight="bold")
+    while test_font.measure(str(value)) + 40 > max_width and current_size > 10:
+        current_size -= 1
+        test_font.configure(size=current_size)
+
     # Update the label text
-    label.config(text=str(value), font=("Arial", size, "bold"))
+    label.config(text=str(value), font=test_font)
 
     # Function to set position after Tkinter updates
     def update_position():
@@ -5755,6 +7602,8 @@ def play_background_music(toggle):
             now_playing_background_music(music_files[current_music_index])
 
 def now_playing_background_music(track = None):
+    if not frame_light_round_started and (light_mode == 'peek' or not light_muted):
+        track = None
     if track:
         basename = os.path.basename(track)
         for ext in valid_music_ext:
@@ -5814,7 +7663,6 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
                     window.geometry(f"+{new_x}+{new_y}"),
                     callback() if callback else None
                 ))
-
     step()
 
 title_window = None  # Store the title popup window
@@ -5891,19 +7739,23 @@ def toggle_title_popup(show, title_only=False):
     if data:
         if currently_playing.get("type") == "youtube":
             title = data.get("title")
-            full_title = data.get("full_title")
+            full_title = data.get("custom_title") or data.get("title")
+            if full_title == title:
+                full_title = ""
+            else:
+                full_title = full_title + "\n"
             uploaded = f"{datetime.strptime(data.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}"
             views = f"{data.get("view_count"):,}"
             likes = f"{data.get("like_count"):,}"
-            channel = data.get("channel")
-            subscribers = f"{data.get("channel_follower_count"):,}"
+            channel = data.get("name")
+            subscribers = f"{data.get("subscriber_count"):,}"
             duration = str(format_seconds(get_youtube_duration(data))) + " mins"
             fg_color = "Black"
             bg_color = "White"
 
             top_row = f"Uploaded by {channel} ({subscribers} subscribers)"
             title_row = title
-            bottom_row = f"{full_title}\nViews: {views} | Likes: {likes} | {uploaded} | {duration}"
+            bottom_row = f"{full_title}Views: {views} | Likes: {likes} | {uploaded} | {duration}"
         else:
             japanese_title = data.get("title")
             title = data.get("eng_title") or japanese_title or (data.get("synonyms", [None]) or [None])[0]
@@ -5933,10 +7785,13 @@ def toggle_title_popup(show, title_only=False):
                 score = f"Score: {data.get("score")} (#{data.get("rank")})"
             title_row = title
             if not title_only:
-                top_row = f"{marks}{theme} | {song} | {aired}"
+                top_row = f"{marks}{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
                 bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
             else:
-                top_font = ("Arial", 1)
+                if title_top_info_txt:
+                    top_row = title_top_info_txt
+                else:
+                    top_font = ("Arial", 1)
                 if japanese_title != title:
                     bottom_row = f"{japanese_title}"
                 else:
@@ -5999,7 +7854,14 @@ def get_song_string(data, type=None, totals=False):
             else:
                 return theme.get("title") + " by " + get_artists_string(theme.get("artist"), total=totals)
     return ""
-    
+
+def prompt_title_top_info_text(event=None):
+    global title_top_info_txt
+    result = simpledialog.askstring("Title Top Info Text", "Enter text that will appear above the title only info popup:", initialvalue=title_top_info_txt)
+    if result is not None:
+        title_top_info_txt = result
+        save_config()    
+
 # =========================================
 #         *GUESS YEAR/MEMBERS/SCORE
 # =========================================
@@ -6028,8 +7890,8 @@ def guess_extra(extra = None):
         elif guessing_extra == "members":
             button_seleted(guess_members_button, True)
             toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The # Of Members This Anime Has On MyAnimeList", 
-                                ("Members are users who added the anime to their list.\n"
+                                ROUND_PREFIX + "Guess The # Of Members This Anime Has", 
+                                ("Members are users who added the anime to their list on MyAnimeList.\n"
                                  "EG: Death Note has over 4 million. Only 1 guess per person, no repeats.\n"
                                 "+1 PT for closest guess. "
                                 "+2 PTs if first 2 digits are correct."),
@@ -6037,8 +7899,9 @@ def guess_extra(extra = None):
         elif guessing_extra == "score":
             button_seleted(guess_score_button, True)
             toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The Score This Anime Has On MyAnimeList", 
-                                ("Scores range from 0.0 to 10.0. Only 1 guess per person, no repeats.\n"
+                                ROUND_PREFIX + "Guess The Score This Anime Has", 
+                                ("Scores takem MyAnimeList and range from 0.0 to 10.0.\n"
+                                 "Only 1 guess per person, no repeats.\n"
                                 "+1 PT for closest guess. "
                                 "+2 PTs if exact score."),
                                 up_next=False)
@@ -6173,13 +8036,13 @@ def play_video(index=playlist["current_index"]):
     if youtube_queue is not None:
         currently_playing = {
             "type":"youtube",
-            "filename":youtube_queue.get("filename"),
+            "filename": youtube_queue.get("filename"),
             "data":youtube_queue
         }
         set_black_screen(False)
         reset_metadata()
         update_youtube_metadata()
-        stream_youtube(youtube_queue.get("filename"))
+        stream_youtube(os.path.join("youtube", youtube_queue.get("filename")))
         unload_youtube_video()
     elif search_queue:
         play_filename(search_queue)
@@ -6229,11 +8092,11 @@ def play_filename(filename, fullscreen=True):
     player.set_media(media)
     global light_round_number, light_round_length
     if light_mode:
-        append_lightning_history()
         if light_round_number%10 == 0:
             next_background_track()
         light_round_number = light_round_number + 1
-        set_light_round_number("#" + str(light_round_number))
+        if light_mode != 'peek':
+            set_light_round_number("#" + str(light_round_number))
         light_round_length = light_modes[light_mode].get("length", light_round_length_default)
         if not black_overlay:
             set_black_screen(True)
@@ -6243,7 +8106,7 @@ def play_filename(filename, fullscreen=True):
     else:
         light_round_number = 0
         set_countdown()
-        set_light_round_number(str(light_round_number))
+        set_light_round_number()
         global manual_blind
         toggle_coming_up_popup(False, "Lightning Round")
         if blind_round_toggle:
@@ -6365,35 +8228,13 @@ def update_current_index(value = None, save = True):
     except NameError:
         pass  # root isn't defined yet — possibly too early in startup
 
-def load_youtube_video(index):
-    global youtube_queue
-    video = get_youtube_metadata_from_index(int(index))
-    if video and youtube_queue != video:
-        unload_youtube_video()
-        youtube_queue = video
-        title = youtube_queue.get('title')
-        try:
-            image = load_image_from_url(youtube_queue.get('thumbnail'))
-        except:
-            image = None
-        details = (
-            "Created by: " + youtube_queue.get("channel") + " (" + str(f"{youtube_queue.get("channel_follower_count"):,}") + " subscribers)" + "\n"
-            "Uploaded: " + str(f"{datetime.strptime(youtube_queue.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}") + " | Duration: " + str(format_seconds(get_youtube_duration(youtube_queue))) + " mins\n\n"
-            "1 PT for the first correct answer."
-        )
-        if player.is_playing():
-            toggle_coming_up_popup(True, title, details, image, queue=True)
-        else:
-            play_video()
-    else:
-        unload_youtube_video()
-    show_youtube_playlist(True)
-
 def load_image_from_url(url, size=(400, 400)):
     """Loads an image from a URL, resizes it to fit one side of the box fully (maximizing size while preserving aspect ratio), centers it in a transparent box, and returns a Tkinter-compatible PhotoImage."""
     response = requests.get(url)
     response.raise_for_status()
     image = Image.open(BytesIO(response.content)).convert("RGBA")
+    if not size:
+        return ImageTk.PhotoImage(image)
 
     # Target box size
     box_width, box_height = size
@@ -6418,28 +8259,6 @@ def load_image_from_url(url, size=(400, 400)):
 
     return ImageTk.PhotoImage(background)
 
-def unload_youtube_video():
-    global youtube_queue
-    if youtube_queue:
-        toggle_coming_up_popup(False, youtube_queue.get('title'))
-    youtube_queue = None
-
-def stream_youtube(youtube_url):
-    """Streams a YouTube video in VLC using yt-dlp to get a direct URL."""
-    media = instance.media_new(youtube_url)
-    player.set_media(media)
-    player.play()
-    check_youtube_video_playing()
-
-def check_youtube_video_playing():
-    if player.is_playing():
-        global video_stopped
-        video_stopped = False
-        player.set_fullscreen(True)
-        player.set_fullscreen(True)
-    else:
-        root.after(1000, check_youtube_video_playing)
-
 def go_to_index():
     """Function to jump to a specific index"""
     try:
@@ -6458,7 +8277,7 @@ def play_pause():
     if frame_light_round_started:
         frame_light_round_pause = not frame_light_round_pause
         return
-    elif light_mode in ['clues', 'song', 'synopsis', 'title', 'character', 'tags', 'episodes', 'names']:
+    elif light_mode and light_modes[light_mode].get("muted"):
         if player.is_playing():
             pygame.mixer.music.pause()
         elif light_round_start_time and ((player.get_time()/1000) < (light_round_start_time+light_round_length)):
@@ -6801,6 +8620,7 @@ def toggle_blind_round():
 # =========================================
 
 censor_list = {}
+other_censor_lists = []
 censors_enabled = True
 censor_bar = None
 def create_censor_bar(create=True):
@@ -6816,12 +8636,31 @@ def create_censor_bar(create=True):
         censor_bar = None
 
 def load_censors():
-    global censor_list
+    global censor_list, other_censor_lists
 
+    # Load main censor file
     if os.path.exists(CENSOR_JSON_FILE):
         with open(CENSOR_JSON_FILE, "r") as a:
             censor_list = json.load(a)
             print(f"Loaded censors for {len(censor_list)} files...")
+
+    # Load other censor-related files in the same directory
+    folder = os.path.dirname(CENSOR_JSON_FILE)
+    basename = os.path.basename(CENSOR_JSON_FILE)
+
+    for fname in os.listdir(folder):
+        if (
+            "censor" in fname.lower()
+            and fname.endswith(".json")
+            and fname != basename
+        ):
+            try:
+                with open(os.path.join(folder, fname), "r") as f:
+                    data = json.load(f)
+                    other_censor_lists.append(data)
+                    print(f"Loaded {len(data)} entries from {fname}")
+            except Exception as e:
+                print(f"Failed to load {fname}: {e}")
 
 load_censors()
 
@@ -6852,6 +8691,11 @@ def apply_censors(time, length):
 
 def get_file_censors(filename):
     file_censors = censor_list.get(filename)
+    if not file_censors:
+        for c_list in other_censor_lists:
+            other_file_censors = c_list.get(filename)
+            if other_file_censors:
+                return other_file_censors
     return file_censors or []
 
 def check_file_censors(filename, time, video_end):
@@ -6893,7 +8737,7 @@ def check_file_censors(filename, time, video_end):
 def lift_windows():
     if root.attributes("-topmost"):
         root.lift()
-    for window in [title_window, progress_bar, coming_up_window, censor_editor]:
+    for window in [title_window, progress_bar, coming_up_window, character_image_overlay, censor_editor]:
         if window:
             window.lift()
 
@@ -7467,18 +9311,6 @@ def remove_theme(index):
 def get_filename(key, value):
     return value
 
-def show_youtube_playlist(update = False):
-    for index, (key, value) in enumerate(youtube_metadata.items()):
-        value['index'] = index
-    if youtube_queue:
-        selected = youtube_queue.get('index')
-    else:
-        selected = -1
-    show_list("youtube", right_column, youtube_metadata, get_youtube_title, load_youtube_video, selected, update)
-
-def get_youtube_title(key, value):
-    return value.get('title')
-
 def button_seleted(button, selected):
     if hasattr(button, 'configure') and button.winfo_exists():
         if selected:
@@ -7668,16 +9500,28 @@ def toggle_progress_bar():
     update_progress_bar(player.get_time(), player.get_length())
 
 disable_video_audio = False
-def toggle_mute():
-    global disable_video_audio
-    disable_video_audio = not disable_video_audio
-    player.audio_set_mute(disable_video_audio)
-    if music_loaded:
-        if disable_video_audio:
-            pygame.mixer.music.set_volume(0)
-        else:
-            pygame.mixer.music.set_volume(0.2*(volume_level/100))
-    button_seleted(mute_button, disable_video_audio)
+light_muted = False
+def toggle_mute(muted=None, lightning=False):
+    global disable_video_audio, light_muted
+    if light_mode or light_round_started or lightning:
+        if muted == None:
+            muted = not light_muted
+        light_muted = muted
+        if not disable_video_audio:
+            player.audio_set_mute(muted)
+        play_background_music(muted)
+        button_seleted(mute_button, muted or disable_video_audio)
+    else:
+        if muted == None:
+            muted = not disable_video_audio
+        disable_video_audio = muted
+        player.audio_set_mute(disable_video_audio)
+        if music_loaded:
+            if disable_video_audio:
+                pygame.mixer.music.set_volume(0)
+            else:
+                pygame.mixer.music.set_volume(0.2*(volume_level/100))
+        button_seleted(mute_button, disable_video_audio)
 
 # =========================================
 #              *END SESSION
@@ -7690,7 +9534,7 @@ def end_session():
     else:
         video_stopped = False
     toggle_end_message()
-    save_session_history(False)
+    send_scoreboard_command("end")
 
 end_message_window = None
 
@@ -7706,6 +9550,7 @@ def get_op_ed_counts(themes):
             ending_count += 1
     return opening_count, ending_count
 
+DEFAULT_END_SESSION_MESSAGE = "THANKS FOR\nPLAYING!🤍"
 def toggle_end_message(speed=500):
     """Toggles the 'Thanks for playing!' message with detailed stats."""
     global end_message_window
@@ -7725,9 +9570,11 @@ def toggle_end_message(speed=500):
 
         total_played = len(all_themes_played)
         opening_count, ending_count = get_op_ed_counts(all_themes_played)
+        
+        end_message_text = end_session_txt or DEFAULT_END_SESSION_MESSAGE
 
         stats_text = (
-            "THANKS FOR\nPLAYING!🤍\n\n"
+            f"{end_message_text}\n\n"
             f"{total_played} THEMES\nPLAYED\n"
             f"{opening_count} OPENINGS\n{ending_count} ENDINGS"
         )
@@ -7748,11 +9595,19 @@ def toggle_end_message(speed=500):
         end_message_window.geometry(f"+{start_x}+{start_y}")
         root.update_idletasks()
         root.after(1, lambda: animate_window(end_message_window, end_x, end_y, delay=5, steps=2000, fade=None))
+        save_session_history(False)
     except AttributeError:
         pass
 
 def on_closing():
     pass
+
+def prompt_end_session_text(event=None):
+    global end_session_txt
+    result = simpledialog.askstring("End Session", "Enter end session message text(use '\\n' for new lines):", initialvalue=end_session_txt)
+    if result is not None:
+        end_session_txt = result
+        save_config()
 
 # =========================================
 #            *POPOUT CONTROLS
@@ -7799,28 +9654,39 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         global resize_after_id
 
         def do_resize():
-            if popout_controls:
-                height = popout_controls.winfo_height()
+            if not popout_controls:
+                return
 
-                new_upnext_size = max(10, int(height / 30))
-                new_button_size = max(10, int(height / 25))
-                new_current_size = max(10, int(height / 25))
-                new_current_extra_size = max(10, int(height / 50))
-                popout_button_font.configure(size=new_button_size)
-                if popout_show_metadata:
-                    popout_up_next_font.configure(size=new_upnext_size)
-                    popout_current_font.configure(size=new_current_size)
-                    popout_current_extra_font.configure(size=new_current_extra_size)
-                    popout_currently_playing.configure(wraplength=int(popout_controls.winfo_width()*0.95))
-                else:
-                    popout_up_next_font.configure(size=1)
-                    popout_current_font.configure(size=1)
-                    popout_current_extra_font.configure(size=1)
-                    popout_currently_playing.configure(wraplength=0)
-                # Reapply button fonts
-                for widget in popout_buttons_by_name.values():
-                    if isinstance(widget, tk.Button):
-                        widget.configure(font=popout_button_font)
+            width = popout_controls.winfo_width()
+            height = popout_controls.winfo_height()
+            min_dim = min(width*.5, height)
+
+            # Use combined or minimum dimension for scaling
+            new_upnext_size = max(10, int(min_dim / 30))
+            new_button_size = max(10, int(min_dim / 25))
+            new_current_size = max(10, int(min_dim / 25))
+            new_current_extra_size = max(10, int(min_dim / 50))
+
+            popout_button_font.configure(size=new_button_size)
+
+            if popout_show_metadata:
+                popout_up_next_font.configure(size=new_upnext_size)
+                popout_current_font.configure(size=new_current_size)
+                popout_current_extra_font.configure(size=new_current_extra_size)
+
+                # Adjust text wrap to match new width
+                popout_currently_playing.configure(wraplength=int(width * 0.95))
+            else:
+                # Collapse metadata if disabled
+                popout_up_next_font.configure(size=1)
+                popout_current_font.configure(size=1)
+                popout_current_extra_font.configure(size=1)
+                popout_currently_playing.configure(wraplength=0)
+
+            # Reapply button fonts to all cloned buttons
+            for widget in popout_buttons_by_name.values():
+                if isinstance(widget, tk.Button):
+                    widget.configure(font=popout_button_font)
 
         # Cancel any pending resize jobs
         if resize_after_id is not None:
@@ -7852,7 +9718,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             (dock_button, "DOCK\nPLAYER", False),
             (tag_button, "TAG", True),
             (favorite_button, "FAVORITE", True),
-            (info_button, "INFORMATION\nPOP-UP", False),
+            (info_button, "INFO\nPOP-UP", False),
             (title_info_button, "TITLE\nONLY", False)
         ],
         "BLIND/PEEK CONTROLS": [
@@ -7870,15 +9736,17 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             (guess_multiple_button, "MULTIPLE", True)
         ],
         "LIGHTNING ROUNDS": [
-            ("DROPDOWN", "MODE SELECT", 2),
+            ("LIGHTNING DROPDOWN", "MODE SELECT", 2),
             (start_light_mode_button, "START", True),
-            (variety_light_mode_button, "VARIETY", True, 2)
+            (variety_light_mode_button, "VARIETY", True),
+            ("DIFFICULTY DROPDOWN", "DIFFICULTY SELECT", 1)
         ],
         "MISC TOGGLES": [
             ("toggle_metadata", "METADATA", False),
             (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get("filename","")))})", False),
             (mute_button, "MUTE", False),
-            (end_button, "END SESSION STATS", False, 2)
+            (filter_button, "FILTERS", False),
+            (end_button, "END SESSION", False)
         ],
         "PLAYER CONTROLS": [
             ("reroll", "", False),
@@ -7934,35 +9802,59 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         col = 0
 
         for entry in button_entries:
-            if isinstance(entry[0], str) and entry[0] == "DROPDOWN":
+            if isinstance(entry[0], str) and "DROPDOWN" in entry[0]:
                 _, label_text, colspan = entry
                 if col + colspan > columns:
                     row += 1
                     col = 0
+                if entry[0] == "LIGHTNING DROPDOWN":
+                    dropdown = ttk.Combobox(
+                        popout_controls,
+                        values=[display for _, display in light_mode_options],
+                        font=popout_button_font,
+                        height=len(light_mode_options),
+                        style="Black.TCombobox",
+                        state='readonly'
+                    )
 
-                dropdown = ttk.Combobox(
-                    popout_controls,
-                    values=[display for _, display in light_mode_options],
-                    font=popout_button_font,
-                    height=len(light_mode_options),
-                    style="Black.TCombobox",
-                    state='readonly'
-                )
+                    def on_popout_dropdown_change(event):
+                        dropdown = popout_buttons_by_name[light_dropdown]
+                        value = dropdown.get()
+                        light_dropdown.set(value)
+                        if light_mode:
+                            select_lightning_mode()
+                        dropdown.selection_clear()
+                        dropdown.icursor(tk.END)
 
-                def on_popout_dropdown_change(event):
-                    dropdown = popout_buttons_by_name[light_dropdown]
-                    value = dropdown.get()
-                    light_dropdown.set(value)
-                    if light_mode:
-                        select_lightning_mode()
-                    dropdown.selection_clear()
-                    dropdown.icursor(tk.END)
+                    dropdown.set(light_dropdown.get())
+                    dropdown.bind("<<ComboboxSelected>>", on_popout_dropdown_change)
+                    popout_buttons_by_name[light_dropdown] = dropdown
+                    dropdown.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=2, pady=1)
+                elif entry[0] == "DIFFICULTY DROPDOWN":
+                    dropdown = ttk.Combobox(
+                        popout_controls,
+                        values=difficulty_options,
+                        font=popout_button_font,
+                        height=len(difficulty_options),
+                        style="Black.TCombobox",
+                        state='readonly'
+                    )
 
-                dropdown.set(light_dropdown.get())
-                dropdown.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=2, pady=1)
-                dropdown.bind("<<ComboboxSelected>>", on_popout_dropdown_change)
+                    def on_popout_dropdown_change(event):
+                        dropdown = popout_buttons_by_name["DIFFICULTY DROPDOWN"]
+                        value = dropdown.get()
+                        difficulty_dropdown.set(value)
+                        select_difficulty()
+                        dropdown.selection_clear()
+                        dropdown.icursor(tk.END)
+
+                    dropdown.set(difficulty_options[playlist.get("difficulty", 2)])
+                    dropdown.bind("<<ComboboxSelected>>", on_popout_dropdown_change)
+                    popout_buttons_by_name[entry[0]] = dropdown
+                    dropdown.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=2, pady=1)
+                    if not playlist.get("infinite"):
+                        dropdown.grid_remove()
                 col += colspan
-                popout_buttons_by_name[light_dropdown] = dropdown
                 continue
 
             if len(entry) == 4:
@@ -8108,6 +10000,9 @@ def scan_directory(queue=False):
                     directory_files[file] = os.path.join(root, file)
         save_config()
         get_cached_sfw_themes()
+        if playlist.get("infinite", False):
+            get_pop_time_groups(refetch=True)
+            update_current_index()
         print(f"\rScanning Directory....COMPLETE ({len(directory_files)} files)")
     if queue:
         threading.Thread(target=worker, daemon=True).start()
@@ -8233,7 +10128,7 @@ def create_first_row_buttons():
                                 "to be able to use all the other playlist functions, "
                                 "you'll need to fetch the metadata for all the files. "
                                 "You can do this by hitting the '?' button next to the "
-                                "[F]ETCH button. It may take awhile "
+                                "[F] button. It may take awhile "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
     
@@ -8293,12 +10188,7 @@ def create_first_row_buttons():
     current_entry.pack(side="left")
 
     global playlist_size_label
-    if playlist.get("infinite", False):
-        get_pop_time_groups(refetch=True)
-        out_of = total_infinite_files - len(cached_skipped_themes)
-    else:
-        out_of = len(playlist["playlist"])
-    playlist_size_label = tk.Label(first_row_frame, text="/" + str(out_of), bg=BACKGROUND_COLOR, fg="white")
+    playlist_size_label = tk.Label(first_row_frame, text="/?", bg=BACKGROUND_COLOR, fg="white")
     playlist_size_label.pack(side="left")
 
     blank_space(first_row_frame)
@@ -8345,28 +10235,36 @@ def create_first_row_buttons():
                                 help_text=("Apply a filter from your list of saved filters. You can save filters in the FILTER "
                                 "button. The filter will apply to the currently selected playlist."))
     global delete_filters_button
-    delete_filters_button = create_button(first_row_frame, "❌", delete_filters, True,
+    delete_filters_button = create_button(first_row_frame, "❌", delete_filters, not playlist.get("infinite", False),
                                 help_title="DELETE SAVED FILTER",
                                 help_text=("Delete a filter from your list of saved filters.\n\n"
                                 "You will be asked to confirm when deleting."))
 
     if playlist.get("infinite", False):
-            global selected_difficulty
+        # global selected_difficulty_label
+        # selected_difficulty_label = tk.Label(first_row_frame, text="MODE:", bg=BACKGROUND_COLOR, fg="white")
+        # selected_difficulty_label.pack(side="left", padx=(2,0))
 
-            selected_difficulty = tk.StringVar()
-            selected_difficulty.set(difficulty_options[playlist["difficulty"]])
-            global difficulty_dropdown
-            difficulty_dropdown = ttk.Combobox(first_row_frame,
-                                    values=difficulty_options,
-                                    textvariable=selected_difficulty,
-                                    width=17,
-                                    height=len(difficulty_options),
-                                    state="readonly",
-                                    style="Black.TCombobox")
-            difficulty_dropdown.pack(side="left")
-            difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
-            blank_space(first_row_frame)
+        global selected_difficulty
+
+        selected_difficulty = tk.StringVar()
+        selected_difficulty.set(difficulty_options[playlist["difficulty"]])
+        global difficulty_dropdown
+        difficulty_dropdown = ttk.Combobox(first_row_frame,
+                                values=difficulty_options,
+                                textvariable=selected_difficulty,
+                                width=17,
+                                height=len(difficulty_options),
+                                state="readonly",
+                                style="Black.TCombobox")
+        difficulty_dropdown.pack(side="left")
+        difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
+        blank_space(first_row_frame)
+        if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
+            popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid() 
     else:
+        if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
+            popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid_remove()
         global sort_button
         sort_button = create_button(first_row_frame, "SORT", sort, True,
                                     help_title="SORT PLAYLIST",
@@ -8449,7 +10347,10 @@ info_button = create_button(second_row_frame, "[I]NFO", toggle_info_popup,
                                          "The popup will automatically close when the theme ends."))
 title_info_button = create_button(second_row_frame, "𝕋", toggle_title_info_popup,
                               help_title="SHOW/HIDE TITLE POPUP (Shortcut Key = 'o')",
-                              help_text=("Show or hide the title popup at the bottom of the screen."))
+                              help_text=("Show or hide the title popup at the bottom of the screen.\n\n"
+                                         "Additional text can be set/added to the top by middle clicking this button."))
+title_info_button.bind("<Button-2>", prompt_title_top_info_text)
+
 start_info_button = create_button(second_row_frame, "⏪", toggle_auto_info_start,
                               help_title="TOGGLE AUTO INFO POPUP AT START",
                               help_text=("When enabled, will show the theme's info popup at the start.\n\n"
@@ -8471,7 +10372,7 @@ favorite_button = create_button(second_row_frame, "❤", favorite, True,
                               help_text=("Adds the current;y playing theme to a 'Favorite Themes' playlist. Clicking again "
                                          "will remove it from the playlist.\n\nJust a way to keep track of your favorite themes."))
 
-refetch_metadata_button = create_button(second_row_frame, "[F]ETCH", refetch_metadata,
+refetch_metadata_button = create_button(second_row_frame, "[F]", refetch_metadata,
                               help_title="RE[F]ETCH THEME METADATA (Shortcut Key = 'f')",
                               help_text=("Refetch the metadata for the currently playing theme.\n\n"
                                          "You may want to do this if there's mising information that "
@@ -8517,7 +10418,7 @@ blind_round_button = create_button(second_row_frame, "👁", toggle_blind_round,
 
 peek_button = create_button(second_row_frame, "PEEK", toggle_peek, False,
                               help_title="PEEK OVERLAY (Shortcut Key = '=')",
-                              help_text=("Covers the screen except for a small peek window that moves across the screen."))
+                              help_text=("Covers the screen except for a small peek window. Picks one of three variants at random."))
 widen_peek_button = create_button(second_row_frame, "⇔", widen_peek, False,
                               help_title="WIDEN PEEK OVERLAY (Shortcut Key = '_')",
                               help_text=("Widens the gap of the peek window."))
@@ -8625,7 +10526,7 @@ variety_light_mode_button = create_button(second_row_frame, "🎲", lambda: togg
 
 variety_light_mode_button.bind("<Button-2>", test_variety_distrbution)
 
-show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE", show_youtube_playlist, True,
+show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE", show_youtube_playlist,
                               help_title="[Y]OUTUBE VIDEOS (Shortcut Key = 'y')",
                               help_text=("Lists downloaded youtube videos to queue up.\n\nVideos are downloaded on startup "
                                          "based on the youtube_links.txt file in the files/ folder. The downloads are stored in the "
@@ -8633,11 +10534,24 @@ show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE", show
                                          "also listed in the youtube_archive.txt file just to keep track of videos downloaded.\n\n"
                                          "Videos are queued with a UP NEXT popup when selected, and will play after the current theme. "
                                          "Only one video may be queued at a time, and selecting the same video will unqueue it."))
+manage_youtube_button = create_button(second_row_frame, "➕", open_youtube_editor, True,
+                              help_title="MANAGE YOUTUBE VIDEOS",
+                              help_text=("Opens an interface for managing YouTube videos. Press [ADD VIDEO FROM URL] to add one. It takes a few to get the info, so wait a bit after. Heres's an explanation of each field."
+                                         "\n\nVIDEO ID: ID of YouTube video from URL. "
+                                         "\n\nTITLE: Title that will show in the interface. Can be changed freely. Use [⟳] to reset it back to default."
+                                         "\n\nSTART/END: Start/end time of video. Use the [NOW] button to set it to the player's current time."
+                                         "Useful if you want to cut out infros/outros. Use [⟳] to reset each back to default."
+                                         "\n\n[▶]: Play the video. Good for testing the video, and setting start/end times."
+                                         "\n\n[ARCHIVE]: Archives the video. Useful if you don't want it to show up in the interface, but don't want to delete it."
+                                         "\n\n[❌] Delete the video. Also deletes file if downloaded."
+                                         "\n\n[SAVE ALL] Save any changes. A lot of functions auto save, but any title, start, or end changes need to be saved manually."
+                                         "\n\n[SHOW ARCHIVED] Show archived videos. From here videos can be restored, or deleted."))
 
 toggle_censor_bar_button = create_button(second_row_frame, "[C]ENSOR(0)", toggle_censor_bar, False, enabled=censors_enabled,
                               help_title="TOGGLE [C]ENSOR BARS (Shortcut Key = 'c')",
                               help_text=("Toggle censor bars. These are pulled from the censors.json file in the files/ "
-                                         "folder. You can add these using the [➕] button next to this one.\n\n"
+                                         "folder. Additonal censors are also loaded from any json files with 'censor' in the title. "
+                                         "You can add these using the [➕] button next to this one.\n\n"
                                          "The point of this feature is to mainly block out titles that show up too early, "
                                          "since this is a trivia program. They always assume the video is fullscreen, on "
                                          "the main monitor, so it will be weird if you try playing in a window. I would have disabled them "
@@ -8656,7 +10570,7 @@ edit_censors_button = create_button(second_row_frame, "➕", open_censor_editor,
                                          "is pressed. This must be pressed againa fter every change to have it reflect. To delete censors, use the [DELETE] button. this will also only save if the "
                                          "[SAVE CENSOR(S)] button is pressed. Lastly, censors are all linked to the filename."))
 
-toggle_progress_bar_button = create_button(second_row_frame, "BAR", toggle_progress_bar, True, enabled=progress_bar_enabled,
+toggle_progress_bar_button = create_button(second_row_frame, "_", toggle_progress_bar, True, enabled=progress_bar_enabled,
                               help_title="TOGGLE PROGRESS BAR OVERLAY",
                               help_text=("This toggles a progress bar overlay for the current time for the theme.\n\n"
                                          "It's pretty thin, and meant to be subtle as to not obstruct the theme."))
@@ -8690,7 +10604,10 @@ end_button = create_button(second_row_frame, "[E]ND", end_session,
                               help_title="[E]ND SESSION MESSAGE (Shortcut Key = 'e')",
                               help_text="Diplays an end message 'THANKS FOR PLAYING!' slowly scrolling "
                               "up the right side of the screen. Just a nice way for me to end my trivia sessions.\n\n"
-                              "It also lists the 'TOTAL THEMED PLAYED:', which are tracked while the application is running.")
+                              "It also lists the 'TOTAL THEMED PLAYED:', which are tracked while the application is running.\n\n" \
+                              "The end message can be set by middle clicking this button.")
+
+end_button.bind("<Button-2>", prompt_end_session_text)
 
 info_panel = tk.Frame(root, bg="black")
 info_panel.pack(fill="both", expand=True, padx=10, pady=5)
@@ -8873,7 +10790,7 @@ def on_release(key):
                 elif key == key.tab:
                     player.toggle_fullscreen()
                 elif key == key.backspace:
-                    if peek_overlay1:
+                    if (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
                         toggle_peek()
                     else:
                         blind(True)
@@ -8962,6 +10879,16 @@ def on_release(key):
                         playlist["difficulty"] += 1
                         difficulty_dropdown.current(playlist["difficulty"])
                         select_difficulty()
+                elif key.char == 'a':
+                    send_scoreboard_command("align")
+                elif key.char == 'x':
+                    send_scoreboard_command("extend")
+                elif key.char == 'w':
+                    send_scoreboard_command("shrink")
+                elif key.char == 'z':
+                    send_scoreboard_command("grow")
+                elif key.char == 'q':
+                    send_scoreboard_command("toggle")
     except AttributeError as e:
         print(f"Error: {e}")
 
@@ -8983,8 +10910,8 @@ create_first_row_buttons()
 threading.Thread(target=load_default_char_images, daemon=True).start()
 
 # Start downloading videos in the background
-download_thread = threading.Thread(target=download_videos, daemon=True)
-download_thread.start()
+# download_thread = threading.Thread(target=download_videos, daemon=True)
+# download_thread.start()
 
 # Start updating the seek bar
 root.after(1000, update_seek_bar)
