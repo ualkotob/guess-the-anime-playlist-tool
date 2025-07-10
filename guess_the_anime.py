@@ -47,7 +47,7 @@ except OSError as e:
     exit(1)
 
 # Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance("--no-xlib", "-q") #instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
+instance = vlc.Instance("--no-xlib", "-q", "--fullscreen") # "--video-on-top", instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
 player = instance.media_player_new()
 # =========================================
 #       *GLOBAL VARIABLES/CONSTANTS
@@ -4196,24 +4196,24 @@ light_modes = {
         )
     },
     "c. pixel":{
-        "length":12,
+        "length":20,
         "icon":"🟦",
         "muted": True,
         "desc":(
             "You will be a pixelated image of a character.\n"
             "They will become less pixelated over time.\n"
-            "You have " + str(light_round_length) + " seconds to guess.\n\n"
+            "You have " + str(20) + " seconds to guess.\n\n"
             "1 PT for the first to guess the character!"
         )
     },
     "c. reveal":{
-        "length":12,
+        "length":20,
         "icon":"🌘",
         "muted": True,
         "desc":(
             "You show a black image of a character.\n"
             "They will be revealed over time.\n"
-            "You have " + str(light_round_length) + " seconds to guess.\n\n"
+            "You have " + str(20) + " seconds to guess.\n\n"
             "1 PT for the first to guess the character!"
         )
     },
@@ -4317,11 +4317,6 @@ def get_light_round_time():
 light_speed_modifier = 1
 light_fullscreen_try = False
 
-def blind_not_top():
-    black_overlay.attributes("-topmost", False)
-    mismatched_player.set_fullscreen(False)
-    mismatched_player.set_fullscreen(True)
-
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay, light_fullscreen_try
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
@@ -4360,18 +4355,15 @@ def update_light_round(time):
             if time_left <= light_round_length-0.1 and not light_fullscreen_try:
                 light_fullscreen_try = True
                 if light_mode != 'mismatch':
-                    mismatched_player.set_fullscreen(False)
-                    mismatched_player.set_fullscreen(True)
-                else:
                     player.set_fullscreen(False)
                     player.set_fullscreen(True)
             if time_left < 1 and light_speed_modifier != 1:
                 light_speed_modifier = 1
                 player.set_rate(light_speed_modifier)
-            if light_mode == 'mismatch' and time_left > 11:
-                mismatched_player.set_fullscreen(False)
-                mismatched_player.set_fullscreen(True)
-                root.after(500, blind_not_top)
+            if light_mode == 'mismatch' and time_left > 10:
+                top_info("MISMATCHED VISUALS")
+                set_frame_number("GUESS BY MUSIC ONLY")
+                set_light_round_number("#" + str(light_round_number))
             if song_overlay_boxes:
                 toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
                 player.audio_set_mute(time_left > 4)
@@ -4408,19 +4400,19 @@ def update_light_round(time):
                 interval = len(title_light_letters) * 0.09
                 final_count = round((5*interval)+starting_letters)
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval)+starting_letters)
-                set_frame_number(f"{word_num}/{final_count} REVEALS")
+                set_frame_number(f"{word_num}/{final_count} REVEALS", inverse=character_round_answer)
                 toggle_title_overlay(get_title_light_string(word_num))
             elif scramble_overlay_root:
                 interval = len(scramble_overlay_letters) * 0.09
                 final_count = round((5*interval))
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval))
-                set_frame_number(f"{word_num}/{final_count} PLACEMENTS")
+                set_frame_number(f"{word_num}/{final_count} PLACEMENTS", inverse=character_round_answer)
                 toggle_scramble_overlay(num_letters=word_num)
             elif swap_overlay_root:
                 interval = len(swap_pairs) * 0.1
                 final_count = round((5*interval))
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval))
-                set_frame_number(f"{word_num}/{final_count} SWAPS")
+                set_frame_number(f"{word_num}/{final_count} SWAPS", inverse=character_round_answer)
                 toggle_swap_overlay(num_swaps=word_num)
             elif peek_overlay1:
                 gap = get_peek_gap(currently_playing.get("data"))
@@ -4440,31 +4432,16 @@ def update_light_round(time):
             elif character_overlay_boxes:
                 reveal_num = min(4, (int(light_round_length - (time_left)) // (light_round_length // 4)) + 1)
                 toggle_character_overlay(num_characters=reveal_num)
-                set_frame_number(f"{reveal_num}/{4}")
+                set_frame_number(f"{reveal_num}/{4}", inverse=character_round_answer)
             elif character_pixel_overlay:
                 total_steps = len(character_pixel_images)
                 step_num = min(total_steps-1, (int(light_round_length - (time_left)) // (light_round_length // total_steps)))
                 toggle_character_pixel_overlay(step=step_num)
-                set_frame_number(f"{step_num+1}/{total_steps}")
+                set_frame_number(f"{step_num+1}/{total_steps}", inverse=True)
             elif reveal_image_window:
                 progress = (light_round_length - time_left) / light_round_length
                 progress = min(max(progress, 0.0), 1.0)
-
-                # Define how much each quarter contributes to the total reveal
-                # These should sum to 1.0
-                quarter_weights = [0.1, 0.15, 0.20, 0.50]
-
-                # Determine current quarter and interpolate within it
-                quarter = int(progress * 4)
-                quarter_progress = (progress * 4) - quarter
-
-                if quarter >= 4:
-                    eased = 1.0
-                else:
-                    eased = sum(quarter_weights[:quarter]) + quarter_weights[quarter] * quarter_progress
-
-                # Final block percent (starting at 100%, ending at 50%)
-                block_percent = 100 - (95 * eased)
+                block_percent = 100 - (100 * progress)
                 toggle_character_reveal_overlay(percent=block_percent / 100, destroy=False)
             elif profile_overlay_window:
                 bio_text = character_round_answer[3]
@@ -4486,7 +4463,7 @@ def update_light_round(time):
                 # Call the toggle
                 toggle_character_profile_overlay(word_count=words_to_show, image_countdown=image_countdown)
                 if image_countdown > 0:
-                    set_frame_number(f"IMAGE IN {image_countdown}...")
+                    set_frame_number(f"IMAGE IN {image_countdown}...", inverse=True)
                 else:
                     set_frame_number()
             elif tag_cloud_tags:
@@ -4512,7 +4489,7 @@ def update_light_round(time):
             if edge_overlay_box:
                 set_countdown(round(time_left/light_speed_modifier), position="center")
             else:
-                set_countdown(round(time_left/light_speed_modifier))
+                set_countdown(round(time_left/light_speed_modifier), inverse=character_round_answer)
     if light_mode and time < 1:
         toggle_coming_up_popup(False, "Lightning Round")
         if not light_round_started:
@@ -4558,7 +4535,7 @@ def update_light_round(time):
                 toggle_character_overlay(num_characters=1)
                 top_info("CHARACTERS")
             elif 'c.' in light_mode:
-                top_info("GUESS THE CHARACTER")
+                top_info("GUESS THE CHARACTER", inverse=True)
                 min_desc = 0
                 if light_mode == 'c. profile':
                     min_desc = 120
@@ -4574,8 +4551,11 @@ def update_light_round(time):
                 elif light_mode == 'c. profile':
                     toggle_character_profile_overlay()
                 elif light_mode == 'c. name':
-                    top_info("MUST SAY FULL NAME")
+                    top_info("MUST SAY FULL NAME", inverse=True)
                     start_title_round()
+                if light_modes[light_mode].get("muted"):
+                    now_playing_background_music(track = None)
+                    toggle_mute(True)
             elif light_mode == 'tags':
                 set_cloud_tags()
                 top_info("TAGS")
@@ -4599,14 +4579,13 @@ def update_light_round(time):
         player.set_time(int(float(light_round_start_time))*1000)
         if light_mode == 'mismatch':
             mismatched_player.set_time(int(float(light_round_start_time))*1000)
-            mismatched_player.set_fullscreen(False)
-            mismatched_player.set_fullscreen(True)
         else:
             player.set_fullscreen(False)
             player.set_fullscreen(True)
-        set_countdown(light_round_length)
+        set_countdown(light_round_length, inverse=character_round_answer)
         if light_mode != 'peek':
-            set_light_round_number("#" + str(light_round_number))
+            set_light_round_number()
+            set_light_round_number("#" + str(light_round_number), inverse=character_round_answer)
         else:
             set_light_round_number()
 
@@ -4632,7 +4611,7 @@ def get_char_types_by_popularity():
     return char_options
 
 def clean_up_light_round():
-    global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay, light_muted, light_fullscreen_try, character_round_answer
+    global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay, frame_light_round_started, light_muted, light_fullscreen_try, character_round_answer
     light_fullscreen_try = False
     mismatched_player.stop()
     mismatched_player.set_media(None)  # Reset the media
@@ -4640,6 +4619,7 @@ def clean_up_light_round():
     character_round_answer = None
     light_name_overlay = False
     light_muted = False
+    frame_light_round_started = False
     character_round_characters = []
     tag_cloud_tags = []
     light_episode_names = []
@@ -4997,7 +4977,7 @@ def setup_frame_light_round():
 def update_frame_light_round(currently_playing_filename):
     global frame_light_round_started, frame_light_round_frames, frame_light_round_frame_index, frame_light_round_frame_time, frame_light_round_pause
     
-    if currently_playing.get('filename') != currently_playing_filename:
+    if not frame_light_round_started or currently_playing.get('filename') != currently_playing_filename:
         return
 
     show_frame_length = (light_round_length/4)*1000
@@ -6289,7 +6269,7 @@ def get_cached_sfw_themes():
                     else:
                         cached_sfw_themes["eds"].append(filename)
 
-instance2 = vlc.Instance("--no-audio", "--no-xlib", "-q")
+instance2 = vlc.Instance("--no-audio", "--no-xlib", "-q", "--video-on-top", "--fullscreen")
 mismatched_player = instance2.media_player_new()
 mismatch_visuals = None
 def get_mismatched_theme():
@@ -6708,7 +6688,7 @@ def has_char_descriptions(characters, length, types=None):
 #         *C. PIXEL LIGHTNING ROUND
 # =========================================
 
-def generate_pixelation_steps(steps=4, final_pixel_size=7, max_pixel_size=45):
+def generate_pixelation_steps(steps=6, final_pixel_size=7, max_pixel_size=45):
     """
     Generates progressively less pixelated versions of the image.
     Returns a list of Tkinter-compatible images (most pixelated first).
@@ -6835,7 +6815,7 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False):
         reveal_image_window.overrideredirect(True)
         reveal_image_window.attributes("-topmost", True)
         reveal_image_window.attributes("-alpha", 0.98)
-        reveal_image_window.configure(bg="black", highlightbackground="white", highlightthickness=4)
+        reveal_image_window.configure(bg="white", highlightbackground="black", highlightthickness=4)
 
         x = (screen_width - new_size[0]) // 2
         y = (screen_height - new_size[1]) // 2
@@ -6887,6 +6867,9 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     target_width = int(screen_width * 0.7)
     target_height = int(screen_height * 0.7)
 
+    back_color = "white"
+    front_color = "black"
+
     # Scale image to fit vertically
     pil_img = ImageTk.getimage(img).copy()
     scale = target_height / pil_img.height
@@ -6910,35 +6893,35 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         profile_overlay_window.overrideredirect(True)
         profile_overlay_window.attributes("-topmost", True)
         profile_overlay_window.attributes("-alpha", 0.95)
-        profile_overlay_window.configure(bg="black", highlightbackground="white", highlightthickness=4)
+        profile_overlay_window.configure(bg=back_color, highlightbackground=front_color, highlightthickness=4)
 
         x = (screen_width - target_width) // 2
         y = (screen_height - target_height) // 2
         profile_overlay_window.geometry(f"{target_width}x{target_height}+{x}+{y}")
 
         # Main layout container
-        container = tk.Frame(profile_overlay_window, bg="black")
+        container = tk.Frame(profile_overlay_window, bg=back_color)
         container.pack(fill="both", expand=True)
 
         # Split left/right
-        left_frame = tk.Frame(container, bg="black")
+        left_frame = tk.Frame(container, bg=back_color)
         left_frame.pack(side="left", fill="both", expand=False, ipadx=5, ipady=10, padx=5, pady=10)
         left_frame.config(width=desc_width, height=target_height)
 
-        right_frame = tk.Frame(container, bg="black")
+        right_frame = tk.Frame(container, bg=back_color)
         right_frame.pack(side="right", fill="both", expand=False, ipadx=5, ipady=5, padx=5, pady=10)
         right_frame.config(width=image_width, height=target_height)
 
-        bio_label = tk.Label(left_frame, text="DESCRIPTION:", font=font_title, bg="black", fg="white",
+        bio_label = tk.Label(left_frame, text="DESCRIPTION:", font=font_title, bg=back_color, fg=front_color,
                              wraplength=wraplength, justify="left", anchor="nw")
         bio_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
 
-        profile_text_label = tk.Label(left_frame, text="", font=font_body, bg="black", fg="white",
+        profile_text_label = tk.Label(left_frame, text="", font=font_body, bg=back_color, fg=front_color,
                              wraplength=wraplength, justify="left", anchor="nw")
         profile_text_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
 
         # Right: Image or countdown
-        profile_image_label = tk.Label(right_frame, bg="black")
+        profile_image_label = tk.Label(right_frame, bg=back_color)
         profile_image_label.pack(expand=True)
 
         # Store resized image
@@ -6949,14 +6932,14 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         profile_image_label.config(
             image=tk_blurred_img,
             text="",
-            bg="black"
+            bg=back_color
         )
         profile_image_label.image = tk_blurred_img
     else:
         profile_image_label.config(
             image=profile_image_label.scaled_img,
             text="",
-            bg="black"
+            bg=back_color
         )
         profile_image_label.image = profile_image_label.scaled_img
 
@@ -6970,7 +6953,7 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         if not hasattr(update_profile_bio_text, "_dummy_label"):
             update_profile_bio_text._dummy_label = tk.Label(
                 profile_overlay_window, font=label_font, wraplength=wraplength,
-                justify="left", bg="black", fg="white"
+                justify="left", bg=back_color, fg=front_color
             )
             # Place it off-screen so it still renders but doesn’t appear
             update_profile_bio_text._dummy_label.place(x=-5000, y=-5000)
@@ -7346,28 +7329,28 @@ def set_light_names():
 #          *LIGHTNING ROUND OVERLAYS
 # =========================================
 
-def set_countdown(value=None, position="top right"):
+def set_countdown(value=None, position="top right", inverse=False):
     """Creates, updates, or removes the countdown overlay in a separate always-on-top window with a semi-transparent background."""
-    set_floating_text("Countdown", value, position=position)
+    set_floating_text("Countdown", value, position=position, inverse=inverse)
 
-def set_light_round_number(value=None):
+def set_light_round_number(value=None, inverse=False):
     size = 80
     if value:
         if len(value) >= 5:
             size = 48
         elif len(value) >= 4:
             size = 62
-    set_floating_text("Lightning Round Number", value, position="bottom right", size=size)
+    set_floating_text("Lightning Round Number", value, position="bottom right", size=size, inverse=inverse)
 
-def set_frame_number(value=None):
-    set_floating_text("Frame Number", value, position="bottom center")
+def set_frame_number(value=None, inverse=False):
+    set_floating_text("Frame Number", value, position="bottom center", inverse=inverse)
 
-def top_info(value=None, size=80, width_max=0.7):
-    set_floating_text("Top Info", value, position="top center", size=size, width_max=width_max)
+def top_info(value=None, size=80, width_max=0.7, inverse=False):
+    set_floating_text("Top Info", value, position="top center", size=size, width_max=width_max, inverse=inverse)
 
 floating_windows = {}  # Dictionary to store windows and labels
 
-def set_floating_text(name, value, position="top right", size=80, width_max=0.7):
+def set_floating_text(name, value, position="top right", size=80, width_max=0.7, inverse=False):
     """
     Creates, updates, or removes a floating overlay window with text.
 
@@ -7385,6 +7368,13 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7)
             del floating_windows[name]
         return
 
+    if inverse:
+        back_color = "white"
+        front_color = "black"
+    else:
+        back_color = "black"
+        front_color = "white"
+
     # Create the window if it doesn't exist
     if name not in floating_windows:
         window = tk.Toplevel()
@@ -7392,9 +7382,9 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7)
         window.overrideredirect(True)  # Remove window borders
         window.attributes("-topmost", True)  # Keep it on top
         window.wm_attributes("-alpha", 0.7)  # Semi-transparent background
-        window.configure(bg="black")
+        window.configure(bg=back_color)
 
-        label = tk.Label(window, font=("Arial", size, "bold"), fg="white", bg="black")
+        label = tk.Label(window, font=("Arial", size, "bold"), fg=front_color, bg=back_color)
         label.pack(padx=20, pady=10)
 
         floating_windows[name] = {"window": window, "label": label}
@@ -7417,7 +7407,8 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7)
         test_font.configure(size=current_size)
 
     # Update the label text
-    label.config(text=str(value), font=test_font)
+    window.config(bg=back_color)
+    label.config(text=str(value), font=test_font, fg=front_color, bg=back_color)
 
     # Function to set position after Tkinter updates
     def update_position():
@@ -7651,7 +7642,7 @@ def now_playing_background_music(track = None):
         for ext in valid_music_ext:
             basename = basename.replace(ext, "")
         track = "BGM: " + basename
-    set_floating_text("Now Playing Background Music", track, position="bottom left", size=14)
+    set_floating_text("Now Playing Background Music", track, position="bottom left", size=14, inverse=character_round_answer)
 
 # =========================================
 #            *INFORMATION POPUP
@@ -8074,7 +8065,6 @@ def play_video(index=playlist["current_index"]):
     toggle_title_popup(False)
     set_countdown()
     toggle_coming_up_popup(False)
-    frame_light_round_started = False
     if youtube_queue is not None:
         currently_playing = {
             "type":"youtube",
