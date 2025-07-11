@@ -4403,16 +4403,35 @@ def update_light_round(time):
                 set_frame_number(f"{word_num}/{final_count} REVEALS", inverse=character_round_answer)
                 toggle_title_overlay(get_title_light_string(word_num))
             elif scramble_overlay_root:
-                interval = len(scramble_overlay_letters) * 0.09
-                final_count = round((5*interval))
-                word_num = min(final_count, int(((light_round_length-time_left)/3)*interval))
-                set_frame_number(f"{word_num}/{final_count} PLACEMENTS", inverse=character_round_answer)
+                total_letters = max(1, round(len(scramble_overlay_letters) * 0.45))  # Just in case
+                placement_cutoff = light_round_length * (2 / 3)
+
+                if time_left >= light_round_length - placement_cutoff:
+                    # We're still in the placement phase
+                    elapsed = light_round_length - time_left
+                    progress = elapsed / placement_cutoff  # 0 to 1
+                    word_num = int(total_letters * progress)
+                else:
+                    # Final 1/3 — all letters placed, time to guess
+                    word_num = total_letters
+                set_frame_number(f"{word_num}/{total_letters} PLACEMENTS", inverse=character_round_answer)
                 toggle_scramble_overlay(num_letters=word_num)
             elif swap_overlay_root:
-                interval = len(swap_pairs) * 0.1
-                final_count = round((5*interval))
-                word_num = min(final_count, int(((light_round_length-time_left)/3)*interval))
-                set_frame_number(f"{word_num}/{final_count} SWAPS", inverse=character_round_answer)
+                # Total swaps you want to show, based on number of pairs
+                total_swaps = max(1, len(swap_pairs) // 2)
+
+                # Define the cutoff point — after this, no more swaps
+                swap_cutoff = light_round_length * (2 / 3)
+
+                if time_left >= light_round_length - swap_cutoff:
+                    # Still in swap phase
+                    elapsed = light_round_length - time_left
+                    progress = elapsed / swap_cutoff  # 0 to 1
+                    word_num = int(total_swaps * progress)
+                else:
+                    # In the final 1/3 — guessing phase
+                    word_num = total_swaps
+                set_frame_number(f"{word_num}/{total_swaps} SWAPS", inverse=character_round_answer)
                 toggle_swap_overlay(num_swaps=word_num)
             elif peek_overlay1:
                 gap = get_peek_gap(currently_playing.get("data"))
@@ -4839,7 +4858,7 @@ def set_variety_light_mode():
         round_options = [r for r in round_options if r != "song"]
     if len((data.get("synopsis") or "").split()) <= 40:
         round_options = [r for r in round_options if r != "synopsis"]
-    if len(get_unique_letters(get_base_title())) < 7:
+    if len(get_base_title()) < 6 and len(get_unique_letters(get_base_title())) < 7:
         round_options = [r for r in round_options if r != "title"]
     if len(data.get("characters", [])) < 4:
         round_options = [r for r in round_options if r != "character"]
@@ -5321,7 +5340,7 @@ def measure_text_height(text, wraplength, font=("Arial", 60), justify="left"):
 #          *TITLE LIGHTNING ROUND
 # =========================================
 
-ALL_TITLE_MODES = ["hangman", "scramble", "swap"]
+ALL_TITLE_MODES = ["reveal", "scramble", "swap"]
 available_title_modes = []
 
 def get_next_title_mode(title_text):
@@ -5343,15 +5362,14 @@ def get_next_title_mode(title_text):
         mode = available_title_modes.pop(0)
 
         # Check if it's allowed
-        if mode == "scramble" and get_line_count() > 2:
-            # Scramble mode disallowed for long titles — skip
+        if (mode == "scramble" and get_line_count() > 2) or (mode == "reveal" and len(get_unique_letters(get_base_title())) < 7):
             available_title_modes.append(mode)
             continue
 
         return mode
 
     # Fallback: all modes invalid (e.g., all were scramble and too long)
-    return "hangman"
+    return "swap"
 
 title_light_letters = None
 title_light_string = None
@@ -5849,7 +5867,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
                 continue
             tx, ty = target_coords[i]
             letter_item = swap_overlay_canvas.create_text(
-                tx, ty, text=char, font=swap_title_font, fill=front_color, anchor="center"
+                tx, ty, text=char, font=swap_title_font, fill="gray", anchor="center"
             )
             swap_overlay_letters.append({
                 "item": letter_item,
@@ -5887,18 +5905,22 @@ def animate_swap_letters(letter_a, letter_b):
         return x, y
 
     def animate():
-        nonlocal step
-        t = step / steps
-        if t > 1:
-            swap_overlay_canvas.coords(letter_a["item"], x1, y1)
-            swap_overlay_canvas.coords(letter_b["item"], x0, y0)
-            letter_a["pos"], letter_b["pos"] = (x1, y1), (x0, y0)
-            return
-        ax, ay = get_arc_pos(t, (x0, y0), (x1, y1), up=True)
-        bx, by = get_arc_pos(t, (x1, y1), (x0, y0), up=False)
-        swap_overlay_canvas.coords(letter_a["item"], ax, ay)
-        swap_overlay_canvas.coords(letter_b["item"], bx, by)
-        step += 1
+        if player.is_playing():
+            nonlocal step
+            t = step / steps
+            if t > 1:
+                swap_overlay_canvas.coords(letter_a["item"], x1, y1)
+                swap_overlay_canvas.coords(letter_b["item"], x0, y0)
+                letter_a["pos"], letter_b["pos"] = (x1, y1), (x0, y0)
+                # ✅ Change colors after swap is complete
+                swap_overlay_canvas.itemconfig(letter_a["item"], fill="white")
+                swap_overlay_canvas.itemconfig(letter_b["item"], fill="white")
+                return
+            ax, ay = get_arc_pos(t, (x0, y0), (x1, y1), up=True)
+            bx, by = get_arc_pos(t, (x1, y1), (x0, y0), up=False)
+            swap_overlay_canvas.coords(letter_a["item"], ax, ay)
+            swap_overlay_canvas.coords(letter_b["item"], bx, by)
+            step += 1
         swap_overlay_root.after(20, animate)
 
     animate()
@@ -7751,8 +7773,8 @@ def toggle_title_popup(show, title_only=False):
     if black_overlay:
         blind()
     
-    if peek_overlay1:
-        toggle_peek_overlay(destroy=True)
+    for overlay in [toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay]:
+        overlay(destroy=True)
 
     if not title_window:
         title_window = tk.Toplevel()
@@ -8154,7 +8176,7 @@ def play_filename(filename, fullscreen=True):
             set_black_screen(False)
             peek_round_toggle = False
             button_seleted(peek_round_button, peek_round_toggle)
-            toggle_peek_overlay()
+            toggle_peek()
             root.after(500, lambda: player.play())
         else:
             manual_blind = False
