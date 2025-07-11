@@ -4579,6 +4579,8 @@ def update_light_round(time):
         player.set_time(int(float(light_round_start_time))*1000)
         if light_mode == 'mismatch':
             mismatched_player.set_time(int(float(light_round_start_time))*1000)
+            mismatched_player.set_fullscreen(False)
+            mismatched_player.set_fullscreen(True)
         else:
             player.set_fullscreen(False)
             player.set_fullscreen(True)
