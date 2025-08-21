@@ -93,6 +93,9 @@ directory_files = {}
 title_top_info_txt = ""
 end_session_txt = ""
 host = ""
+inverted_colors = False
+inverted_positions = False
+half_points = False
 YOUTUBE_API_KEY = ""
 OPENAI_API_KEY = ""
 CONFIG_FILE = "files/config.json"
@@ -105,6 +108,10 @@ CENSOR_FILE = "files/censors.csv"
 CENSOR_JSON_FILE = "files/censors.json"
 TAGGED_FILE = "files/tagged.txt"
 HIGHLIGHT_COLOR = "gray26"
+OVERLAY_BACKGROUND_COLOR = "black"
+OVERLAY_TEXT_COLOR = "white"
+INVERSE_OVERLAY_BACKGROUND_COLOR = "white"
+INVERSE_OVERLAY_TEXT_COLOR = "black"
 
 # =========================================
 #         *FETCHING ANIME METADATA
@@ -2918,6 +2925,9 @@ def save_config():
         os.makedirs(files_folder)
     config = {
         "host": host,
+        "inverted_colors": inverted_colors,
+        "inverted_positions": inverted_positions,
+        "half_points": half_points,
         "youtube_api_key": YOUTUBE_API_KEY,
         "openai_api_key": OPENAI_API_KEY,
         "title_top_info_txt": title_top_info_txt,
@@ -2936,7 +2946,9 @@ def save_config():
 def load_config():
     """Function to load configuration"""
     global directory_files, directory, playlist, title_top_info_txt, end_session_txt, host, YOUTUBE_API_KEY, OPENAI_API_KEY
-    global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings
+    global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings, bonus_points
+    global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR
+    global inverted_colors, inverted_positions, half_points
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -2952,6 +2964,9 @@ def load_config():
             lightning_mode_settings = update_lightning_mode_settings(config.get("lightning_mode_settings", copy.deepcopy(lightning_mode_settings_default)))
             selected_light_mode_settings = config.get("selected_light_mode_settings", "")
             saved_lightning_mode_settings = config.get("saved_lightning_mode_settings", {})
+            inverted_colors = config.get("inverted_colors", False)
+            inverted_positions = config.get("inverted_positions", False)
+            half_points = config.get("half_points", False)
             if not selected_light_mode_settings:
                 lightning_mode_settings = update_lightning_mode_settings(copy.deepcopy(lightning_mode_settings_default))
             elif selected_light_mode_settings in saved_lightning_mode_settings:
@@ -2959,6 +2974,21 @@ def load_config():
             set_openai_client_key()
             update_playlist_name()
             update_current_index()
+            if half_points:
+                bonus_points = ['½ PT', '1 PT', '½ PT']
+            else:
+                bonus_points = ['1 PT', '2 PTs', '2 PTs']
+
+            if inverted_colors:
+                OVERLAY_BACKGROUND_COLOR = "white"
+                OVERLAY_TEXT_COLOR = "black"
+                INVERSE_OVERLAY_BACKGROUND_COLOR = "black"
+                INVERSE_OVERLAY_TEXT_COLOR = "white"
+            else:
+                OVERLAY_BACKGROUND_COLOR = "black"
+                OVERLAY_TEXT_COLOR = "white"
+                INVERSE_OVERLAY_BACKGROUND_COLOR = "white"
+                INVERSE_OVERLAY_TEXT_COLOR = "black"
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -6078,7 +6108,7 @@ def toggle_clues_overlay(destroy=False):
     clues_overlay.overrideredirect(True)
     clues_overlay.attributes("-topmost", True)
     clues_overlay.attributes("-alpha", 0.8)
-    clues_overlay.configure(bg="black")
+    clues_overlay.configure(bg=OVERLAY_BACKGROUND_COLOR)
 
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
@@ -6100,14 +6130,14 @@ def toggle_clues_overlay(destroy=False):
     clues_overlay.grid_rowconfigure(3, weight=1)
 
     def create_box(row, column, title, value, key, columnspan=1, rowspan=1):
-        frame = tk.Frame(clues_overlay, bg="black", padx=20, pady=20, highlightbackground="white", highlightthickness=4)
+        frame = tk.Frame(clues_overlay, bg=OVERLAY_BACKGROUND_COLOR, padx=20, pady=20, highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=4)
         frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan, sticky="nsew", padx=10, pady=10)
 
         if title:
-            tk.Label(frame, text=title.upper(), font=("Arial", 50, "bold", "underline"), fg="white", bg="black").pack(anchor="center")
+            tk.Label(frame, text=title.upper(), font=("Arial", 50, "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR).pack(anchor="center")
 
         val_size = 70 - max(0, (value.count('\n') - 5) * 5)
-        label = tk.Label(frame, text=value, font=("Arial", val_size), fg="white", bg="black",
+        label = tk.Label(frame, text=value, font=("Arial", val_size), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
                          wraplength=((overlay_width // 3) * columnspan - 10), justify="center")
         label.pack(fill="both", expand=True)
         clues_overlay_labels[key] = label  # Store reference
@@ -6171,28 +6201,28 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
                 box.overrideredirect(True)
                 box.attributes("-topmost", True)
                 box.attributes("-alpha", 0.85)
-                box.configure(bg="black", padx=20, pady=20, highlightbackground="white", highlightthickness=4)
+                box.configure(bg=OVERLAY_BACKGROUND_COLOR, padx=20, pady=20, highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=4)
 
                 song_overlay_boxes[key] = box
 
                 # Title label
                 if key == "music":
-                    title_lbl = tk.Label(box, text=title, font=("Arial", font_size, "bold"), fg="white", bg="black")
+                    title_lbl = tk.Label(box, text=title, font=("Arial", font_size, "bold"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
                 else:
-                    title_lbl = tk.Label(box, text=title, font=("Arial", 60, "bold", "underline"), fg="white", bg="black")
+                    title_lbl = tk.Label(box, text=title, font=("Arial", 60, "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
                 if text:
                     title_lbl.pack(anchor="center")
                 else:
                     title_lbl.pack(anchor="center", fill="both", expand=True)
 
                 if key == "music":
-                    text_lbl = tk.Label(box, text="🎵", font=("Arial", 1000), bg="black", fg=generate_random_color(100,255))
+                    text_lbl = tk.Label(box, text="🎵", font=("Arial", 1000), bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100,255))
                     text_lbl.place(relx=0.5, rely=0.5, anchor="center")
                     # Start pulsating the music icon
                     pulsate_music_icon(text_lbl)
                 elif text:
                     # Text label (optional)
-                    text_lbl = tk.Label(box, text=text, font=("Arial", font_size), fg="white", bg="black", justify="center")
+                    text_lbl = tk.Label(box, text=text, font=("Arial", font_size), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, justify="center")
                     text_lbl.pack(fill="both", expand=True)
                     adjust_font_size(text_lbl, box_width, base_size=font_size, min_size=20)
 
@@ -6265,11 +6295,19 @@ def generate_anime_trivia(data, display=False):
             model="gpt-4-turbo",
             input=prompt
         )
+        def extract_response_text(response):
+            texts = []
+            for item in response.output:
+                if hasattr(item, "content") and item.content:
+                    for c in item.content:
+                        if hasattr(c, "text") and c.text:
+                            texts.append(c.text)
+            return "\n".join(texts) if texts else None
 
-        content = response.output[0].content[0].text
+        content = extract_response_text(response)
         if display:
             print(content)
-        if "Question:" in content and "Answer:" in content:
+        if content and "Question:" in content and "Answer:" in content:
             return parse_trivia_response(content)
         else:
             return no_trivia_available()
@@ -6371,8 +6409,8 @@ def toggle_synopsis_overlay(text=None, destroy=False):
     if synopsis_overlay is None and text:
         
         title_header_txt = "SYNOPSIS:"
-        back_color = "black"
-        front_color = "white"
+        back_color = OVERLAY_BACKGROUND_COLOR
+        front_color = OVERLAY_TEXT_COLOR
         if light_trivia_answer:
             title_header_txt = "TRIVIA:"
             back_color = "dark gray"
@@ -6573,11 +6611,11 @@ def toggle_title_overlay(title_text=None, destroy=False):
     y = (screen_height - overlay_height) // 2
 
     spacing = 64
-    front_color = "white"
-    back_color = "black"
+    front_color = OVERLAY_TEXT_COLOR
+    back_color = OVERLAY_BACKGROUND_COLOR
     if character_round_answer:
-        front_color = "black"
-        back_color = "white"
+        front_color = INVERSE_OVERLAY_TEXT_COLOR
+        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
 
     if title_overlay is None:
         title_overlay_items = []
@@ -6685,11 +6723,11 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_canvas = None
         return
 
-    front_color = "white"
-    back_color = "black"
+    front_color = OVERLAY_TEXT_COLOR
+    back_color = OVERLAY_BACKGROUND_COLOR
     if character_round_answer:
-        front_color = "black"
-        back_color = "white"
+        front_color = INVERSE_OVERLAY_TEXT_COLOR
+        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
 
     if not scramble_overlay_root:
         scramble_title_text = get_base_title()
@@ -6893,11 +6931,11 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         swap_pairs.clear()
         return
 
-    front_color = "white"
-    back_color = "black"
+    front_color = OVERLAY_TEXT_COLOR
+    back_color = OVERLAY_BACKGROUND_COLOR
     if character_round_answer:
-        front_color = "black"
-        back_color = "white"
+        front_color = INVERSE_OVERLAY_TEXT_COLOR
+        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
 
     if not swap_overlay_root:
         swap_title_text = get_base_title()
@@ -7074,9 +7112,9 @@ def animate_swap_letters(letter_a, letter_b):
                 swap_overlay_canvas.coords(letter_b["item"], x0, y0)
                 letter_a["pos"], letter_b["pos"] = (x1, y1), (x0, y0)
                 # ✅ Change colors after swap is complete
-                front_color = "white"
+                front_color = OVERLAY_TEXT_COLOR
                 if character_round_answer:
-                    front_color = "black"
+                    front_color = INVERSE_OVERLAY_TEXT_COLOR
                 swap_overlay_canvas.itemconfig(letter_a["item"], fill=front_color)
                 swap_overlay_canvas.itemconfig(letter_b["item"], fill=front_color)
                 return
@@ -7176,7 +7214,7 @@ def choose_peek_direction():
 peeking = False
 peek_overlay1 = None
 peek_overlay2 = None
-def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
+def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
     """Toggles two fullscreen overlays that reveal the screen in a chosen direction by percentage.
 
     Args:
@@ -7208,7 +7246,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
         screen_height = root.winfo_screenheight()
 
         # Calculate the gap in pixels as a percentage of the screen size
-        gap_pixels = ((gap / 100) * screen_width) + (gap_modifier*(screen_width/100)) # Use screen width for gap calculation
+        gap_pixels = ((gap+gap_modifier / 100) * screen_width)
         # Initialize overlay dimensions and positions
         first_width, first_height, first_x, first_y = 0, 0, 0, 0
         second_width, second_height, second_x, second_y = 0, 0, 0, 0
@@ -7275,7 +7313,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
         second_y = int(second_y)
 
         # image_color = get_image_color()
-        image_color = "Black"
+        image_color = "black"
         # First overlay
         if peek_overlay1 is None:
             peek_overlay1 = tk.Toplevel(root)
@@ -7595,7 +7633,7 @@ character_round_image_cache_default = []
 character_round_image_cache_default_urls =[
     "https://w0.peakpx.com/wallpaper/104/618/HD-wallpaper-anime-error-female-dress-black-cute-hair-windows-girl-anime-page.jpg",
     "https://i.imgflip.com/1xuu83.jpg",
-    "https://platform.polygon.com/wp-content/uploads/sites/2/chorus/uploads/chorus_asset/file/23653986/20073937.jpeg",
+    "https://www.pngarts.com/files/8/Confused-Anime-PNG-Background-Image.png",
     "https://cdn.anidb.net/misc/confused.png",
 ]
 
@@ -8234,8 +8272,8 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     target_width = int(screen_width * 0.7)
     target_height = int(screen_height * 0.7)
 
-    back_color = "white"
-    front_color = "black"
+    back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
+    front_color = INVERSE_OVERLAY_TEXT_COLOR
 
     # Scale image to fit vertically
     pil_img = ImageTk.getimage(img).copy()
@@ -8508,12 +8546,12 @@ def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
         box.overrideredirect(True)
         box.attributes("-topmost", True)
         box.attributes("-alpha", 0.9)
-        box.configure(bg="black")
+        box.configure(bg=OVERLAY_BACKGROUND_COLOR)
 
         label = tk.Label(
             box, text=tag["name"],
             font=("Arial", font_size, "bold"),
-            fg="white", bg="black"
+            fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR
         )
         label.pack()
         box.geometry(f"+{x}+{y}")
@@ -8604,11 +8642,11 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
         box.overrideredirect(True)
         box.attributes("-topmost", True)
         box.attributes("-alpha", 0.9)
-        box.configure(bg="black", highlightbackground="white", highlightthickness=4)
+        box.configure(bg=OVERLAY_BACKGROUND_COLOR, highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=4)
         font_size = 55
         wrap = box_width - 40
         # Try to find the largest font size that fits within 3 lines
-        background = "black"
+        background = OVERLAY_BACKGROUND_COLOR
         if light_name_overlay:
             background = {"a":'#374151',"s":'#065F46',"m":'#1E3A8A'}.get(title[0], '#374151')
             title = title[1]
@@ -8622,7 +8660,7 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
             box,
             text=title,
             font=("Arial", font_size, "bold"),
-            fg="white",
+            fg=OVERLAY_TEXT_COLOR,
             bg=background,
             wraplength=wrap,
             justify="center"
@@ -9069,6 +9107,8 @@ def toggle_outer_edge_overlay(destroy=False, pixels=65, color="black"):
 
 def set_countdown(value=None, position="top right", inverse=False):
     """Creates, updates, or removes the countdown overlay in a separate always-on-top window with a semi-transparent background."""
+    if inverted_positions:
+        position = "top left"
     set_floating_text("Countdown", value, position=position, inverse=inverse)
 
 def set_light_round_number(value=None, inverse=False):
@@ -9107,11 +9147,11 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         return
 
     if inverse:
-        back_color = "white"
-        front_color = "black"
+        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
+        front_color = INVERSE_OVERLAY_TEXT_COLOR
     else:
-        back_color = "black"
-        front_color = "white"
+        back_color = OVERLAY_BACKGROUND_COLOR
+        front_color = OVERLAY_TEXT_COLOR
 
     # Create the window if it doesn't exist
     if name not in floating_windows:
@@ -9206,7 +9246,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         progress_overlay.overrideredirect(True)
         progress_overlay.attributes("-topmost", True)
         progress_overlay.attributes("-alpha", 0.8)
-        progress_overlay.configure(bg="black")
+        progress_overlay.configure(bg=OVERLAY_BACKGROUND_COLOR)
 
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
@@ -9233,7 +9273,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
 
         music_icon_label = tk.Label(progress_overlay, text="🎵", font=("Segoe UI Emoji", 100),
-                                    bg="black", fg=generate_random_color(100, 255))
+                                    bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
 
         music_icon_label.place(x=0, rely=0.35, anchor="center")  # Temporarily place far left
 
@@ -9501,8 +9541,8 @@ def toggle_title_popup(show, title_only=False):
     top_row = ""
     title_row = ""
     bottom_row = ""
-    bg_color = "Black"
-    fg_color = "White"
+    bg_color = OVERLAY_BACKGROUND_COLOR
+    fg_color = OVERLAY_TEXT_COLOR
     top_font = ("Arial", 20, "bold")
     title_font = ("Arial", 50, "bold")
     bottom_font = ("Arial", 15, "bold")
@@ -9521,8 +9561,8 @@ def toggle_title_popup(show, title_only=False):
             channel = data.get("name")
             subscribers = f"{data.get("subscriber_count"):,}"
             duration = str(format_seconds(get_youtube_duration(data))) + " mins"
-            fg_color = "Black"
-            bg_color = "White"
+            fg_color = INVERSE_OVERLAY_TEXT_COLOR
+            bg_color = INVERSE_OVERLAY_BACKGROUND_COLOR
 
             top_row = f"Uploaded by {channel} ({subscribers} subscribers)"
             title_row = title
@@ -9536,6 +9576,7 @@ def toggle_title_popup(show, title_only=False):
             if is_game(data):
                 aired = data.get("release")
                 bg_color = "Dark Red"
+                fg_color = "white"
             else:
                 aired = data.get("season")
             studio = ", ".join(data.get("studios"))
@@ -9554,11 +9595,13 @@ def toggle_title_popup(show, title_only=False):
                     episodes = str(episodes) + " Episodes"
                 members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
                 score = f"Score: {data.get("score")} (#{data.get("rank")})"
-            title_row = title
             if not title_only:
+                title_row = title
                 top_row = f"{marks}{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
                 bottom_row = f"{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}"
             else:
+                title_row = get_base_title()
+                japanese_title = get_base_title(title=japanese_title)
                 if title_top_info_txt:
                     top_row = title_top_info_txt
                 else:
@@ -9639,6 +9682,7 @@ def prompt_title_top_info_text(event=None):
 
 guessing_extra = None
 showing_bonus_answer = False
+bonus_points = ['1 PT', '2 PTs', '2 PTs']
 def guess_extra(extra = None):
     global guessing_extra, showing_bonus_answer, bonus_chars, bonus_correct_indices
     buttons = [guess_year_button, guess_members_button, guess_score_button, guess_tags_button, guess_multiple_button, guess_characters_button]
@@ -9667,8 +9711,8 @@ def guess_extra(extra = None):
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Year This Anime Aired", 
                                 ("Only 1 guess per person, no repeats.\n"
-                                "+1 PT for closest guess. "
-                                "+2 PTs if exact year."),
+                                f"+{bonus_points[0]} for closest guess. "
+                                f"+{bonus_points[1]} if exact year."),
                                 up_next=False)
         elif guessing_extra == "members":
             button_seleted(guess_members_button, True)
@@ -9676,8 +9720,8 @@ def guess_extra(extra = None):
                                 ROUND_PREFIX + "Guess The # Of Members This Anime Has", 
                                 ("Members are users who added the anime to their list on MyAnimeList.\n"
                                  "EG: Death Note has over 4 million. Only 1 guess per person, no repeats.\n"
-                                "+1 PT for closest guess. "
-                                "+2 PTs if first 2 digits are correct."),
+                                f"+{bonus_points[0]} for closest guess. "
+                                f"+{bonus_points[1]} PTs if first 2 digits are correct."),
                                 up_next=False)
         elif guessing_extra == "score":
             button_seleted(guess_score_button, True)
@@ -9685,8 +9729,8 @@ def guess_extra(extra = None):
                                 ROUND_PREFIX + "Guess The Score This Anime Has", 
                                 ("Scores takem MyAnimeList and range from 0.0 to 10.0.\n"
                                  "Only 1 guess per person, no repeats.\n"
-                                "+1 PT for closest guess. "
-                                "+2 PTs if exact score."),
+                                f"+{bonus_points[0]} for closest guess. "
+                                f"+{bonus_points[1]} if exact score."),
                                 up_next=False)
         elif guessing_extra == "tags":
             button_seleted(guess_tags_button, True)
@@ -9702,7 +9746,7 @@ def guess_extra(extra = None):
             tags_array = split_array(get_random_tags())
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The " + tags + " This Anime Has", 
-                                ("Guess until you get a tag wrong. +1 PT for each correct tag.\n\n"
+                                (f"Guess until you get a tag wrong. +{bonus_points[0]} for each correct tag.\n\n"
                                 "[" + "] [".join(tags_array[0]) + "]\n[" + "] [".join(tags_array[1])) + "]",
                                 up_next=False)
         elif guessing_extra == "multiple":
@@ -9711,7 +9755,7 @@ def guess_extra(extra = None):
             titles = get_random_titles()
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Anime", 
-                                ("Only one guess. +2 PTs if correct.\n\n"
+                                (f"Only one guess. +{bonus_points[1]} if correct.\n\n"
                                 f"[A] {titles[0]}\n[B] {titles[1]}\n"
                                 f"[C] {titles[2]}\n[D] {titles[3]}"),
                                 up_next=False)
@@ -9721,7 +9765,7 @@ def guess_extra(extra = None):
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The 2 Characters From This Anime", 
                                 ("2 out of 6 characters are from this anime.\n"
-                                "+1 PT per correct guess."),
+                                f"+{bonus_points[0]} PT per correct guess."),
                                 up_next=False)
             bonus_chars, bonus_correct_indices = pick_bonus_characters()
             
@@ -9964,7 +10008,7 @@ def show_bonus_characters(characters, reveal_correct=False):
     bonus_overlay_window.lift()
     bonus_overlay_window.attributes("-topmost", True)
     bonus_overlay_window.attributes("-alpha", 0.9)
-    bonus_overlay_window.config(bg="black")
+    bonus_overlay_window.config(bg=OVERLAY_BACKGROUND_COLOR)
 
     container = tk.Frame(bonus_overlay_window, bg="pink")
     container.pack(expand=True)
@@ -9973,7 +10017,7 @@ def show_bonus_characters(characters, reveal_correct=False):
     bonus_character_labels = []
 
     # Use a nested frame to help center the character row
-    center_frame = tk.Frame(container, bg="black")
+    center_frame = tk.Frame(container, bg=OVERLAY_BACKGROUND_COLOR)
     center_frame.pack(expand=True)
 
     for i, char in enumerate(characters):
@@ -9982,13 +10026,13 @@ def show_bonus_characters(characters, reveal_correct=False):
         # Frame for each character (black background, white border)
         frame = tk.Frame(center_frame,
                          bg="black",
-                         highlightbackground="white",
+                         highlightbackground=OVERLAY_TEXT_COLOR,
                          highlightthickness=2,
                          padx=6,
                          pady=6)
         frame.grid(row=0, column=i, padx=5, pady=5)
 
-        inner_frame = tk.Frame(frame, bg="black")
+        inner_frame = tk.Frame(frame, bg=OVERLAY_BACKGROUND_COLOR)
         inner_frame.pack()
 
 
@@ -10381,7 +10425,7 @@ def play_previous():
 
 def stop():
     """Function to stop the video"""
-    global video_stopped, currently_playing, censor_bar
+    global video_stopped, currently_playing
     video_stopped = True
     toggle_light_mode()
     clean_up_light_round()
@@ -10393,7 +10437,7 @@ def stop():
     player.stop()
     player.set_media(None)  # Reset the media
     update_progress_bar(0,1)
-    create_censor_bar(False)
+    remove_all_censor_boxes()
 
 def seek(value):
     """Function to seek the video"""
@@ -10518,21 +10562,21 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True,
         coming_up_window.overrideredirect(True)  # Remove window borders
         coming_up_window.attributes("-topmost", True)  # Keep it on top
         coming_up_window.wm_attributes("-alpha", 0.8)  # Semi-transparent background
-        coming_up_window.configure(bg="black")
+        coming_up_window.configure(bg=OVERLAY_BACKGROUND_COLOR)
 
     # Title
     if not coming_up_title_label:
-        coming_up_title_label = tk.Label(coming_up_window, font=("Arial", 40, "bold", "underline"), fg="white", bg="black")
+        coming_up_title_label = tk.Label(coming_up_window, font=("Arial", 40, "bold", "underline"))
         coming_up_title_label.pack(pady=(10, 0), padx=10)
     if up_next:
         title = "UP NEXT: " + title.upper() + "!"
     if title == coming_up_title_label.cget("text"):
         return
-    coming_up_title_label.configure(text=title.upper())
+    coming_up_title_label.configure(text=title.upper(), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
 
     # Details
     if not coming_up_rules_label:
-        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", 20, "bold"), fg="white", bg="black", justify="center", wraplength=1700)
+        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", 20, "bold"), justify="center", wraplength=1700)
         coming_up_rules_label.pack(pady=(5, 10))
     if image:
         coming_up_rules_label.configure(image=image, compound="top")
@@ -10540,7 +10584,7 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True,
     else:
         coming_up_rules_label.configure(image="")
         coming_up_rules_label.image = None
-    coming_up_rules_label.configure(text=details)
+    coming_up_rules_label.configure(text=details, fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
 
     # Position at the top center of the screen
     coming_up_window.update_idletasks()
@@ -10689,18 +10733,36 @@ def toggle_blind_round():
 censor_list = {}
 other_censor_lists = []
 censors_enabled = True
-censor_bar = None
-def create_censor_bar(create=True):
-    global censor_bar
-    if create:
-        censor_bar = tk.Toplevel()
-        censor_bar.configure(bg="black")
-        censor_bar.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}")
-        censor_bar.overrideredirect(True)
-        censor_bar.lower()
-    elif censor_bar:
-        censor_bar.destroy()
-        censor_bar = None
+
+censor_boxes = {}
+def toggle_censor_box(filename, censor, enabled):
+    censor_id = f"{filename}:{censor['pos_x']}x{censor['pos_y']}-{censor['start']}-{censor['end']}"
+    if censor_id in censor_boxes and censor_boxes[censor_id] and censor_boxes[censor_id].get("box") and censor_boxes[censor_id].get("box").winfo_exists():
+        if not enabled:
+            censor_boxes[censor_id]["box"].destroy()
+            del censor_boxes[censor_id]
+    elif enabled:
+        censor_box = tk.Toplevel()
+        censor_box.configure(bg="black")
+        censor_box.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}")
+        censor_box.overrideredirect(True)
+        censor_box.attributes("-topmost", True)
+        censor_boxes[censor_id] = {
+            "box": censor_box,
+            "used": True
+        }
+    return censor_boxes.get(censor_id)
+
+def remove_all_censor_boxes(filename=None):
+    censors_to_delete = []
+    for censor_id, box_data in censor_boxes.items():
+        if not filename or filename not in censor_id:
+            box = box_data.get("box")
+            if box and box.winfo_exists():
+                box.destroy()
+            censors_to_delete.append(censor_id)
+    for censor_id in censors_to_delete:
+        del censor_boxes[censor_id]
 
 def load_censors():
     global censor_list, other_censor_lists
@@ -10739,29 +10801,17 @@ def apply_censors(time, length):
     global censor_used, mute_censor_used, pre_censor
     global censor_list
     global censors_enabled
-    if censor_bar is None:
-        create_censor_bar()
-    screen_width = censor_bar.winfo_screenwidth()
-    screen_height = censor_bar.winfo_screenheight()
     if censors_enabled and not mismatch_visuals and not currently_streaming:
-        if check_file_censors(currently_playing.get('filename'), time, False, not pre_censor):
-            return
-        elif not video_stopped and length - time <= 1.2 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(os.path.basename(playlist["playlist"][playlist["current_index"]+1]), time, True, auto_info_start):
+        check_file_censors(currently_playing.get('filename'), time, False, not pre_censor)
+        if not video_stopped and length - time <= 0.3 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(os.path.basename(playlist["playlist"][playlist["current_index"]+1]), time, True, auto_info_start):
             pre_censor = True
-            return
-    if censor_used:
-        pre_censor = False
-        censor_bar.attributes("-topmost", False)
-        censor_bar.lower()
-        censor_bar.geometry(str(screen_width) + "x" + str(screen_height))
-        censor_bar.configure(bg="Black")
-        censor_bar.geometry(f"+0+0")
-        if not disable_shortcuts and not root.attributes("-topmost"):
-            root.lower()
-        censor_used = False
-    if mute_censor_used:
-        player.audio_set_mute(disable_video_audio)
-        mute_censor_used = False
+        else:
+            remove_all_censor_boxes(filename=currently_playing.get('filename'))
+    else:
+        remove_all_censor_boxes()
+        if mute_censor_used:
+            player.audio_set_mute(disable_video_audio)
+            mute_censor_used = False
 
 def get_file_censors(filename):
     file_censors = censor_list.get(filename)
@@ -10774,32 +10824,32 @@ def get_file_censors(filename):
 
 def check_file_censors(filename, time, video_end, check_title=True):
     global censor_used, mute_censor_used
-    screen_width = censor_bar.winfo_screenwidth()
-    screen_height = censor_bar.winfo_screenheight()
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
     file_censors = get_file_censors(filename)
     censor_found = False
     mute_found = False
     if file_censors:
         for censor in file_censors:
             if (not blind_enabled or censor.get("mute")) and (not check_title or not is_title_window_up() or censor.get("nsfw")) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
-                if not censor_used and not censor.get("mute"):
-                    censor_used = True
-                    censor_bar.attributes("-topmost", True)
+                if not censor.get("mute"):
+                    censor_box = toggle_censor_box(filename, censor, True)["box"]
                     for p in [peek_overlay1, peek_overlay2]:
                         if p:
                             p.lift()
                     lift_windows()
                     if censor_editor:
                         censor_editor.attributes("-topmost", True)
-                if censor.get("mute"):
+                    censor_box.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
+                    censor_box.configure(bg=(censor.get("color") or get_image_color()))
+                    set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
+                else:
                     player.audio_set_mute(True)
                     mute_censor_used = True
                     mute_found = True
-                else:
-                    censor_bar.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
-                    censor_bar.configure(bg=(censor.get("color") or get_image_color()))
-                    set_window_position(censor_bar, censor['pos_x'], censor['pos_y'])
                 censor_found = True
+            elif not censor.get("mute"):
+                toggle_censor_box(filename, censor, False)
 
     if not censor_found and censor_editor:
         censor_editor.attributes("-topmost", False)
@@ -11005,12 +11055,16 @@ def open_censor_editor(refresh=False):
         update_censor_button_count()
 
     def refresh_ui():
+        global current_censors
         for widgets in censor_entry_widgets:
             for widget in widgets:
                 widget.destroy()
         censor_entry_widgets.clear()
 
+        current_censors = sorted(current_censors, key=lambda c: (c["start"], c["end"]))
+
         for idx, censor in enumerate(current_censors):
+            
             row_widgets = []
 
             # Frame for Size
@@ -11031,8 +11085,8 @@ def open_censor_editor(refresh=False):
             pos_frame.grid(row=idx+1, column=1, padx=(0, 6), pady=4)
 
             # Frame for Start and End Times
-            def build_time_frame(var, row, col):
-                frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
+            def build_time_frame(var, row, col, back_color):
+                frame = tk.Frame(censor_editor, bg=back_color)
                 tk.Button(frame, text="-", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() - 0.1, 1))).pack(side="left")
                 tk.Entry(frame, textvariable=var, width=6, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left")
                 tk.Button(frame, text="+", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() + 0.1, 1))).pack(side="left")
@@ -11042,8 +11096,12 @@ def open_censor_editor(refresh=False):
 
             start_var = tk.DoubleVar(value=censor['start'])
             end_var = tk.DoubleVar(value=censor['end'])
-            start_frame = build_time_frame(start_var, idx+1, 2)
-            end_frame = build_time_frame(end_var, idx+1, 3)
+            start_frame = build_time_frame(start_var, idx+1, 2, BACKGROUND_COLOR)
+            if censor['end']:
+                row_color = BACKGROUND_COLOR
+            else:
+                row_color = "white"
+            end_frame = build_time_frame(end_var, idx+1, 3, row_color)
 
             # Frame for Color and Buttons
             def remove_color(label):
@@ -11159,6 +11217,8 @@ def open_censor_editor(refresh=False):
         save_censor_func()
         save_censors_button.configure(text="SAVED!")
         root.after(300, lambda: save_censors_button.configure(text="SAVE CENSOR(S)"))
+        remove_all_censor_boxes()
+        apply_censors(player.get_time()/1000, player.get_length()/1000)
 
     tk.Button(censor_editor, text="ADD NEW CENSOR", width=20, font=font_big, bg=bg_color, fg=fg_color, command=add_new_censor).grid(row=999, column=0, columnspan=2, pady=12)
     tk.Button(censor_editor, text="ADD NEW MUTE", width=20, font=font_big, bg=bg_color, fg=fg_color, command=add_new_mute).grid(row=999, column=2, columnspan=2, pady=12)
@@ -11571,7 +11631,7 @@ def toggle_censor_bar():
     apply_censors(player.get_time()/1000, player.get_length()/1000)
     button_seleted(toggle_censor_bar_button, censors_enabled)
     if not censors_enabled:
-        create_censor_bar(False)
+        remove_all_censor_boxes()
         
 def toggle_progress_bar():
     global progress_bar_enabled
@@ -11648,7 +11708,7 @@ def toggle_end_message(speed=500):
         end_message_window.overrideredirect(True)
         end_message_window.attributes("-topmost", True)
         end_message_window.wm_attributes("-alpha", 0.8)
-        end_message_window.configure(bg="black")
+        end_message_window.configure(bg=OVERLAY_BACKGROUND_COLOR)
 
         total_played = len(all_themes_played)
         opening_count, ending_count = get_op_ed_counts(all_themes_played)
@@ -11662,7 +11722,7 @@ def toggle_end_message(speed=500):
         )
 
         label = tk.Label(end_message_window, text=stats_text, font=("Arial", 90, "bold"),
-                         fg="white", bg="black", justify="right", anchor="e")
+                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, justify="right", anchor="e")
         label.pack(padx=20, pady=20)
 
         screen_width = end_message_window.winfo_screenwidth()
@@ -12563,10 +12623,8 @@ light_mode_settings_button = create_button(second_row_frame, "🛠", open_settin
 
 show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE", show_youtube_playlist,
                               help_title="[Y]OUTUBE VIDEOS (Shortcut Key = 'y')",
-                              help_text=("Lists downloaded youtube videos to queue up.\n\nVideos are downloaded on startup "
-                                         "based on the youtube_links.txt file in the files/ folder. The downloads are stored in the "
-                                         "youtube/ folder and deleted when removed from the youtube_links.txt file. All videos are "
-                                         "also listed in the youtube_archive.txt file just to keep track of videos downloaded.\n\n"
+                              help_text=("Lists downloaded youtube videos to queue up.\n\nVideos are using the '➕' button."
+                                         "The downloads are stored in the youtube/ folder.\n\n"
                                          "Videos are queued with a UP NEXT popup when selected, and will play after the current theme. "
                                          "Only one video may be queued at a time, and selecting the same video will unqueue it."))
 manage_youtube_button = create_button(second_row_frame, "➕", open_youtube_editor, True,
