@@ -113,6 +113,12 @@ OVERLAY_TEXT_COLOR = "white"
 INVERSE_OVERLAY_BACKGROUND_COLOR = "white"
 INVERSE_OVERLAY_TEXT_COLOR = "black"
 
+DISPLAY_SCREEN_WIDTH, DISPLAY_SCREEN_HEIGHT = pyautogui.size()
+def scl(num):
+    modifier_w, modifier_h = DISPLAY_SCREEN_WIDTH / 2560, DISPLAY_SCREEN_HEIGHT / 1440
+    modifier = min(modifier_w, modifier_h)
+    return int(num*modifier)
+
 # =========================================
 #         *FETCHING ANIME METADATA
 # =========================================
@@ -1020,7 +1026,7 @@ def update_extra_metadata(data):
             bg=HIGHLIGHT_COLOR
         else:
             bg="black"
-        right_column.window_create(tk.END, window=tk.Button(right_column, text=(f"{e.upper().replace("EPISODE_INFO", "EPS").replace("CsHARACTERS", "")}"), font=("Arial", 11, "bold", "underline"), command=lambda x=e: select_extra_metadata(x), padx=2, bg=bg, fg="white"))
+        right_column.window_create(tk.END, window=tk.Button(right_column, text=(f"{e.upper().replace("EPISODE_INFO", "EPS").replace("CsHARACTERS", "")}"), font=("Arial", scl(11), "bold", "underline"), command=lambda x=e: select_extra_metadata(x), padx=scl(2), bg=bg, fg="white"))
         # right_column.insert(tk.END, "   ", "blank")
     right_column.insert(tk.END, "\n\n", "blank")
     if selected_extra_metadata == "links":
@@ -1049,9 +1055,9 @@ def update_extra_metadata(data):
                 right_column,
                 text=name,
                 command=func,
-                padx=2, pady=1,
+                padx=scl(2), pady=scl(1),
                 bg="black", fg="white",
-                font=("Arial", 12)
+                font=("Arial", scl(12))
             )
             right_column.window_create(tk.END, window=b)
             if new_line:
@@ -1122,22 +1128,22 @@ def update_extra_metadata(data):
                 popup.configure(bg="black")
                 
                 # Name
-                tk.Label(popup, text=name, font=("Arial", 20, "bold", "underline"), bg="black", fg="white", anchor="center").pack(anchor="center", pady=(0, 0))
+                tk.Label(popup, text=name, font=("Arial", scl(20), "bold", "underline"), bg="black", fg="white", anchor="center").pack(anchor="center", pady=(0, 0))
 
                 # Load image
-                tk_img = load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(700, 700))
+                tk_img = load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(scl(700), scl(700)))
                 label = tk.Label(popup, image=tk_img, bg="black")
                 label.image = tk_img
-                label.pack(pady=10)
+                label.pack(pady=scl(10))
 
                 # Info section
                 info_frame = tk.Frame(popup, bg="black")
-                info_frame.pack(padx=20, pady=(0, 20), fill="both", expand=True)
+                info_frame.pack(padx=scl(20), pady=(0, scl(20)), fill="both", expand=True)
 
                 new_desc = f"Gender: {gender.capitalize()}. {desc.strip()}"
                 if new_desc.strip():
-                    tk.Label(info_frame, text="DESCRIPTION:", font=("Arial", 15, "bold", "underline"), bg="black", fg="white", anchor="w").pack(anchor="w", pady=(10, 0))
-                    tk.Label(info_frame, text=new_desc.strip(), font=("Arial", 15), wraplength=700, justify="left", bg="black", fg="white", anchor="w").pack(anchor="w")
+                    tk.Label(info_frame, text="DESCRIPTION:", font=("Arial", scl(15), "bold", "underline"), bg="black", fg="white", anchor="w").pack(anchor="w", pady=(scl(10), 0))
+                    tk.Label(info_frame, text=new_desc.strip(), font=("Arial", scl(15)), wraplength=scl(700), justify="left", bg="black", fg="white", anchor="w").pack(anchor="w")
 
             return _popup
 
@@ -1158,7 +1164,7 @@ def update_extra_metadata(data):
                     command=create_image_popup(name, image, gender, desc),
                     padx=2, pady=1,
                     bg="black", fg="white",
-                    font=("Arial", 12)
+                    font=("Arial", scl(12))
                 )
                 right_column.window_create(tk.END, window=b)
                 right_column.insert(tk.END, " ")
@@ -5215,7 +5221,7 @@ def update_light_round(time):
                 if time_left <= 15:
                     tags = "\n".join(get_tags(data))
                     val_size = 60 - max(0, (tags.count('\n') - 5) * 5)
-                    clues_overlay_labels["Tags"].config(text=tags, font=("Arial", val_size))
+                    clues_overlay_labels["Tags"].config(text=tags, font=("Arial", scl(val_size)))
                 else:
                     clues_overlay_labels["Tags"].config(text=f"in...{round(time_left-15)}")
                 if time_left <= 10:
@@ -6130,15 +6136,15 @@ def toggle_clues_overlay(destroy=False):
     clues_overlay.grid_rowconfigure(3, weight=1)
 
     def create_box(row, column, title, value, key, columnspan=1, rowspan=1):
-        frame = tk.Frame(clues_overlay, bg=OVERLAY_BACKGROUND_COLOR, padx=20, pady=20, highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=4)
-        frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan, sticky="nsew", padx=10, pady=10)
+        frame = tk.Frame(clues_overlay, bg=OVERLAY_BACKGROUND_COLOR, padx=scl(20), pady=scl(20), highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=scl(4))
+        frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan, sticky="nsew", padx=scl(10), pady=scl(10))
 
         if title:
-            tk.Label(frame, text=title.upper(), font=("Arial", 50, "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR).pack(anchor="center")
+            tk.Label(frame, text=title.upper(), font=("Arial", scl(50), "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR).pack(anchor="center")
 
         val_size = 70 - max(0, (value.count('\n') - 5) * 5)
-        label = tk.Label(frame, text=value, font=("Arial", val_size), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                         wraplength=((overlay_width // 3) * columnspan - 10), justify="center")
+        label = tk.Label(frame, text=value, font=("Arial", scl(val_size)), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
+                         wraplength=((overlay_width // 3) * columnspan - scl(10)), justify="center")
         label.pack(fill="both", expand=True)
         clues_overlay_labels[key] = label  # Store reference
 
@@ -6188,10 +6194,10 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
 
     # Each box: { key: (title, text, y_position, show?) }
     boxes = {
-        "theme":   (theme_label, None, 0, int(screen_height * 0.28), 60, show_theme),
-        "title":   ("SONG TITLE", song, 0, int(screen_height * 0.4), 120, show_title),
-        "artist":  ("SONG ARTIST", artist, 0, int(screen_height * 0.65), 80, show_artist),
-        "music":  ("             \n\n", None, 2, int(screen_height * 0.12), 70, show_music)
+        "theme":   (theme_label, None, 0, int(screen_height * 0.28), scl(60), show_theme),
+        "title":   ("SONG TITLE", song, 0, int(screen_height * 0.4), scl(120), show_title),
+        "artist":  ("SONG ARTIST", artist, 0, int(screen_height * 0.65), scl(80), show_artist),
+        "music":  ("             \n\n", None, 2, int(screen_height * 0.12), scl(70), show_music)
     }
 
     for key, (title, text, x_offset, y, font_size, show) in boxes.items():
@@ -6201,7 +6207,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
                 box.overrideredirect(True)
                 box.attributes("-topmost", True)
                 box.attributes("-alpha", 0.85)
-                box.configure(bg=OVERLAY_BACKGROUND_COLOR, padx=20, pady=20, highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=4)
+                box.configure(bg=OVERLAY_BACKGROUND_COLOR, padx=scl(20), pady=scl(20), highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=scl(4))
 
                 song_overlay_boxes[key] = box
 
@@ -6209,14 +6215,14 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
                 if key == "music":
                     title_lbl = tk.Label(box, text=title, font=("Arial", font_size, "bold"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
                 else:
-                    title_lbl = tk.Label(box, text=title, font=("Arial", 60, "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
+                    title_lbl = tk.Label(box, text=title, font=("Arial", scl(60), "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
                 if text:
                     title_lbl.pack(anchor="center")
                 else:
                     title_lbl.pack(anchor="center", fill="both", expand=True)
 
                 if key == "music":
-                    text_lbl = tk.Label(box, text="🎵", font=("Arial", 1000), bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100,255))
+                    text_lbl = tk.Label(box, text="🎵", font=("Arial", scl(1000)), bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100,255))
                     text_lbl.place(relx=0.5, rely=0.5, anchor="center")
                     # Start pulsating the music icon
                     pulsate_music_icon(text_lbl)
@@ -6224,7 +6230,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
                     # Text label (optional)
                     text_lbl = tk.Label(box, text=text, font=("Arial", font_size), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, justify="center")
                     text_lbl.pack(fill="both", expand=True)
-                    adjust_font_size(text_lbl, box_width, base_size=font_size, min_size=20)
+                    adjust_font_size(text_lbl, box_width, base_size=font_size, min_size=scl(20))
 
                 box.update_idletasks()
                 box.geometry(f"+{-screen_width}+{y}")  # Adjust for bottom spacing
@@ -6425,11 +6431,11 @@ def toggle_synopsis_overlay(text=None, destroy=False):
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         overlay_width = round(screen_width * 0.7)
-        wraplength = overlay_width - 60
+        wraplength = overlay_width - scl(60)
 
         # 📏 Measure how tall the label will need to be
-        content_height = measure_text_height(get_light_synopsis_string(), wraplength-5, font=("Arial", 60))+30
-        overlay_height = content_height + 160  # Add space for padding/title
+        content_height = measure_text_height(get_light_synopsis_string(), wraplength-scl(5), font=("Arial", scl(60)))+scl(30)
+        overlay_height = content_height + scl(160)  # Add space for padding/title
 
         x = (screen_width - overlay_width) // 2
         y = (screen_height - overlay_height) // 2
@@ -6437,25 +6443,25 @@ def toggle_synopsis_overlay(text=None, destroy=False):
         synopsis_overlay.geometry(f"{overlay_width}x{overlay_height}+{-screen_width}+{y}")
         synopsis_overlay.update_idletasks()
 
-        frame = tk.Frame(synopsis_overlay, bg=back_color, padx=20, pady=20, highlightbackground=front_color, highlightthickness=4)
+        frame = tk.Frame(synopsis_overlay, bg=back_color, padx=scl(20), pady=scl(20), highlightbackground=front_color, highlightthickness=scl(4))
         frame.pack(fill="both", expand=True)
 
 
-        title_label = tk.Label(frame, text=title_header_txt, font=("Arial", 70, "bold", "underline"),
+        title_label = tk.Label(frame, text=title_header_txt, font=("Arial", scl(70), "bold", "underline"),
                                fg=front_color, bg=back_color, anchor="w", justify="left")
         title_label.pack(anchor="w")
 
-        synopsis_label = tk.Label(frame, text=text, font=("Arial", 60),
+        synopsis_label = tk.Label(frame, text=text, font=("Arial", scl(60)),
                                   fg=front_color, bg=back_color, wraplength=wraplength,
                                   justify="left", anchor="nw")
-        synopsis_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
+        synopsis_label.pack(side="top", anchor="w", fill="x", padx=scl(10), pady=(scl(10), 0))
 
         animate_window(synopsis_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)
 
     elif text is not None and synopsis_label and synopsis_label.winfo_exists():
         synopsis_label.config(text=text)
 
-def measure_text_height(text, wraplength, font=("Arial", 60), justify="left"):
+def measure_text_height(text, wraplength, font=("Arial", scl(60)), justify="left"):
     temp_root = tk.Tk()
     temp_root.withdraw()
     label = tk.Label(temp_root, text=text, font=font, wraplength=wraplength, justify=justify)
@@ -6488,8 +6494,8 @@ def get_next_title_mode(title_text):
 
     def get_line_count():
         screen_width = root.winfo_screenwidth()
-        max_width = screen_width * 0.7 - 40
-        lines = get_title_text_lines(title_text, max_width, font=("Courier New", 80, "bold"))
+        max_width = screen_width * 0.7 - scl(40)
+        lines = get_title_text_lines(title_text, max_width, font=("Courier New", scl(80), "bold"))
         return len(lines)
     
     def get_long_word_count(length=5):
@@ -6603,14 +6609,14 @@ def toggle_title_overlay(title_text=None, destroy=False):
     screen_height = root.winfo_screenheight()
     overlay_width = round(screen_width * 0.7)
 
-    title_font = ("Courier New", 80, "bold")
-    lines = get_title_text_lines(title_text, overlay_width - 40, font=title_font)
-    overlay_height = len(lines) * 100 + 320
+    title_font = ("Courier New", scl(80), "bold")
+    lines = get_title_text_lines(title_text, overlay_width - scl(40), font=title_font)
+    overlay_height = len(lines) * scl(100) + scl(320)
 
     x = (screen_width - overlay_width) // 2
     y = (screen_height - overlay_height) // 2
 
-    spacing = 64
+    spacing = scl(64)
     front_color = OVERLAY_TEXT_COLOR
     back_color = OVERLAY_BACKGROUND_COLOR
     if character_round_answer:
@@ -6641,12 +6647,12 @@ def toggle_title_overlay(title_text=None, destroy=False):
         if character_round_answer:
             title_txt = "CHARACTER NAME:"
         title_overlay_canvas.create_text(
-            x + 30, y + 30,
-            text=title_txt, font=("Arial", 70, "bold", "underline"),
+            x + scl(30), y + scl(30),
+            text=title_txt, font=("Arial", scl(70), "bold", "underline"),
             fill=front_color, anchor="nw"
         )
 
-        line_y = y + 270
+        line_y = y + scl(270)
         idx = 0
         for line in lines:
             total_width = len(line) * spacing
@@ -6661,7 +6667,7 @@ def toggle_title_overlay(title_text=None, destroy=False):
                 # Underscore (always shown)
                 underscore = title_overlay_canvas.create_text(
                     line_x, line_y,
-                    text="_", font=("Courier New", 65),
+                    text="_", font=("Courier New", scl(65)),
                     fill=front_color, anchor="center"
                 )
                 title_overlay_items.append(underscore)
@@ -6676,7 +6682,7 @@ def toggle_title_overlay(title_text=None, destroy=False):
 
                 line_x += spacing
                 idx += 1
-            line_y += 100
+            line_y += scl(100)
 
     # Update letters on top of underscores
     flat_chars = [c for c in title_text if c != " "]
@@ -6733,12 +6739,12 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_text = get_base_title()
         screen_w = root.winfo_screenwidth()
         screen_h = root.winfo_screenheight()
-        title_font = ("Courier New", 80, "bold")
+        title_font = ("Courier New", scl(80), "bold")
         # Split title into lines
-        lines = get_title_text_lines(scramble_title_text, screen_w * 0.7 - 40, font=title_font)
+        lines = get_title_text_lines(scramble_title_text, screen_w * 0.7 - scl(40), font=title_font)
         overlay_width = round(screen_w * 0.7)
         # Adjust vertical spacing: line height * number of lines + padding
-        overlay_height = len(lines) * 100 + 320
+        overlay_height = len(lines) * scl(100) + scl(320)
         x = (screen_w - overlay_width) // 2
         y = (screen_h - overlay_height) // 2
         box_top = y
@@ -6762,16 +6768,16 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_canvas.create_rectangle(
             # x, y, x + overlay_width, y + overlay_height,
             x, full_y, x + overlay_width, full_y + full_overlay_height,
-            fill=back_color, outline=front_color, width=4
+            fill=back_color, outline=front_color, width=scl(4)
         )
         title_text = "TITLE:"
         if character_round_answer:
             title_text = "CHARACTER NAME:"
         scramble_title_canvas.create_text(
             # x + 30, y + 40,
-            x + 30, full_y + 30,
+            x + scl(30), full_y + scl(30),
             text=title_text,
-            font=("Arial", 70, "bold", "underline"),
+            font=("Arial", scl(70), "bold", "underline"),
             fill=front_color,
             anchor="nw"
         )
@@ -6779,8 +6785,8 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_text_items.clear()
         scramble_letter_placed_indices.clear()
 
-        spacing = 64  # Increased spacing to avoid overlap
-        line_y = y + 270  # Moved text start down 20px for better centering
+        spacing = scl(64)  # Increased spacing to avoid overlap
+        line_y = y + scl(270)  # Moved text start down 20px for better centering
         target_coords = {}
 
         for line in lines:
@@ -6794,16 +6800,16 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
                     continue
                 text_item = scramble_title_canvas.create_text(
                     line_x, line_y,
-                    text="_", font=("Courier New", 65), fill=front_color, anchor="center"
+                    text="_", font=("Courier New", scl(65)), fill=front_color, anchor="center"
                 )
                 target_coords[len(scramble_title_text_items)] = (line_x, line_y)
                 scramble_title_text_items.append(text_item)
                 line_x += spacing
-            line_y += 100
+            line_y += scl(100)
 
         # Create floating letters
         margin_x = int(screen_w * 0.18)
-        top_range = (int(screen_h*0.3), box_top + 150)  # start 100px from top, end 150px above box top
+        top_range = (int(screen_h*0.3), box_top + scl(150))  # start 100px from top, end 150px above box top
         bottom_range = (box_bottom, screen_h - int(screen_h*0.2))  # start 100px below box bottom, leave 150px at bottom
 
         floating_letters = [{"char": c, "index": i} for i, c in enumerate(scramble_title_text.replace(" ", "")) if c != " " and i in target_coords]
@@ -6814,7 +6820,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_letter_objects.clear()
 
         letter_positions = []  # Store positions of already placed letters
-        min_distance = 80      # Minimum allowed distance between letters
+        min_distance = scl(80)      # Minimum allowed distance between letters
         
         for i, letter in enumerate(floating_letters):
             idx = letter["index"]
@@ -6885,7 +6891,7 @@ def animate_scramble_letters():
             letter["wiggle"] = (-wiggle_x, -wiggle_y)
     scramble_overlay_root.after(200, animate_scramble_letters)
 
-def get_title_text_lines(text, max_width, font=("Courier New", 80, "bold")):
+def get_title_text_lines(text, max_width, font=("Courier New", scl(80), "bold")):
     f = Font(family=font[0], size=font[1], weight=font[2])
     words = text.split(" ")
     lines = []
@@ -6912,7 +6918,7 @@ swap_title_items = []
 swap_pairs = []
 swap_animating = False
 swap_completed = 0
-swap_title_font = ("Courier New", 80, "bold")
+swap_title_font = ("Courier New", scl(80), "bold")
 swap_overlay_letters = []
 
 def toggle_swap_overlay(num_swaps=0, destroy=False):
@@ -6942,9 +6948,9 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         screen_w = root.winfo_screenwidth()
         screen_h = root.winfo_screenheight()
 
-        lines = get_title_text_lines(swap_title_text, screen_w * 0.7 - 40, font=swap_title_font)
+        lines = get_title_text_lines(swap_title_text, screen_w * 0.7 - scl(40), font=swap_title_font)
         overlay_width = round(screen_w * 0.7)
-        overlay_height = len(lines) * 100 + 320
+        overlay_height = len(lines) * scl(100) + scl(320)
         x = (screen_w - overlay_width) // 2
         y = (screen_h - overlay_height) // 2
 
@@ -6965,16 +6971,16 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         )
         title_text = "TITLE:" if not character_round_answer else "CHARACTER NAME:"
         swap_overlay_canvas.create_text(
-            x + 30, y + 30,
-            text=title_text, font=("Arial", 70, "bold", "underline"),
+            x + scl(30), y + scl(30),
+            text=title_text, font=("Arial", scl(70), "bold", "underline"),
             fill=front_color, anchor="nw"
         )
 
         swap_title_items.clear()
         swap_overlay_letters.clear()
 
-        spacing = 64
-        line_y = y + 270
+        spacing = scl(64)
+        line_y = y + scl(270)
         target_coords = {}
         base_chars = []
         base_indices = []
@@ -6999,7 +7005,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
 
                 text_item = swap_overlay_canvas.create_text(
                     line_x, line_y,
-                    text="_", font=("Courier New", 65),
+                    text="_", font=("Courier New", scl(65)),
                     fill=front_color, anchor="center"
                 )
                 target_coords[idx] = (line_x, line_y)
@@ -7008,7 +7014,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
             if current_word:
                 word_visual_groups.append(current_word)
                 current_word = []
-            line_y += 100
+            line_y += scl(100)
 
         total_letters = len(base_chars)
         kept = set(i for i, c in enumerate(base_chars) if c == "_")
@@ -7246,12 +7252,12 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
         screen_height = root.winfo_screenheight()
 
         # Calculate the gap in pixels as a percentage of the screen size
-        gap_pixels = ((gap+gap_modifier / 100) * screen_width)
+        gap_pixels = int((((gap+gap_modifier) / 100) * screen_width))
         # Initialize overlay dimensions and positions
         first_width, first_height, first_x, first_y = 0, 0, 0, 0
         second_width, second_height, second_x, second_y = 0, 0, 0, 0
 
-        cover_margin = 20  # pixels to ensure full screen edge coverage
+        cover_margin = scl(20)  # pixels to ensure full screen edge coverage
 
         if direction == "left":
             first_width = screen_width * (1 - progress / 100)
@@ -7591,7 +7597,7 @@ def check_nsfw(filename):
 pulsating_note_window = None
 pulsating_note_label = None
 
-def spawn_pulsating_music_note(x=0, y=0, font_size=100, destroy=False):
+def spawn_pulsating_music_note(x=0, y=0, font_size=scl(100), destroy=False):
     global pulsating_note_window, pulsating_note_label
 
     if destroy:
@@ -7921,7 +7927,7 @@ def toggle_character_image_overlay(character=None, destroy=False):
     resized_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
 
     # White border
-    bordered_image = Image.new("RGB", (new_w + 8, new_h + 8), "black")
+    bordered_image = Image.new("RGB", (new_w + scl(8), new_h + scl(8)), "black")
     bordered_image.paste(resized_image, (4, 4))
 
     tk_img = ImageTk.PhotoImage(bordered_image)
@@ -7933,9 +7939,9 @@ def toggle_character_image_overlay(character=None, destroy=False):
     character_image_overlay.attributes("-alpha", 0.95)
     character_image_overlay.configure(bg="black")
 
-    x = (screen_w - (new_w + 8)) // 2
-    y = (screen_h - (new_h + 8)) // 2 - int(screen_h * 0.015)
-    character_image_overlay.geometry(f"{new_w + 8}x{new_h + 8}+{x}+{y}")
+    x = (screen_w - (new_w)) // 2
+    y = (screen_h - (new_h)) // 2 - int(screen_h * 0.015)
+    character_image_overlay.geometry(f"{new_w + scl(8)}x{new_h + scl(8)}+{x}+{y}")
 
     label = tk.Label(character_image_overlay, image=tk_img, bg="black", borderwidth=0)
     label.image = tk_img  # Keep a reference
@@ -8287,10 +8293,10 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     # Let's say text area should match image width roughly or be slightly narrower
     desc_width =  (target_width // 3)*2 # max(int(target_width - tk_scaled_img.width()), int(target_width // 3))
     image_width = target_width - desc_width
-    wraplength = desc_width - 20
+    wraplength = desc_width - scl(20)
 
-    font_title = ("Arial", 60, "bold", "underline")
-    font_body = ("Arial", 50)
+    font_title = ("Arial", scl(60), "bold", "underline")
+    font_body = ("Arial", scl(50))
 
     if not profile_overlay_window or not profile_overlay_window.winfo_exists():
         # Create the main window
@@ -8319,11 +8325,11 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
 
         bio_label = tk.Label(left_frame, text="CHARACTER DESCRIPTION:", font=font_title, bg=back_color, fg=front_color,
                              wraplength=wraplength, justify="left", anchor="nw")
-        bio_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
+        bio_label.pack(side="top", anchor="w", fill="x", padx=scl(10), pady=(scl(10), 0))
 
         profile_text_label = tk.Label(left_frame, text="", font=font_body, bg=back_color, fg=front_color,
                              wraplength=wraplength, justify="left", anchor="nw")
-        profile_text_label.pack(side="top", anchor="w", fill="x", padx=10, pady=(10, 0))
+        profile_text_label.pack(side="top", anchor="w", fill="x", padx=scl(10), pady=(scl(10), 0))
 
         # Right: Image or countdown
         profile_image_label = tk.Label(right_frame, bg=back_color)
@@ -8439,8 +8445,8 @@ def set_cloud_tags():
     min_w, max_w = min(weights), max(weights)
 
     # Adjust font size range based on number of tags
-    min_font_size = max(22, 60 - len(tag_cloud_tags))
-    max_font_size = max(min_font_size+6, 60 - len(tag_cloud_tags) // 4)  # Smaller range for many tags
+    min_font_size = scl(max(22, 60 - len(tag_cloud_tags)))
+    max_font_size = scl(max(min_font_size+6, 60 - len(tag_cloud_tags) // 4))  # Smaller range for many tags
 
     font_range = max_font_size - min_font_size
 
@@ -8474,7 +8480,7 @@ def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
     cx, cy = screen_w // 2, screen_h // 2
-    margin = 50
+    margin = scl(50)
 
     def boxes_overlap(a, b):
         ax, ay, aw, ah = a
@@ -8643,16 +8649,16 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
         box.attributes("-topmost", True)
         box.attributes("-alpha", 0.9)
         box.configure(bg=OVERLAY_BACKGROUND_COLOR, highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=4)
-        font_size = 55
-        wrap = box_width - 40
+        font_size = scl(55)
+        wrap = box_width - scl(40)
         # Try to find the largest font size that fits within 3 lines
         background = OVERLAY_BACKGROUND_COLOR
         if light_name_overlay:
             background = {"a":'#374151',"s":'#065F46',"m":'#1E3A8A'}.get(title[0], '#374151')
             title = title[1]
-        while font_size >= 10:
+        while font_size >= scl(10):
             test_font = font.Font(family="Arial", size=font_size, weight="bold")
-            line_count = get_wrapped_line_count(title, test_font, wrap-10)
+            line_count = get_wrapped_line_count(title, test_font, wrap-scl(10))
             if line_count <= 3:
                 break
             font_size -= 1
@@ -8665,9 +8671,9 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
             wraplength=wrap,
             justify="center"
         )
-        label.pack(expand=True, fill="both", padx=10, pady=10)
+        label.pack(expand=True, fill="both", padx=scl(10), pady=scl(10))
 
-        box.geometry(f"{box_width - 20}x{box_height - 20}+{x}+{y}")
+        box.geometry(f"{box_width - scl(20)}x{box_height - scl(20)}+{x}+{y}")
         episode_overlay_boxes[f"ep_{i}"] = box
 
 def get_wrapped_line_count(text, font, wraplength):
@@ -9138,7 +9144,7 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         position (str): Where to place the window (e.g., "top left", "bottom center", "middle right").
     """
     global floating_windows
-
+    size = scl(size)
     # Remove window if value is '0' or negative
     if value is None or isinstance(value, str) and value == '0' or isinstance(value, int) and value < 0:
         if name in floating_windows:
@@ -9272,7 +9278,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
                                              length=round(screen_width * 0.6))
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
 
-        music_icon_label = tk.Label(progress_overlay, text="🎵", font=("Segoe UI Emoji", 100),
+        music_icon_label = tk.Label(progress_overlay, text="🎵", font=("Segoe UI Emoji", scl(100)),
                                     bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
 
         music_icon_label.place(x=0, rely=0.35, anchor="center")  # Temporarily place far left
@@ -9313,8 +9319,8 @@ def pulsate_music_icon(label):
         root.after(500, pulsate_music_icon, label)  # Check again later if paused
         return
 
-    base_size = 160
-    max_size = 200
+    base_size = scl(160)
+    max_size = scl(200)
     speed = 0.5
 
     pulse_step += speed
@@ -9334,7 +9340,7 @@ def move_music_icon(current_time, total_length):
     if progress_bar_width <= 1:
         return  # Avoid division by zero or incomplete layout
 
-    icon_width = 40  # Estimated width
+    icon_width = scl(40)  # Estimated width
 
     if total_length > 0:
         progress_ratio = min(max(current_time / total_length, 0), 1)
@@ -9481,7 +9487,7 @@ title_row_label = None
 top_row_label = None
 bottom_row_label = None
 
-def adjust_font_size(label, max_width, base_size=50, min_size=20):
+def adjust_font_size(label, max_width, base_size=scl(50), min_size=scl(20)):
     """Adjusts the font size dynamically to fit within max_width."""
     font_size = base_size
     label.config(font=("Arial", font_size, "bold"))
@@ -9543,9 +9549,9 @@ def toggle_title_popup(show, title_only=False):
     bottom_row = ""
     bg_color = OVERLAY_BACKGROUND_COLOR
     fg_color = OVERLAY_TEXT_COLOR
-    top_font = ("Arial", 20, "bold")
-    title_font = ("Arial", 50, "bold")
-    bottom_font = ("Arial", 15, "bold")
+    top_font = ("Arial", scl(20), "bold")
+    title_font = ("Arial", scl(50), "bold")
+    bottom_font = ("Arial", scl(15), "bold")
     data = currently_playing.get("data")
     if data:
         if currently_playing.get("type") == "youtube":
@@ -9623,19 +9629,19 @@ def toggle_title_popup(show, title_only=False):
     else:
         top_row_label = tk.Label(title_window, text=top_row,
                                 font=top_font, fg=fg_color, bg=bg_color)
-        top_row_label.pack(pady=(10, 0), padx = 10)
+        top_row_label.pack(pady=(scl(10), 0), padx = scl(10))
 
         # Title Label (Large Text)
         title_row_label = tk.Label(title_window, text=title_row, font=title_font, fg=fg_color, bg=bg_color)
-        title_row_label.pack(pady=(0, 0), padx = 10)
+        title_row_label.pack(pady=(0, 0), padx = scl(10))
 
         bottom_row_label = tk.Label(title_window, text=bottom_row,
                                 font=bottom_font, fg=fg_color, bg=bg_color)
-        bottom_row_label.pack(pady=(0, 10), padx = 10)
+        bottom_row_label.pack(pady=(0, scl(10)), padx = scl(10))
 
     # Dynamically adjust font size to fit window width
     title_window.update_idletasks()
-    max_width = title_window.winfo_screenwidth() - 550  # Leave padding
+    max_width = title_window.winfo_screenwidth() - scl(550)  # Leave padding
     adjust_font_size(title_row_label, max_width)
     
     # Position at the bottom center of the screen
@@ -9645,7 +9651,7 @@ def toggle_title_popup(show, title_only=False):
     window_width = title_window.winfo_reqwidth()
     window_height = title_window.winfo_reqheight()
     title_window.geometry(f"+{(screen_width - window_width) // 2}+{screen_height}")  # Adjust for bottom spacing
-    root.after(1, lambda: animate_window(title_window, (screen_width - window_width) // 2, screen_height - window_height - 20))
+    root.after(1, lambda: animate_window(title_window, (screen_width - window_width) // 2, screen_height - window_height - scl(20)))
 
 def get_tags_string(data):
     return ", ".join(get_tags(data))
@@ -9995,10 +10001,10 @@ def show_bonus_characters(characters, reveal_correct=False):
     height = int(screen_height * 0.3)
     if reveal_correct:
         width = int(screen_width * 0.585)
-        y = 10
+        y = scl(10)
     else:
         width = coming_up_window.winfo_reqwidth()
-        y = coming_up_window.winfo_reqheight() + 20
+        y = coming_up_window.winfo_reqheight() + scl(20)
     
     x = (screen_width - width) // 2
 
@@ -10013,7 +10019,7 @@ def show_bonus_characters(characters, reveal_correct=False):
     container = tk.Frame(bonus_overlay_window, bg="pink")
     container.pack(expand=True)
 
-    label_font = ("Arial", 24, "bold")
+    label_font = ("Arial", scl(24), "bold")
     bonus_character_labels = []
 
     # Use a nested frame to help center the character row
@@ -10022,15 +10028,15 @@ def show_bonus_characters(characters, reveal_correct=False):
 
     for i, char in enumerate(characters):
         img_url = "https://cdn-eu.anidb.net/images/main/" + char[2]
-        img = load_image_from_url(img_url, size=(210, 315))
+        img = load_image_from_url(img_url, size=(scl(210), scl(315)))
         # Frame for each character (black background, white border)
         frame = tk.Frame(center_frame,
                          bg="black",
                          highlightbackground=OVERLAY_TEXT_COLOR,
-                         highlightthickness=2,
-                         padx=6,
-                         pady=6)
-        frame.grid(row=0, column=i, padx=5, pady=5)
+                         highlightthickness=scl(2),
+                         padx=scl(6),
+                         pady=scl(6))
+        frame.grid(row=0, column=i, padx=scl(5), pady=scl(5))
 
         inner_frame = tk.Frame(frame, bg=OVERLAY_BACKGROUND_COLOR)
         inner_frame.pack()
@@ -10566,8 +10572,8 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True,
 
     # Title
     if not coming_up_title_label:
-        coming_up_title_label = tk.Label(coming_up_window, font=("Arial", 40, "bold", "underline"))
-        coming_up_title_label.pack(pady=(10, 0), padx=10)
+        coming_up_title_label = tk.Label(coming_up_window, font=("Arial", scl(40), "bold", "underline"))
+        coming_up_title_label.pack(pady=(scl(10), 0), padx=scl(10))
     if up_next:
         title = "UP NEXT: " + title.upper() + "!"
     if title == coming_up_title_label.cget("text"):
@@ -10576,8 +10582,8 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True,
 
     # Details
     if not coming_up_rules_label:
-        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", 20, "bold"), justify="center", wraplength=1700)
-        coming_up_rules_label.pack(pady=(5, 10))
+        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", scl(20), "bold"), justify="center", wraplength=scl(1700))
+        coming_up_rules_label.pack(pady=(scl(5), scl(10)))
     if image:
         coming_up_rules_label.configure(image=image, compound="top")
         coming_up_rules_label.image = image
@@ -12080,7 +12086,7 @@ BACKGROUND_COLOR = "gray12"
 WINDOW_TITLE = "Guess the Anime! Playlist Tool"
 root = tk.Tk()
 root.title(WINDOW_TITLE)
-root.geometry("1200x550")
+root.geometry(f"{scl(1200)}x{scl(550)}")
 root.configure(bg=BACKGROUND_COLOR)  # Set background color to black
 
 def blank_space(row, size=0):
@@ -12092,7 +12098,8 @@ def create_button(frame, label, func, add_space=False, enabled=False, help_title
     bg = HIGHLIGHT_COLOR if enabled else "black"
     
     # Create the button
-    button = tk.Button(frame, text=label, command=func, bg=bg, fg="white")
+    # button = tk.Button(frame, text=label, command=func, bg=bg, fg="white")
+    button = tk.Button(frame, text=label, command=func, bg=bg, fg="white", font=("Segoe UI", scl(9)))
     button.pack(side="left", padx=(0,0))
 
     # Bind right-click to show help
@@ -12185,7 +12192,7 @@ def create_first_row_buttons():
                                 "button after to create the playlist.")
 
     global directory_entry
-    directory_entry = tk.Entry(first_row_frame, width=33, bg="black", fg="white", insertbackground="white", textvariable=directory)
+    directory_entry = tk.Entry(first_row_frame, width=scl(33), bg="black", fg="white", insertbackground="white", textvariable=directory)
     directory_entry.pack(side="left")
     directory_entry.delete(0, tk.END)
     directory_entry.insert(0, directory)
@@ -12251,7 +12258,7 @@ def create_first_row_buttons():
                                 help_text=("Go to the index in the text box of the playlist. "
                                 "It will play it immediately and set the current index."))
     global current_entry
-    current_entry = tk.Entry(first_row_frame, width=5, bg="black", fg="white", insertbackground="white", justify='center')
+    current_entry = tk.Entry(first_row_frame, width=5, bg="black", fg="white", insertbackground="white", justify='center', font=("Segoe UI", scl(9)))
     if playlist.get("infinite", False):
         current_entry.insert(0, "∞")
         out_of = "?"
@@ -12261,7 +12268,7 @@ def create_first_row_buttons():
     current_entry.pack(side="left")
 
     global playlist_size_label
-    playlist_size_label = tk.Label(first_row_frame, text=f"/{out_of}", bg=BACKGROUND_COLOR, fg="white")
+    playlist_size_label = tk.Label(first_row_frame, text=f"/{out_of}", bg=BACKGROUND_COLOR, fg="white", font=("Segoe UI", scl(9)))
     playlist_size_label.pack(side="left")
 
     blank_space(first_row_frame)
@@ -12329,7 +12336,8 @@ def create_first_row_buttons():
                                 width=17,
                                 height=len(difficulty_options),
                                 state="readonly",
-                                style="Black.TCombobox")
+                                style="Black.TCombobox",
+                                font=("Segoe UI", scl(9)))
         difficulty_dropdown.pack(side="left")
         difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
         blank_space(first_row_frame)
@@ -12563,7 +12571,8 @@ light_dropdown = ttk.Combobox(second_row_frame,
                         width=14,
                         height=len(light_mode_options),
                         state="readonly",
-                        style="Black.TCombobox")
+                        style="Black.TCombobox",
+                        font=("Segoe UI", scl(9)))
 light_dropdown.current(0)
 light_dropdown.pack(side="left")
 
@@ -12703,16 +12712,16 @@ end_button = create_button(second_row_frame, "[E]ND", end_session,
 end_button.bind("<Button-2>", prompt_end_session_text)
 
 info_panel = tk.Frame(root, bg="black")
-info_panel.pack(fill="both", expand=True, padx=10, pady=5)
+info_panel.pack(fill="both", expand=True, padx=scl(10), pady=scl(5))
 
 # Left Column
-left_column = tk.Text(info_panel, height=20, width=40, bg="black", fg="white",
+left_column = tk.Text(info_panel, height=scl(20), width=scl(40), bg="black", fg="white",
                       insertbackground="white", state=tk.DISABLED,
                       selectbackground=HIGHLIGHT_COLOR, wrap="word")
 left_column.pack(side="left", fill="both", expand=True)
 
 # Middle Column
-middle_column = tk.Text(info_panel, height=20, width=40, bg="black", fg="white",
+middle_column = tk.Text(info_panel, height=scl(20), width=scl(40), bg="black", fg="white",
                         insertbackground="white", state=tk.DISABLED,
                         selectbackground=HIGHLIGHT_COLOR, wrap="word")
 middle_column.pack(side="left", fill="both", expand=True)
@@ -12722,13 +12731,13 @@ right_column_container = tk.Frame(info_panel, bg="black")
 right_column_container.pack(side="left", fill="both", expand=True)
 
 # Top Shorter Column (e.g., header, stats, etc.)
-right_top = tk.Text(right_column_container, height=0, width=40, bg="black", fg="white",
+right_top = tk.Text(right_column_container, height=0, width=scl(40), bg="black", fg="white",
                     insertbackground="white", state=tk.DISABLED,
                     selectbackground=HIGHLIGHT_COLOR, wrap="word")
 right_top.pack(fill="x")
 
 # Main Right Column
-right_column = tk.Text(right_column_container, height=20, width=40, bg="black", fg="white",
+right_column = tk.Text(right_column_container, height=scl(20), width=scl(40), bg="black", fg="white",
                        insertbackground="white", state=tk.DISABLED,
                        selectbackground=HIGHLIGHT_COLOR, wrap="word")
 right_column.pack(fill="both", expand=True)
@@ -12748,20 +12757,20 @@ def set_volume(value):
     if music_loaded:
         pygame.mixer.music.set_volume(0.2*(volume_level/100))  # Adjust volume
 
-volume_slider = tk.Scale(controls_frame, from_=200, to=0, orient=tk.VERTICAL, command=set_volume, label="🔊", length=50, bg="black", fg="white", border=0, font=("Arial", 12, "bold"))
+volume_slider = tk.Scale(controls_frame, from_=200, to=0, orient=tk.VERTICAL, command=set_volume, label="🔊", length=50, bg="black", fg="white", border=0, font=("Arial", scl(12), "bold"))
 volume_slider.set(100)  # Default volume at 50%
-volume_slider.pack(side="left", padx=(10, 5))
+volume_slider.pack(side="left", padx=(scl(10), scl(5)))
 
-play_pause_button = tk.Button(controls_frame, text="⏯", command=play_pause, bg="black", fg="white", font=("Arial", 30, "bold"), border=0, width=2)
+play_pause_button = tk.Button(controls_frame, text="⏯", command=play_pause, bg="black", fg="white", font=("Arial", scl(30), "bold"), border=0, width=2)
 play_pause_button.pack(side="left", padx=0)
 
-stop_button = tk.Button(controls_frame, text="⏹", command=stop, bg="black", fg="white", font=("Arial", 30, "bold"), border=0, width=2)
+stop_button = tk.Button(controls_frame, text="⏹", command=stop, bg="black", fg="white", font=("Arial", scl(30), "bold"), border=0, width=2)
 stop_button.pack(side="left", padx=0)
 
-previous_button = tk.Button(controls_frame, text="⏮", command=play_previous, bg="black", fg="white", font=("Arial", 30, "bold"), border=0, width=2)
+previous_button = tk.Button(controls_frame, text="⏮", command=play_previous, bg="black", fg="white", font=("Arial", scl(30), "bold"), border=0, width=2)
 previous_button.pack(side="left", padx=0)
 
-next_button = tk.Button(controls_frame, text="⏭", command=play_next, bg="black", fg="white", font=("Arial", 30, "bold"), border=0, width=2)
+next_button = tk.Button(controls_frame, text="⏭", command=play_next, bg="black", fg="white", font=("Arial", scl(30), "bold"), border=0, width=2)
 next_button.pack(side="left", padx=0)
 
 autoplay_toggle = 0
@@ -12778,30 +12787,30 @@ def toggle_autoplay():
         autoplay_button.configure(text="🔁", fg=HIGHLIGHT_COLOR)
 
 autoplay_button = tk.Button(controls_frame, text="🔁", command=toggle_autoplay, bg="black", fg="white", font=("Arial", 30, "bold"), border=0, width=2, anchor="center", justify="center")
-autoplay_button.pack(side="left", padx=0, pady=(0,15))
+autoplay_button.pack(side="left", padx=0, pady=(0,scl(15)))
 
 # Seek bar
 seek_bar = tk.Scale(controls_frame, from_=0, to=1000, orient=tk.HORIZONTAL, command=seek, length=2000, resolution=0.1, bg="black", fg="white")
-seek_bar.pack(side="left", fill="x", padx=(5,10))
+seek_bar.pack(side="left", fill="x", padx=(scl(5),scl(10)))
 
 # Text formatting tags
-left_column.tag_configure("bold", font=("Arial", 12, "bold"), foreground="white")
+left_column.tag_configure("bold", font=("Arial", scl(12), "bold"), foreground="white")
 left_column.tag_configure("underline", underline=True)
-middle_column.tag_configure("bold", font=("Arial", 12, "bold"), foreground="white")
-middle_column.tag_configure("highlight", background="#333333", foreground="white", font=("Arial", 12, "bold"))  # Dark gray highlight
+middle_column.tag_configure("bold", font=("Arial", scl(12), "bold"), foreground="white")
+middle_column.tag_configure("highlight", background="#333333", foreground="white", font=("Arial", scl(12), "bold"))  # Dark gray highlight
 middle_column.tag_configure("underline", underline=True)
-right_column.tag_configure("bold", font=("Arial", 12, "bold"), foreground="white")
-right_column.tag_configure("highlight", background=HIGHLIGHT_COLOR, foreground="white", font=("Arial", 12, "bold"))  # Dark gray highlight
-right_column.tag_configure("highlightreg", background=HIGHLIGHT_COLOR, foreground="white", font=("Arial", 12))  # Dark gray highlight
+right_column.tag_configure("bold", font=("Arial", scl(12), "bold"), foreground="white")
+right_column.tag_configure("highlight", background=HIGHLIGHT_COLOR, foreground="white", font=("Arial", scl(12), "bold"))  # Dark gray highlight
+right_column.tag_configure("highlightreg", background=HIGHLIGHT_COLOR, foreground="white", font=("Arial", scl(12)))  # Dark gray highlight
 right_column.tag_configure("underline", underline=True)
-left_column.tag_configure("white", foreground="white", font=("Arial", 12))
-left_column.tag_configure("blank", foreground="white", font=("Arial", 6))
-middle_column.tag_configure("white", foreground="white", font=("Arial", 12))
-middle_column.tag_configure("blank", foreground="white", font=("Arial", 6))
-right_column.tag_configure("white", foreground="white", font=("Arial", 12))
-right_column.tag_configure("blank", foreground="white", font=("Arial", 6))
-right_top.tag_configure("bold", font=("Arial", 12, "bold"), foreground="white")
-right_top.tag_configure("white", foreground="white", font=("Arial", 12))
+left_column.tag_configure("white", foreground="white", font=("Arial", scl(12)))
+left_column.tag_configure("blank", foreground="white", font=("Arial", scl(6)))
+middle_column.tag_configure("white", foreground="white", font=("Arial", scl(12)))
+middle_column.tag_configure("blank", foreground="white", font=("Arial", scl(6)))
+right_column.tag_configure("white", foreground="white", font=("Arial", scl(12)))
+right_column.tag_configure("blank", foreground="white", font=("Arial", scl(6)))
+right_top.tag_configure("bold", font=("Arial", scl(12), "bold"), foreground="white")
+right_top.tag_configure("white", foreground="white", font=("Arial", scl(12)))
 
 list_buttons = [
     {"button":"show_playlist_button", "label":"playlist", "func":show_playlist},
