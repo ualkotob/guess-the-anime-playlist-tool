@@ -49,7 +49,13 @@ vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installatio
 os.add_dll_directory(vlc_path)  # Add VLC directory to DLL search path
     
 # Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance("--no-xlib", "-q", "--fullscreen", "--avcodec-hw=none")
+instance = vlc.Instance(
+    "--no-xlib", 
+    "-q", 
+    "--fullscreen", 
+    "--avcodec-hw=none",
+    "--codec=avcodec"
+)
 
 player = instance.media_player_new()
 # =========================================
@@ -7503,7 +7509,15 @@ def get_cached_sfw_themes():
                     else:
                         cached_sfw_themes["eds"].append(filename)
 
-instance2 = vlc.Instance("--no-audio", "--no-xlib", "-q", "--video-on-top", "--fullscreen", "--avcodec-hw=none")
+instance2 = vlc.Instance(
+    "--no-audio", 
+    "--video-on-top",
+    "--no-xlib", 
+    "-q", 
+    "--fullscreen", 
+    "--avcodec-hw=none",
+    "--codec=avcodec"
+)
 mismatched_player = instance2.media_player_new()
 mismatch_visuals = None
 def get_mismatched_theme():
@@ -8747,7 +8761,15 @@ def set_light_names():
 # =========================================
 #          *CLIP/*TRAILER LIGHTNING ROUND
 # =========================================
-stream_instance = vlc.Instance("--no-xlib", "-q", "--video-on-top", "--fullscreen", "--aout=directsound", "--avcodec-hw=none")
+stream_instance = vlc.Instance(
+    "--aout=directsound",
+    "--video-on-top",
+    "--no-xlib", 
+    "-q", 
+    "--fullscreen", 
+    "--avcodec-hw=none",
+    "--codec=avcodec"
+)
 stream_player = stream_instance.media_player_new()
 currently_streaming = None
 last_streamed = ["","","",""]
