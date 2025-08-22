@@ -47,18 +47,10 @@ os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
 # Explicitly load libvlc.dll and its dependencies
 vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installation path
 os.add_dll_directory(vlc_path)  # Add VLC directory to DLL search path
-
-# Load libvlc.dll
-# try:
-#     ctypes.CDLL(os.path.join(vlc_path, 'libvlc.dll'))
-# except OSError as e:
-#     print(f"Error loading libvlc.dll: {e}")
-#     exit(1)
     
-# --vout=directdraw, direct3d11, opengl, direct3d9
 # Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance("--no-xlib", "-q", "--fullscreen") # "--video-on-top", instance = vlc.Instance("--no-xlib --no-video-deco")  # Disable hardware acceleration
-# alt_instance = vlc.Instance("--vout=direct3d9", "--no-xlib", "-q", "--fullscreen")
+instance = vlc.Instance("--no-xlib", "-q", "--fullscreen", "--avcodec-hw=none")
+
 player = instance.media_player_new()
 # =========================================
 #       *GLOBAL VARIABLES/CONSTANTS
@@ -7511,7 +7503,7 @@ def get_cached_sfw_themes():
                     else:
                         cached_sfw_themes["eds"].append(filename)
 
-instance2 = vlc.Instance("--no-audio", "--no-xlib", "-q", "--video-on-top", "--fullscreen")
+instance2 = vlc.Instance("--no-audio", "--no-xlib", "-q", "--video-on-top", "--fullscreen", "--avcodec-hw=none")
 mismatched_player = instance2.media_player_new()
 mismatch_visuals = None
 def get_mismatched_theme():
@@ -8755,7 +8747,7 @@ def set_light_names():
 # =========================================
 #          *CLIP/*TRAILER LIGHTNING ROUND
 # =========================================
-stream_instance = vlc.Instance("--no-xlib", "-q", "--video-on-top", "--fullscreen", "--aout=directsound")
+stream_instance = vlc.Instance("--no-xlib", "-q", "--video-on-top", "--fullscreen", "--aout=directsound", "--avcodec-hw=none")
 stream_player = stream_instance.media_player_new()
 currently_streaming = None
 last_streamed = ["","","",""]
