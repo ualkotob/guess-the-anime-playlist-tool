@@ -47,15 +47,26 @@ os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
 # Explicitly load libvlc.dll and its dependencies
 vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installation path
 os.add_dll_directory(vlc_path)  # Add VLC directory to DLL search path
-    
+
+def load_vlc_parameters():
+    param_file = os.path.join("files", "vlc-parameters.txt")
+    if os.path.isfile(param_file):
+        with open(param_file, "r", encoding="utf-8") as f:
+            # Split lines into args, strip whitespace, ignore empty lines
+            print("Loaded custom vlc parameters.")
+            return [line.strip() for line in f if line.strip()]
+    else:
+        # Default fallback parameters
+        return [
+            "--no-xlib",
+            "-q",
+            "--fullscreen",
+            "--avcodec-hw=none",
+            "--codec=avcodec"
+        ]
+
 # Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance(
-    "--no-xlib", 
-    "-q", 
-    "--fullscreen", 
-    "--avcodec-hw=none",
-    "--codec=avcodec"
-)
+instance = vlc.Instance(load_vlc_parameters())
 
 player = instance.media_player_new()
 # =========================================
