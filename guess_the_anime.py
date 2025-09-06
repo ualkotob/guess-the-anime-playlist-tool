@@ -344,8 +344,10 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
         if refresh and mal_id not in fetched_metadata and (refresh_all or (auto_refresh_toggle and fetch)):
             fetched_metadata.add(mal_id)
             refresh_jikan_data(mal_id, anime_data)
+            anime_data = anime_metadata.get(mal_id) or {}
         if refresh and fetch and anidb_id and (anidb_id not in anidb_metadata or auto_refresh_toggle) and not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names'] or (light_mode and "c." in light_mode)):
             refresh_anidb_data(anidb_id, anime_data)
+            anidb_data = anidb_metadata.get(anidb_id, {})
 
     result = file_data | anime_data | anidb_data | ai_data
     _metadata_cache[filename] = result
@@ -731,7 +733,7 @@ def fetch_all_metadata(delay=0):
     scan_directory()
     cached_pop_time_group = None
     series_cooldowns_cache = None
-    def worker():
+    def fetch_all_metadata_worker():
         global anidb_delay
         total_checked = 0
         total_fetched = 0
@@ -812,7 +814,7 @@ def fetch_all_metadata(delay=0):
             print(f"{total_fetched} files saved to playlist '{"New Themes"}'.")
 
     # Run in a separate thread so it doesn’t freeze the UI
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=fetch_all_metadata_worker, daemon=True).start()
 
 def refresh_all_metadata(delay=1):
     """Refreshes all jikan metadata for the entire directory, spacing out API calls."""
@@ -4473,7 +4475,7 @@ light_modes = {
     "cover":{
         "icon":"👤",
         "desc":(
-            "You will be shown 4 characters revealed over time."
+            "You will be shown the cover of the anime, revealed over time."
         )
     },
     "character":{
@@ -4557,7 +4559,7 @@ light_modes = {
     "c. reveal":{
         "icon":"✨",
         "desc":(
-            "A cover image will be revealed over time."
+            "You will be shown a character, revealed over time."
         )
     },
     "c. profile":{
@@ -4775,7 +4777,8 @@ lightning_mode_settings_default = {
         "variants": {
             "standard": True,
             "double_speed": True,
-            "mismatch": True
+            "mismatch": True,
+            "one_second": True
         },
         "variety": {
             "enabled": True,
@@ -4919,7 +4922,7 @@ lightning_mode_settings_default = {
         "variety": {
             "enabled": True,
             "popularity": {
-                "range": [0, 0],
+                "range": [0, 3000],
                 "weight": 10
             },
             "cooldown": {
@@ -4936,7 +4939,7 @@ lightning_mode_settings_default = {
         "variety": {
             "enabled": True,
             "popularity": {
-                "range": [0, 0],
+                "range": [0, 3000],
                 "weight": {
                     "op":10,
                     "ed":5
@@ -5276,10 +5279,11 @@ def get_light_round_time():
     return start_time
 
 light_speed_modifier = 1
+light_blind_one_second_count = None
 stream_start_time = 0
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
-    global stream_start_time, character_round_answer, character_round_characters
+    global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
         if time < 1:
             player.pause()
@@ -5292,34 +5296,39 @@ def update_light_round(time):
             light_round_started = False
         elif(time >= light_round_start_time+light_round_length):
             start_str = "next"
-            if not is_title_window_up():
-                player.set_fullscreen(False)
-                player.set_fullscreen(True)
-                char_answer = copy.copy(character_round_answer)
-                cover_answer = light_cover_image
-                trivia_answer = light_trivia_answer
-                if mismatch_visuals:
-                    top_info_data = "MISMATCHED VISUALS:\n" + mismatch_visuals
-                elif last_streamed[0] == currently_playing.get("filename") and last_streamed[1] != "Trailer":
-                    top_info_data = f"YOUTUBE VIDEO:\n{last_streamed[1]}\nby {last_streamed[3]}"
-                else:
-                    top_info_data = None
-                toggle_title_popup(True)
-                set_black_screen(False)
-                set_light_round_number("#" + str(light_round_number))
-                clean_up_light_round()
-                if top_info_data:
-                    top_info(top_info_data, 20)
-                if char_answer:
-                    top_info(char_answer[0], width_max=0.55) 
-                    toggle_character_image_overlay(char_answer[1])
-                if cover_answer:
-                    toggle_character_image_overlay(cover_answer)
-                if trivia_answer:
-                    top_info(trivia_answer, width_max=0.55) 
-            if not light_mode:
-                start_str = "end"
-            set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
+            blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default) // 2
+            if light_blind_one_second_count != None and light_blind_one_second_count < blind_length:
+                light_blind_one_second_count += 1
+                player.set_time(int(float(light_round_start_time))*1000)
+            else:
+                if not is_title_window_up():
+                    player.set_fullscreen(False)
+                    player.set_fullscreen(True)
+                    char_answer = copy.copy(character_round_answer)
+                    cover_answer = light_cover_image
+                    trivia_answer = light_trivia_answer
+                    if mismatch_visuals:
+                        top_info_data = "MISMATCHED VISUALS:\n" + mismatch_visuals
+                    elif last_streamed[0] == currently_playing.get("filename") and last_streamed[1] != "Trailer":
+                        top_info_data = f"YOUTUBE VIDEO:\n{last_streamed[1]}\nby {last_streamed[3]}"
+                    else:
+                        top_info_data = None
+                    toggle_title_popup(True)
+                    set_black_screen(False)
+                    set_light_round_number("#" + str(light_round_number))
+                    clean_up_light_round()
+                    if top_info_data:
+                        top_info(top_info_data, 20)
+                    if char_answer:
+                        top_info(char_answer[0], width_max=0.55) 
+                        toggle_character_image_overlay(char_answer[1])
+                    if cover_answer:
+                        toggle_character_image_overlay(cover_answer)
+                    if trivia_answer:
+                        top_info(trivia_answer, width_max=0.55) 
+                if not light_mode:
+                    start_str = "end"
+                set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
         else:
             time_left = (light_round_length-(time - light_round_start_time))
             if time_left < 1 and light_speed_modifier != 1:
@@ -5456,7 +5465,7 @@ def update_light_round(time):
                 toggle_character_blur_reveal_overlay(percent=blur_percent / 100, destroy=False)
                 set_frame_number(f"BLUR: {round(blur_percent)}%", inverse=character_round_answer)
             elif zoom_reveal_image_window:
-                progress = (light_round_length - max(0, time_left)) / light_round_length
+                progress = ((light_round_length - 1) - max(0, time_left-1)) / (light_round_length-1)
                 progress = min(max(progress, 0.0), 1.0)
                 zoom_percent = 100 - (100 * progress)
                 toggle_character_zoom_reveal_overlay(percent=zoom_percent / 100, destroy=False)
@@ -5534,6 +5543,9 @@ def update_light_round(time):
                 set_frame_number(f"{reveal_num}/{6}")
             if edge_overlay_box:
                 set_countdown(round(time_left/light_speed_modifier), position="center")
+            elif light_blind_one_second_count is not None:
+                blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default) // 2
+                set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 set_countdown(round(time_left/light_speed_modifier), inverse=character_round_answer)
     if light_mode and time < 1:
@@ -5548,13 +5560,18 @@ def update_light_round(time):
                 player.set_rate(light_speed_modifier)
                 light_round_length = light_round_length * light_speed_modifier
                 set_frame_number(f"x{light_speed_modifier} SPEED")
+            def set_one_second():
+                global light_round_length, light_blind_one_second_count
+                light_blind_one_second_count = 0
+                light_round_length = 1
+                set_frame_number(f"ONE SECOND")
             if light_round_start_time is None:
                 light_round_start_time = get_light_round_time()
             if lightning_mode_settings.get(light_mode, {}).get("muted"):
                 toggle_mute(True)
             if light_mode == 'blind':
                 blind_variants = lightning_mode_settings.get("blind",{}).get("variants",{})
-                standard, double_speed, mismatch = blind_variants.get("standard"), blind_variants.get("double_speed"), blind_variants.get("mismatch")
+                standard, double_speed, mismatch, one_second = blind_variants.get("standard"), blind_variants.get("double_speed"), blind_variants.get("mismatch"), blind_variants.get("one_second")
                 blind_modes = ['standard', 'standard', 'mismatch']
                 allowed_blind_modes = []
                 for m in blind_modes:
@@ -5562,7 +5579,7 @@ def update_light_round(time):
                         allowed_blind_modes.append(m)
                 allowed_blind_modes = allowed_blind_modes or blind_modes
                 blind_mode = random.choice(allowed_blind_modes)
-                
+                blind_mode = 'standard'
                 if blind_mode == "mismatch":
                     media = instance.media_new(directory_files.get(get_mismatched_theme()))
                     mismatched_player.set_media(media)
@@ -5590,13 +5607,24 @@ def update_light_round(time):
                             root.after(100, wait_for_mismatch, filename)
                     wait_for_mismatch(currently_playing.get("filename"))
                 else:
-                    if double_speed:
-                        if not standard:
+                    is_op = is_slug_op(currently_playing.get('data', {}).get('slug', ""))
+                    def pick_double_or_one_second(is_op):
+                        if double_speed and one_second:
+                            if not is_op or random.randint(1, 2) == 1:
+                                set_double_speed()
+                            else:
+                                set_one_second()
+                        elif double_speed:
                             set_double_speed()
+                        elif one_second:
+                            set_one_second()
+                    if double_speed or one_second:
+                        if not standard:
+                            pick_double_or_one_second(is_op)
                         else:
                             popularity = currently_playing.get("data", {}).get("popularity", 1000) or 3000
-                            if (popularity <= 100 and random.randint(1, 5) == 1) or (popularity <= 250 and random.randint(1, 10) == 1):
-                                set_double_speed()
+                            if (popularity <= 100 and random.randint(1, 3) == 1) or (popularity <= 250 and random.randint(1, 6) == 1):
+                                pick_double_or_one_second(is_op)
                     set_progress_overlay(0, light_round_length*100)
             elif light_mode == 'clues':
                 toggle_clues_overlay()
@@ -5735,7 +5763,7 @@ def update_light_round(time):
                         elif stream_player.is_playing() and stream_player.get_length() > 0:
                             def stream_overlay():
                                 if light_mode == 'ost':
-                                    top_info("OST")
+                                    top_info("SOUNDTRACK / OST")
                                     set_progress_overlay(0, light_round_length*100)
                                 else:
                                     if last_streamed and last_streamed[3] and "Crunchyroll" in last_streamed[3]:
@@ -5756,7 +5784,7 @@ def update_light_round(time):
                                     restart_player()
                                 else:
                                     player.play()
-                            root.after(1500, start_player)
+                            root.after(2000, start_player)
                             set_stream_start()
                             for time in [500, 1000, 1500, 2000]:
                                 root.after(time, stream_overlay)
@@ -5820,7 +5848,7 @@ def get_char_types_by_popularity(data=None, mode=""):
 
 def clean_up_light_round():
     global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay
-    global frame_light_round_started, light_muted, character_round_answer, light_cover_image, light_trivia_answer
+    global frame_light_round_started, light_muted, character_round_answer, light_cover_image, light_trivia_answer, light_blind_one_second_count
     mismatched_player.stop()
     mismatched_player.set_media(None)  # Reset the media
     stop_stream()
@@ -5835,6 +5863,7 @@ def clean_up_light_round():
     tag_cloud_tags = []
     light_episode_names = []
     light_speed_modifier = 1
+    light_blind_one_second_count = None
     player.set_rate(light_speed_modifier)
     for overlay in [set_progress_overlay, toggle_clues_overlay, toggle_song_overlay, toggle_synopsis_overlay, toggle_title_overlay, toggle_scramble_overlay, toggle_swap_overlay, 
                     toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay, toggle_character_overlay, toggle_tag_cloud_overlay, toggle_episode_overlay, toggle_tile_overlay,
@@ -5948,7 +5977,7 @@ def is_slug_op(slug):
 lightning_queue = None
 lightning_queue_data = {}
 def queue_next_lightning_mode():
-    def worker():
+    def queue_next_lightning_mode_worker():
         global lightning_queue, lightning_queue_data
         lightning_queue = None
         next_index = playlist["current_index"] + 1
@@ -6006,9 +6035,9 @@ def queue_next_lightning_mode():
                 if not data.get("emojis"):
                     get_emoji_clues_for_title(data)
         up_next_text()
-
+    
     if light_mode:
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=queue_next_lightning_mode_worker, daemon=True).start()
 
 def set_variety_light_mode(queue=None, excluded_modes=[]):
     global last_round, variety_light_mode_enabled, variety_mode_cooldown_counts, lightning_queue, last_variety_forced
@@ -7830,7 +7859,7 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
     lift_windows()
 
 def send_scoreboard_command(cmd):
-    def worker():
+    def send_scoreboard_command_worker():
         try:
             s = socket.socket()
             s.connect(("localhost", 5555))
@@ -7838,7 +7867,7 @@ def send_scoreboard_command(cmd):
             s.close()
         except ConnectionRefusedError:
             pass
-    threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=send_scoreboard_command_worker, daemon=True).start()
 
 # =========================================
 #          *GROW LIGHTNING ROUND
@@ -8134,9 +8163,9 @@ def get_character_round_characters(data=None, queue=False):
             return get_cached_character_round_images(urls, queue=True)
         character_round_characters = []
         get_cached_character_round_images([urls[0]])
-        def worker():
+        def get_character_round_characters_worker():
             get_cached_character_round_images(urls[1:4])
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=get_character_round_characters_worker, daemon=True).start()
     else:
         if queue:
             return copy.copy(character_round_image_cache_default)
@@ -9850,8 +9879,8 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "10 differences between", "overrated!?!", "manga and anime", "film theory:",
                     "the manga that", "the anime that", "anime similar to", "should you watch",
                     "best anime of", "best watch order", "manga is so much better than the anime",
-                    "everything you need to know about", "seasons ranked", "#animeedit", "They NEED to REMAKE",
-                    "? Watch these!"
+                    "everything you need to know about", "seasons ranked", "#animeedit", "they need to remake",
+                    "? watch these!"
                 ]
                 ost_bad_keywords = [
                     "insert song"
@@ -9898,6 +9927,17 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     test_print(f"[{video_id}]{title}: title doesn't match enough")
                     continue  # skip this result
                 
+                if ost:
+                    # check if ost match
+                    is_ost = False
+                    for t in ["OST", "Soundtrack", "Insert Song"]:
+                        if title_match_score(t, title) or title_match_score(t, description):
+                            is_ost = True
+                            break
+                    if not is_ost:
+                        test_print(f"[{video_id}]{title}: is not ost")
+                        continue  # skip this result
+
                 # check channel
                 channel_title = item["snippet"]["channelTitle"]
                 blacklisted_channels = [
@@ -10242,12 +10282,20 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
                                              length=round(screen_width * 0.6))
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
 
-        music_icon_label = tk.Label(progress_overlay, text="🎵", font=("Segoe UI Emoji", scl(100)),
+        # Music icon
+        if light_mode == 'ost':
+            music_icon = "🎼"
+        else:
+            music_icon = "🎵"
+        music_icon_label = tk.Label(progress_overlay, text=music_icon, font=("Segoe UI Emoji", scl(100)),
                                     bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
 
         music_icon_label.place(x=0, rely=0.35, anchor="center")  # Temporarily place far left
 
-        pulsate_music_icon(music_icon_label)
+        def pulsate_music_icon_worker():
+            pulsate_music_icon(music_icon_label)
+        threading.Thread(target=pulsate_music_icon_worker, daemon=True).start()
+        # pulsate_music_icon(music_icon_label)
 
         # Animate to center, then mark ready and move icon
         def finish_animation():
@@ -11246,7 +11294,7 @@ def play_video(index=playlist["current_index"]):
     set_countdown()
     toggle_coming_up_popup(False)
 
-    if playlist["current_index"] < len(playlist["playlist"]) and index + 2 >= len(playlist["playlist"]):
+    if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]):
         get_next_infinite_track()
         
     if youtube_queue is not None:
@@ -11297,26 +11345,30 @@ def check_next_queue_round(next_filename_set):
             elif check_mute_peek_mark(next_filename):
                 toggle_mute_peek_round()
 
+skip_limit = 0
 def skip_filename():
-    global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle
+    global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle, skip_limit
     blind_round_toggle = False
     peek_round_toggle = False
     mute_peek_round_toggle = False
+    skip_limit += 1
     play_video(playlist["current_index"] + skip_direction)  # Try playing the next video
 
 all_themes_played = []
 def play_filename(filename, fullscreen=True):
-    global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle, currently_playing, video_stopped, all_themes_played, previous_media
+    global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle, currently_playing
+    global video_stopped, all_themes_played, previous_media, skip_limit
     filepath = directory_files.get(filename)  # Get file path from playlist
     data = get_metadata(filename, fetch=True)
-    if not filepath or not os.path.exists(filepath):  # Check if file exists
-        print(f"File not found: {filepath}. Skipping...")
-        skip_filename()
-        return False
-    elif not variety_light_mode_enabled and light_mode and not has_lightning_mode_info(data, light_mode):
-        print(f"Not enough info for {filename}. Skipping...")
-        skip_filename()
-        return False
+    if skip_limit <= 10:
+        if not filepath or not os.path.exists(filepath):  # Check if file exists
+            print(f"File not found: {filepath}. Skipping...")
+            skip_filename()
+            return False
+        elif not variety_light_mode_enabled and light_mode and not has_lightning_mode_info(data, light_mode):
+            print(f"Not enough info for {filename}. Skipping...")
+            skip_filename()
+            return False
     currently_playing = {
         "type":"theme",
         "filename":filename,
@@ -11386,11 +11438,12 @@ def play_filename(filename, fullscreen=True):
             manual_blind = False
             set_black_screen(False)
             player.play()
-    if light_mode not in ['frame', 'clip']:
+    if light_mode not in ['frame', 'clip', 'ost']:
         root.after(500, play_video_retry, 5, fullscreen)  # Retry playback
     if filename not in all_themes_played:
         all_themes_played.append(filename)
         update_playlist_name()
+    skip_limit = 0
     save_config()
     return True
 
