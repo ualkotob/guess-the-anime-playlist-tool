@@ -339,18 +339,21 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     anime_data = anime_metadata.get(mal_id) or {}
     anidb_data = anidb_metadata.get(anidb_id, {}) if anidb_id else {}
     ai_data = ai_metadata.get(mal_id, {}) if mal_id else {}
-
+    re_queue_lightning_mode = False
     if anime_data and "-[ID]" not in filename and mal_id:
         if refresh and mal_id not in fetched_metadata and (refresh_all or (auto_refresh_toggle and fetch)):
             fetched_metadata.add(mal_id)
             refresh_jikan_data(mal_id, anime_data)
-            anime_data = anime_metadata.get(mal_id) or {}
+            if light_mode:
+                re_queue_lightning_mode = True
         if refresh and fetch and anidb_id and (anidb_id not in anidb_metadata or auto_refresh_toggle) and not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names'] or (light_mode and "c." in light_mode)):
             refresh_anidb_data(anidb_id, anime_data)
-            anidb_data = anidb_metadata.get(anidb_id, {})
+            re_queue_lightning_mode = True
 
     result = file_data | anime_data | anidb_data | ai_data
     _metadata_cache[filename] = result
+    if re_queue_lightning_mode:
+        queue_next_lightning_mode()
     return result
 
 def refetch_metadata():
@@ -2721,12 +2724,27 @@ cached_pop_time_cooldown = 0
 cached_skipped_themes = []
 total_infinite_files = 0
 difficulty_ranges = [
-    [100, 250, 500],
-    [150, 500, 1000],
-    [250, 1000, 0],
-    [500, 1500, 0],
-    [750, 2000, 0]
+    ["easy"],
+    ["easy", "normal"],
+    ["easy", "normal", "hard"],
+    ["normal", "hard"],
+    ["hard"]
 ]
+
+difficulty_groups = {
+    "easy": {
+        "range": [1, 250],
+        "cooldown": [0.5, 0.6]
+    },
+    "normal": {
+        "range": [251, 1000],
+        "cooldown": [0.75, 0.9]
+    },
+    "hard": {
+        "range": [1001, INT_INF],
+        "cooldown": [1.0, 1.5]
+    }
+}
 def get_pop_time_groups(refetch=False):
     global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map, cached_pop_time_cooldown, cached_skipped_themes, total_infinite_files
 
@@ -2748,13 +2766,13 @@ def get_pop_time_groups(refetch=False):
                 cached_skipped_themes.append(f)
                 continue
 
-            # p = get_series_popularity(d)
             p = d.get("popularity") or float('inf')
             mal = d.get("mal")
             placed = False
 
             for k, l in enumerate(group_limits):
-                if l == 0 or p <= l:
+                difficulty_group = difficulty_groups.get(l)
+                if p >= difficulty_group["range"][0] and p <= difficulty_group["range"][1]:
                     boost = 0
                     if mal not in shows_files_map:
                         boost += max(0, (d.get("score", 0) or 0) - 7)
@@ -2843,7 +2861,7 @@ def get_next_infinite_track(increment=True):
     s_limit_mod, f_limit_mod = 1, 1
     p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
 
-    if groups[p][t]:
+    if p < len(groups) and t < len(groups[p]) and groups[p][t]:
         random.shuffle(groups[p][t])
     selected_file = None
     checked_mal_ids = []
@@ -2857,7 +2875,7 @@ def get_next_infinite_track(increment=True):
         else:
             need_op = ed_count >= op_count and (group_op_count / (2 * group_ed_count)) > 0.05
 
-        if not groups[p][t]:
+        if p >= len(groups) or t >= len(groups[p]) or not groups[p][t]:
             if try_count > 18:
                 return
             next_playlist_order()
@@ -2888,11 +2906,18 @@ def get_next_infinite_track(increment=True):
                     continue
                 checked_files.append(selected_file)
                 d = get_metadata(selected_file)
+                s_pop = get_series_popularity(d)
+                s_limit = None
+                f_limit = None
                 for k, l in enumerate(difficulty_ranges[playlist["difficulty"]]):
-                    if l == 0 or get_series_popularity(d) <= l:
+                    difficulty_group = difficulty_groups.get(l)
+                    if s_pop >= difficulty_group["range"][0] and s_pop <= difficulty_group["range"][1]:
                         s_limit = SERIES_LIMIT[k]*s_limit_mod
                         f_limit = FILE_LIMIT[k]*f_limit_mod
                         break
+                if not s_limit or not f_limit:
+                    s_limit = SERIES_LIMIT[0]*s_limit_mod
+                    f_limit = FILE_LIMIT[0]*f_limit_mod
                 if need_op and not is_slug_op(d.get("slug")):
                     selected_file = None
                     continue
@@ -2927,12 +2952,15 @@ file_cooldowns_cache  = None
 def compute_cooldowns(groups, refetch=False):
     global series_cooldowns_cache, file_cooldowns_cache
     if not series_cooldowns_cache or refetch:
-        POPULARITY_WEIGHTS = [0.5, 0.75, 1.0]  # Lower = more frequent repeats allowed
-        FILE_POPULARITY_WEIGHTS = [0.6, 0.9, 1.5]  # Lower = more frequent repeats allowed
         series_cooldowns = []
         file_cooldowns = []
 
+        difficulty_range = difficulty_ranges[playlist["difficulty"]]
         for i, group in enumerate(groups):
+            if i >= len(difficulty_range):
+                # Prevent index error
+                continue
+            difficulty_group = difficulty_groups[difficulty_range[i]]
             all_files = [f for subgroup in group for f in subgroup]
             file_count = len(set(all_files))
 
@@ -2944,8 +2972,8 @@ def compute_cooldowns(groups, refetch=False):
             base_f_cd = file_count
 
             # Apply weights
-            s_cd = max(30, int(base_s_cd * POPULARITY_WEIGHTS[i]))
-            f_cd = max(300, int(base_f_cd * FILE_POPULARITY_WEIGHTS[i]))
+            s_cd = max(30, int(base_s_cd * difficulty_group["cooldown"][0]))
+            f_cd = max(300, int(base_f_cd * difficulty_group["cooldown"][1]))
 
             series_cooldowns.append(s_cd)
             file_cooldowns.append(f_cd)
@@ -4473,7 +4501,7 @@ light_modes = {
         )
     },
     "cover":{
-        "icon":"👤",
+        "icon":"📚",
         "desc":(
             "You will be shown the cover of the anime, revealed over time."
         )
@@ -5296,10 +5324,22 @@ def update_light_round(time):
             light_round_started = False
         elif(time >= light_round_start_time+light_round_length):
             start_str = "next"
-            blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default) // 2
+            blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default)
             if light_blind_one_second_count != None and light_blind_one_second_count < blind_length:
-                light_blind_one_second_count += 1
-                player.set_time(int(float(light_round_start_time))*1000)
+                if light_blind_one_second_count % 3 == 0:
+                    light_blind_one_second_count += 1
+                    player.pause()
+                    set_progress_overlay(light_round_length*100, light_round_length*100)
+                    def update_light_blind_count():
+                        global light_blind_one_second_count
+                        if light_blind_one_second_count % 3 == 2:
+                            player.set_time(int(float(light_round_start_time)) * 1000)
+                            player.play()
+                        light_blind_one_second_count += 1
+                        set_countdown(round(blind_length - light_blind_one_second_count))
+                    root.after(1000, update_light_blind_count)
+                    root.after(2000, update_light_blind_count)
+                    set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 if not is_title_window_up():
                     player.set_fullscreen(False)
@@ -5544,7 +5584,7 @@ def update_light_round(time):
             if edge_overlay_box:
                 set_countdown(round(time_left/light_speed_modifier), position="center")
             elif light_blind_one_second_count is not None:
-                blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default) // 2
+                blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default)
                 set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 set_countdown(round(time_left/light_speed_modifier), inverse=character_round_answer)
@@ -11438,7 +11478,7 @@ def play_filename(filename, fullscreen=True):
             manual_blind = False
             set_black_screen(False)
             player.play()
-    if light_mode not in ['frame', 'clip', 'ost']:
+    if light_mode not in ['frame', 'clip', 'ost', 'blind']:
         root.after(500, play_video_retry, 5, fullscreen)  # Retry playback
     if filename not in all_themes_played:
         all_themes_played.append(filename)
@@ -11490,7 +11530,7 @@ def thread_prefetch_metadata():
 def play_video_retry(retries, fullscreen=True):
     global video_stopped
     # Check if the video is playing
-    if not player.is_playing() or player.get_length() == 0:
+    if (not player.is_playing() or player.get_length() == 0):
         if retries > 0:
             if retries < 5:
                 print(f"Retrying playback for: {currently_playing.get('filename')}")
