@@ -1,3 +1,9 @@
+def set_title_light_text():
+    global title_light_letters, title_light_string
+    title = get_base_title()
+    title_light_letters = get_unique_letters(title)
+    title_light_string = title
+    random.shuffle(title_light_letters)
 # =========================================
 #      GUESS THE ANIME - PLAYLIST TOOL
 #             by Ramun Flame
@@ -999,22 +1005,46 @@ def update_metadata():
     updating_metadata = False
 
 def update_popout_currently_playling(data, clear=False):
+    is_youtube = currently_playing.get("type") == "youtube"
     popout_currently_playing_extra.config(state=tk.NORMAL, wrap="word")
     popout_currently_playing_extra.delete(1.0, tk.END)
     if not clear and popout_show_metadata:
+        if is_youtube:
+            title = get_youtube_display_title(data)
+        else:
+            title = get_display_title(data)
         japanese_title = data.get("title")
-        title = get_display_title(data)
-        theme = format_slug(data.get("slug"))
+        slug = data.get("slug")
+        # Handle YouTube videos or missing slug gracefully
+        if slug:
+            theme = format_slug(slug)
+        elif is_youtube:
+            theme = "[YouTube]"
+        else:
+            theme = ""
         song = get_song_string(data)
         tags = get_tags_string(data)
-        studio = ", ".join(data.get("studios"))
+        if is_youtube:
+            studio = youtube_queue.get('name')
+        else:
+            studio = ", ".join(data.get("studios", []))
         type = data.get("type")
         source = data.get("source")
         marks = get_file_marks(currently_playing.get("filename", ""))
+        # Fallbacks for YouTube or missing fields
         if data.get("platforms"):
             episodes = ", ".join(data.get("platforms"))
             members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
-            score = f"Score: {data.get("score")}"
+            score = f"Score: {data.get("score")}" if data.get("score") else ""
+        elif is_youtube:
+            # YouTube video: show duration, views, likes, etc. if available
+            duration = data.get("duration")
+            if duration:
+                episodes = f"{format_seconds(duration)}"
+            else:
+                episodes = "YouTube Video"
+            members = f"Views: {data.get('view_count'):,}" if data.get('view_count') else ""
+            score = f"Likes: {data.get('like_count'):,}" if data.get('like_count') else ""
         else:
             episodes =  data.get("episodes")
             if not episodes:
@@ -1025,10 +1055,15 @@ def update_popout_currently_playling(data, clear=False):
             score = f"Score: {data.get("score")} (#{data.get("rank")})"
         if is_game(data):
             aired = data.get("release")
+        elif is_youtube:
+            aired = f"{datetime.strptime(data.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}"
         else:
             aired = data.get("season")
         popout_currently_playing.configure(text=title)
-        popout_currently_playing_extra.insert(tk.END, f"{marks}{theme}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
+        if is_youtube:
+            popout_currently_playing_extra.insert(tk.END, f"Uploaded by {studio} ({data.get('subscriber_count', 0):,} subscribers)\n{japanese_title}\n{members} | {score} | {aired} | {episodes}", "white")
+        else:
+            popout_currently_playing_extra.insert(tk.END, f"{marks}{theme}{overall_theme_num_display(currently_playing.get('filename'))} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
     else:
         popout_currently_playing.configure(text="")
     popout_currently_playing_extra.config(state=tk.DISABLED)
@@ -1732,6 +1767,15 @@ def unload_youtube_video():
     global youtube_queue
     if youtube_queue:
         toggle_coming_up_popup(False, get_youtube_display_title(youtube_queue))
+    # Unhighlight the YouTube queue button if it exists
+    try:
+        if 'YOUTUBE QUEUE' in popout_buttons_by_name:
+            button = popout_buttons_by_name['YOUTUBE QUEUE']
+            button_seleted(button, False)
+        if "YOUTUBE DROPDOWN" in popout_buttons_by_name:
+            popout_buttons_by_name['YOUTUBE DROPDOWN'].set("YOUTUBE VIDEOS")
+    except Exception:
+        pass
     youtube_queue = None
 
 def get_youtube_display_title(data):
@@ -1809,7 +1853,8 @@ def update_youtube_metadata():
     insert_column_line(left_column, "DURATION: ", str(format_seconds(get_youtube_duration(youtube_queue))) + " mins")
     insert_column_line(middle_column, "DESCRIPTION: ", youtube_queue.get('description'))
     show_youtube_playlist()
-    # 'thumbnail':info.get('thumbnail'),
+    if popout_currently_playing:
+        update_popout_currently_playling(youtube_queue)
 
 def insert_column_line(column, title, data):
     column.insert(tk.END, title, "bold")
@@ -2725,9 +2770,9 @@ cached_skipped_themes = []
 total_infinite_files = 0
 difficulty_ranges = [
     ["easy"],
-    ["easy", "normal"],
-    ["easy", "normal", "hard"],
-    ["normal", "hard"],
+    ["easy", "medium"],
+    ["easy", "medium", "hard"],
+    ["medium", "hard"],
     ["hard"]
 ]
 
@@ -2736,7 +2781,7 @@ difficulty_groups = {
         "range": [1, 250],
         "cooldown": [0.5, 0.6]
     },
-    "normal": {
+    "medium": {
         "range": [251, 1000],
         "cooldown": [0.75, 0.9]
     },
@@ -2851,6 +2896,7 @@ def next_playlist_order(increment=True):
             threading.Thread(target=worker, daemon=True).start()
             cached_pop_time_cooldown = 0
 
+INFINITE_PLAYLIST_LIMIT = 5000
 def get_next_infinite_track(increment=True):
     if not playlist.get("infinite", False):
         return
@@ -2935,7 +2981,7 @@ def get_next_infinite_track(increment=True):
                     playlist["playlist"].append(selected_file)
                     if playlist["current_index"] == -1:
                         update_current_index(0)
-                    if len(playlist["playlist"]) > 5000:
+                    if len(playlist["playlist"]) > INFINITE_PLAYLIST_LIMIT:
                         playlist["playlist"].pop(0)
                         update_current_index(playlist["current_index"]-1)
                     else:
@@ -4600,7 +4646,7 @@ light_modes = {
     "c. name":{
         "icon":"🔤",
         "desc":(
-            "You will need to guess the character as letters are randomly placed in position."
+            "You will need to guess the character name as letters are randomly placed in position."
         )
     },
     "variety":{
@@ -4612,60 +4658,32 @@ light_modes = {
 }
 
 lightning_mode_settings_default = {
-    "song": {
+    "blind": {
         "length": 12,
-        "muted": True,
+        "muted": False,
+        "variants": {
+            "standard": True,
+            "double_speed": True,
+            "mismatch": True,
+            "one_second": True
+        },
         "variety": {
             "enabled": True,
             "popularity": {
-                "range": [0, 250],
-                "weight": {
+                "range": [0, 1500],
+                "weight":  {
                     "op":10,
                     "ed":3
                 }
             },
             "cooldown": {
-                "min_gap": 10,
-                "max_gap": 25,
+                "min_gap": 2,
+                "max_gap": 7,
                 "popularity_force_threshold": {
-                    "op":100,
-                    "ed":50
+                    "op":750,
+                    "ed":500
                 },
-                "no_repeat_limit": 40
-            }
-        }
-    },
-    "ost": {
-        "length": 12,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 250],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 10,
-                "max_gap": 25,
-                "popularity_force_threshold": 100,
-                "no_repeat_limit": 40
-            }
-        }
-    },
-    "clues": {
-        "length": 20,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 500],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 10,
-                "max_gap": 20,
-                "popularity_force_threshold": 250,
-                "no_repeat_limit": 40
+                "no_repeat_limit": 0
             }
         }
     },
@@ -4692,53 +4710,25 @@ lightning_mode_settings_default = {
             }
         }
     },
-    "tags": {
+    "c. profile": {
         "length": 20,
         "muted": True,
+        "character_types": {
+            "main": True,
+            "secondary": True,
+            "appears": False,
+            "popularity_limit": True
+        },
         "variety": {
             "enabled": True,
             "popularity": {
-                "range": [0, 750],
+                "range": [0, 250],
                 "weight": 10
             },
             "cooldown": {
-                "min_gap": 25,
-                "max_gap": 50,
-                "popularity_force_threshold": 500,
-                "no_repeat_limit": 40
-            }
-        }
-    },
-    "episodes": {
-        "length": 20,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 1000],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 25,
-                "max_gap": 50,
-                "popularity_force_threshold": 500,
-                "no_repeat_limit": 40
-            }
-        }
-    },
-    "names": {
-        "length": 20,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 1000],
-                "weight": 5
-            },
-            "cooldown": {
-                "min_gap": 25,
-                "max_gap": 50,
-                "popularity_force_threshold": 500,
+                "min_gap": 10,
+                "max_gap": 30,
+                "popularity_force_threshold": 750,
                 "no_repeat_limit": 40
             }
         }
@@ -4776,131 +4766,6 @@ lightning_mode_settings_default = {
             }
         }
     },
-    "c. profile": {
-        "length": 20,
-        "muted": True,
-        "character_types": {
-            "main": True,
-            "secondary": True,
-            "appears": False,
-            "popularity_limit": True
-        },
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 250],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 10,
-                "max_gap": 30,
-                "popularity_force_threshold": 750,
-                "no_repeat_limit": 40
-            }
-        }
-    },
-    "blind": {
-        "length": 12,
-        "muted": False,
-        "variants": {
-            "standard": True,
-            "double_speed": True,
-            "mismatch": True,
-            "one_second": True
-        },
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 1500],
-                "weight":  {
-                    "op":10,
-                    "ed":3
-                }
-            },
-            "cooldown": {
-                "min_gap": 2,
-                "max_gap": 7,
-                "popularity_force_threshold": {
-                    "op":750,
-                    "ed":500
-                },
-                "no_repeat_limit": 0
-            }
-        }
-    },
-    "title": {
-        "length": 20,
-        "muted": True,
-        "variants": {
-            "reveal": True,
-            "scramble": True,
-            "swap": True
-        },
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 1500],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 4,
-                "max_gap": 6,
-                "popularity_force_threshold": 1000,
-                "no_repeat_limit": 80
-            }
-        }
-    },
-    "synopsis": {
-        "length": 20,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 1000],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 4,
-                "max_gap": 8,
-                "popularity_force_threshold": 1000,
-                "no_repeat_limit": 80
-            }
-        }
-    },
-    "trivia": {
-        "length": 12,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 1000],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 7,
-                "max_gap": 15,
-                "popularity_force_threshold": 1000,
-                "no_repeat_limit": 40
-            }
-        }
-    },
-    "emoji": {
-        "length": 12,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 500],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 10,
-                "max_gap": 30,
-                "popularity_force_threshold": 100,
-                "no_repeat_limit": 40
-            }
-        }
-    },
     "character": {
         "length": 12,
         "muted": True,
@@ -4915,6 +4780,23 @@ lightning_mode_settings_default = {
                 "max_gap": 7,
                 "popularity_force_threshold": 0,
                 "no_repeat_limit": 80
+            }
+        }
+    },
+    "clues": {
+        "length": 20,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 500],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 10,
+                "max_gap": 20,
+                "popularity_force_threshold": 250,
+                "no_repeat_limit": 40
             }
         }
     },
@@ -4936,48 +4818,6 @@ lightning_mode_settings_default = {
                 "max_gap": 8,
                 "popularity_force_threshold": 0,
                 "no_repeat_limit": 80
-            }
-        }
-    },
-    "peek": {
-        "length": 12,
-        "muted": True,
-        "variants": {
-            "slice": True,
-            "edge": True,
-            "grow": True
-        },
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 3000],
-                "weight": 10
-            },
-            "cooldown": {
-                "min_gap": 3,
-                "max_gap": 10,
-                "popularity_force_threshold": 0,
-                "no_repeat_limit": 0
-            }
-        }
-    },
-    "frame": {
-        "length": 12,
-        "muted": True,
-        "variety": {
-            "enabled": True,
-            "popularity": {
-                "range": [0, 3000],
-                "weight": {
-                    "op":10,
-                    "ed":5
-                }
-            },
-            "cooldown": {
-                "min_gap": 4,
-                "max_gap": 20,
-                "popularity_force_threshold": 0,
-                "no_repeat_limit": 0
             }
         }
     },
@@ -5007,6 +4847,116 @@ lightning_mode_settings_default = {
             }
         }
     },
+    "emoji": {
+        "length": 12,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 500],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 10,
+                "max_gap": 30,
+                "popularity_force_threshold": 100,
+                "no_repeat_limit": 40
+            }
+        }
+    },
+    "episodes": {
+        "length": 20,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 1000],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 25,
+                "max_gap": 50,
+                "popularity_force_threshold": 500,
+                "no_repeat_limit": 40
+            }
+        }
+    },
+    "frame": {
+        "length": 12,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 3000],
+                "weight": {
+                    "op":10,
+                    "ed":5
+                }
+            },
+            "cooldown": {
+                "min_gap": 4,
+                "max_gap": 20,
+                "popularity_force_threshold": 0,
+                "no_repeat_limit": 0
+            }
+        }
+    },
+    "names": {
+        "length": 20,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 1000],
+                "weight": 5
+            },
+            "cooldown": {
+                "min_gap": 25,
+                "max_gap": 50,
+                "popularity_force_threshold": 500,
+                "no_repeat_limit": 40
+            }
+        }
+    },
+    "ost": {
+        "length": 12,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 250],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 10,
+                "max_gap": 25,
+                "popularity_force_threshold": 100,
+                "no_repeat_limit": 40
+            }
+        }
+    },
+    "peek": {
+        "length": 12,
+        "muted": True,
+        "variants": {
+            "slice": True,
+            "edge": True,
+            "grow": True
+        },
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 3000],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 3,
+                "max_gap": 10,
+                "popularity_force_threshold": 0,
+                "no_repeat_limit": 0
+            }
+        }
+    },
     "regular": {
         "length": 12,
         "muted": False,
@@ -5015,6 +4965,119 @@ lightning_mode_settings_default = {
             "popularity": {
                 "range": [250, 0],
                 "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 0,
+                "max_gap": 0,
+                "popularity_force_threshold": 0,
+                "no_repeat_limit": 0
+            }
+        }
+    },
+    "song": {
+        "length": 12,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 250],
+                "weight": {
+                    "op":10,
+                    "ed":3
+                }
+            },
+            "cooldown": {
+                "min_gap": 10,
+                "max_gap": 25,
+                "popularity_force_threshold": {
+                    "op":100,
+                    "ed":50
+                },
+                "no_repeat_limit": 40
+            }
+        }
+    },
+    "synopsis": {
+        "length": 20,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 1000],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 4,
+                "max_gap": 10,
+                "popularity_force_threshold": 1000,
+                "no_repeat_limit": 80
+            }
+        }
+    },
+    "tags": {
+        "length": 20,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 750],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 25,
+                "max_gap": 50,
+                "popularity_force_threshold": 500,
+                "no_repeat_limit": 40
+            }
+        }
+    },
+    "title": {
+        "length": 20,
+        "muted": True,
+        "variants": {
+            "reveal": True,
+            "scramble": True,
+            "swap": True
+        },
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 1500],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 4,
+                "max_gap": 6,
+                "popularity_force_threshold": 1000,
+                "no_repeat_limit": 80
+            }
+        }
+    },
+    "trivia": {
+        "length": 12,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 1000],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 7,
+                "max_gap": 15,
+                "popularity_force_threshold": 1000,
+                "no_repeat_limit": 40
+            }
+        }
+    },
+    "variety": {
+        "length": 0,
+        "muted": True,
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 0],
+                "weight": 0
             },
             "cooldown": {
                 "min_gap": 0,
@@ -5042,8 +5105,16 @@ def open_settings_editor():
     def insert_into_tree(tree, parent, d):
         if isinstance(d, dict):
             for key, val in d.items():
-                node_id = tree.insert(parent, 'end', text=str(key), open=False)
-                insert_into_tree(tree, node_id, val)
+                # Special display for 'range' lists of length 2
+                if key == "range" and isinstance(val, (list, tuple)) and len(val) == 2:
+                    node_id = tree.insert(parent, 'end', text=str(key), open=False)
+                    tree.insert(node_id, 'end', text=f"min: {val[0]}", open=False)
+                    tree.insert(node_id, 'end', text=f"max: {val[1]}", open=False)
+                elif isinstance(val, (bool, int, float, str)) or val is None:
+                    node_id = tree.insert(parent, 'end', text=f"{key}: {val}", open=False)
+                else:
+                    node_id = tree.insert(parent, 'end', text=str(key), open=False)
+                    insert_into_tree(tree, node_id, val)
         elif isinstance(d, (list, tuple)):
             for i, val in enumerate(d):
                 node_id = tree.insert(parent, 'end', text=f"[{i}]", open=False)
@@ -5054,14 +5125,37 @@ def open_settings_editor():
     def tree_to_dict(tree, parent=''):
         children = tree.get_children(parent)
         if not children:
-            return parse_literal(tree.item(parent, 'text'))
+            text = tree.item(parent, 'text')
+            # If leaf is 'key: value', split and return {key: value (parsed)}
+            if ": " in text:
+                key, val = text.rsplit(": ", 1)
+                return {key: parse_literal(val)}
+            return parse_literal(text)
+
+        # Special handling for 'range' nodes: two children 'min: x', 'max: y'
+        if len(children) == 2:
+            texts = [tree.item(child, 'text') for child in children]
+            if (texts[0].startswith('min: ') and texts[1].startswith('max: ')) or (texts[1].startswith('min: ') and texts[0].startswith('max: ')):
+                min_val = None
+                max_val = None
+                for child in children:
+                    t = tree.item(child, 'text')
+                    if t.startswith('min: '):
+                        min_val = parse_literal(t[5:])
+                    elif t.startswith('max: '):
+                        max_val = parse_literal(t[5:])
+                return [min_val, max_val]
 
         # If this node is a dict key node and has exactly one child, and that child has no children,
         # treat the child as the value leaf node
         if len(children) == 1:
             only_child = children[0]
             if not tree.get_children(only_child):
-                return parse_literal(tree.item(only_child, 'text'))
+                text = tree.item(only_child, 'text')
+                if ": " in text:
+                    key, val = text.rsplit(": ", 1)
+                    return {key: parse_literal(val)}
+                return parse_literal(text)
 
         is_list = all(tree.item(child, 'text').startswith('[') for child in children)
         if is_list:
@@ -5069,9 +5163,15 @@ def open_settings_editor():
 
         result = {}
         for child in children:
-            key = tree.item(child, 'text')
-            val = tree_to_dict(tree, child)
-            result[key] = val
+            text = tree.item(child, 'text')
+            # If leaf is 'key: value', split and use key, value
+            if not tree.get_children(child) and ": " in text:
+                key, val = text.rsplit(": ", 1)
+                result[key] = parse_literal(val)
+            else:
+                key = text
+                val = tree_to_dict(tree, child)
+                result[key] = val
         return result
 
     def rebuild_tree(data):
@@ -5087,16 +5187,41 @@ def open_settings_editor():
 
         old_value = tree.item(item_id, 'text')
 
-        # Try to parse the old_value to actual Python type
-        parsed_value = parse_literal(old_value)
+        # Check for 'key: True' or 'key: False' pattern (toggle boolean)
+        if ": True" in old_value or ": False" in old_value:
+            key, val = old_value.rsplit(": ", 1)
+            if val == "True":
+                new_val = "False"
+            else:
+                new_val = "True"
+            tree.item(item_id, text=f"{key}: {new_val}")
+            return
 
-        # If it's a boolean, toggle it directly
+        # Check for 'key: value' pattern for any leaf node
+        if ": " in old_value and not tree.get_children(item_id):
+            key, val = old_value.rsplit(": ", 1)
+            entry = tk.Entry(tree, bg="#2a2a2a", fg="white", insertbackground="white")
+            entry.insert(0, val)
+            x, y, w, h = tree.bbox(item_id)
+            entry.place(x=x, y=y, width=w)
+
+            def save_edit(event):
+                new_val = entry.get()
+                tree.item(item_id, text=f"{key}: {new_val}")
+                entry.destroy()
+
+            entry.bind('<Return>', save_edit)
+            entry.focus()
+            return
+
+        # Try to parse the old_value to actual Python type (legacy fallback)
+        parsed_value = parse_literal(old_value)
         if isinstance(parsed_value, bool):
             new_value = not parsed_value
             tree.item(item_id, text=str(new_value))
             return
 
-        # Otherwise, allow editing with Entry widget
+        # Otherwise, allow editing with Entry widget (legacy fallback)
         entry = tk.Entry(tree, bg="#2a2a2a", fg="white", insertbackground="white")
         entry.insert(0, old_value)
         x, y, w, h = tree.bbox(item_id)
@@ -5275,7 +5400,7 @@ def unselect_light_modes():
     button_seleted(globals()['start_light_mode_button'], False)
     start_light_mode_button.configure(text="▶")
     if popout_buttons_by_name.get(start_light_mode_button):
-        popout_buttons_by_name[start_light_mode_button].configure(text="▶\nSTART")
+        popout_buttons_by_name[start_light_mode_button].configure(text="▶START")
 
 
 # =========================================
@@ -6193,7 +6318,7 @@ def has_lightning_mode_info(data, round_type):
         return not (youtube_api_limited or not YOUTUBE_API_KEY)
     elif round_type == "trivia":
         return data.get("trivia") or (OPENAI_API_KEY and (int(data.get("season", "9999")[-4:]) <= gpt_cutoff_year or len((data.get("synopsis") or "").split()) > 40))
-    elif round_type == "emojis":
+    elif round_type == "emoji":
         return bool(data.get("emojis")) or OPENAI_API_KEY
     elif round_type == "names":
         return len(data.get("characters", [])) >= 6
@@ -6971,6 +7096,36 @@ def get_next_title_mode(title_text):
         return total
 
     allowed_modes = []
+    all_variants = []
+    available_variants = []
+    for variant, enabled in lightning_mode_settings.get("title", {}).get("variants", {}).items():
+        all_variants.append(variant)
+        if enabled:
+            available_variants.append(variant)
+    available_variants = available_variants or all_variants
+
+    if not available_title_modes:
+        # Shuffle all available variants, but avoid starting with last_title_mode if possible
+        shuffled = random.sample(available_variants, k=len(available_variants))
+        if len(shuffled) > 1 and shuffled[0] == last_title_mode:
+            # Move last_title_mode to the end
+            shuffled = shuffled[1:] + [shuffled[0]]
+        available_title_modes = shuffled
+
+    def get_line_count():
+        screen_width = root.winfo_screenwidth()
+        max_width = screen_width * 0.7 - scl(40)
+        lines = get_title_text_lines(title_text, max_width, font=("Courier New", scl(80), "bold"))
+        return len(lines)
+
+    def get_long_word_count(length=5):
+        total = 0
+        for word in title_text.split(" "):
+            if len(word) >= length:
+                total += 1
+        return total
+
+    allowed_modes = []
     if get_line_count() <= 2:
         allowed_modes.append("scramble")
     if len(get_unique_letters(get_base_title())) >= 7:
@@ -6978,55 +7133,33 @@ def get_next_title_mode(title_text):
     if get_long_word_count(6):
         allowed_modes.append("swap")
 
-    for _ in range(len(available_title_modes)):
-        mode = available_title_modes.pop(0)
-
-        # Check if it's allowed
-        if mode not in allowed_modes:
-            available_title_modes.append(mode)
-            continue
-        
+    # If any allowed modes exist, always pick from those (ignore round-robin fairness for disallowed variants)
+    allowed_in_queue = [m for m in available_title_modes if m in allowed_modes]
+    if allowed_in_queue:
+        # Strictly only pick from allowed variants
+        non_repeat = [m for m in allowed_in_queue if m != last_title_mode]
+        if non_repeat:
+            mode = non_repeat[0]
+        else:
+            mode = allowed_in_queue[0]
+        if mode in available_title_modes:
+            available_title_modes.remove(mode)
         last_title_mode = mode
         return mode
-
-    # Fallback: all modes invalid (e.g., all were scramble and too long)
-    mode_choices = allowed_modes or available_title_modes
-    mode_choice = None
-    while not mode_choice:
-        mode_choice = random.choice(mode_choices)
-        if mode_choice not in available_title_modes:
-            mode_choices = available_variants
-            mode_choice = None
-        if len(mode_choices) > 1 and mode_choice == last_title_mode:
-            mode_choice = None
-    last_title_mode = mode_choice
-    return last_title_mode
-
-title_light_letters = None
-title_light_string = None
-def set_title_light_text():
-    global title_light_letters, title_light_string
-    if not title_light_letters:
-        title_light_letters = get_unique_letters(get_base_title())
-        title_light_string = get_base_title()
-        random.shuffle(title_light_letters)
-
-def get_base_title(data=None, title=None):
-    if not title:
-        if character_round_answer:
-            return character_round_answer[0]
-        if not data:
-            data = currently_playing.get("data", {})
-        title = data.get('eng_title') or data.get("title")
-    for p in [': ',' ']:
-        for s in ['Season', 'Series', 'Part']:
-            for n in ['0','1','2','3','4','5','6','7','8','9','III','II','IV','I','VIIII','VIII','VII','VI','V','X']:
-                title = title.replace(f"{p}{s} {n}", "")
-    for p in [': ',' ']:
-        for n in ['First','Second','Third','Fourth','Fifth','1st','2nd','3rd','4th','5th','6th','Final']:
-            for s in ['Season', 'Series', 'Part']:
-                title = title.replace(f"{p}{n} {s}", "")
-    return title
+    # If no allowed variants at all, only then pick from the rest
+    if not allowed_modes:
+        if available_title_modes:
+            mode = available_title_modes.pop(0)
+            last_title_mode = mode
+            return mode
+        # Should never happen, but fallback to a random variant
+        mode = random.choice(available_variants)
+        last_title_mode = mode
+        return mode
+    # If there are allowed_modes but none are in the queue, reshuffle queue to try again
+    available_title_modes[:] = random.sample([m for m in available_variants if m in allowed_modes], k=len([m for m in available_variants if m in allowed_modes]))
+    # Try again recursively (should always succeed now)
+    return get_next_title_mode(title_text)
 
 def get_unique_letters(title):
     letters = []
@@ -7047,7 +7180,29 @@ def get_title_light_string(letters=0):
             revealed_title = revealed_title + new_letter
         else:
             revealed_title = revealed_title + letter
+
     return revealed_title
+
+def get_base_title(data=None, title=None):
+    if not title:
+        if 'character_round_answer' in globals() and character_round_answer:
+            return character_round_answer[0]
+        if not data and 'currently_playing' in globals():
+            data = currently_playing.get("data", {})
+        if data:
+            title = data.get('eng_title') or data.get("title")
+        else:
+            title = ""
+    # Remove common season/series/part suffixes
+    for p in [': ', ' ']:
+        for s in ['Season', 'Series', 'Part']:
+            for n in ['0','1','2','3','4','5','6','7','8','9','III','II','IV','I','VIIII','VIII','VII','VI','V','X']:
+                title = title.replace(f"{p}{s} {n}", "")
+    for p in [': ', ' ']:
+        for n in ['First','Second','Third','Fourth','Fifth','1st','2nd','3rd','4th','5th','6th','Final']:
+            for s in ['Season', 'Series', 'Part']:
+                title = title.replace(f"{p}{n} {s}", "")
+    return title or ""
 
 title_overlay = None
 title_overlay_canvas = None
@@ -7646,7 +7801,7 @@ def toggle_peek():
         send_scoreboard_command("show")
         for overlay in [toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay]:
             overlay(destroy=True)
-        toggle_mute(False, True)
+        toggle_mute(False)
 
 peek_round_toggle = False
 def toggle_peek_round():
@@ -11335,6 +11490,8 @@ def play_video(index=playlist["current_index"]):
     toggle_coming_up_popup(False)
 
     if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]):
+        if len(playlist["playlist"]) == INFINITE_PLAYLIST_LIMIT:
+            index -= 1
         get_next_infinite_track()
         
     if youtube_queue is not None:
@@ -11355,6 +11512,8 @@ def play_video(index=playlist["current_index"]):
     elif search_queue:
         play_filename(search_queue)
         search_queue = None
+        if "SEARCH QUEUE" in popout_buttons_by_name:
+            button_seleted(popout_buttons_by_name["SEARCH QUEUE"], False)
     elif 0 <= index < len(playlist["playlist"]):
         same_index = index == playlist["current_index"]
         update_current_index(index)
@@ -11470,7 +11629,7 @@ def play_filename(filename, fullscreen=True):
                 button_seleted(peek_round_button, peek_round_toggle)
             else:
                 next_background_track()
-                toggle_mute(True, True)
+                toggle_mute(True)
                 mute_peek_round_toggle = False
                 button_seleted(mute_peek_round_button, mute_peek_round_toggle)
             root.after(500, lambda: player.play())
@@ -13112,7 +13271,15 @@ def toggle_show_popout_metadata():
         update_up_next_display(popout_up_next, clear=True)
     popout_controls.event_generate("<Configure>")
 
+popout_searching = False
+POPOUT_SEARCH_DEFAULT = "SEARCH THEMES"
 def create_popout_controls(columns=5, title="Popout Controls"):
+    # --- SEARCH GROUP STATE ---
+    global search_term, search_results
+    search_var = tk.StringVar(value=search_term if ('search_term' in globals() and search_term) else POPOUT_SEARCH_DEFAULT)
+    search_results_var = tk.StringVar(value="")
+    search_results_map = {}
+
     global popout_controls, popout_up_next, popout_up_next_font, popout_button_font, popout_currently_playing, popout_currently_playing_extra
 
     def on_popout_close():
@@ -13230,6 +13397,15 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             (variety_light_mode_button, "VARIETY", True),
             ("DIFFICULTY DROPDOWN", "DIFFICULTY SELECT", 1)
         ],
+        "YOUTUBE QUEUE": [
+            ("YOUTUBE DROPDOWN", "YOUTUBE VIDEOS", 4),
+            ("YOUTUBE QUEUE", "QUEUE NEXT", 1)
+        ],
+        "SEARCH": [
+            ("SEARCH ENTRY", "SEARCH", 2),
+            ("SEARCH DROPDOWN", "RESULTS", 2),
+            ("SEARCH QUEUE", "QUEUE NEXT", 1)
+        ],
         "MISC TOGGLES": [
             (dock_button, "DOCK", False),
             (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get("filename","")))})", False),
@@ -13291,6 +13467,201 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         col = 0
 
         for entry in button_entries:
+            # --- SEARCH GROUP ---
+            if group_name == "SEARCH":
+                if entry[0] == "SEARCH ENTRY":
+                    # Search entry
+                    search_entry = tk.Entry(
+                        popout_controls,
+                        textvariable=search_var,
+                        font=popout_button_font,
+                        bg="black",
+                        fg="white",
+                        insertbackground="white"
+                    )
+                    search_entry.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
+                    def on_search_entry_key(event=None):
+                        global search_term, search_results
+                        query = search_var.get().strip()
+                        if not query:
+                            query = ""
+                        elif query == POPOUT_SEARCH_DEFAULT:
+                            search_term = ""
+                            search_results = []
+                            search_results_dropdown["values"] = []
+                            search_results_var.set("")
+                            search_results_map.clear()
+                            return
+                        else:
+                            search_term = query
+                        # Use the standard search logic
+                        if query and query != POPOUT_SEARCH_DEFAULT:
+                            search_results = search_playlist(query)
+                        else:
+                            search_results = []
+                        search_results.sort(key=lambda file: get_title(file, file).lower())
+                        # Update dropdown
+                        titles = [get_title(f, f) for f in search_results]
+                        search_results_dropdown["values"] = titles
+                        if titles:
+                            search_results_var.set(titles[0])
+                        else:
+                            search_results_var.set("")
+                        # Map titles to filenames
+                        search_results_map.clear()
+                        for i, f in enumerate(search_results):
+                            search_results_map[titles[i]] = f
+                    def on_focus_in(e):
+                        global popout_searching
+                        popout_searching = True
+                        if search_var.get() == POPOUT_SEARCH_DEFAULT:
+                            search_var.set("")
+                    def on_focus_out(e):
+                        global popout_searching
+                        popout_searching = False
+                        if not search_var.get().strip():
+                            search_var.set(POPOUT_SEARCH_DEFAULT)
+                    search_entry.bind("<FocusIn>", on_focus_in)
+                    search_entry.bind("<FocusOut>", on_focus_out)
+                    search_entry.bind("<KeyRelease>", on_search_entry_key)
+                    popout_buttons_by_name[entry[0]] = search_entry
+                    col += entry[2]
+                    continue
+                elif entry[0] == "SEARCH DROPDOWN":
+                    # Results dropdown
+                    titles = [get_title(f, f) for f in search_results]
+                    for i, f in enumerate(search_results):
+                        search_results_map[titles[i]] = f
+                    search_results_dropdown = ttk.Combobox(
+                        popout_controls,
+                        values=titles,
+                        textvariable=search_results_var,
+                        font=popout_button_font,
+                        height=10,
+                        style="Black.TCombobox",
+                        state='readonly'
+                    )
+                    search_results_dropdown.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
+                    def on_search_dropdown_change(event):
+                        search_results_dropdown.selection_clear()
+                        search_results_dropdown.icursor(tk.END)
+                    search_results_dropdown.bind("<<ComboboxSelected>>", on_search_dropdown_change)
+                    popout_buttons_by_name[entry[0]] = search_results_dropdown
+                    col += entry[2]
+                    continue
+                elif entry[0] == "SEARCH QUEUE":
+                    # Queue/Add Next button
+                    def queue_selected_search():
+                        global search_queue, search_results, playlist
+                        selected = search_results_var.get()
+                        if selected and selected in search_results_map:
+                            filename = search_results_map[selected]
+                            if playlist.get("infinite"):
+                                # Use add_search_playlist (index is 1-based)
+                                if filename in search_results:
+                                    idx = search_results.index(filename) + 1
+                                    add_search_playlist(idx)
+                                # Reset search box and dropdown
+                                search_var.set(POPOUT_SEARCH_DEFAULT)
+                                search_results_var.set("")
+                                search_results_map.clear()
+                                search_results_dropdown["values"] = []
+                            else:
+                                # Use the same function as regular search queue
+                                if filename in search_results:
+                                    idx = search_results.index(filename) + 1
+                                    set_search_queue(idx)
+                        if search_queue: 
+                            search_queue_button.configure(bg=HIGHLIGHT_COLOR)
+                        else:
+                            search_queue_button.configure(bg="black")
+                    button_text = "ADD NEXT" if playlist.get("infinite") else "QUEUE NEXT"
+                    search_queue_button = tk.Button(
+                        popout_controls,
+                        text=button_text,
+                        font=popout_button_font,
+                        command=queue_selected_search,
+                        bg="black",
+                        fg="white"
+                    )
+                    search_queue_button.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
+                    popout_buttons_by_name[entry[0]] = search_queue_button
+                    col += entry[2]
+                    continue
+                elif entry[0] is None:
+                    tk.Label(popout_controls, text="", bg=BACKGROUND_COLOR).grid(row=row, column=col, columnspan=entry[2], sticky="nsew")
+                    col += entry[2]
+                    continue
+            # --- END SEARCH GROUP ---
+            # --- YOUTUBE QUEUE GROUP ---
+            if group_name == "YOUTUBE QUEUE":
+                if entry[0] == "YOUTUBE DROPDOWN":
+                    # Build YouTube dropdown with only downloaded videos
+                    youtube_video_var = tk.StringVar(value="")
+                    youtube_video_list = []
+                    youtube_video_map = {}
+                    for key, value in youtube_metadata.get("videos", {}).items():
+                        if os.path.exists(os.path.join("youtube", value["filename"])):
+                            title = value.get('custom_title') or value.get('title')
+                            youtube_video_list.append(title)
+                            youtube_video_map[title] = key
+                    youtube_dropdown = ttk.Combobox(
+                        popout_controls,
+                        values=youtube_video_list,
+                        textvariable=youtube_video_var,
+                        font=popout_button_font,
+                        height=10,
+                        style="Black.TCombobox",
+                        state='readonly'
+                    )
+                    youtube_dropdown.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
+                    def set_dropdown_default():
+                        youtube_dropdown.set("YOUTUBE VIDEOS")
+                    youtube_dropdown.after(100, set_dropdown_default)
+                    def on_youtube_dropdown_change(event):
+                        youtube_dropdown.selection_clear()
+                        youtube_dropdown.icursor(tk.END)
+                    youtube_dropdown.bind("<<ComboboxSelected>>", on_youtube_dropdown_change)
+                    popout_buttons_by_name[entry[0]] = youtube_dropdown
+                    col += entry[2]
+                    continue
+                elif entry[0] == "YOUTUBE QUEUE":
+                    def queue_selected_youtube():
+                        selected = popout_buttons_by_name["YOUTUBE DROPDOWN"].get()
+                        if selected and selected in youtube_video_map:
+                            video_id = youtube_video_map[selected]
+                            # Find the index of the video_id in the current _youtube_playlist
+                            show_youtube_playlist()
+                            video_keys = list(_youtube_playlist.keys())
+                            try:
+                                index = video_keys.index(video_id)
+                            except ValueError:
+                                index = None
+                            if index is not None:
+                                load_youtube_video(index)
+                        if youtube_queue:
+                            queue_button.configure(bg=HIGHLIGHT_COLOR)
+                        else:
+                            queue_button.configure(bg="black")
+                    queue_button = tk.Button(
+                        popout_controls,
+                        text=entry[1],
+                        font=popout_button_font,
+                        command=queue_selected_youtube,
+                        bg="black",
+                        fg="white"
+                    )
+                    queue_button.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
+                    popout_buttons_by_name[entry[0]] = queue_button
+                    col += entry[2]
+                    continue
+                elif entry[0] is None:
+                    # Blank columns
+                    tk.Label(popout_controls, text="", bg=BACKGROUND_COLOR).grid(row=row, column=col, columnspan=entry[2], sticky="nsew")
+                    col += entry[2]
+                    continue
+
+            # --- END YOUTUBE QUEUE GROUP ---
             if isinstance(entry[0], str) and "DROPDOWN" in entry[0]:
                 _, label_text, colspan = entry
                 if col + colspan > columns:
@@ -13548,7 +13919,7 @@ def create_first_row_buttons():
                                 "to be able to use all the other playlist functions, "
                                 "you'll need to fetch the metadata for all the files. "
                                 "You can do this by hitting the '?' button next to the "
-                                "[F] button. It may take awhile "
+                                "RE[F]ETCH METADATA button. It may take awhile "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
     
@@ -13559,9 +13930,17 @@ def create_first_row_buttons():
                                 "based on popularity and season groups. Favorited tracks get a boost, and tagged tracks will not be picked. "
                                 "Tracks from the last 3 seasons also get a boost.\n\n"
                                 "Filters can be applied and removed freely. Sorting/shuffling is disabled.\n\n"
-                                "Difficulty can be chosen, limiting the groups to certain popularity levels. For example, 'VERY EASY' will only "
-                                "pick tracks from MALs top 500 anime, rotating from the top 100, 100-250, and 250-500 every 3 entries. "
-                                "'NORMAL' will pick from the top 250, 250-750, then 1000+ every 3 entries.")
+                                "Difficulty can be chosen, limiting the groups to certain popularity levels. The groups are as follows:\n\n"
+                                "Easy: 1-250\n"
+                                "Medium: 250-1000\n"
+                                "Hard: >1001\n\n"
+                                "By selecting a difficulty, it doesn't change the ranges, just limit which groups are being used as follows:\n\n"
+                                "VERY EASY: [Easy]\n"
+                                "EASY: [Easy, Medium]\n"
+                                "NORMAL: [Easy, Medium, Hard]\n"
+                                "HARD: [Medium, Hard]\n"
+                                "VERY HARD: [Hard]\n\n"
+                                "So Normal will include everything, while other difficulties exclude certain groups.")
     create_infinite_button.bind("<Button-2>", test_infinite_playlist)
 
     global generate_from_anilist_button
@@ -13663,10 +14042,6 @@ def create_first_row_buttons():
                                 "You will be asked to confirm when deleting."))
 
     if playlist.get("infinite", False):
-        # global selected_difficulty_label
-        # selected_difficulty_label = tk.Label(first_row_frame, text="MODE:", bg=BACKGROUND_COLOR, fg="white")
-        # selected_difficulty_label.pack(side="left", padx=(2,0))
-
         global selected_difficulty
 
         selected_difficulty = tk.StringVar()
@@ -13684,10 +14059,14 @@ def create_first_row_buttons():
         difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
         blank_space(first_row_frame)
         if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
-            popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid() 
+            popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid()
+        if popout_buttons_by_name.get("SEARCH QUEUE"):
+            popout_buttons_by_name.get("SEARCH QUEUE").config(text="ADD NEXT")
     else:
         if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
             popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid_remove()
+        if popout_buttons_by_name.get("SEARCH QUEUE"):
+            popout_buttons_by_name.get("SEARCH QUEUE").config(text="QUEUE NEXT")
         global sort_button
         sort_button = create_button(first_row_frame, "SORT", sort, True,
                                     help_title="SORT PLAYLIST",
@@ -13775,7 +14154,7 @@ guess_year_button = create_button(second_row_frame, "📅", lambda: guess_extra(
                                 help_text=("Displays a pop-up at the top informing players to guess the year. "
                                             "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
 guess_score_button = create_button(second_row_frame, "🏆", lambda: guess_extra("score"), False,
-                                help_title="GUESS SCORE([J]UDGE) (Shortcut Key = 'g','g')",
+                                help_title="GUESS SCORE (Shortcut Key = 'g','g')",
                                 help_text=("Displays a pop-up at the top informing players to guess the score. "
                                             "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
 guess_popularity_button = create_button(second_row_frame, "🥇", lambda: guess_extra("popularity"), False,
@@ -13783,7 +14162,7 @@ guess_popularity_button = create_button(second_row_frame, "🥇", lambda: guess_
                                 help_text=("Displays a pop-up at the top informing players to guess the popularity. "
                                             "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
 guess_members_button = create_button(second_row_frame, "👥", lambda: guess_extra("members"), False,
-                                help_title="GUESS MEMBERS([H]EADCOUNT) (Shortcut Key = 'g','g','g','g')",
+                                help_title="GUESS MEMBERS (Shortcut Key = 'g','g','g','g')",
                                 help_text=("Displays a pop-up at the top informing players to guess the members. "
                                             "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
 guess_tags_button = create_button(second_row_frame, "🔖", lambda: guess_extra("tags"), False,
@@ -13802,7 +14181,7 @@ guess_artist_button = create_button(second_row_frame, "🎤", lambda: guess_extr
                                 help_text=("Displays a pop-up for guessing the artist who performed the song for this anime. "
                                         "Multiple choice: 1 correct, 3 distractors."))
 guess_multiple_button = create_button(second_row_frame, "４", lambda: guess_extra("multiple"),
-                                help_title="GUESS MUTIPLE (Shortcut Key = 'u')",
+                                help_title="GUESS MULTIPLE (Shortcut Key = 'u')",
                                 help_text=("Displays a pop-up at the top informing a player to guess the anime from a multiple choice. "
                                             "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
 guess_characters_button = create_button(second_row_frame, "👤", lambda: guess_extra("characters"), True,
@@ -14240,7 +14619,9 @@ def on_press(key):
 def on_release(key):
     global disable_shortcuts
     try:
-        if disable_shortcuts:
+        if popout_searching:
+            pass
+        elif disable_shortcuts:
             try:
                 if key.char == '`':
                     toggle_disable_shortcuts()
