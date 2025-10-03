@@ -1,9 +1,3 @@
-def set_title_light_text():
-    global title_light_letters, title_light_string
-    title = get_base_title()
-    title_light_letters = get_unique_letters(title)
-    title_light_string = title
-    random.shuffle(title_light_letters)
 # =========================================
 #      GUESS THE ANIME - PLAYLIST TOOL
 #             by Ramun Flame
@@ -55,30 +49,142 @@ vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installatio
 os.add_dll_directory(vlc_path)  # Add VLC directory to DLL search path
 
 hw_acc_enabled = True
-def load_vlc_parameters():
+current_vout = None  # Track current video output module
+
+def load_vlc_parameters(override_vout=None):
+    """Load VLC parameters from file, optionally overriding --vout.
+
+    If override_vout is provided, any existing --vout argument is removed and
+    replaced with the requested one. Passing override_vout=None leaves any file
+    value as-is. Passing override_vout="automatic" removes explicit --vout.
+    """
     global hw_acc_enabled
     param_file = os.path.join("files", "vlc-parameters.txt")
     if os.path.isfile(param_file):
         with open(param_file, "r", encoding="utf-8") as f:
-            # Split lines into args, strip whitespace, ignore empty lines
             print("Loaded custom vlc parameters.")
             parameters = [line.strip() for line in f if line.strip()]
-            print(parameters)
             if '--avcodec-hw=none' in parameters:
                 hw_acc_enabled = False
-            return parameters
     else:
-        # Default fallback parameters
-        return [
+        parameters = [
             "--no-xlib",
             "-q",
-            "--fullscreen"
+            "--fullscreen",
+            # "--vout=opengl"
         ]
 
-# Initialize VLC instance with hardware acceleration disabled
-instance = vlc.Instance(load_vlc_parameters())
+    # Normalize removal of existing --vout if override requested
+    if override_vout is not None:
+        parameters = [p for p in parameters if not p.startswith('--vout=')]
+        if override_vout and override_vout != 'automatic':
+            parameters.append(f'--vout={override_vout}')
+    return parameters
 
-player = instance.media_player_new()
+instance = None
+player = None
+
+def _recreate_vlc(params, restore_media=None, restore_time=0, was_playing=False):
+    """Internal helper to safely recreate VLC instance/player."""
+    global instance, player
+    # Stop old player
+    try:
+        if player:
+            player.stop()
+    except Exception:
+        pass
+    # Release old instance (after stopping)
+    try:
+        if instance:
+            instance.release()
+    except Exception:
+        pass
+    # Create new instance; python-vlc expects args expanded
+    instance = vlc.Instance(*params)
+    player_new = instance.media_player_new()
+    # Restore media if requested
+    if restore_media is not None:
+        try:
+            player_new.set_media(restore_media)
+            if was_playing:
+                player_new.play()
+            else:
+                # Start then pause later if we need to seek
+                player_new.play()
+        except Exception as e:
+            print(f"Failed to restore media after vout change: {e}")
+        # Seek back to prior time (some modules need slight delay)
+        if restore_time > 0:
+            def _seek_back():
+                try:
+                    player_new.set_time(restore_time)
+                    if not was_playing:
+                        player_new.pause()
+                except Exception:
+                    pass
+            try:
+                # root may not yet exist at import time; guard usage
+                if 'root' in globals() and root:
+                    root.after(200, _seek_back)
+                else:
+                    # Fallback simple timer
+                    threading.Timer(0.2, _seek_back).start()
+            except Exception:
+                threading.Timer(0.2, _seek_back).start()
+    player = player_new
+    return player
+
+def create_vlc_instance(vout=None):
+    """Create the initial VLC instance; call once at startup.
+
+    vout: desired video output module (e.g., 'opengl', 'direct3d11').
+    """
+    global current_vout
+    current_vout = vout
+    params = load_vlc_parameters(override_vout=vout)
+    return _recreate_vlc(params)
+
+def set_vout(vout_module=None, reload_current=False):
+    """Change the video output module at runtime by recreating the VLC instance.
+
+    vout_module: Name of the module (e.g., 'opengl', 'direct3d11', 'direct3d9', 'automatic').
+    reload_current: Attempt to preserve current media & playback position.
+    """
+    global current_vout, player
+    if vout_module == current_vout:
+        print(f"VLC vout already '{vout_module}', no change.")
+        return
+
+    media = None
+    was_playing = False
+    cur_time = 0
+    if reload_current and player is not None:
+        try:
+            media = player.get_media()
+            if media:
+                media.retain()  # keep reference
+            state = player.get_state()
+            was_playing = state == vlc.State.Playing
+            try:
+                cur_time = player.get_time()
+            except Exception:
+                cur_time = 0
+        except Exception:
+            media = None
+
+    new_vout = None if vout_module in (None, 'automatic', '') else vout_module
+    params = load_vlc_parameters(override_vout=new_vout)
+    current_vout = new_vout
+    _recreate_vlc(params, restore_media=media, restore_time=cur_time, was_playing=was_playing)
+
+    if media:
+        try:
+            media.release()
+        except Exception:
+            pass
+
+# Create initial player (automatic / file-defined vout)
+create_vlc_instance()
 # =========================================
 #       *GLOBAL VARIABLES/CONSTANTS
 # =========================================
@@ -520,7 +626,7 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                     return (prefix, is_variant, int(num))
                 else:
                     # Push unrecognized formats to the end
-                    return ("ZZZ", True, float('inf'))
+                    return ("ZZZ", True, INT_INF)
 
             # Sort and combine
             anime_data["songs"] = (
@@ -1408,15 +1514,16 @@ def get_display_title(data):
 def is_game(data):
     return data.get("type") == "Game" or data.get("type") == "Visual Novel" or data.get("platforms")
 
-def add_field_total_button(column, group, blank = True, show_count=True):
+def add_field_total_button(column, group, blank = True, show_count=True, button_text=None):
     count = len(group)
     if count > 0:
-        if show_count:
-            column.insert(tk.END, f" [{count}", "white")
-        btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: show_field_themes(group=group), bg="black", fg="white")
+        if not button_text:
+            if show_count:
+                button_text = f"[{count}]"
+            else:
+                button_text = "▶"
+        btn = tk.Button(column, text=button_text, borderwidth=0, pady=0, command=lambda: show_field_themes(group=group), bg="black", fg="white", font=("Arial", scl(11), "bold"))
         column.window_create(tk.END, window=btn)
-        if show_count:
-            column.insert(tk.END, f"]", "white")
     if blank:
         column.insert(tk.END, "\n\n", "blank")
 
@@ -1783,6 +1890,8 @@ def get_youtube_display_title(data):
 
 def stream_youtube(youtube_url):
     """Streams a YouTube video in VLC using yt-dlp to get a direct URL."""
+    if current_vout != 'opengl':
+        set_vout(vout_module='opengl')
     media = instance.media_new(youtube_url)
     player.set_media(media)
     player.play()
@@ -1914,7 +2023,7 @@ def open_youtube_editor():
             widget.destroy()
         entry_widgets.clear()
         
-        headers = ["Video ID", "Title", "Start", "End", "Actions"]
+        headers = ["Video ID", "Channel", "Title", "Start", "End", "Actions"]
         for col, header in enumerate(headers):
             tk.Label(youtube_editor_window, text=header.upper(), font=font_big, bg=BACKGROUND_COLOR, fg=fg_color).grid(row=0, column=col, padx=8, pady=6)
         active_videos = {k: v for k, v in youtube_metadata.get("videos", {}).items() if not v.get("archived")}
@@ -1923,6 +2032,11 @@ def open_youtube_editor():
             row_widgets = []
 
             tk.Label(youtube_editor_window, text=video_id, font=font_big, fg=fg_color, bg=BACKGROUND_COLOR).grid(row=idx+1, column=0, padx=4, pady=4)
+
+            # Channel name
+            channel_id = video.get("channel_id")
+            channel_name = youtube_metadata.get("channels", {}).get(channel_id, {}).get("name", "Unknown")
+            tk.Label(youtube_editor_window, text=channel_name, font=font_big, fg=fg_color, bg=BACKGROUND_COLOR, width=15, anchor="w").grid(row=idx+1, column=1, padx=4, pady=4)
 
             # Title (Entry + Refresh Button)
             title_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
@@ -1953,7 +2067,7 @@ def open_youtube_editor():
                 fg="white"
             ).pack(side="left")
 
-            title_frame.grid(row=idx+1, column=1, padx=4, pady=4)
+            title_frame.grid(row=idx+1, column=2, padx=4, pady=4)
 
             start_var = tk.StringVar(value=str(video.get("start", 0)))
             end_var = tk.StringVar(value=str(video.get("end", 0) or video.get("duration")))
@@ -1984,7 +2098,7 @@ def open_youtube_editor():
                 fg="white"
             ).pack(side="left")
 
-            start_frame.grid(row=idx+1, column=2, padx=4)
+            start_frame.grid(row=idx+1, column=3, padx=4)
 
             # End time (Entry + NOW + REFRESH)
             end_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
@@ -2009,7 +2123,7 @@ def open_youtube_editor():
                 fg="white"
             ).pack(side="left")
 
-            end_frame.grid(row=idx+1, column=3, padx=4)
+            end_frame.grid(row=idx+1, column=4, padx=4)
 
             # Determine if file is downloaded
             filepath = os.path.join("youtube", video["filename"])
@@ -2087,7 +2201,7 @@ def open_youtube_editor():
                     refresh_ui()
 
             tk.Button(action_frame, text="❌", font=font_big, fg="red", bg="black", command=delete_this).pack(side="left", padx=2)
-            action_frame.grid(row=idx+1, column=4, padx=4)
+            action_frame.grid(row=idx+1, column=5, padx=4)
             row_widgets.append(action_frame)
             # Store the widget row
             entry_widgets.append((video_id, [title_entry, start_frame, end_frame]))
@@ -2732,7 +2846,7 @@ def get_last_three_seasons():
 def get_boost_multiplier(season_string):
     for i, s in enumerate(get_last_three_seasons()):
         if s == season_string:
-            return [3,2,1.5][i]
+            return [4,3,2][i]
     return 1
 
 difficulty_options = ["MODE: VERY EASY","MODE: EASY","MODE: NORMAL","MODE: HARD","MODE: VERY HARD"]
@@ -2761,7 +2875,7 @@ def refetch_next_track():
     up_next_text()
     root.after(1000, queue_next_lightning_mode)
 
-INT_INF = 10**18
+INT_INF = float('inf')
 cached_pop_time_group = None
 cached_show_files_map = None
 cached_boosted_show_files_map = None
@@ -2811,7 +2925,7 @@ def get_pop_time_groups(refetch=False):
                 cached_skipped_themes.append(f)
                 continue
 
-            p = d.get("popularity") or float('inf')
+            p = d.get("popularity") or INT_INF
             mal = d.get("mal")
             placed = False
 
@@ -2982,8 +3096,9 @@ def get_next_infinite_track(increment=True):
                     if playlist["current_index"] == -1:
                         update_current_index(0)
                     if len(playlist["playlist"]) > INFINITE_PLAYLIST_LIMIT:
-                        playlist["playlist"].pop(0)
-                        update_current_index(playlist["current_index"]-1)
+                        while len(playlist["playlist"]) > INFINITE_PLAYLIST_LIMIT:
+                            playlist["playlist"].pop(0)
+                            update_current_index(playlist["current_index"]-1)
                     else:
                         update_current_index()
                     return selected_file
@@ -3490,8 +3605,8 @@ def year_stats(column):
         count = year_counter[group]
         percent = round(count / len(directory_files) * 100, 2)
         column.insert(tk.END, f"{group}: ", "bold")
-        column.insert(tk.END, f"{count} ({percent}%)", "white")
-        add_field_total_button(column, year_to_filenames[group], False, False)
+        # column.insert(tk.END, f"{count} ({percent}%)", "white")
+        add_field_total_button(column, year_to_filenames[group], False, False, button_text=f"{count} ({percent}%)")
         column.insert(tk.END, "\n")
 
     column.config(state=tk.DISABLED)
@@ -4183,7 +4298,7 @@ def filter_playlist(filters):
         score = float(data.get("score") or 0)
         rank = data.get("rank") or 100000
         members = int(data.get("members") or 0)
-        popularity = data.get("popularity") or float('inf')
+        popularity = data.get("popularity") or INT_INF
         season = data.get("season", "")  # Example: "Fall 2020"
         def season_to_tuple(season_str):
             try:
@@ -4697,7 +4812,7 @@ lightning_mode_settings_default = {
             "popularity_limit": True
         },
         "variety": {
-            "enabled": True,
+            "enabled": False,
             "popularity": {
                 "range": [0, 750],
                 "weight": 10
@@ -5071,7 +5186,7 @@ lightning_mode_settings_default = {
         }
     },
     "variety": {
-        "length": 0,
+        "length": "12-20",
         "muted": True,
         "variety": {
             "enabled": True,
@@ -5375,7 +5490,7 @@ def toggle_light_mode(type=None, queue=True):
         button_seleted(globals()['start_light_mode_button'], True)
         start_light_mode_button.configure(text="⏹️")
         if popout_buttons_by_name.get(start_light_mode_button):
-            popout_buttons_by_name[start_light_mode_button].configure(text="⏹️\nSTOP")
+            popout_buttons_by_name[start_light_mode_button].configure(text="⏹️STOP")
         if light_round_number == 0:
             image_path = "banners/" + type + "_lightning_round.webp"
             image_tk = None
@@ -5940,7 +6055,7 @@ def update_light_round(time):
                                 set_light_round_number("#" + str(light_round_number))
                             def set_stream_start():
                                 stream_player.set_time(int(float(stream_start_time))*1000)
-                                stream_player.audio_set_volume(volume_level)
+                                stream_player.audio_set_volume(volume_level+20)
                                 stream_player.set_fullscreen(False)
                                 stream_player.set_fullscreen(True)
                             def start_player():
@@ -5967,11 +6082,9 @@ def update_light_round(time):
             append_lightning_history()
         player.set_time(int(float(light_round_start_time))*1000)
         set_countdown(light_round_length, inverse=character_round_answer)
+        set_light_round_number()
         if light_mode != 'peek':
-            set_light_round_number()
             set_light_round_number("#" + str(light_round_number), inverse=character_round_answer)
-        else:
-            set_light_round_number()
 
 def start_title_round():
     title_mode = get_next_title_mode(get_base_title())
@@ -5983,6 +6096,13 @@ def start_title_round():
         set_title_light_text()
         toggle_title_overlay(get_title_light_string(min(5, max(1, len(title_light_letters) // 5))))
         set_frame_number(f"2/{min(7, len(title_light_string))}")
+
+def set_title_light_text():
+    global title_light_letters, title_light_string
+    title = get_base_title()
+    title_light_letters = get_unique_letters(title)
+    title_light_string = title
+    random.shuffle(title_light_letters)
 
 def get_char_types_by_popularity(data=None, mode=""):
     all_types = []
@@ -6303,7 +6423,7 @@ def has_lightning_mode_info(data, round_type):
     elif round_type == "synopsis":
         return len((data.get("synopsis") or "").split()) > 40
     elif round_type == "title":
-        return len(get_base_title(data)) >= 5
+        return len(get_base_title(data).replace(" ", "")) >= 7
     elif round_type == "character":
         return len(data.get("characters", [])) >= 4
     elif round_type == "cover":
@@ -7164,14 +7284,14 @@ def get_next_title_mode(title_text):
 def get_unique_letters(title):
     letters = []
     for letter in title:
-        if letter.isalnum() and letter.lower() not in letters:
+        if letter != " " and letter.lower() not in letters:
             letters.append(letter.lower())
     return letters
 
 def get_title_light_string(letters=0):
     revealed_title = ""
     for letter in title_light_string:
-        if letter.isalnum():
+        if letter != " ":
             new_letter = "ˍ"
             for l in range(0, min(len(title_light_letters), letters)):
                 if title_light_letters[l] == letter.lower():
@@ -7199,9 +7319,10 @@ def get_base_title(data=None, title=None):
             for n in ['0','1','2','3','4','5','6','7','8','9','III','II','IV','I','VIIII','VIII','VII','VI','V','X']:
                 title = title.replace(f"{p}{s} {n}", "")
     for p in [': ', ' ']:
-        for n in ['First','Second','Third','Fourth','Fifth','1st','2nd','3rd','4th','5th','6th','Final']:
-            for s in ['Season', 'Series', 'Part']:
-                title = title.replace(f"{p}{n} {s}", "")
+        for t in ['The ', '']:
+            for n in ['First','Second','Third','Fourth','Fifth','1st','2nd','3rd','4th','5th','6th','Final']:
+                for s in ['Season', 'Series', 'Part']:
+                    title = title.replace(f"{p}{t}{n} {s}", "")
     return title or ""
 
 title_overlay = None
@@ -7878,11 +7999,20 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
     global gap_modifier, peek_overlay1, peek_overlay2, peeking
 
     if destroy:
-        if peek_overlay1 and peek_overlay1.winfo_exists():
-            peek_overlay1.destroy()
+        # Always destroy both overlays and reset state
+        if peek_overlay1:
+            try:
+                if peek_overlay1.winfo_exists():
+                    peek_overlay1.destroy()
+            except Exception:
+                pass
             peek_overlay1 = None
-        if peek_overlay2 and peek_overlay2.winfo_exists():
-            peek_overlay2.destroy()
+        if peek_overlay2:
+            try:
+                if peek_overlay2.winfo_exists():
+                    peek_overlay2.destroy()
+            except Exception:
+                pass
             peek_overlay2 = None
         gap_modifier = 0
         peeking = False
@@ -7892,77 +8022,22 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
     if not 0 <= progress <= 100:
         return
 
-    if not peeking:
-        peeking = True
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
+    # If overlays exist but are not valid, destroy them before recreating
+    for overlay_var in ['peek_overlay1', 'peek_overlay2']:
+        overlay = globals()[overlay_var]
+        if overlay and not overlay.winfo_exists():
+            try:
+                overlay.destroy()
+            except Exception:
+                pass
+            globals()[overlay_var] = None
 
-        # Calculate the gap in pixels as a percentage of the screen size
-        gap_pixels = int((((gap+gap_modifier) / 100) * screen_width))
-        # Initialize overlay dimensions and positions
-        first_width, first_height, first_x, first_y = 0, 0, 0, 0
-        second_width, second_height, second_x, second_y = 0, 0, 0, 0
-
-        cover_margin = scl(20)  # pixels to ensure full screen edge coverage
-
-        if direction == "left":
-            first_width = screen_width * (1 - progress / 100)
-            first_height = screen_height
-            first_x = 0
-            first_y = 0
-
-            second_width = max(0, screen_width * (progress / 100) - gap_pixels)
-            second_height = screen_height
-            second_x = first_width + gap_pixels
-            second_y = 0
-
-        elif direction == "right":
-            first_width = screen_width * (1 - progress / 100)
-            first_height = screen_height
-            first_x = screen_width - first_width + cover_margin  # Extra cover on edge
-            first_y = 0
-
-            second_width = max(0, screen_width * (progress / 100) - gap_pixels)
-            second_height = screen_height
-            second_x = 0
-            second_y = 0
-
-        elif direction == "up":
-            first_width = screen_width
-            first_height = screen_height * (1 - progress / 100)
-            first_x = 0
-            first_y = 0
-
-            second_width = screen_width
-            second_height = max(0, screen_height * (progress / 100) - gap_pixels)
-            second_x = 0
-            second_y = first_height + gap_pixels
-
-        elif direction == "down":
-            first_width = screen_width
-            first_height = screen_height * (1 - progress / 100)
-            first_x = 0
-            first_y = screen_height - first_height + cover_margin  # Extra cover on edge
-
-            second_width = screen_width
-            second_height = max(0, screen_height * (progress / 100) - gap_pixels)
-            second_x = 0
-            second_y = 0
-        else:
-            print("Invalid direction.")
-            return
+    # If overlays exist but direction or geometry changed drastically, destroy and recreate
+    # (Optional: could add more logic here if overlays get out of sync)
 
 
-        # Convert to integers for geometry calculation
-        first_width = int(first_width)
-        first_height = int(first_height)
-        first_x = int(first_x)
-        first_y = int(first_y)
-
-        second_width = int(second_width)
-        second_height = int(second_height)
-        second_x = int(second_x)
-        second_y = int(second_y)
+    # Only create overlays if both are None (ensures no duplicates)
+    if peek_overlay1 is None and peek_overlay2 is None:
 
         # image_color = get_image_color()
         image_color = "black"
@@ -7979,29 +8054,88 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
             peek_overlay2.overrideredirect(True)
             peek_overlay2.attributes("-topmost", True)
             peek_overlay2.configure(bg=image_color)
+            
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
 
-        # Update both overlays
-        def update_overlays():
-            for p in [peek_overlay1, peek_overlay2]:
-                if p:
-                    p.update()
-                else:
-                    return False
-            return True
+    # Calculate the gap in pixels as a percentage of the screen size
+    gap_pixels = int((((gap+gap_modifier) / 100) * screen_width))
+    # Initialize overlay dimensions and positions
+    first_width = first_height = first_x = first_y = None
+    second_width = second_height = second_x = second_y = None
 
-        if peek_overlay1:
-            if direction == "right":
-                peek_overlay2.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
-                peek_overlay1.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
-            else:
-                peek_overlay1.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
-                peek_overlay2.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
-        
-        if peek_overlay1:
-            button_seleted(peek_button, True)
-            lift_windows()
+    cover_margin = scl(20)  # pixels to ensure full screen edge coverage
 
-        peeking = False
+    if direction == "left":
+        first_width = screen_width * (1 - progress / 100)
+        first_height = screen_height
+        first_x = 0
+        first_y = 0
+
+        second_width = max(0, screen_width * (progress / 100) - gap_pixels)
+        second_height = screen_height
+        second_x = first_width + gap_pixels
+        second_y = 0
+
+    elif direction == "right":
+        first_width = screen_width * (1 - progress / 100)
+        first_height = screen_height
+        first_x = screen_width - first_width + cover_margin  # Extra cover on edge
+        first_y = 0
+
+        second_width = max(0, screen_width * (progress / 100) - gap_pixels)
+        second_height = screen_height
+        second_x = 0
+        second_y = 0
+
+    elif direction == "up":
+        first_width = screen_width
+        first_height = screen_height * (1 - progress / 100)
+        first_x = 0
+        first_y = 0
+
+        second_width = screen_width
+        second_height = max(0, screen_height * (progress / 100) - gap_pixels)
+        second_x = 0
+        second_y = first_height + gap_pixels
+
+    elif direction == "down":
+        first_width = screen_width
+        first_height = screen_height * (1 - progress / 100)
+        first_x = 0
+        first_y = screen_height - first_height + cover_margin  # Extra cover on edge
+
+        second_width = screen_width
+        second_height = max(0, screen_height * (progress / 100) - gap_pixels)
+        second_x = 0
+        second_y = 0
+    else:
+        # If direction is invalid, do not proceed to use uninitialized variables
+        print("Invalid direction.")
+        return
+
+    # Convert to integers for geometry calculation
+    first_width = int(first_width)
+    first_height = int(first_height)
+    first_x = int(first_x)
+    first_y = int(first_y)
+
+    second_width = int(second_width)
+    second_height = int(second_height)
+    second_x = int(second_x)
+    second_y = int(second_y)
+
+    # Only update geometry if overlays were just created and geometry variables are set
+    if peek_overlay1 and peek_overlay2:
+        # Only update geometry if 'first_width' and related variables are defined in this scope
+        if direction == "right":
+            peek_overlay2.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
+            peek_overlay1.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
+        else:
+            peek_overlay1.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
+            peek_overlay2.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
+        button_seleted(peek_button, True)
+        lift_windows()
 
 # =========================================
 #          *EDGE LIGHTNING ROUND
@@ -8084,8 +8218,23 @@ def set_grow_position():
 
     grow_position = (cx, cy)
 
+def move_grow_position(dx, dy):
+    """Move the grow overlay box by dx, dy pixels, constrained to the screen."""
+    global grow_position
+    if grow_position is None:
+        return
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+
+    cx, cy = grow_position
+    cx = min(max(cx + dx, 0), screen_w)
+    cy = min(max(cy + dy, 0), screen_h)
+    grow_position = (cx, cy)
+    toggle_grow_overlay(block_percent=last_grow_block_percent, position=(cx, cy))
+
+last_grow_block_percent = 100
 def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
-    global grow_overlay_boxes
+    global grow_overlay_boxes, last_grow_block_percent, grow_position
 
     if destroy:
         for box in grow_overlay_boxes.values():
@@ -8094,6 +8243,8 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
         grow_overlay_boxes.clear()
         button_seleted(peek_button, False)
         return
+
+    last_grow_block_percent = block_percent
 
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
@@ -8105,8 +8256,11 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
     # Determine center position
     if isinstance(position, tuple):
         cx, cy = position
+        # Save position for movement
+        grow_position = (cx, cy)
     else:  # center by default
         cx, cy = screen_w // 2, screen_h // 2
+        grow_position = (cx, cy)
 
     left = cx - visible_w // 2
     right = cx + visible_w // 2
@@ -8126,10 +8280,18 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
     update_or_create("top", 0, 0, screen_w, max(0, top))
     # Bottom
     update_or_create("bottom", 0, bottom + 5, screen_w, max(0, screen_h - bottom + 20))
+    if bottom + 10 < screen_h:
+        update_or_create("bottom_buffer", 0, screen_h - 10, screen_w, 10)
+    else:
+        update_or_create("bottom_buffer", 0, screen_h, screen_w, 0)
     # Left
     update_or_create("left", 0, top - 10, max(0, left), max(0, visible_h + 30))
     # Right
-    update_or_create("right", right, top - 10, max(0, screen_w - right), max(0, visible_h + 30))
+    update_or_create("right", right, top - 10, max(0, screen_w - right + 5), max(0, visible_h + 30))
+    if right + 10 < screen_w:
+        update_or_create("right_buffer", screen_w - 10, top - 10, 10, max(0, visible_h + 30))
+    else:
+        update_or_create("right_buffer", screen_w, top - 10, 0, max(0, visible_h + 30))
 
     if grow_overlay_boxes:
         button_seleted(peek_button, True)
@@ -9852,12 +10014,14 @@ stream_instance = vlc.Instance(
     "--video-on-top",
     "--no-xlib", 
     "-q", 
-    "--fullscreen"
+    "--fullscreen",
+    "--vout=opengl"
 )
 ost_stream_instance = vlc.Instance(
     "--aout=directsound",
     "--no-xlib", 
-    "-q", 
+    "-q",
+    "--vout=opengl"
 )
 stream_player = stream_instance.media_player_new()
 currently_streaming = None
@@ -9905,6 +10069,9 @@ def stream_url(url, name, channel, new_player=True):
             stream_player.set_fullscreen(True)
         else:
             video_stopped = True
+            if current_vout != "opengl":
+                set_vout("opengl")
+            time.sleep(2)
             player.set_media(media)
             player.play()
             player.set_fullscreen(False)
@@ -10075,7 +10242,9 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "the manga that", "the anime that", "anime similar to", "should you watch",
                     "best anime of", "best watch order", "manga is so much better than the anime",
                     "everything you need to know about", "seasons ranked", "#animeedit", "they need to remake",
-                    "? watch these!"
+                    "? watch these!", "must watch", "anime you should", "anime you must", "anime you need",
+                    "anime you have to", "anime you gotta", "veggietales", "reacting to", "the anime effect #",
+                    "#animeexplain", "top 10", "why you should watch ", "simulcast sampler", "anime haul", "anime unboxing"
                 ]
                 ost_bad_keywords = [
                     "insert song"
@@ -10112,7 +10281,13 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                 # check title match
                 title_okay = False
                 for t in [anime_title, data.get("title"), get_base_title(title=anime_title), get_base_title(title=data.get("title"))]:
-                    for t_edit in [t, t.split(": ")[0], t.replace(" ", ""), t.replace(".", ""), t.replace("-", " ")]:
+                    t_edits = [t]
+                    # Only use the split-at-colon result if it's not too short or trivial
+                    colon_split = t.split(": ")[0]
+                    if colon_split != t and len(colon_split.strip()) >= 3:
+                        t_edits.append(colon_split)
+                    t_edits.extend([t.replace(" ", ""), t.replace(".", ""), t.replace("-", " ")])
+                    for t_edit in t_edits:
                         if title_match_score(t_edit, title) or title_match_score(t_edit, description):
                             title_okay = True
                             break
@@ -10137,9 +10312,10 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                 channel_title = item["snippet"]["channelTitle"]
                 blacklisted_channels = [
                     "Reacts", "AniRecaps", "Anime Recap", "Anime Summary", "Plot Recap", "Explains", "Crunchyroll Brasil", 
-                    "Explained", "Mother's Basement", "Crunchyroll: Inside Anime", "Crunchyroll TV", "It's Certified Otaku Vibes"
-                    "Crunchyroll en Español", "Crunchyroll FR", "Crunchyroll India", "Crunchyroll DE", "WatchMojo", "Watch Mojo"
-                    "AnimeVersa", "Crunchyroll en Español"]
+                    "Explained", "Mother's Basement", "Crunchyroll: Inside Anime", "Crunchyroll TV", "It's Certified Otaku Vibes",
+                    "Crunchyroll en Español", "Crunchyroll FR", "Crunchyroll India", "Crunchyroll DE", "WatchMojo", "Watch Mojo",
+                    "AnimeVersa", "Crunchyroll en Español", "Netflix Jr.", "MWAMVEVO", "Tarkeus", "Gigguk", "ryuuarm", "Jent Watches"
+                ]
                 ost_blacklisted_channels = [
                     " - Topic"
                 ]
@@ -10216,6 +10392,46 @@ def title_match_score(anime_title, video_title):
     anime_words = clean_words(anime_title, True)
     anime_words_count = clean_words(anime_title)
     video_words = clean_words(video_title, True)
+
+    # Filter case: Video title contains "from the director of <Anime Title>" which refers to a DIFFERENT work.
+    # We should not treat that as a match if the ONLY occurrence of the anime title is inside that phrase.
+    # Strategy: detect the phrase, then check if anime title tokens appear elsewhere outside the phrase.
+    lowered_full = video_title.lower()
+    phrase_key = "from the director of"
+    if phrase_key in lowered_full:
+        # Build regex to capture the portion after the phrase up to common separators
+        # (dash, pipe, colon, parentheses start, end of string)
+        # Example: "From the director of Attack on Titan | New Sci-Fi Original" -> captures "Attack on Titan"
+        import re as _re
+        # Escape anime title for presence test, but we'll instead tokenize to be robust.
+        # Identify spans of the phrase + following chunk (max 8 words) for scanning tokens.
+        pattern = _re.compile(r"from the director of\s+([^-|:()]+)", _re.IGNORECASE)
+        spans = []
+        for m in pattern.finditer(video_title):
+            span_words = clean_words(m.group(1), False)
+            spans.append((m.span(1), span_words))
+        if spans:
+            # Count total appearances of anime words in entire title
+            video_all_tokens_no_generic = clean_words(video_title, True)
+            anime_set = set(anime_words)
+            # Check if every anime word occurrence lies wholly within one of the captured spans
+            # Build a map of indices of tokens in spans
+            # Simpler: reconstruct tokens sequence with indices to see if anime words appear outside any span.
+            tokens_full = [w.strip("|『[]×.,!?:;\"'").lower() for w in video_title.lower().split()]
+            # Build char index for each token to test if within a span; approximate via running position.
+            # For simplicity: check raw substring presence outside phrase first.
+            outside_text = lowered_full
+            for sspan, _w in spans:
+                start, end = sspan
+                outside_text = outside_text[:start].replace(anime_title.lower(), "") + outside_text[end:].replace(anime_title.lower(), "")
+            # If after removing span regions the anime title (as a contiguous substring ignoring case) no longer appears,
+            # and all anime words appear inside one span, treat as non-match.
+            anime_inline = anime_title.lower()
+            appears_outside = anime_inline in outside_text
+            # Also ensure the span actually contains all required anime words (order-insensitive) to avoid false negatives.
+            span_contains_all = any(anime_set.issubset(set(words)) for _, words in spans)
+            if span_contains_all and not appears_outside:
+                return False
 
     # Try to match all anime title words in order in the video title
     i = 0
@@ -11164,10 +11380,20 @@ def get_random_titles(amount=4):
     if not data:
         return ["", "", "", ""]
 
+
     correct_title = get_display_title(data)
+    correct_base_title = get_base_title(data)
     correct_series = (data.get("series") or [data.get("title")])
     titles = [correct_title]
     used_series = set(correct_series)
+
+    GENERIC_WORDS = {"the", "a", "an", "of", "and", "in", "to", "for", "with", "on", "season", "part", "new", "as", "is", "at", "by", "from", 
+                        "it", "this", "that", "these", "those", "animation", "movie", "ova", "special", "tv", "series", "episode", "episodes"}
+
+    def get_words(title):
+        return set(w.lower() for w in re.findall(r'\w+', title) if w.lower() not in GENERIC_WORDS)
+
+    correct_words = get_words(correct_base_title)
 
     def get_similarity_score(anime):
         score = 0
@@ -11176,6 +11402,10 @@ def get_random_titles(amount=4):
         score += len(set(anime.get("studios", [])) & set(data.get("studios", [])))
         score += len(set(get_tags(anime)) & set(get_tags(data)))
         score -= max(0, (get_series_total(anime) - 2))
+        # Add bonus for non-generic word overlap
+        anime_words = get_words(get_base_title(anime))
+        overlap = len(correct_words & anime_words)
+        score += overlap * 2
         return score
 
     # Step 1: Filter and score
@@ -11200,14 +11430,23 @@ def get_random_titles(amount=4):
         if len(unique_series_anime) >= 30:
             break
 
-    # Step 4: Sort those by members (ascending)
+    # Step 4: Try to include at least one with non-generic word overlap
+    overlap_candidates = [a for a in unique_series_anime if get_words(get_base_title(a)) & correct_words]
+    distractors = []
+    if overlap_candidates:
+        pick = random.choice(overlap_candidates)
+        distractors.append(get_display_title(pick))
+        unique_series_anime = [a for a in unique_series_anime if a != pick]
+
+    # Step 5: Fill remaining with less popular ones
+    needed = amount - 1 - len(distractors)
     top_similar_sorted_by_members = sorted(unique_series_anime, key=lambda a: int(a.get("members") or 0))
+    for group in split_array(top_similar_sorted_by_members, needed):
+        if group:
+            pick = random.choice(group)
+            distractors.append(get_display_title(pick))
 
-    # Step 5: Choose titles from the less popular ones
-    for group in split_array(top_similar_sorted_by_members, amount - 1):
-        pick = random.choice(group)
-        titles.append(get_display_title(pick))
-
+    titles.extend(distractors)
     random.shuffle(titles)
     return titles
 
@@ -11490,8 +11729,8 @@ def play_video(index=playlist["current_index"]):
     toggle_coming_up_popup(False)
 
     if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]):
-        if len(playlist["playlist"]) == INFINITE_PLAYLIST_LIMIT:
-            index -= 1
+        if len(playlist["playlist"]) >= INFINITE_PLAYLIST_LIMIT:
+            index -= len(playlist["playlist"]) - INFINITE_PLAYLIST_LIMIT + 1
         get_next_infinite_track()
         
     if youtube_queue is not None:
@@ -11582,6 +11821,8 @@ def play_filename(filename, fullscreen=True):
         toggle_title_popup(True)
     # Update metadata display asynchronously
     update_metadata_queue(playlist["current_index"])
+    if current_vout:
+        set_vout()
     if hw_acc_enabled:
         media = instance.media_new(filepath)
     else:
@@ -13069,6 +13310,7 @@ def list_keyboard_shortcuts():
     add_single_line(right_column, "TOGGLE PEEK", "[=]")
     add_single_line(right_column, "BLIND/PEEK/MUTE ROUND", "[B]", False)
     add_single_line(right_column, "PEEK SIZE", "[ [ ]/[ ] ]")
+    add_single_line(right_column, "MOVE GROW PEEK BOX", "[ARROW KEYS]", False)
     add_single_line(right_column, "SHOW YOUTUBE PLAYLIST", "[Y]")
     add_single_line(right_column, "LIGHTNING ROUND CYCLE", "[L]", False)
     add_single_line(right_column, "VARIETY", "[V]")
@@ -14601,6 +14843,17 @@ def on_press(key):
     try:
         if disable_shortcuts:
             pass
+        # Arrow key movement for grow peek overlay (position only)
+        elif grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values()):
+            move_amount = 5  # pixels per key press
+            if key == key.up:
+                move_grow_position(0, -move_amount)
+            elif key == key.down:
+                move_grow_position(0, move_amount)
+            elif key == key.left:
+                move_grow_position(-move_amount, 0)
+            elif key == key.right:
+                move_grow_position(move_amount, 0)
         elif key == key.up:
             list_move(-1)
         elif key == key.down:
@@ -14646,14 +14899,16 @@ def on_release(key):
             except AttributeError:
                 search_term = search_term + key.char
                 search(True, add=playlist.get("infinite", False))
-        else:    
+        else:
             try:
-                if key == key.right:
-                    play_next()
-                elif key == key.space:
+                # Only handle left/right arrows for next/previous if grow_overlay_boxes is not active/visible
+                if not (grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values())):
+                    if key == key.right:
+                        play_next()
+                    elif key == key.left:
+                        play_previous()
+                if key == key.space:
                     play_pause()
-                elif key == key.left:
-                    play_previous()
                 elif key == key.esc:
                     stop()
                 elif key == key.tab:
