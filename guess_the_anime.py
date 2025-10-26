@@ -3,10 +3,13 @@
 #             by Ramun Flame
 # =========================================
 
+# Version for auto-update functionality
+APP_VERSION = "11.0"  # Update this when making releases
+GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"  # Update with your actual GitHub repo
+
 import os
 import sys
 import shutil
-import ctypes
 import random
 import math
 import json
@@ -22,13 +25,17 @@ import numpy as np
 from io import BytesIO
 from datetime import datetime
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk, StringVar, font
+import tkinterdnd2 as tkdnd
+import ctypes
+from ctypes import wintypes
+import threading
+from tkinter import filedialog, messagebox, simpledialog, ttk, StringVar, font, Menu
 import webbrowser
-from PIL import Image, ImageTk, ImageFilter
+from PIL import Image, ImageTk, ImageFilter, ImageFont, ImageDraw
 import threading  # For asynchronous metadata loading
 import vlc
 from yt_dlp import YoutubeDL
-from pynput import keyboard
+from pynput import keyboard, mouse
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
@@ -123,7 +130,7 @@ def _recreate_vlc(params, restore_media=None, restore_time=0, was_playing=False)
                 except Exception:
                     pass
             try:
-                # root may not yet exist at import time; guard usage
+                # root may not yet exist at time; guard usage
                 if 'root' in globals() and root:
                     root.after(200, _seek_back)
                 else:
@@ -185,6 +192,299 @@ def set_vout(vout_module=None, reload_current=False):
 
 # Create initial player (automatic / file-defined vout)
 create_vlc_instance()
+
+# =========================================
+#          DRAG AND DROP SUPPORT
+# =========================================
+
+def enable_drag_and_drop(widget, callback):
+    """Enable drag-and-drop for files from Windows Explorer."""
+    
+    # Method 1: Try tkinterdnd2 (best option)
+    try:
+        
+        # Check if root is tkinterdnd2-enabled
+        root = widget.winfo_toplevel()
+        if hasattr(root, 'drop_target_register') or isinstance(root, tkdnd.Tk):
+            widget.drop_target_register(tkdnd.DND_FILES)
+            
+            def handle_drop(event):
+                global external_drag_active
+                external_drag_active = False  # Clear external drag state
+                
+                files = widget.tk.splitlist(event.data)
+                if files and callback:
+                    # Pass event coordinates to callback for position detection
+                    callback(files, event=event)
+                return "copy"
+            
+            widget.dnd_bind('<<Drop>>', handle_drop)
+            return True
+        else:
+            raise Exception("Root window not tkinterdnd2-enabled")
+            
+    except Exception as e:
+        print(f"tkinterdnd2 failed: {e}")
+    
+    # Method 2: Windows API (more reliable than before)
+    if sys.platform.startswith('win'):
+        try:
+            # Get window handle
+            hwnd = widget.winfo_id()
+            
+            # Enable file dropping
+            ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
+            
+            # Store the original window procedure
+            GWL_WNDPROC = -4
+            original_wndproc = ctypes.windll.user32.GetWindowLongPtrW(hwnd, GWL_WNDPROC)
+            
+            def window_proc(hwnd, msg, wparam, lparam):
+                WM_DROPFILES = 0x0233
+                if msg == WM_DROPFILES:
+                    try:
+                        file_count = ctypes.windll.shell32.DragQueryFileW(wparam, 0xFFFFFFFF, None, 0)
+                        files = []
+                        
+                        for i in range(file_count):
+                            length = ctypes.windll.shell32.DragQueryFileW(wparam, i, None, 0)
+                            buffer = ctypes.create_unicode_buffer(length + 1)
+                            ctypes.windll.shell32.DragQueryFileW(wparam, i, buffer, length + 1)
+                            files.append(buffer.value)
+                        
+                        ctypes.windll.shell32.DragFinish(wparam)
+                        
+                        if files and callback:
+                            # Use after_idle to safely call callback from main thread
+                            # Note: Windows API doesn't provide event coordinates easily
+                            widget.after_idle(lambda f=files: callback(f, event=None))
+                        return 0
+                    except Exception as e:
+                        print(f"Drop handling error: {e}")
+                
+                # Call original window procedure
+                return ctypes.windll.user32.CallWindowProcW(original_wndproc, hwnd, msg, wparam, lparam)
+            
+            # Set up the window procedure with proper signature
+            WNDPROC = ctypes.WINFUNCTYPE(wintypes.LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+            new_wndproc = WNDPROC(window_proc)
+            
+            # Replace window procedure
+            ctypes.windll.user32.SetWindowLongPtrW(hwnd, GWL_WNDPROC, new_wndproc)
+            
+            # Store reference to prevent garbage collection
+            widget._drag_drop_wndproc = new_wndproc
+            widget._original_wndproc = original_wndproc
+            
+            return True
+            
+        except Exception as e:
+            print(f"Windows API drag-and-drop failed: {e}")
+    
+    # Method 3: Fallback to file dialogs
+    try:
+        def show_file_dialog(event=None):
+            files = filedialog.askopenfilenames(
+                title="Select media files to add to playlist",
+                filetypes=[
+                    ("Media files", "*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm *.mp3 *.wav *.ogg *.m4a *.flac"),
+                    ("Video files", "*.mp4 *.mkv *.avi *.mov *.wmv *.flv *.webm"),
+                    ("Audio files", "*.mp3 *.wav *.ogg *.m4a *.flac"),
+                    ("All files", "*.*")
+                ]
+            )
+            if files and callback:
+                callback(list(files), event=None)
+        
+        def show_context_menu(event):
+            menu = Menu(widget, tearoff=0)
+            menu.add_command(label="📁 Add Files to Playlist...", command=show_file_dialog)
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+        
+        widget.bind("<Button-3>", show_context_menu)
+        widget.bind("<Double-Button-1>", show_file_dialog)
+        
+        print(f"📁 File selection enabled on {widget.__class__.__name__}: Right-click or double-click")
+        return True
+        
+    except Exception as e:
+        print(f"Could not set up file selection: {e}")
+        return False
+
+def handle_dropped_files(files, event=None):
+    """Handle files dropped from Windows Explorer."""
+    global hovered_button_index
+    
+    added_files = []
+    
+    # Try to detect drop position using coordinates (since hover events don't work during external drag)
+    insert_position = None
+    
+    # Method 1: Use event coordinates if available (tkinterdnd2)
+    if event is not None and list_loaded == "playlist":
+        try:
+            if 'right_column' in globals():
+                # Get the playlist widget position and bounds
+                right_column.update_idletasks()
+                widget_x = right_column.winfo_rootx()
+                widget_y = right_column.winfo_rooty()
+                widget_width = right_column.winfo_width()
+                widget_height = right_column.winfo_height()
+                
+                # Check if drop is within playlist bounds
+                if (widget_x <= event.x_root <= widget_x + widget_width and
+                    widget_y <= event.y_root <= widget_y + widget_height):
+                    
+                    # Calculate relative position within the text widget
+                    relative_x = event.x_root - widget_x
+                    relative_y = event.y_root - widget_y
+                    
+                    # Use Text widget's index method to get the line at the drop position
+                    # This automatically accounts for scrolling
+                    try:
+                        text_index = right_column.index(f"@{relative_x},{relative_y}")
+                        drop_line = int(text_index.split('.')[0])
+                        
+                        # Account for pagination in playlist view
+                        if list_loaded == "playlist":
+                            # Convert line to actual playlist index (0-based) accounting for pagination
+                            insert_position = max(0, drop_line - 1 + playlist_page_offset)
+                            playlist_size = len(playlist.get("playlist", []))
+                            insert_position = min(insert_position, playlist_size)
+                        else:
+                            # Account for the "items above" indicator if present
+                            content = right_column.get("1.0", "2.0")
+                            if "items above" in content:
+                                drop_line = max(1, drop_line - 1)
+                            
+                            # Convert to 0-based index and clamp to valid range
+                            insert_position = max(0, drop_line - 1)
+                            playlist_size = len(playlist.get("playlist", []))
+                            insert_position = min(insert_position, playlist_size)
+                    except (ValueError, tk.TclError):
+                        # Fallback to simple calculation if Text index fails
+                        button_height = scl(12) + 8
+                        insert_position = max(0, int(relative_y / button_height))
+                        playlist_size = len(playlist.get("playlist", []))
+                        insert_position = min(insert_position, playlist_size)
+        except Exception as e:
+            print(f"DEBUG: Event position detection failed: {e}")
+    
+    # Method 2: Use mouse coordinates if event method failed
+    if insert_position is None and list_loaded == "playlist":
+        try:
+            mouse_x, mouse_y = pyautogui.position()
+            
+            if 'right_column' in globals():
+                right_column.update_idletasks()
+                widget_x = right_column.winfo_rootx()
+                widget_y = right_column.winfo_rooty()
+                widget_width = right_column.winfo_width()
+                widget_height = right_column.winfo_height()
+                
+                # Check if mouse is over the playlist area
+                if (widget_x <= mouse_x <= widget_x + widget_width and
+                    widget_y <= mouse_y <= widget_y + widget_height):
+                    
+                    # Calculate relative position within the text widget
+                    relative_x = mouse_x - widget_x
+                    relative_y = mouse_y - widget_y
+                    
+                    # Use Text widget's index method to get the line at the mouse position
+                    # This automatically accounts for scrolling
+                    try:
+                        text_index = right_column.index(f"@{relative_x},{relative_y}")
+                        drop_line = int(text_index.split('.')[0])
+                        
+                        # Account for pagination in playlist view
+                        if list_loaded == "playlist":
+                            # Convert line to actual playlist index (0-based) accounting for pagination
+                            insert_position = max(0, drop_line - 1 + playlist_page_offset)
+                            playlist_size = len(playlist.get("playlist", []))
+                            insert_position = min(insert_position, playlist_size)
+                        else:
+                            # Account for the "items above" indicator if present
+                            content = right_column.get("1.0", "2.0")
+                            if "items above" in content:
+                                drop_line = max(1, drop_line - 1)
+                            
+                            # Convert to 0-based index and clamp to valid range
+                            insert_position = max(0, drop_line - 1)
+                            playlist_size = len(playlist.get("playlist", []))
+                            insert_position = min(insert_position, playlist_size)
+                    except (ValueError, tk.TclError):
+                        # Fallback to simple calculation if Text index fails
+                        button_height = scl(12) + 8
+                        relative_position = max(0, int(relative_y / button_height))
+                        if list_loaded == "playlist":
+                            insert_position = relative_position + playlist_page_offset
+                        else:
+                            insert_position = relative_position
+                        playlist_size = len(playlist.get("playlist", []))
+                        insert_position = min(insert_position, playlist_size)
+        except Exception as e:
+            print(f"DEBUG: Mouse position detection failed: {e}")
+    
+    # Method 3: Default fallback
+    if insert_position is None:
+        current_index = playlist.get("current_index", -1)
+        insert_position = current_index + 1 if current_index >= 0 else len(playlist["playlist"])
+    
+    # Clear any leftover hover state
+    hovered_button_index = None
+    
+    for file_path in files:
+        if os.path.isfile(file_path):
+            # Get just the filename without path
+            filename = os.path.basename(file_path)
+            
+            # Filter for media files (optional - you can remove this filter if you want all files)
+            media_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', 
+                              '.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac'}
+            file_ext = os.path.splitext(filename)[1].lower()
+            
+            # Always add to playlist (allow duplicates)
+            # Check if file is from the current directory
+            if filename in directory_files:
+                # Local file - store just filename
+                playlist_entry = filename
+            else:
+                # External file - store full path
+                playlist_entry = file_path
+            
+            # Insert at the specified position
+            playlist["playlist"].insert(insert_position, playlist_entry)
+            added_files.append(filename)  # Still show just filename in messages
+            
+            # Update current_index if we inserted before it
+            current_index = playlist.get("current_index", -1)
+            if current_index >= 0 and insert_position <= current_index:
+                playlist["current_index"] = current_index + 1
+            
+            insert_position += 1  # Increment for next file
+    
+    # Show summary message
+    if added_files:
+        # Update the playlist display after adding files
+        try:
+            show_playlist(update=True)
+        except NameError:
+            # If show_playlist function doesn't exist, try other display functions
+            try:
+                show_list("playlist", None, None, None, None, None, update=True)
+            except:
+                print("Could not refresh playlist display")
+    
+    # Clear hover state after drop
+    hovered_button_index = None
+        
+    # Refresh playlist display if it's currently shown
+    if list_loaded == "playlist":
+        show_playlist(True)
+
 # =========================================
 #       *GLOBAL VARIABLES/CONSTANTS
 # =========================================
@@ -193,6 +493,7 @@ BLANK_PLAYLIST = {
     "name":"",
     "current_index":-1,
     "lightning_history": {},
+    "background_track_history": [],
     "infinite":False,
     "difficulty":2,
     "order": 0,
@@ -217,6 +518,54 @@ youtube_metadata = {}
 YOUTUBE_METADATA_FILE = "metadata/youtube_metadata.json"
 directory = ""
 directory_files = {}
+
+def get_file_path(playlist_entry):
+    """Get the full file path for a playlist entry.
+    
+    Args:
+        playlist_entry: Either a filename (for local files) or full path (for external files)
+    
+    Returns:
+        Full file path or None if file doesn't exist
+    """
+    if os.path.isabs(playlist_entry):
+        # It's already a full path (external file)
+        return playlist_entry if os.path.exists(playlist_entry) else None
+    else:
+        # It's a filename, look it up in directory_files
+        return directory_files.get(playlist_entry)
+
+def is_external_file(playlist_entry):
+    """Check if a playlist entry is an external file (full path) or local file (filename)."""
+    return os.path.isabs(playlist_entry)
+
+def get_display_filename(playlist_entry):
+    """Get the display filename for a playlist entry."""
+    return os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
+
+def is_youtube_file(filename):
+    """Check if a filename corresponds to a YouTube video in metadata."""
+    if not youtube_metadata.get("videos"):
+        return False
+    
+    # Check if any YouTube video has this filename
+    for video_id, video in youtube_metadata.get("videos", {}).items():
+        if video.get("filename") == filename:
+            return True
+    return False
+
+def get_youtube_metadata_by_filename(filename):
+    """Get YouTube metadata for a specific filename."""
+    for video_id, video in youtube_metadata.get("videos", {}).items():
+        if video.get("filename") == filename:
+            # Add channel info
+            channel_info = youtube_metadata.get("channels", {}).get(video.get("channel_id"), {
+                "name": "N/A",
+                "subscriber_count": 0
+            })
+            return video | channel_info | {"url": video_id}
+    return None
+
 title_top_info_txt = ""
 end_session_txt = ""
 host = ""
@@ -427,8 +776,12 @@ def fetch_anilist_user_ids(username, watched_only=False):
 
 def pre_fetch_metadata():
     for i in range(playlist["current_index"]-1, playlist["current_index"]+3):
-        if i >= 0 and i < len(playlist["playlist"]) and i != playlist["current_index"] and (fetching_metadata.get(playlist["playlist"][i]) is None and playlist["playlist"][i] in directory_files):
-            get_metadata(playlist["playlist"][i], refresh=True, fetch=True)
+        playlist_entry = playlist["playlist"][i] if i >= 0 and i < len(playlist["playlist"]) else None
+        if playlist_entry and i != playlist["current_index"]:
+            filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
+            filepath = get_file_path(playlist_entry)
+            if fetching_metadata.get(filename) is None and filepath and os.path.exists(filepath):
+                get_metadata(filename, refresh=True, fetch=True)
 
 # Global cache for merged metadata
 _metadata_cache = {}
@@ -441,6 +794,9 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     # Fast return if already cached and no refresh/fetch needed
     if not (refresh or fetch) and filename in _metadata_cache:
         return _metadata_cache[filename]
+
+    if filename and not ("-OP" in filename or "-ED" in filename):
+        return {}
 
     file_data = file_metadata.get(filename)
     if not file_data:
@@ -472,7 +828,8 @@ def refetch_metadata():
     if currently_playing and currently_playing.get('type') == 'theme':
         filename = currently_playing.get('filename')
     else:
-        filename = playlist["playlist"][playlist["current_index"]]
+        playlist_entry = playlist["playlist"][playlist["current_index"]]
+        filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
     fetch_metadata(filename, True)
 
 def get_external_site_id(anime_themes, site):
@@ -487,7 +844,8 @@ fetching_metadata = {}
 def fetch_metadata(filename = None, refetch = False, label=""):
     global currently_playing, anidb_cooldown, anidb_delay
     if filename is None:
-        filename = playlist["playlist"][playlist["current_index"]]
+        playlist_entry = playlist["playlist"][playlist["current_index"]]
+        filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
         refetch = True
 
     print(f"{label}Fetching metadata for {filename}...", end="", flush=True)
@@ -932,27 +1290,87 @@ def fetch_all_metadata(delay=0):
     threading.Thread(target=fetch_all_metadata_worker, daemon=True).start()
 
 def refresh_all_metadata(delay=1):
-    """Refreshes all jikan metadata for the entire directory, spacing out API calls."""
-    confirm = messagebox.askyesno("Refresh All Jikan Metadata", f"Are you sure you want to refresh all jikan metadata?")
+    """Refreshes all jikan metadata for files in the directory, spacing out API calls."""
+    confirm = messagebox.askyesno("Refresh All Jikan Metadata", f"Are you sure you want to refresh all jikan metadata for files in your directory?")
     if not confirm:
         return  # User canceled
-    def worker():
+    
+    current_year = datetime.now().year
+    
+    # Get year limit from user input (must be done on main thread)
+    year_input = simpledialog.askstring(
+        "Year Limit", 
+        f"Enter how many years back to refresh (leave empty for all years):\n\nCurrent year: {current_year}",
+        initialvalue=""
+    )
+    
+    # If user cancelled the dialog, return
+    if year_input is None:
+        return
+    
+    def worker(year_input):
         current_year = datetime.now().year
-        year_limit = messagebox.askyesno("Year Limit", f"Do you want to limit to the last 5 years({current_year-5}-{current_year})?")
-        total_checked = 0
-        for key, data in anime_metadata.items():
-            if key.isdigit():
-                season = data.get("season")
-                if not year_limit or int(season[-4:] if season and season[-4:].isdigit() else 0) >= (current_year-5):
-                    refresh_jikan_data(key, data)
-                    total_checked = total_checked + 1
-            # time.sleep(delay)  # Delay to avoid API rate limits
+        # Parse year limit
+        year_limit = None
+        if year_input and year_input.strip():
+            try:
+                years_back = int(year_input.strip())
+                if years_back > 0:
+                    year_limit = current_year - years_back
+                    print(f"Refreshing metadata for files from {year_limit} onwards...")
+                else:
+                    print("Invalid input. Refreshing all metadata...")
+            except ValueError:
+                print("Invalid input. Refreshing all metadata...")
+        else:
+            print("Refreshing all metadata...")
+        
+        # Get list of MAL IDs that we actually have files for
+        mal_ids_in_directory = set()
+        for filename in directory_files:
+            file_data = file_metadata.get(filename, {})
+            mal_id = file_data.get('mal')
+            if mal_id and mal_id.isdigit():
+                mal_ids_in_directory.add(mal_id)
+        
+        # Filter anime_metadata to only include entries we have files for
+        entries_to_refresh = []
+        for mal_id in mal_ids_in_directory:
+            if mal_id in anime_metadata:
+                data = anime_metadata[mal_id]
+                season = data.get("season", "")
+                
+                # Check year limit if specified
+                if year_limit is None:
+                    entries_to_refresh.append((mal_id, data))
+                else:
+                    # Extract year from season (e.g., "Spring 2023" -> 2023)
+                    try:
+                        season_year = int(season[-4:] if season and season[-4:].isdigit() else 0)
+                        if season_year >= year_limit:
+                            entries_to_refresh.append((mal_id, data))
+                    except (ValueError, IndexError):
+                        # If we can't parse the year, include it to be safe
+                        entries_to_refresh.append((mal_id, data))
+        
+        total_to_refresh = len(entries_to_refresh)
+        total_refreshed = 0
+        
+        print(f"Found {total_to_refresh} entries to refresh from your directory files...")
+        
+        for mal_id, data in entries_to_refresh:
+            try:
+                refresh_jikan_data(mal_id, data, label=f"[{total_refreshed + 1}/{total_to_refresh}]")
+                total_refreshed += 1
+                # time.sleep(delay)  # Delay to avoid API rate limits
+            except Exception as e:
+                print(f"\nError refreshing {mal_id}: {e}")
+                total_refreshed += 1  # Still count it as processed
 
-        print("Metadata refeshing complete! - Refreshed:" + str(total_checked))
+        print(f"\nMetadata refreshing complete! - Refreshed: {total_refreshed}/{total_to_refresh}")
 
-    # Run in a separate thread so it doesn’t freeze the UI
-    threading.Thread(target=worker, daemon=True).start()
-
+    # Run in a separate thread so it doesn't freeze the UI
+    threading.Thread(target=worker, args=(year_input,), daemon=True).start()
 
 # =========================================
 #        *METADATA DISPLAY
@@ -996,10 +1414,11 @@ def move_new_files():
 def clear_metadata():
     """Function to clear metadata fields"""
     global list_loaded
-    list_set_loaded(None)
     left_column.delete(1.0, tk.END)
     middle_column.delete(1.0, tk.END)
-    right_column.delete(1.0, tk.END)
+    if list_loaded != "playlist":
+        list_set_loaded(None)
+        right_column.delete(1.0, tk.END)
 
 def open_mal_page(mal_id):
     url = f"https://myanimelist.net/anime/{mal_id}"
@@ -1100,7 +1519,8 @@ def update_metadata():
 
                 update_series_song_information(data, data.get("mal"))
 
-                update_extra_metadata(data)
+                if list_loaded != "playlist":
+                    update_extra_metadata(data)
                 
                 toggleColumnEdit(False)
 
@@ -1204,6 +1624,7 @@ def update_extra_metadata(data):
             ["FILE ACTIONS", "header", True],
             ["⎘COPY FILENAME", lambda: pyperclip.copy(filename), True],
             ["📁OPEN FOLDER", lambda: open_file_folder_by_filename(filename), True],
+            ["🔊EDIT VOLUME", lambda: edit_file_volume_by_filename(filename), True],
             ["❌DELETE FILE", lambda: delete_file_by_filename(filename), True],
             ["EXTERNAL SITES", "header", not is_game(data)],
             ["ANIMETHEMES", lambda: anime_themes_video(filename), "[MAL]" not in filename and "[ID]" not in filename and currently_playing.get("type") == "theme"],
@@ -1410,7 +1831,7 @@ def update_series_song_information(data, mal):
             index = 0
             for anime_id, anime in all_series_themes:
                 index += 1
-                middle_column.insert(tk.END, f"{get_display_title(anime)} [{anime.get("season")}]:\n", "bold underline")
+                middle_column.insert(tk.END, f"{get_display_title(anime)} [{anime.get("type")} / {anime.get("season")}]:\n", "bold underline")
                 if anime_id == data.get("mal"):
                     slug = data.get("slug")
                 else:
@@ -1445,6 +1866,10 @@ def up_next_text():
     update_up_next_display(right_top)
     if popout_up_next and popout_show_metadata:
         update_up_next_display(popout_up_next)
+    # Refresh list display to adjust button count based on right_top content
+    if list_loaded:
+        # Small delay to ensure text widget is fully updated
+        root.after(10, refresh_current_list)
 
 reroll_button = None
 def update_up_next_display(widget, clear=False):
@@ -1482,7 +1907,8 @@ def update_up_next_display(widget, clear=False):
             next_up_text = "End of playlist"
             if playlist["current_index"] + 1 < len(playlist["playlist"]):
                 try:
-                    next_filename = playlist["playlist"][playlist["current_index"] + 1]
+                    playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
+                    next_filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
                     next_up_data = get_metadata(next_filename)
                     if lightning_queue and lightning_queue[0] == next_filename and variety_light_mode_enabled:
                         widget.insert(tk.END, f"[{lightning_queue[1].upper()}] ", "white")
@@ -1494,7 +1920,8 @@ def update_up_next_display(widget, clear=False):
                     if is_popout:
                         next_up_text = f"NEXT: {next_up_text.replace("\n", " - ")}"
                 except Exception:
-                    next_up_text = playlist["playlist"][playlist["current_index"] + 1]
+                    playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
+                    next_up_text = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
             widget.insert(tk.END, f"{next_up_text}", "white")
             adjust_up_next_height(widget, is_popout)
             return
@@ -1910,9 +2337,48 @@ _youtube_playlist = {}
 def show_youtube_playlist(update = False):
     global _youtube_playlist
     downloaded_videos = {}
+    
+    # Check both local youtube folder and external files
     for video_id, video in youtube_metadata.get("videos", {}).items():
-        if os.path.exists(os.path.join("youtube", video["filename"])):
+        filename = video["filename"]
+        
+        # Check if file exists in youtube folder
+        if os.path.exists(os.path.join("youtube", filename)):
             downloaded_videos[video_id] = video
+        else:
+            # Check if it exists as an external file in current playlist
+            for playlist_entry in playlist.get("playlist", []):
+                if (os.path.isabs(playlist_entry) and 
+                    os.path.basename(playlist_entry) == filename and 
+                    os.path.exists(playlist_entry)):
+                    downloaded_videos[video_id] = video
+                    break
+
+    # Sort by date_added (newest first), then by upload_date as fallback
+    def get_sort_key(item):
+        video_id, video = item
+        # Try to get date_added first, fallback to upload_date
+        date_added = video.get("date_added")
+        if date_added:
+            try:
+                return datetime.fromisoformat(date_added)
+            except (ValueError, TypeError):
+                pass
+        
+        # Fallback to upload_date
+        upload_date = video.get("upload_date", "")
+        if upload_date:
+            try:
+                return datetime.strptime(upload_date, "%Y%m%d")
+            except (ValueError, TypeError):
+                pass
+        
+        # If no valid dates, use a very old date so it appears last
+        return datetime(1900, 1, 1)
+    
+    # Sort and convert back to dict
+    sorted_videos = sorted(downloaded_videos.items(), key=get_sort_key, reverse=True)
+    downloaded_videos = dict(sorted_videos)
 
     for index, (key, value) in enumerate(downloaded_videos.items()):
         value['index'] = index
@@ -1950,17 +2416,22 @@ def load_youtube_video(index):
         unload_youtube_video()
     show_youtube_playlist(True)
 
-def update_youtube_metadata():
+def update_youtube_metadata(data=None):
     global youtube_queue
-    insert_column_line(left_column, "TITLE: ", youtube_queue.get('title'))
-    insert_column_line(left_column, "FULL TITLE: ", youtube_queue.get('full_title'))
-    insert_column_line(left_column, "UPLOAD DATE: ", f"{datetime.strptime(youtube_queue.get('upload_date'), "%Y%m%d").strftime("%Y-%m-%d")}")
-    insert_column_line(left_column, "VIEWS: ", f"{youtube_queue.get('view_count'):,}")
-    insert_column_line(left_column, "LIKES: ", f"{youtube_queue.get('like_count'):,}")
-    insert_column_line(left_column, "CHANNEL: ", youtube_queue.get('name'))
-    insert_column_line(left_column, "SUBSCRIBERS: ", f"{youtube_queue.get('subscriber_count'):,}")
-    insert_column_line(left_column, "DURATION: ", str(format_seconds(get_youtube_duration(youtube_queue))) + " mins")
-    insert_column_line(middle_column, "DESCRIPTION: ", youtube_queue.get('description'))
+    # Use provided data or fall back to youtube_queue
+    youtube_data = data or youtube_queue
+    if not youtube_data:
+        return
+        
+    insert_column_line(left_column, "TITLE: ", youtube_data.get('title'))
+    insert_column_line(left_column, "FULL TITLE: ", youtube_data.get('full_title'))
+    insert_column_line(left_column, "UPLOAD DATE: ", f"{datetime.strptime(youtube_data.get('upload_date'), "%Y%m%d").strftime("%Y-%m-%d")}")
+    insert_column_line(left_column, "VIEWS: ", f"{youtube_data.get('view_count'):,}")
+    insert_column_line(left_column, "LIKES: ", f"{youtube_data.get('like_count'):,}")
+    insert_column_line(left_column, "CHANNEL: ", youtube_data.get('name'))
+    insert_column_line(left_column, "SUBSCRIBERS: ", f"{youtube_data.get('subscriber_count'):,}")
+    insert_column_line(left_column, "DURATION: ", str(format_seconds(get_youtube_duration(youtube_data))) + " mins")
+    insert_column_line(middle_column, "DESCRIPTION: ", youtube_data.get('description'))
     show_youtube_playlist()
     if popout_currently_playing:
         update_popout_currently_playling(youtube_queue)
@@ -1987,6 +2458,30 @@ def load_youtube_metadata():
         with open(YOUTUBE_METADATA_FILE, "r") as f:
             youtube_metadata = json.load(f)
             print("Loaded metadata for " + str(len(youtube_metadata.get("videos", []))) + " youtube videos...")
+        
+        # Migration: Add date_added field to existing videos that don't have it
+        migration_needed = False
+        for video_id, video in youtube_metadata.get("videos", {}).items():
+            if "date_added" not in video:
+                # Use upload_date as fallback, or current date if neither exists
+                upload_date = video.get("upload_date", "")
+                if upload_date:
+                    try:
+                        # Convert upload_date to datetime and use as date_added
+                        upload_datetime = datetime.strptime(upload_date, "%Y%m%d")
+                        video["date_added"] = upload_datetime.isoformat()
+                    except (ValueError, TypeError):
+                        # If upload_date is invalid, use current date
+                        video["date_added"] = datetime.now().isoformat()
+                else:
+                    # No upload_date, use current date
+                    video["date_added"] = datetime.now().isoformat()
+                migration_needed = True
+        
+        # Save the metadata if migration was needed
+        if migration_needed:
+            save_youtube_metadata()
+        
         return True
     return False
 
@@ -2028,7 +2523,29 @@ def open_youtube_editor():
             tk.Label(youtube_editor_window, text=header.upper(), font=font_big, bg=BACKGROUND_COLOR, fg=fg_color).grid(row=0, column=col, padx=8, pady=6)
         active_videos = {k: v for k, v in youtube_metadata.get("videos", {}).items() if not v.get("archived")}
 
-        for idx, (video_id, video) in enumerate(sorted(active_videos.items(), key=lambda x: x[1].get("title", ""))):
+        # Sort by date_added (newest first), then by upload_date as fallback
+        def get_sort_key_manager(item):
+            video_id, video = item
+            # Try to get date_added first, fallback to upload_date
+            date_added = video.get("date_added")
+            if date_added:
+                try:
+                    return datetime.fromisoformat(date_added)
+                except (ValueError, TypeError):
+                    pass
+            
+            # Fallback to upload_date
+            upload_date = video.get("upload_date", "")
+            if upload_date:
+                try:
+                    return datetime.strptime(upload_date, "%Y%m%d")
+                except (ValueError, TypeError):
+                    pass
+            
+            # If no valid dates, use a very old date so it appears last
+            return datetime(1900, 1, 1)
+
+        for idx, (video_id, video) in enumerate(sorted(active_videos.items(), key=get_sort_key_manager, reverse=True)):
             row_widgets = []
 
             tk.Label(youtube_editor_window, text=video_id, font=font_big, fg=fg_color, bg=BACKGROUND_COLOR).grid(row=idx+1, column=0, padx=4, pady=4)
@@ -2292,7 +2809,8 @@ def open_youtube_editor():
                     "thumbnail": info.get("thumbnail", ""),
                     "filename": filename,
                     "archived": False,
-                    "archived_date": None
+                    "archived_date": None,
+                    "date_added": datetime.now().isoformat()
                 }
 
                 save_youtube_metadata()
@@ -2823,6 +3341,14 @@ def toggle_infinite_playlist():
         playlist["infinite"] = True
         if playlist["current_index"]+1 >= len(playlist["playlist"]):
             get_next_infinite_track()
+    
+    # Refresh list display to show any changes
+    if list_loaded == "playlist":
+        global current_list_content, current_list_selected
+        current_list_content = convert_playlist_to_dict(playlist["playlist"])
+        current_list_selected = playlist["current_index"]
+        refresh_current_list()
+    
     create_first_row_buttons()
     save_config()
 
@@ -3101,6 +3627,14 @@ def get_next_infinite_track(increment=True):
                             update_current_index(playlist["current_index"]-1)
                     else:
                         update_current_index()
+                    
+                    # Update list display if playlist is currently shown
+                    if list_loaded == "playlist":
+                        global current_list_content, current_list_selected
+                        current_list_content = convert_playlist_to_dict(playlist["playlist"])
+                        current_list_selected = playlist["current_index"]
+                        refresh_current_list()
+                    
                     return selected_file
         if not groups[p][t]:
             groups, shows_files_map = get_pop_time_groups()
@@ -3189,6 +3723,9 @@ def load_config():
             title_top_info_txt = config.get("title_top_info_txt", "")
             end_session_txt = config.get("end_session_txt", "")
             playlist = config.get("playlist", copy.deepcopy(BLANK_PLAYLIST))
+            # Ensure backward compatibility for background_track_history
+            if "background_track_history" not in playlist:
+                playlist["background_track_history"] = []
             directory_files = config.get("directory_files", {})
             directory = config.get("directory", "")
             YOUTUBE_API_KEY = config.get("youtube_api_key", "")
@@ -3468,7 +4005,7 @@ def load(update = False):
             selected = key
             break
         
-    show_list("load_playlist", right_column, playlists, get_playlist_name, load_playlist, selected, update)
+    show_list("load_playlist", right_column, playlists, get_playlist_name, load_playlist, selected, update, delete_playlist)
 
 def delete(update = False):
     selected = -1
@@ -3507,7 +4044,7 @@ def delete_playlist(index):
         return
 
     # Refresh the list display
-    delete(True)
+    reload_playlist(True)
 
 def delete_file_by_filename(filename):
     """Find the full path from directory_files and delete the file after confirmation."""
@@ -3550,6 +4087,411 @@ def open_file_folder_by_filename(filename):
         print(f"Opened folder for: {filename}")
     except Exception as e:
         messagebox.showerror("Error", f"Could not open folder:\n{e}")
+
+def edit_file_volume_by_filename(filename):
+    """Find the full path from directory_files and edit the volume using ffmpeg."""
+    filepath = directory_files.get(filename)
+    
+    if not filepath or not os.path.exists(filepath):
+        messagebox.showerror("Edit Volume", f"The file does not exist or is not found:\n{filename}")
+        return
+
+    # Prompt for volume level
+    volume_str = simpledialog.askstring("Edit Volume", 
+                                       "Enter volume multiplier (e.g., 0.5 for half volume, 2.0 for double volume):\n\n"
+                                       "Examples:\n"
+                                       "• 0.5 = 50% volume\n"
+                                       "• 1.0 = original volume\n"
+                                       "• 2.0 = 200% volume",
+                                       initialvalue="1.0")
+    
+    if not volume_str:
+        return  # User canceled
+    
+    try:
+        volume_level = float(volume_str)
+        if volume_level <= 0:
+            messagebox.showerror("Invalid Volume", "Volume level must be greater than 0")
+            return
+    except ValueError:
+        messagebox.showerror("Invalid Volume", "Please enter a valid number (e.g., 0.5, 1.0, 2.0)")
+        return
+
+    # Confirm the operation
+    confirm = messagebox.askyesno("Edit Volume", 
+                                 f"This will modify the volume of:\n{filename}\n\n"
+                                 f"Volume multiplier: {volume_level}\n\n"
+                                 "The video will be stopped and the original file will be replaced.\n"
+                                 "Continue?")
+    if not confirm:
+        return
+
+    # Stop the currently playing video
+    stop()
+    
+    # Generate temporary filename
+    base, ext = os.path.splitext(filepath)
+    temp_filepath = f"{base}_temp_volume{ext}"
+    
+    try:
+        # Build ffmpeg command
+        ffmpeg_cmd = [
+            "ffmpeg",
+            "-i", filepath,
+            "-af", f"volume={volume_level}",
+            "-c:v", "copy",  # Copy video without re-encoding
+            "-y",  # Overwrite output file without asking
+            temp_filepath
+        ]
+        
+        # Run ffmpeg command with proper encoding handling
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=300)  # 5 minute timeout
+        
+        if result.returncode == 0:
+            # Success - replace original file with the modified one
+            if os.path.exists(temp_filepath):
+                # Remove original file
+                os.remove(filepath)
+                # Rename temp file to original filename
+                os.rename(temp_filepath, filepath)
+                
+                messagebox.showinfo("Volume Edited", 
+                                  f"Successfully edited volume:\n{filename}\n\n"
+                                  f"Volume multiplier: {volume_level}x")
+                print(f"Successfully edited volume for: {filename} (volume: {volume_level}x)")
+            else:
+                messagebox.showerror("Error", "Temporary file was not created successfully")
+        else:
+            # Error occurred - safely decode error message
+            try:
+                error_msg = result.stderr if result.stderr else "Unknown ffmpeg error"
+            except UnicodeDecodeError:
+                error_msg = "FFmpeg error (unable to decode error message)"
+            messagebox.showerror("FFmpeg Error", 
+                               f"Failed to edit volume:\n\n{error_msg}")
+            # Clean up temp file if it exists
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+                
+    except subprocess.TimeoutExpired:
+        messagebox.showerror("Timeout", "Operation timed out. The file may be too large or ffmpeg is not responding.")
+        # Clean up temp file if it exists
+        if os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
+    except FileNotFoundError:
+        messagebox.showerror("FFmpeg Not Found", 
+                           "FFmpeg is not installed or not found in PATH.\n\n"
+                           "Please install FFmpeg and ensure it's available in your system PATH.")
+    except Exception as e:
+        messagebox.showerror("Error", f"An error occurred while editing volume:\n{e}")
+        # Clean up temp file if it exists
+        if os.path.exists(temp_filepath):
+            os.remove(temp_filepath)
+
+# =========================================
+#           *AUTO-UPDATE FUNCTIONALITY
+# =========================================
+
+def check_for_updates():
+    """Check GitHub releases for newer version."""
+    try:
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        response = requests.get(api_url, timeout=10)
+        
+        if response.status_code == 200:
+            release_data = response.json()
+            latest_version = release_data.get("tag_name", "").lstrip("v")  # Remove 'v' prefix if present
+            
+            if compare_versions(latest_version, APP_VERSION):
+                return {
+                    "update_available": True,
+                    "latest_version": latest_version,
+                    "current_version": APP_VERSION,
+                    "release_data": release_data
+                }
+            else:
+                return {
+                    "update_available": False,
+                    "latest_version": latest_version,
+                    "current_version": APP_VERSION
+                }
+        else:
+            return {"error": f"Failed to check for updates: HTTP {response.status_code}"}
+    
+    except requests.exceptions.RequestException as e:
+        return {"error": f"Network error checking for updates: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Error checking for updates: {str(e)}"}
+
+def compare_versions(version1, version2):
+    """Compare two version strings. Returns True if version1 > version2."""
+    try:
+        def version_tuple(v):
+            return tuple(map(int, (v.split("."))))
+        return version_tuple(version1) > version_tuple(version2)
+    except Exception:
+        return False
+
+def download_and_update():
+    """Download the latest release and update the application."""
+    try:
+        # Check for updates first
+        update_info = check_for_updates()
+        
+        if update_info.get("error"):
+            messagebox.showerror("Update Error", update_info["error"])
+            return False
+        
+        if not update_info.get("update_available"):
+            messagebox.showinfo("No Updates", f"You already have the latest version ({APP_VERSION})")
+            return False
+        
+        # Determine what will be updated and create appropriate message
+        if getattr(sys, 'frozen', False):
+            update_target_msg = "The current executable will be updated."
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            exe_path = os.path.join(script_dir, "guess_the_anime.exe")
+            if os.path.exists(exe_path):
+                update_target_msg = f"The executable will be updated:\\n{os.path.basename(exe_path)}"
+            else:
+                messagebox.showerror("Update Error", 
+                                   f"Cannot find guess_the_anime.exe in the script directory.\\n\\n"
+                                   f"Expected location: {exe_path}\\n\\n"
+                                   "Make sure the .exe file exists in the same folder as the .py script.")
+                return False
+        
+        release_data = update_info["release_data"]
+        
+        # Find the .exe asset in the release
+        exe_asset = None
+        for asset in release_data.get("assets", []):
+            if asset["name"].endswith(".exe"):
+                exe_asset = asset
+                break
+        
+        if not exe_asset:
+            messagebox.showerror("Update Error", "No .exe file found in the latest release")
+            return False
+        
+        # Show download progress
+        progress_window = tk.Toplevel()
+        progress_window.title("Downloading Update...")
+        progress_window.geometry("400x100")
+        progress_window.configure(bg="black")
+        progress_window.resizable(False, False)
+        
+        # Center the progress window
+        progress_window.transient(root)
+        progress_window.grab_set()
+        
+        progress_label = tk.Label(progress_window, text="Downloading update...", 
+                                bg="black", fg="white", font=("Arial", 12))
+        progress_label.pack(pady=20)
+        
+        progress_bar = ttk.Progressbar(progress_window, mode='indeterminate')
+        progress_bar.pack(pady=10, padx=20, fill='x')
+        progress_bar.start()
+        
+        progress_window.update()
+        
+        # Download the update
+        download_url = exe_asset["browser_download_url"]
+        
+        # Determine target file for update
+        if getattr(sys, 'frozen', False):
+            # Running from exe - update the current exe
+            target_exe = sys.executable
+        else:
+            # Running from .py file - look for .exe in same directory
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            target_exe = os.path.join(script_dir, "guess_the_anime.exe")
+            
+            # Check if the exe exists
+            if not os.path.exists(target_exe):
+                messagebox.showerror("Update Error", 
+                                   f"Cannot find guess_the_anime.exe in the script directory.\n\n"
+                                   f"Expected location: {target_exe}\n\n"
+                                   "Make sure the .exe file exists in the same folder as the .py script.")
+                return False
+        
+        # Create backup and new file names
+        backup_name = f"{target_exe}.backup"
+        new_exe_name = f"{target_exe}.new"
+        
+        # Download new version
+        response = requests.get(download_url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        with open(new_exe_name, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        progress_window.destroy()
+        
+        # Download the updater.exe from the separate repository
+        updater_url = "https://github.com/ualkotob/guess-the-anime-playlist-tool-updater/releases/latest/download/updater.exe"
+        updater_path = "updater.exe"
+        
+        try:
+            # Always download fresh updater.exe
+            # Remove old updater if it exists
+            if os.path.exists(updater_path):
+                os.remove(updater_path)
+            
+            # Show progress for updater download
+            progress_window = tk.Toplevel()
+            progress_window.title("Downloading Updater...")
+            progress_window.geometry("400x100")
+            progress_window.configure(bg="black")
+            progress_window.resizable(False, False)
+            progress_window.transient(root)
+            progress_window.grab_set()
+            
+            progress_label = tk.Label(progress_window, text="Downloading updater...", 
+                                    bg="black", fg="white", font=("Arial", 12))
+            progress_label.pack(pady=20)
+            
+            progress_bar = ttk.Progressbar(progress_window, mode='indeterminate')
+            progress_bar.pack(pady=10, padx=20, fill='x')
+            progress_bar.start()
+            progress_window.update()
+            
+            # Download updater.exe
+            updater_response = requests.get(updater_url, stream=True, timeout=30)
+            updater_response.raise_for_status()
+            
+            with open(updater_path, 'wb') as f:
+                for chunk in updater_response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            progress_window.destroy()
+        
+        except Exception as e:
+            messagebox.showerror("Updater Download Failed", 
+                               f"Failed to download updater.exe: {str(e)}\n\n"
+                               "Cannot proceed with update.")
+            # Clean up the downloaded app file
+            if os.path.exists(new_exe_name):
+                os.remove(new_exe_name)
+            return False
+        
+        # Determine what to restart after update
+        # Always restart the exe if we just updated it
+        restart_command = f'"{target_exe}"'
+        
+        # Show final message
+        if getattr(sys, 'frozen', False):
+            update_msg = "Update downloaded successfully!\n\nThe application will now close and restart with the new version."
+        else:
+            update_msg = f"Update downloaded successfully!\n\nThe exe file will be updated: {os.path.basename(target_exe)}\n\nThe application will now restart."
+        
+        messagebox.showinfo("Update Starting", update_msg)
+        
+        # Launch updater.exe with appropriate arguments
+        try:
+            subprocess.Popen([
+                updater_path,
+                new_exe_name,     # source file (downloaded update)
+                target_exe,       # target file (current executable) 
+                restart_command   # restart command
+            ])
+            
+            # Exit the main application to allow update
+            root.quit()
+            return True
+            
+        except Exception as e:
+            messagebox.showerror("Update Launch Failed", 
+                               f"Failed to launch updater: {str(e)}\n\n"
+                               "Update files have been downloaded but could not be applied.")
+            # Clean up downloaded files
+            if os.path.exists(new_exe_name):
+                os.remove(new_exe_name)
+            return False
+        return True
+        
+    except requests.exceptions.RequestException as e:
+        messagebox.showerror("Download Error", f"Failed to download update: {str(e)}")
+        return False
+    except Exception as e:
+        messagebox.showerror("Update Error", f"Update failed: {str(e)}")
+        return False
+
+def check_for_updates_button():
+    """Button handler to check for updates."""
+    try:
+        # Show checking message
+        check_window = tk.Toplevel()
+        check_window.title("Checking for Updates...")
+        check_window.geometry("300x80")
+        check_window.configure(bg="black")
+        check_window.resizable(False, False)
+        
+        # Center the window
+        check_window.transient(root)
+        check_window.grab_set()
+        
+        check_label = tk.Label(check_window, text="Checking for updates...", 
+                             bg="black", fg="white", font=("Arial", 12))
+        check_label.pack(pady=20)
+        
+        check_window.update()
+        
+        # Check for updates
+        update_info = check_for_updates()
+        check_window.destroy()
+        
+        if update_info.get("error"):
+            messagebox.showerror("Update Check Failed", update_info["error"])
+        elif update_info.get("update_available"):
+            # Update is available, ask if user wants to download
+            release_data = update_info.get("release_data", {})
+            release_body = release_data.get("body", "No release notes available.")
+            
+            result = messagebox.askyesno("Update Available", 
+                                       f"New version available!\n\n"
+                                       f"Current version: {update_info['current_version']}\n"
+                                       f"Latest version: {update_info['latest_version']}\n\n"
+                                       f"Release Notes:\n{release_body}\n\n"
+                                       "Would you like to download and install it now?")
+            if result:
+                download_and_update()
+        else:
+            messagebox.showinfo("No Updates", 
+                              f"You have the latest version ({update_info['current_version']})")
+    
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to check for updates: {str(e)}")
+
+def check_for_updates_on_startup():
+    """Check for updates on startup and prompt user if update is available."""
+    try:
+        # Check for updates in background
+        update_info = check_for_updates()
+        
+        if update_info.get("error"):
+            # Silently fail on startup - don't bother user with network errors
+            print(f"Update check failed: {update_info['error']}")
+            return
+        
+        if update_info.get("update_available"):
+            # Update is available, ask if user wants to download
+            release_data = update_info.get("release_data", {})
+            release_body = release_data.get("body", "No release notes available.")
+            
+            result = messagebox.askyesno("Update Available", 
+                                       f"New version available!\n\n"
+                                       f"Current version: {update_info['current_version']}\n"
+                                       f"Latest version: {update_info['latest_version']}\n\n"
+                                       f"Release Notes:\n{release_body}\n\n"
+                                       "Would you like to download and install it now?")
+            if result:
+                download_and_update()
+    
+    except Exception as e:
+        # Silently fail on startup - don't bother user with errors
+        print(f"Startup update check failed: {str(e)}")
 
 # =========================================
 #           *STATS DISPLAY
@@ -3795,7 +4737,7 @@ def display_theme_stats_in_columns():
 
 def load_filters(update = False):
     filters = get_all_filters()
-    show_list("load_filters", right_column, filters, get_filter_name, load_filter, -1, update)
+    show_list("load_filters", right_column, filters, get_filter_name, load_filter, -1, update, delete_filter)
 
 def get_filter_name(key, value):
     return value.get("name")
@@ -3845,7 +4787,7 @@ def delete_filter(index):
         return
 
     # Refresh the list display
-    delete_filters(True)
+    reload_playlist(True)
 
 def filters():
     show_filter_popup()
@@ -5852,14 +6794,13 @@ def update_light_round(time):
             if light_mode == 'blind':
                 blind_variants = lightning_mode_settings.get("blind",{}).get("variants",{})
                 standard, double_speed, mismatch, one_second = blind_variants.get("standard"), blind_variants.get("double_speed"), blind_variants.get("mismatch"), blind_variants.get("one_second")
-                blind_modes = ['standard', 'standard', 'mismatch']
+                blind_modes = ['standard', 'standard', 'standard', 'mismatch']
                 allowed_blind_modes = []
                 for m in blind_modes:
                     if blind_variants.get(m):
                         allowed_blind_modes.append(m)
                 allowed_blind_modes = allowed_blind_modes or blind_modes
                 blind_mode = random.choice(allowed_blind_modes)
-                blind_mode = 'standard'
                 if blind_mode == "mismatch":
                     media = instance.media_new(directory_files.get(get_mismatched_theme()))
                     mismatched_player.set_media(media)
@@ -6913,8 +7854,6 @@ def get_emoji_clues_for_title(data):
     except Exception as e:
         print("Emoji GPT error:", e)
         return ["❓"]
-
-from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 def get_emoji_image(emoji_char, size=120):
     try:
@@ -8285,13 +9224,13 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
     else:
         update_or_create("bottom_buffer", 0, screen_h, screen_w, 0)
     # Left
-    update_or_create("left", 0, top - 10, max(0, left), max(0, visible_h + 30))
+    update_or_create("left", 0, top - 100, max(0, left), max(0, visible_h + 200))
     # Right
-    update_or_create("right", right, top - 10, max(0, screen_w - right + 5), max(0, visible_h + 30))
+    update_or_create("right", right, top - 100, max(0, screen_w - right + 5), max(0, visible_h + 200))
     if right + 10 < screen_w:
-        update_or_create("right_buffer", screen_w - 10, top - 10, 10, max(0, visible_h + 30))
+        update_or_create("right_buffer", screen_w - 10, top - 100, 10, max(0, visible_h + 200))
     else:
-        update_or_create("right_buffer", screen_w, top - 10, 0, max(0, visible_h + 30))
+        update_or_create("right_buffer", screen_w, top - 100, 0, max(0, visible_h + 200))
 
     if grow_overlay_boxes:
         button_seleted(peek_button, True)
@@ -9420,22 +10359,40 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
         tile_overlay_grid_size = grid_size
         tile_overlay_parts = generate_image_grid_slices(tk_img, grid_size, ignore_solid=not swap)
         tile_overlay_order = list(range(len(tile_overlay_parts)))
-        random.shuffle(tile_overlay_order)
-        # Save the initial shuffled order for swaps
-        toggle_tile_overlay.swap_order = tile_overlay_order[:]
-        # Generate unique swap pairs: each pair (i, j) where i != j and both not in correct position
-        swap_order = toggle_tile_overlay.swap_order
-        swap_pairs = []
-        used = set()
-        for i in range(len(swap_order)):
-            if swap_order[i] != i and i not in used:
-                j = swap_order.index(i)
-                if j != i and j not in used:
-                    swap_pairs.append((i, j))
-                    used.add(i)
-                    used.add(j)
-        random.shuffle(swap_pairs)
-        toggle_tile_overlay.swap_pairs = swap_pairs
+        
+        if swap:
+            # For swap mode, start with correct order and create meaningful scramble
+            toggle_tile_overlay.swap_order = tile_overlay_order[:]  # Start correct: [0,1,2,3,4,...]
+            
+            # Create swap pairs that will scramble the puzzle meaningfully
+            swap_pairs = []
+            used = set()
+            order_copy = toggle_tile_overlay.swap_order[:]
+            available_positions = list(range(len(order_copy)))
+            random.shuffle(available_positions)
+            
+            # Create random pairs and apply swaps to scramble the order
+            i = 0
+            while i < len(available_positions) - 1:
+                pos_a = available_positions[i]
+                pos_b = available_positions[i + 1]
+                
+                if pos_a not in used and pos_b not in used:
+                    # Swap these two random positions to create the scrambled puzzle
+                    order_copy[pos_a], order_copy[pos_b] = order_copy[pos_b], order_copy[pos_a]
+                    swap_pairs.append((pos_a, pos_b))
+                    used.update([pos_a, pos_b])
+                    i += 2
+                else:
+                    i += 1
+            
+            # The scrambled order becomes our starting state
+            toggle_tile_overlay.swap_order = order_copy
+            random.shuffle(swap_pairs)  # Randomize which swaps happen when
+            toggle_tile_overlay.swap_pairs = swap_pairs
+        else:
+            # For regular mode, shuffle normally
+            random.shuffle(tile_overlay_order)
 
     pil_img = ImageTk.getimage(tk_img).convert("RGBA")
     w, h = pil_img.size
@@ -9448,8 +10405,8 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
         if hasattr(toggle_tile_overlay, "swap_pairs"):
             swaps_to_do = toggle_tile_overlay.swap_pairs[:num_revealed]
             for a, b in swaps_to_do:
-                swap_order[a] = a
-                swap_order[b] = b
+                # Actually swap the tiles at positions a and b
+                swap_order[a], swap_order[b] = swap_order[b], swap_order[a]
         grid_cols = tile_overlay_grid_size
         for i, idx in enumerate(swap_order):
             part, box, (row, col) = tile_overlay_parts[idx]
@@ -10244,11 +11201,17 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "everything you need to know about", "seasons ranked", "#animeedit", "they need to remake",
                     "? watch these!", "must watch", "anime you should", "anime you must", "anime you need",
                     "anime you have to", "anime you gotta", "veggietales", "reacting to", "the anime effect #",
-                    "#animeexplain", "top 10", "why you should watch ", "simulcast sampler", "anime haul", "anime unboxing"
+                    "#animeexplain", "top 10", "why you should watch ", "simulcast sampler", "anime haul", "anime unboxing",
+                    "anime mix", "english dub greeting video", "best of 20"
                 ]
                 ost_bad_keywords = [
                     "insert song"
                 ]
+                game_bad_keywords = [
+                    "gameplay", "let's play", "walkthrough", "opening cinematic", "game trailer"
+                ]
+                if not is_game(data):
+                    bad_keywords += game_bad_keywords
                 if not ost:
                     bad_keywords += ost_bad_keywords
                 else:
@@ -10277,9 +11240,21 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                 if "movie" not in anime_title.lower() and "movie" in title.lower() and not data.get("type") == "Movie":
                     test_print(f"[{video_id}]{title}:  movie in title when not movie")
                     continue
+                
+                #check description
+                bad_description_phrases = [" amv ", " amv."]
+                if any(phrase in description.lower() for phrase in bad_description_phrases):
+                    test_print(f"[{video_id}]{title}:  bad phrase in description")
+                    continue
 
                 # check title match
                 title_okay = False
+                check_description = True
+                different_title_phrases = [
+                    "from the creators of", "from the makers of", "by the creators of", "all it took was", "from the studio that brought you"
+                ]
+                if any(phrase in description.lower() for phrase in different_title_phrases):
+                    check_description = False
                 for t in [anime_title, data.get("title"), get_base_title(title=anime_title), get_base_title(title=data.get("title"))]:
                     t_edits = [t]
                     # Only use the split-at-colon result if it's not too short or trivial
@@ -10288,7 +11263,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                         t_edits.append(colon_split)
                     t_edits.extend([t.replace(" ", ""), t.replace(".", ""), t.replace("-", " ")])
                     for t_edit in t_edits:
-                        if title_match_score(t_edit, title) or title_match_score(t_edit, description):
+                        if title_match_score(t_edit, title) or (check_description and title_match_score(t_edit, description)):
                             title_okay = True
                             break
                     if title_okay:
@@ -10315,6 +11290,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "Explained", "Mother's Basement", "Crunchyroll: Inside Anime", "Crunchyroll TV", "It's Certified Otaku Vibes",
                     "Crunchyroll en Español", "Crunchyroll FR", "Crunchyroll India", "Crunchyroll DE", "WatchMojo", "Watch Mojo",
                     "AnimeVersa", "Crunchyroll en Español", "Netflix Jr.", "MWAMVEVO", "Tarkeus", "Gigguk", "ryuuarm", "Jent Watches"
+                    "IGN Anime Club", "Albert Senpai", "AnimeSekaiStore"
                 ]
                 ost_blacklisted_channels = [
                     " - Topic"
@@ -10402,10 +11378,9 @@ def title_match_score(anime_title, video_title):
         # Build regex to capture the portion after the phrase up to common separators
         # (dash, pipe, colon, parentheses start, end of string)
         # Example: "From the director of Attack on Titan | New Sci-Fi Original" -> captures "Attack on Titan"
-        import re as _re
         # Escape anime title for presence test, but we'll instead tokenize to be robust.
         # Identify spans of the phrase + following chunk (max 8 words) for scanning tokens.
-        pattern = _re.compile(r"from the director of\s+([^-|:()]+)", _re.IGNORECASE)
+        pattern = re.compile(r"from the director of\s+([^-|:()]+)", re.IGNORECASE)
         spans = []
         for m in pattern.finditer(video_title):
             span_words = clean_words(m.group(1), False)
@@ -10803,9 +11778,38 @@ def load_music_files():
 def next_background_track():
     global current_music_index, music_changed
     if music_files:
-        current_music_index = current_music_index + 1
-        if current_music_index >= len(music_files):
-            current_music_index = 0
+        # Get background track history for current playlist
+        track_history = playlist.get("background_track_history", [])
+        total_tracks = len(music_files)
+        
+        # Calculate how many tracks to avoid (half of total tracks)
+        avoid_count = total_tracks // 2
+        
+        # Get list of recently used tracks to avoid
+        recent_tracks = track_history[-avoid_count:] if avoid_count > 0 else []
+        
+        # Find next available track that hasn't been used recently
+        attempts = 0
+        original_index = current_music_index
+        
+        while attempts < total_tracks:
+            current_music_index = (current_music_index + 1) % total_tracks
+            current_track_path = music_files[current_music_index]
+            current_track_basename = os.path.basename(current_track_path)
+            
+            # If this track is not in recent history, use it
+            if current_track_basename not in recent_tracks:
+                break
+            
+            attempts += 1
+        
+        # If all tracks are in recent history, just use the next one
+        if attempts >= total_tracks:
+            current_music_index = (original_index + 1) % total_tracks
+        
+        # Record this track in the history
+        record_background_track_usage(music_files[current_music_index])
+        
         music_changed = True
 
 checked_music_folder = False
@@ -10840,6 +11844,26 @@ def play_background_music(toggle):
                 pygame.mixer.music.set_volume(0.15*(volume_level/100))  # Adjust volume
             music_changed = False
             now_playing_background_music(music_files[current_music_index])
+
+def record_background_track_usage(track_path):
+    """Record the usage of a background track in the current playlist's history"""
+    if not track_path:
+        return
+    
+    # Ensure background_track_history exists in playlist
+    if "background_track_history" not in playlist:
+        playlist["background_track_history"] = []
+    
+    # Add track to history (avoid duplicates) - store only basename
+    track_basename = os.path.basename(track_path)
+    if not playlist["background_track_history"] or playlist["background_track_history"][-1] != track_basename:
+        playlist["background_track_history"].append(track_basename)
+    
+    # Keep history manageable - limit to total number of tracks available
+    # This ensures we can always find non-recent tracks when we have enough variety
+    max_history = len(music_files) if music_files else 50
+    if len(playlist["background_track_history"]) > max_history:
+        playlist["background_track_history"] = playlist["background_track_history"][-max_history:]
 
 def now_playing_background_music(track = None):
     if not frame_light_round_started and (light_mode == 'peek' or not light_muted or peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
@@ -11000,7 +12024,10 @@ def toggle_title_popup(show, title_only=False):
             japanese_title = data.get("title")
             title = data.get("eng_title") or japanese_title or (data.get("synonyms", [None]) or [None])[0]
             theme = format_slug(data.get("slug"))
-            marks = get_file_marks(currently_playing.get("filename", ""))
+            if check_favorited(currently_playing.get("filename", "")):
+                marks = "❤"
+            else:
+                marks = ""
             song = get_song_string(data)
             if is_game(data):
                 aired = data.get("release")
@@ -11430,13 +12457,13 @@ def get_random_titles(amount=4):
         if len(unique_series_anime) >= 30:
             break
 
-    # Step 4: Try to include at least one with non-generic word overlap
-    overlap_candidates = [a for a in unique_series_anime if get_words(get_base_title(a)) & correct_words]
+    # # Step 4: Try to include at least one with non-generic word overlap
+    # overlap_candidates = [a for a in unique_series_anime if get_words(get_base_title(a)) & correct_words]
     distractors = []
-    if overlap_candidates:
-        pick = random.choice(overlap_candidates)
-        distractors.append(get_display_title(pick))
-        unique_series_anime = [a for a in unique_series_anime if a != pick]
+    # if overlap_candidates:
+    #     pick = random.choice(overlap_candidates)
+    #     distractors.append(get_display_title(pick))
+    #     unique_series_anime = [a for a in unique_series_anime if a != pick]
 
     # Step 5: Fill remaining with less popular ones
     needed = amount - 1 - len(distractors)
@@ -11449,7 +12476,6 @@ def get_random_titles(amount=4):
     titles.extend(distractors)
     random.shuffle(titles)
     return titles
-
 
 def get_series_total(data):
     get_series_totals(refetch=False)
@@ -11749,7 +12775,32 @@ def play_video(index=playlist["current_index"]):
         stream_youtube(os.path.join("youtube", youtube_queue.get("filename")))
         unload_youtube_video()
     elif search_queue:
-        play_filename(search_queue)
+        # Check if search_queue is a YouTube file
+        if is_youtube_file(search_queue):
+            youtube_data = get_youtube_metadata_by_filename(search_queue)
+            if youtube_data:
+                currently_playing = {
+                    "type":"youtube",
+                    "filename": search_queue,
+                    "data":youtube_data
+                }
+                set_black_screen(False)
+                reset_metadata()
+                update_youtube_metadata(youtube_data)
+                if "guess the character" in (get_youtube_display_title(youtube_data)).lower():
+                    set_rules("character")
+                else:
+                    set_rules("anime")
+                # Get file path for external YouTube files
+                youtube_file_path = get_file_path(search_queue)
+                if youtube_file_path:
+                    stream_youtube(youtube_file_path)
+                else:
+                    stream_youtube(os.path.join("youtube", search_queue))
+            else:
+                play_filename(search_queue)
+        else:
+            play_filename(search_queue)
         search_queue = None
         if "SEARCH QUEUE" in popout_buttons_by_name:
             button_seleted(popout_buttons_by_name["SEARCH QUEUE"], False)
@@ -11757,9 +12808,40 @@ def play_video(index=playlist["current_index"]):
         same_index = index == playlist["current_index"]
         update_current_index(index)
         up_next_text()
-        if play_filename(playlist["playlist"][playlist["current_index"]], fullscreen=not same_index or autoplay_toggle != 1):
-            root.after(3000, thread_prefetch_metadata)
-            root.after(1000, queue_next_lightning_mode)
+        
+        playlist_entry = playlist["playlist"][playlist["current_index"]]
+        filename = get_display_filename(playlist_entry)
+        
+        # Check if this is a YouTube file
+        if is_youtube_file(filename):
+            youtube_data = get_youtube_metadata_by_filename(filename)
+            if youtube_data:
+                currently_playing = {
+                    "type":"youtube",
+                    "filename": filename,
+                    "data":youtube_data
+                }
+                set_black_screen(False)
+                reset_metadata()
+                update_youtube_metadata(youtube_data)
+                if "guess the character" in (get_youtube_display_title(youtube_data)).lower():
+                    set_rules("character")
+                else:
+                    set_rules("anime")
+                # Get file path for external YouTube files
+                youtube_file_path = get_file_path(playlist_entry)
+                if youtube_file_path:
+                    stream_youtube(youtube_file_path)
+                else:
+                    stream_youtube(os.path.join("youtube", filename))
+            else:
+                if play_filename(playlist_entry, fullscreen=not same_index or autoplay_toggle != 1):
+                    root.after(3000, thread_prefetch_metadata)
+                    root.after(1000, queue_next_lightning_mode)
+        else:
+            if play_filename(playlist_entry, fullscreen=not same_index or autoplay_toggle != 1):
+                root.after(3000, thread_prefetch_metadata)
+                root.after(1000, queue_next_lightning_mode)
     else:
         if index < 0:
             play_next()
@@ -11793,10 +12875,12 @@ def skip_filename():
     play_video(playlist["current_index"] + skip_direction)  # Try playing the next video
 
 all_themes_played = []
-def play_filename(filename, fullscreen=True):
+def play_filename(playlist_entry, fullscreen=True):
     global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle, currently_playing
     global video_stopped, all_themes_played, previous_media, skip_limit
-    filepath = directory_files.get(filename)  # Get file path from playlist
+    filepath = get_file_path(playlist_entry)  # Get file path from playlist
+    # Extract filename for metadata lookup
+    filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
     data = get_metadata(filename, fetch=True)
     if skip_limit <= 10:
         if not filepath or not os.path.exists(filepath):  # Check if file exists
@@ -11810,6 +12894,7 @@ def play_filename(filename, fullscreen=True):
     currently_playing = {
         "type":"theme",
         "filename":filename,
+        "playlist_entry":playlist_entry,
         "data":data
     }
     update_censor_button_count()
@@ -11821,7 +12906,10 @@ def play_filename(filename, fullscreen=True):
         toggle_title_popup(True)
     # Update metadata display asynchronously
     update_metadata_queue(playlist["current_index"])
-    if current_vout:
+    if ".webm" not in filename:
+        if current_vout != 'opengl':
+            set_vout(vout_module='opengl')
+    elif current_vout:
         set_vout()
     if hw_acc_enabled:
         media = instance.media_new(filepath)
@@ -11949,7 +13037,7 @@ previous_media = None
 def check_video_end():
     """Function to check if the current video has ended"""
     global video_stopped
-    if player.is_playing() or video_stopped or autoplay_toggle == 2:
+    if player.is_playing() or video_stopped or autoplay_toggle == 2 or last_seek_time:
         # If the video is still playing, check again in 1/2 second
         root.after(500, check_video_end)
     else:
@@ -11978,6 +13066,23 @@ def update_current_index(value = None, save = True):
                 current_entry.insert(0, str(playlist["current_index"]+1))
                 out_of = len(playlist["playlist"])
             playlist_size_label.configure(text = "/" + str(out_of))
+        
+        # Update playlist view to show current item if playlist is loaded
+        if list_loaded == "playlist" and value is not None:
+            global current_list_offset, current_list_selected
+            # Update the selected index to match the current playing item
+            current_list_selected = value
+            # Only auto-scroll if the current item is outside the visible window
+            entries_count = get_list_entries_count()
+            current_start = current_list_offset
+            current_end = current_list_offset + entries_count
+            if value < current_start or value >= current_end:
+                # Center the new current item in the view
+                ideal_offset = max(0, value - entries_count // 2)
+                max_offset = max(0, len(playlist["playlist"]) - entries_count)
+                current_list_offset = min(ideal_offset, max_offset)
+            refresh_current_list()
+            
         if save:
             save_config()
     except NameError:
@@ -12095,11 +13200,13 @@ def stop():
     update_progress_bar(0,1)
     remove_all_censor_boxes()
 
+last_seek_time = None
 def seek(value):
     """Function to seek the video"""
     global can_seek
     if can_seek:
-        player.set_time(int(float(value))*1000)
+        global last_seek_time
+        last_seek_time = value
     else:
         can_seek = True
 
@@ -12135,9 +13242,10 @@ def update_seek_bar():
                 toggle_peek_overlay(direction=direction, progress=progress, gap=gap)
             if length > 0:
                 global can_seek
-                can_seek = False
-                seek_bar.config(to=length)
-                seek_bar.set(time)
+                if not last_seek_time:
+                    can_seek = False
+                    seek_bar.config(to=length)
+                    seek_bar.set(time)
                 if currently_playing.get("type") == "youtube":
                     start = currently_playing.get("data").get("start")
                     end = currently_playing.get("data").get("end")
@@ -12424,7 +13532,7 @@ censors_enabled = True
 
 censor_boxes = {}
 def toggle_censor_box(filename, censor, enabled):
-    censor_id = f"{filename}:{censor['pos_x']}x{censor['pos_y']}-{censor['start']}-{censor['end']}"
+    censor_id = f"{filename}:{censor['pos_x']}x{censor['pos_y']}--{censor['size_w']}x{censor['size_h']}-{censor['start']}-{censor['end']}"
     if censor_id in censor_boxes and censor_boxes[censor_id] and censor_boxes[censor_id].get("box") and censor_boxes[censor_id].get("box").winfo_exists():
         if not enabled:
             censor_boxes[censor_id]["box"].destroy()
@@ -13095,6 +14203,9 @@ def dock_player():
         move_root_to_bottom()
         root.lift()
     up_next_text()
+    # Refresh list display to adjust button count based on right_top content changes
+    if list_loaded:
+        refresh_current_list()
 
 def move_root_to_bottom(toggle=True):
     """Moves the Tkinter root window to the bottom-left corner with accurate positioning."""
@@ -13148,7 +14259,25 @@ def show_field_themes(update = False, group=[]):
 
 def get_title(key, value):
     try:
-        data = get_metadata(value)
+        # Extract filename for metadata lookup
+        filename = os.path.basename(value) if os.path.isabs(value) else value
+        
+        # Check if this is a YouTube file first
+        if is_youtube_file(filename):
+            youtube_data = get_youtube_metadata_by_filename(filename)
+            if youtube_data:
+                title = get_youtube_display_title(youtube_data)
+                max_length = 35  # Leave space for YouTube icon
+                if len(title) > max_length:
+                    keep = 32  # number of characters excluding "..."
+                    half = keep // 2
+                    title = title[:half] + "..." + title[-(keep - half):]
+                
+                # Add YouTube icon and external file indicator
+                return f"[YT] {title}"
+        
+        # Regular theme file handling
+        data = get_metadata(filename)
         if data:
             title = get_display_title(data)
             max_length = 37  # includes space before slug
@@ -13156,18 +14285,27 @@ def get_title(key, value):
                 keep = 34  # number of characters excluding "..."
                 half = keep // 2
                 title = title[:half] + "..." + title[-(keep - half):]
-            return title + " " + data.get("slug")
+            display_name = title + " " + data.get("slug")
+            # Add indicator for external files
+            if os.path.isabs(value):
+                display_name = "📁 " + display_name
+            return display_name
         else:
-            return value
+            # Show filename with external indicator if applicable
+            display_name = filename
+            if os.path.isabs(value):
+                display_name = "📁 " + display_name
+            return display_name
     except:
-        return value
+        filename = os.path.basename(value) if os.path.isabs(value) else value
+        return ("📁 " + filename) if os.path.isabs(value) else filename
 
 def play_video_from_last(index):
     if last_themes_listed:
         play_video_from_filename(last_themes_listed[index])
 
 def show_playlist(update = False):
-    show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update)
+    show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=remove_theme)
 
 def remove(update = False):
     show_list("remove", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, remove_theme, playlist["current_index"], update)
@@ -13175,13 +14313,42 @@ def remove(update = False):
 def convert_playlist_to_dict(playlis):
     return {f"{video}_{i}": video for i, video in enumerate(playlis)}
 
+def update_playlist_display():
+    """Helper function to update the playlist display when the playlist changes"""
+    if list_loaded == "playlist":
+        global current_list_content, current_list_selected
+        current_list_content = convert_playlist_to_dict(playlist["playlist"])
+        current_list_selected = playlist["current_index"]
+        refresh_current_list()
+
 def remove_theme(index):
-    global playlist
-    confirm = messagebox.askyesno("Remove Theme", f"Are you sure you want to remove '{playlist["playlist"][index]}' from '{playlist["name"]}'?")
+    global playlist, current_list_content, current_list_selected
+    playlist_entry = playlist["playlist"][index]
+    display_name = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
+    confirm = messagebox.askyesno("Remove Theme", f"Are you sure you want to remove '{display_name}' from '{playlist["name"]}'?")
     if not confirm:
         return  # User canceled
     del playlist["playlist"][index]
-    remove(True)
+    
+    # Update current_list_content to reflect the removal
+    if list_loaded == "playlist":
+        current_list_content = convert_playlist_to_dict(playlist["playlist"])
+        # Adjust current_list_selected if needed
+        if current_list_selected > index:
+            current_list_selected -= 1
+        elif current_list_selected == index and current_list_selected >= len(playlist["playlist"]):
+            current_list_selected = len(playlist["playlist"]) - 1 if playlist["playlist"] else -1
+        refresh_current_list()
+    elif list_loaded == "remove":
+        current_list_content = convert_playlist_to_dict(playlist["playlist"])
+        # If we're in the remove view, we need to refresh that too
+        reload_playlist(True)
+
+def reload_playlist(update = False):
+    if list_loaded:
+        for button in list_buttons:
+            if list_loaded == button.get('label'):
+                button.get('func')(update)
 
 def get_filename(key, value):
     return value
@@ -13198,6 +14365,248 @@ def button_seleted(button, selected):
 list_loaded = None
 list_index = 0
 list_func = None
+playlist_page_offset = 0
+def get_list_entries_count():
+    """Get the number of entries to show in lists. 13 if right_top is empty, 12 otherwise."""
+    try:
+        content = right_top.get(1.0, tk.END)
+        content_stripped = content.strip()
+        
+        # Check if content is empty or just whitespace/newlines
+        if not content_stripped or content_stripped == "" or len(content_stripped) == 0:
+            return 13
+        else:
+            return 12
+    except Exception as e:
+        return 12  # Default fallback
+
+persistent_buttons = []  # Store the reusable buttons for any list type
+button_to_index_map = {}  # Map button widgets to their current indices
+current_list_offset = 0  # Offset for any list type
+current_list_content = {}  # Store current list content
+current_list_name_func = None  # Store current name function
+current_list_selected = -1  # Store the currently selected/playing item index
+def create_persistent_list_buttons(column, target_count=None):
+    """Create persistent buttons that will be reused for any list display."""
+    global persistent_buttons, button_to_index_map
+    
+    if target_count is None:
+        target_count = get_list_entries_count()
+    
+    # Clear any existing buttons
+    for btn in persistent_buttons:
+        try:
+            btn.destroy()
+        except:
+            pass
+    
+    persistent_buttons = []
+    button_to_index_map = {}
+    
+    # Create buttons based on target count
+    entries_count = target_count
+    for i in range(entries_count):
+        btn = tk.Button(column, text="", borderwidth=0, pady=0, 
+                       bg="black", fg="white", font=("Arial", scl(12)),
+                       command=lambda idx=i: handle_persistent_button_click(idx))
+        
+        # Add all the event bindings
+        btn.bind("<Button-3>", lambda e, idx=i: handle_persistent_right_click(e, idx))
+        btn.bind("<MouseWheel>", lambda e: handle_list_scroll(e))
+        btn.bind("<Button-4>", lambda e: handle_btn_scroll_up(e))
+        btn.bind("<Button-5>", lambda e: handle_btn_scroll_down(e))
+        btn.bind("<Enter>", lambda e, idx=i: handle_persistent_button_enter(e, idx))
+        btn.bind("<Leave>", lambda e, idx=i: handle_persistent_button_leave(e, idx))
+        
+        # Add drag bindings only for playlist
+        if list_loaded == "playlist":
+            btn.bind("<Button-1>", lambda e, idx=i: handle_persistent_drag_start(e, idx))
+            btn.bind("<B1-Motion>", lambda e: handle_drag_motion(e))
+            btn.bind("<ButtonRelease-1>", lambda e: end_playlist_drag(e))
+        
+        persistent_buttons.append(btn)
+    
+    return persistent_buttons
+
+def list_scroll_up():
+    global current_list_offset
+    if list_loaded:
+        current_list_offset = max(0, current_list_offset - 1)
+        refresh_current_list()
+
+def list_scroll_down():
+    global current_list_offset, current_list_content
+    if list_loaded:
+        list_size = len(current_list_content)
+        entries_count = get_list_entries_count()
+        max_offset = max(0, list_size - entries_count)
+        current_list_offset = min(max_offset, current_list_offset + 1)
+        refresh_current_list()
+
+def refresh_current_list():
+    """Refresh the current list display without changing the list type."""
+    if list_loaded == "playlist":
+        # Check if button count needs to change first
+        entries_count = get_list_entries_count()
+        current_count = len(persistent_buttons) if persistent_buttons else 0
+        
+        if current_count != entries_count:
+            # Directly recreate buttons and layout
+            if persistent_buttons:
+                try:
+                    column = persistent_buttons[0].master
+                    create_persistent_list_buttons(column, entries_count)
+                    
+                    # Recreate layout
+                    column.config(state=tk.NORMAL, wrap="none")
+                    column.delete(1.0, tk.END)
+                    for button_index in range(entries_count):
+                        try:
+                            column.window_create(tk.END, window=persistent_buttons[button_index])
+                            column.insert(tk.END, "\n")
+                        except tk.TclError:
+                            pass
+                    column.config(state=tk.DISABLED)
+                except (IndexError, AttributeError, tk.TclError) as e:
+                    return
+        
+        # For playlist, just update the persistent buttons directly instead of calling show_playlist
+        if persistent_buttons and current_list_content:
+            start_index = current_list_offset
+            end_index = min(len(current_list_content), start_index + entries_count)
+            
+            for button_index in range(entries_count):
+                item_index = start_index + button_index
+                if item_index < end_index:
+                    update_persistent_button(button_index, item_index, current_list_name_func, current_list_content, current_list_selected)
+                else:
+                    update_persistent_button(button_index, -1, current_list_name_func, current_list_content, current_list_selected)
+        else:
+            # Fallback to full refresh if persistent buttons aren't ready
+            show_playlist(update=True)
+    elif list_loaded and current_list_content:
+        # For other lists, update the display directly
+        update_persistent_list_display()
+
+def update_persistent_list_display():
+    """Update the persistent buttons with current list content."""
+    global current_list_content, current_list_name_func
+    
+    if not current_list_content or not current_list_name_func:
+        return
+    
+    list_size = len(current_list_content)
+    start_index = current_list_offset
+    entries_count = get_list_entries_count()
+    end_index = min(list_size, start_index + entries_count)
+    
+    # Update each persistent button
+    for button_index in range(entries_count):
+        list_index = start_index + button_index
+        if list_index < end_index:
+            update_persistent_button(button_index, list_index, current_list_name_func, current_list_content, current_list_selected)
+        else:
+            # Clear button content for unused positions
+            try:
+                persistent_buttons[button_index].config(text="", state="disabled")
+            except (tk.TclError, IndexError):
+                pass
+
+def update_persistent_button(button_index, item_index, name_func, content_dict, selected):
+    """Update a single persistent button with new content."""
+    global button_to_index_map
+    
+    if button_index >= len(persistent_buttons):
+        return
+    
+    btn = persistent_buttons[button_index]
+    
+    # Check if button still exists
+    try:
+        if not btn.winfo_exists():
+            return
+    except tk.TclError:
+        return
+    
+    button_to_index_map[btn] = item_index
+    
+    # Get the content for this item index
+    items_list = list(content_dict.items())
+    if item_index < len(items_list) and item_index >= 0:
+        key, value = items_list[item_index]
+        name = str(item_index + 1) + ": " + name_func(key, value)
+        
+        # Update button appearance
+        if item_index == selected:
+            font = ("Arial", scl(12), "bold")
+            bg = HIGHLIGHT_COLOR
+        elif not disable_shortcuts and item_index == list_index:
+            font = ("Arial", scl(12))
+            bg = HIGHLIGHT_COLOR
+        else:
+            font = ("Arial", scl(12))
+            bg = "black"
+        
+        try:
+            btn.config(text=name, font=font, bg=bg, fg="white", state="normal")
+        except tk.TclError:
+            return
+    else:
+        # Hide button if no content
+        try:
+            btn.config(text="", state="disabled")
+        except tk.TclError:
+            return
+
+def handle_persistent_button_click(button_index):
+    """Handle click on a persistent button."""
+    try:
+        if button_index < len(persistent_buttons):
+            btn = persistent_buttons[button_index]
+            if btn in button_to_index_map and btn.winfo_exists():
+                actual_index = button_to_index_map[btn]
+                if list_func:
+                    list_func(actual_index)
+    except (tk.TclError, IndexError):
+        pass
+
+def handle_persistent_right_click(event, button_index):
+    """Handle right click on a persistent button."""
+    try:
+        if button_index < len(persistent_buttons):
+            btn = persistent_buttons[button_index]
+            if btn in button_to_index_map and btn.winfo_exists():
+                actual_index = button_to_index_map[btn]
+                # Call the right-click function if it exists
+                if hasattr(handle_persistent_right_click, 'right_click_func') and handle_persistent_right_click.right_click_func:
+                    handle_persistent_right_click.right_click_func(actual_index)
+    except (tk.TclError, IndexError):
+        pass
+
+def handle_persistent_button_enter(event, button_index):
+    """Handle mouse enter on persistent button."""
+    if button_index < len(persistent_buttons):
+        btn = persistent_buttons[button_index]
+        if btn in button_to_index_map:
+            actual_index = button_to_index_map[btn]
+            on_button_enter(event, actual_index)
+
+def handle_persistent_button_leave(event, button_index):
+    """Handle mouse leave on persistent button."""
+    if button_index < len(persistent_buttons):
+        btn = persistent_buttons[button_index]
+        if btn in button_to_index_map:
+            actual_index = button_to_index_map[btn]
+            on_button_leave(event, actual_index)
+
+def handle_persistent_drag_start(event, button_index):
+    """Handle drag start on persistent button."""
+    if button_index < len(persistent_buttons):
+        btn = persistent_buttons[button_index]
+        if btn in button_to_index_map:
+            actual_index = button_to_index_map[btn]
+            start_playlist_drag(event, actual_index)
+
 def list_set_loaded(type):
     global list_loaded
     list_loaded = type
@@ -13206,6 +14615,16 @@ def list_set_loaded(type):
             button_seleted(globals().get(button.get('button')), list_loaded == button.get('label'))
 
 def list_unload(column):
+    global persistent_buttons
+    # Clean up persistent buttons when switching away from playlist
+    if list_loaded == "playlist" and persistent_buttons:
+        for btn in persistent_buttons:
+            try:
+                btn.destroy()
+            except:
+                pass
+        persistent_buttons = []
+    
     list_set_loaded(None)
     if currently_playing.get("data"):
         update_extra_metadata(currently_playing.get("data"))
@@ -13215,12 +14634,28 @@ def list_unload(column):
         column.config(state=tk.DISABLED, wrap="word")
 
 def list_move(amount):
-    global list_index
-    if list_loaded != None:
-        list_index = list_index + amount
-        for button in list_buttons:
-            if list_loaded == button.get('label'):
-                button.get('func')(True)
+    global list_index, current_list_offset
+    if list_loaded and current_list_content:
+        # Move selection with wrapping
+        old_index = list_index
+        list_size = len(current_list_content)
+        
+        if amount > 0:  # Moving down
+            list_index = (list_index + 1) % list_size
+        else:  # Moving up
+            list_index = (list_index - 1) % list_size
+        
+        # Auto-scroll if selection moves out of visible area
+        entries_count = get_list_entries_count()
+        if list_index < current_list_offset:
+            current_list_offset = list_index
+            refresh_current_list()
+        elif list_index >= current_list_offset + entries_count:
+            current_list_offset = list_index - entries_count + 1
+            refresh_current_list()
+        elif old_index != list_index:
+            # Just update highlighting if no scrolling needed
+            refresh_current_list()
     else:
         left_column.yview_scroll(amount, "units")
         middle_column.yview_scroll(amount, "units")
@@ -13230,9 +14665,20 @@ def list_select():
     if list_loaded:
         list_func(list_index)
 
-def show_list(type, column, content, name_func, btn_func, selected, update = True):
-    global list_loaded, list_index, list_func
+def playlist_page_up():
+    if list_loaded == "playlist":
+        list_scroll_up()
+
+def playlist_page_down():
+    if list_loaded == "playlist":
+        list_scroll_down()
+
+def show_list(type, column, content, name_func, btn_func, selected, update = True, right_click_func=None, items_per_page=None):
+    global list_loaded, list_index, list_func, current_list_offset, current_list_content, current_list_name_func, persistent_buttons
+    
     list_size = len(content)
+    buttons_need_recreation = False
+    
     if list_loaded == type and not update:
         list_unload(column)
         return
@@ -13243,36 +14689,444 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
         else:
             list_index = selected
         list_func = btn_func
+        current_list_offset = 0
+        buttons_need_recreation = True
+        
+        # For playlist, center on current playing item
+        if type == "playlist":
+            entries_count = get_list_entries_count()
+            current_playing = playlist.get("current_index", -1)
+            if current_playing >= 0:
+                current_list_offset = max(0, current_playing - entries_count // 2)
+                max_offset = max(0, list_size - entries_count)
+                current_list_offset = min(current_list_offset, max_offset)
     elif list_index >= list_size:
         list_index = 0
     elif list_index < 0:
         list_index = list_size - 1
-    column.config(state=tk.NORMAL, wrap="none")
-    column.delete(1.0, tk.END)  # Clear existing content
     
-    scrolled = False
-    for index, (key, value) in enumerate(content.items()):
-        name = str(index+1) + ": " + name_func(key, value)
-        if (list_index-100 <= index <= list_index+100):
-            # Create button for the video
-            btn = tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda idx=index: btn_func(idx), bg="black", fg="white")
-            column.window_create(tk.END, window=btn)
-        if index == selected:
-            if index == list_index:
-                column.insert(tk.END, name, "highlight")
-            else:
-                column.insert(tk.END, name, "bold")
+    # Store current list data
+    current_list_content = content
+    current_list_name_func = name_func
+    
+    # Store the selected index for highlighting
+    global current_list_selected
+    current_list_selected = selected
+    
+    # Update playlist offset for playlist type
+    if type == "playlist":
+        global playlist_page_offset
+        playlist_page_offset = current_list_offset
+    
+    # Store right_click_func for persistent button handlers
+    handle_persistent_right_click.right_click_func = right_click_func
+    
+    # Only clear and recreate layout when switching list types
+    if buttons_need_recreation:
+        column.config(state=tk.NORMAL, wrap="none")
+        column.delete(1.0, tk.END)
+        
+        # Create or recreate persistent buttons if count changed
+        entries_count = get_list_entries_count()
+        current_count = len(persistent_buttons) if persistent_buttons else 0
+        if not persistent_buttons or len(persistent_buttons) != entries_count:
+            create_persistent_list_buttons(column, entries_count)
         else:
-            if index == list_index:
-                column.insert(tk.END, name, "highlightreg")
-            else:
-                column.insert(tk.END, name, "white")
-        if list_size > 19 and not scrolled and (index == list_index+15 or index == (list_size-1)):
-            scrolled = True
-            column.see("end-1c")
-        column.insert(tk.END, "\n")  # Ensure next item appears on a new line
+            pass  # Button count matches, no recreation needed
+        
+        # Add buttons to layout
+        for button_index in range(entries_count):
+            try:
+                column.window_create(tk.END, window=persistent_buttons[button_index])
+                column.insert(tk.END, "\n")
+            except tk.TclError:
+                # Button was destroyed, recreate persistent buttons
+                create_persistent_list_buttons(column, entries_count)
+                column.window_create(tk.END, window=persistent_buttons[button_index])
+                column.insert(tk.END, "\n")
+        
+        column.config(state=tk.DISABLED)
+    
+    # Calculate display boundaries
+    entries_count = get_list_entries_count()
+    start_index = current_list_offset
+    end_index = min(list_size, start_index + entries_count)
+    
+    # Adjust offset if we're beyond the valid range
+    if start_index >= list_size:
+        current_list_offset = max(0, list_size - entries_count)
+        start_index = current_list_offset
+        end_index = min(list_size, start_index + entries_count)
+    
+    # Update each persistent button with current content (no layout changes needed)
+    for button_index in range(entries_count):
+        item_index = start_index + button_index
+        if item_index < end_index:
+            update_persistent_button(button_index, item_index, name_func, content, selected)
+        else:
+            # Hide button if no content
+            update_persistent_button(button_index, -1, name_func, content, selected)
+    
+    # Ensure keyboard focus for navigation
+    if buttons_need_recreation:
+        column.focus_set()
 
-    column.config(state=tk.DISABLED)
+# Drag and drop variables
+drag_start_index = None
+drag_current_y = None
+drag_indicator_line = None
+
+# Hover tracking for drag-and-drop insertion
+hovered_button_index = None
+external_drag_active = False
+
+def start_playlist_drag(event, index):
+    """Start dragging a playlist item."""
+    global drag_start_index, drag_current_y
+    # Clear any existing highlighting
+    clear_drop_highlight()
+    
+    drag_start_index = index
+    drag_current_y = event.y_root
+    
+    # Highlight the source item being dragged
+    highlight_drag_source(index)
+
+def handle_drag_motion(event):
+    """Handle dragging motion - can be called from any button."""
+    global drag_current_y, drag_indicator_line
+    if drag_start_index is None:
+        return
+    
+    drag_current_y = event.y_root
+    
+    # Update cursor to show dragging is active
+    try:
+        event.widget.configure(cursor="hand2")
+    except (tk.TclError, AttributeError):
+        pass
+    
+    # Calculate and highlight drop target position
+    try:
+        # Get the widget under the mouse cursor
+        widget_under_mouse = root.winfo_containing(event.x_root, event.y_root)
+        
+        # Clear only target highlights (preserve source highlight)
+        clear_target_highlights()
+        
+        # If we're over a button, highlight it
+        if widget_under_mouse and hasattr(widget_under_mouse, 'cget'):
+            try:
+                button_text = widget_under_mouse.cget('text')
+                # Extract index from button text (format: "1: Title Name")
+                if ':' in button_text:
+                    index_str = button_text.split(':')[0].strip()
+                    if index_str.isdigit():
+                        target_index = int(index_str) - 1  # Convert to 0-based
+                        
+                        # Only highlight if it's different from the source
+                        if target_index != drag_start_index and 0 <= target_index < len(playlist["playlist"]):
+                            # Store original colors and highlight
+                            highlighted_buttons[target_index] = {
+                                'widget': widget_under_mouse,
+                                'original_bg': widget_under_mouse.cget('bg'),
+                                'original_fg': widget_under_mouse.cget('fg'),
+                                'is_target': True
+                            }
+                            widget_under_mouse.configure(bg=HIGHLIGHT_COLOR, fg="white")
+            except (tk.TclError, AttributeError, ValueError):
+                pass
+            
+    except (ValueError, tk.TclError, AttributeError):
+        pass
+
+# Global variables to track highlight tags
+current_highlight_tag = None
+current_source_tag = None
+highlighted_buttons = {}  # Track highlighted button widgets
+
+def highlight_drag_source(source_index):
+    """Highlight the source item being dragged to look like it's pressed."""
+    global current_source_tag
+    
+    if list_loaded != "playlist":
+        return
+        
+    try:
+        # Highlight the button widget for the source index to look pressed (white bg, black text)
+        highlight_button_at_index(source_index, "white", "black", is_source=True)
+        
+    except (tk.TclError, AttributeError, ValueError):
+        pass
+
+def highlight_drop_target(target_index):
+    """Highlight the target drop position in the playlist."""
+    global current_highlight_tag
+    
+    if list_loaded != "playlist":
+        return
+    
+    # Don't highlight if dropping on the same item
+    if target_index == drag_start_index:
+        clear_button_highlights()
+        return
+        
+    try:
+        # Clear previous button highlights
+        clear_button_highlights()
+        
+        # Find and highlight the button widget for the target index
+        highlight_button_at_index(target_index, "lime", "black")
+        
+    except (tk.TclError, AttributeError, ValueError):
+        pass
+
+def highlight_button_at_index(target_index, bg_color, fg_color, is_source=False):
+    """Highlight the button widget at the specified playlist index."""
+    global highlighted_buttons
+    
+    try:
+        # Find all button widgets in the right_column
+        for widget_name in right_column.children:
+            widget = right_column.nametowidget(widget_name)
+            if hasattr(widget, 'configure') and hasattr(widget, 'cget'):
+                try:
+                    button_text = widget.cget('text')
+                    # Check if this button corresponds to our target index
+                    if button_text.startswith(f"{target_index + 1}:"):
+                        # Store original colors
+                        if target_index not in highlighted_buttons:
+                            highlighted_buttons[target_index] = {
+                                'widget': widget,
+                                'original_bg': widget.cget('bg'),
+                                'original_fg': widget.cget('fg'),
+                                'is_source': is_source,
+                                'is_target': not is_source
+                            }
+                        # Apply highlight
+                        widget.configure(bg=bg_color, fg=fg_color)
+                        break
+                except (tk.TclError, AttributeError):
+                    continue
+    except (tk.TclError, AttributeError):
+        pass
+
+def clear_button_highlights():
+    """Clear all button highlighting and restore original colors."""
+    global highlighted_buttons
+    
+    try:
+        for index, button_data in highlighted_buttons.items():
+            widget = button_data['widget']
+            if widget and hasattr(widget, 'configure'):
+                try:
+                    # Restore original colors
+                    widget.configure(
+                        bg=button_data['original_bg'],
+                        fg=button_data['original_fg']
+                    )
+                except (tk.TclError, AttributeError):
+                    pass
+        highlighted_buttons.clear()
+    except (tk.TclError, AttributeError):
+        pass
+
+def clear_target_highlights():
+    """Clear only target button highlights, preserve source highlight."""
+    global highlighted_buttons
+    
+    try:
+        # Find and clear only target highlights
+        targets_to_remove = []
+        for index, button_data in highlighted_buttons.items():
+            if button_data.get('is_target', False):
+                widget = button_data['widget']
+                if widget and hasattr(widget, 'configure'):
+                    try:
+                        # Restore original colors
+                        widget.configure(
+                            bg=button_data['original_bg'],
+                            fg=button_data['original_fg']
+                        )
+                        targets_to_remove.append(index)
+                    except (tk.TclError, AttributeError):
+                        pass
+        
+        # Remove cleared targets from the dictionary
+        for index in targets_to_remove:
+            del highlighted_buttons[index]
+            
+    except (tk.TclError, AttributeError):
+        pass
+
+def clear_drop_highlight():
+    """Clear any drop target and source highlighting."""
+    global current_highlight_tag, current_source_tag
+    try:
+        # Clear button highlights
+        clear_button_highlights()
+        
+        # Clear any remaining text highlights
+        if current_highlight_tag:
+            right_column.tag_delete(current_highlight_tag)
+            current_highlight_tag = None
+        if current_source_tag:
+            right_column.tag_delete(current_source_tag)
+            current_source_tag = None
+    except (tk.TclError, AttributeError):
+        pass
+
+def on_button_enter(event, index):
+    """Handle mouse entering a button during drag operation."""
+    global hovered_button_index
+    
+    # Always track which button we're hovering over (for file drops)
+    hovered_button_index = index
+    
+    # Always highlight on hover, unless it's a special button we shouldn't change
+    try:
+        current_bg = event.widget.cget('bg')
+        current_fg = event.widget.cget('fg')
+        
+        # Don't change highlighting if it's the current playing song or drag source
+        is_current_index = (index == playlist.get("current_index", -1))
+        is_drag_source = (drag_start_index is not None and index == drag_start_index)
+        
+        if not (is_current_index or is_drag_source):
+            # Store original colors if not already stored
+            if index not in highlighted_buttons:
+                highlighted_buttons[index] = {
+                    'widget': event.widget,
+                    'original_bg': current_bg,
+                    'original_fg': current_fg
+                }
+            
+            # Apply hover highlight
+            event.widget.configure(bg="gray26", fg="white")
+        
+    except (tk.TclError, AttributeError):
+        pass
+
+def on_button_leave(event, index):
+    """Handle mouse leaving a button during drag operation."""
+    global hovered_button_index
+    
+    # Clear hover tracking when leaving button
+    if hovered_button_index == index:
+        hovered_button_index = None
+    
+    # Restore original colors when leaving (unless it's current index or drag source)
+    is_current_index = (index == playlist.get("current_index", -1))
+    is_drag_source = (drag_start_index is not None and index == drag_start_index)
+    
+    if not (is_current_index or is_drag_source) and index in highlighted_buttons:
+        try:
+            button_data = highlighted_buttons[index]
+            event.widget.configure(
+                bg=button_data['original_bg'],
+                fg=button_data['original_fg']
+            )
+            del highlighted_buttons[index]
+        except (tk.TclError, AttributeError, KeyError):
+            pass
+
+def drag_playlist_item(event, index):
+    """Handle dragging motion (legacy function)."""
+    handle_drag_motion(event)
+
+def end_playlist_drag(event):
+    """End dragging and reorder playlist if needed."""
+    global drag_start_index, drag_current_y, playlist
+    
+    if drag_start_index is None:
+        return
+    
+    # Calculate drop position based on mouse position - use same method as visual highlighting
+    try:
+        # Get the widget under the mouse cursor (same as visual highlighting)
+        widget_under_mouse = root.winfo_containing(event.x_root, event.y_root)
+        drop_index = None
+        
+        # If we're over a button, get its index
+        if widget_under_mouse and hasattr(widget_under_mouse, 'cget'):
+            try:
+                button_text = widget_under_mouse.cget('text')
+                # Extract index from button text (format: "1: Title Name")
+                if ':' in button_text:
+                    index_str = button_text.split(':')[0].strip()
+                    if index_str.isdigit():
+                        display_index = int(index_str) - 1  # Convert to 0-based
+                        # Account for pagination offset
+                        if list_loaded == "playlist":
+                            drop_index = display_index  # display_index already includes pagination offset
+                        else:
+                            drop_index = display_index
+            except (tk.TclError, AttributeError, ValueError):
+                pass
+        
+        # If no button found, try fallback text position method
+        if drop_index is None:
+            try:
+                text_widget = right_column
+                x_rel = event.x_root - text_widget.winfo_rootx()
+                y_rel = event.y_root - text_widget.winfo_rooty()
+                
+                if (0 <= x_rel <= text_widget.winfo_width() and 
+                    0 <= y_rel <= text_widget.winfo_height()):
+                    
+                    text_index = text_widget.index(f"@{x_rel},{y_rel}")
+                    drop_line = int(text_index.split('.')[0]) - 1  # Convert to 0-based line index
+                    
+                    # Account for pagination in playlist view
+                    if list_loaded == "playlist":
+                        # Each line corresponds to a playlist item, add the pagination offset
+                        drop_index = max(0, min(drop_line + playlist_page_offset, len(playlist["playlist"]) - 1))
+                    else:
+                        # Original logic for non-playlist lists
+                        # Account for the "items above" indicator if present
+                        if "items above" in text_widget.get("1.0", "2.0"):
+                            drop_line = max(0, drop_line - 1)
+                        
+                        drop_index = max(0, min(drop_line, len(playlist["playlist"]) - 1))
+            except (ValueError, tk.TclError):
+                pass
+        
+        # Perform the reorder if we have a valid drop position
+        if (drop_index is not None and 
+            drop_index != drag_start_index and 
+            0 <= drop_index < len(playlist["playlist"])):
+            
+            # Reorder the playlist
+            item = playlist["playlist"].pop(drag_start_index)
+            playlist["playlist"].insert(drop_index, item)
+            
+            # Adjust current_index if needed
+            if playlist["current_index"] == drag_start_index:
+                playlist["current_index"] = drop_index
+            elif drag_start_index < playlist["current_index"] <= drop_index:
+                playlist["current_index"] -= 1
+            elif drop_index <= playlist["current_index"] < drag_start_index:
+                playlist["current_index"] += 1
+            
+            # Refresh the playlist display
+            show_playlist(True)
+    
+    except Exception as e:
+        print(f"Drag and drop error: {e}")
+    
+    # Clear drop target highlighting
+    clear_drop_highlight()
+    
+    # Reset drag state
+    drag_start_index = None
+    drag_current_y = None
+    
+    # Reset cursor
+    try:
+        event.widget.configure(cursor="")
+        right_column.configure(cursor="")
+    except (tk.TclError, AttributeError):
+        pass
 
 def list_keyboard_shortcuts():
     right_column.config(state=tk.NORMAL, wrap="none")
@@ -14037,12 +15891,31 @@ def create_popout_controls(columns=5, title="Popout Controls"):
 # =========================================
 
 BACKGROUND_COLOR = "gray12"
-WINDOW_TITLE = "Guess the Anime! Playlist Tool"
-root = tk.Tk()
+WINDOW_TITLE = f"Guess the Anime! Playlist Tool v{APP_VERSION}"
+
+# Try to use tkinterdnd2 for better drag-and-drop support
+try:
+    root = tkdnd.Tk()
+except ImportError:
+    root = tk.Tk()
+except Exception as e:
+    root = tk.Tk()
+
 root.title(WINDOW_TITLE)
 root.geometry(f"{scl(1200)}x{scl(570)}")
 root.configure(bg=BACKGROUND_COLOR)  # Set background color to black
 root.resizable(False, False)
+
+# Enable drag-and-drop on main window
+def setup_main_window_drag_drop():
+    try:
+        # Enable drag-and-drop on main window
+        enable_drag_and_drop(root, handle_dropped_files)
+    except Exception as e:
+        print(f"Could not enable drag-and-drop on main window: {e}")
+
+# Setup drag-and-drop after window is fully initialized
+root.after(500, setup_main_window_drag_drop)
 
 def blank_space(row, size=2):
     space_label = tk.Label(row, text="", bg=BACKGROUND_COLOR, fg="white")
@@ -14161,7 +16034,7 @@ def create_first_row_buttons():
                                 "to be able to use all the other playlist functions, "
                                 "you'll need to fetch the metadata for all the files. "
                                 "You can do this by hitting the '?' button next to the "
-                                "RE[F]ETCH METADATA button. It may take awhile "
+                                "RE[F]ETCH METADATA button. It may take a while "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
     
@@ -14207,12 +16080,22 @@ def create_first_row_buttons():
                                 "and set the current index to it.\n\nAs with all lists, it loads buttons "
                                 "to select the entry, but for the playlist it may be quite a few buttons. "
                                 "It usually loads quickly, but may take a second to clear."))
+    
+    # Enable drag-and-drop on playlist button
+    def setup_playlist_drag_drop():
+        try:
+            enable_drag_and_drop(show_playlist_button, handle_dropped_files)
+        except Exception as e:
+            print(f"Could not enable drag-and-drop on playlist button: {e}")
+    
+    # Setup drag-and-drop after widget is fully created
+    root.after(100, setup_playlist_drag_drop)
     # if not playlist.get("infinite", False):
     global remove_button
     remove_button = create_button(first_row_frame, "❌", remove, True,
                                 help_title="REMOVE THEME",
                                 help_text=("Remove a theme from the playlist. There is a confirmation "
-                                "dialogue after selecting.\n\nIt may be a bit slow dpending on how many "
+                                "dialogue after selecting.\n\nIt may be a bit slow depending on how many "
                                 "themes you have added or want to delete."))
 
     global go_button
@@ -14267,7 +16150,7 @@ def create_first_row_buttons():
                                 help_text=("Open a window where you can create, apply, and save playlist filters.\n\n"
                                 "The filter will apply to the currently selected playlist.\n\n"
                                 "Saved filters are stored in the filters/ folder.\n\n" 
-                                "The values are taken from the metadata files, so this will take awhile to grab all "
+                                "The values are taken from the metadata files, so this will take a while to grab all "
                                 "the metadata if you haven't already.\n\nThe Artists, Studios, and Tags filter all "
                                 "will grab any themes that match just one of the selected items if you select multiple. "
                                 "If you only want themes that match multiple items, you can run the filter another time "
@@ -14320,7 +16203,7 @@ def create_first_row_buttons():
         randomize_playlist_button = create_button(first_row_frame, "SHUFFLE", randomize_playlist,
                                     help_title="SHUFFLE PLAYLIST",
                                     help_text=("Randomizes the current playlist.\n\n" +
-                                    "This is a completly random shuffle. For a weighted shuffle, hit the ⚖️ button "
+                                    "This is a completely random shuffle. For a weighted shuffle, hit the ⚖️ button "
                                     "next to this one.\n\n" +
                                     "You will be asked to confirm when shuffling"))
         global weighted_randomize_playlist_button
@@ -14502,7 +16385,7 @@ start_light_mode_button = create_button(second_row_frame, "▶", select_lightnin
                                          "Katanagatari [OST] - DUB TRIP"))
 variety_light_mode_button = create_button(second_row_frame, "🎲", lambda: toggle_light_mode("variety"), False,
                               help_title="[V]ARIETY LIGHTNING ROUND (Shortcut Key = 'v')",
-                              help_text=("Lightning Round varient using the following rules:\n\n" + light_modes["variety"]["desc"] +
+                              help_text=("Lightning Round variant using the following rules:\n\n" + light_modes["variety"]["desc"] +
                                          "\n\nThis mode ensures no round is repeated consecutively, and picks rounds "
                                          "taking the show's popularity into account. So you aren't likely to get a Clues round "
                                          "unless a quite popular show appears."))
@@ -14514,37 +16397,37 @@ light_mode_settings_button = create_button(second_row_frame, "🛠", open_settin
                                          "MUTED: If round has theme sound or not. Will play background tracks if true\\nn"
                                          "VARIANTS(on some): Enable and disable variants for round.\n\n"
                                          "CHARACTER_TYPES(on c. rounds): Enable/diable different character types form appearing. popularity_limit wil use popularity to decide if secondary or appears characters should appear.\n\n"
-                                         "VARIETY: Different settings for ocntrolling what appears in variety rounds.\n\n"
+                                         "VARIETY: Different settings for controlling what appears in variety rounds.\n\n"
                                          "VARIETY/ENABLED: Allowed or not alowed to appear in variety rounds.\n\n"
                                          "VARIETY/POPULARITY: Settings to limit popularity allowed and frequency of round.\n\n"
                                          "VARIETY/POPULARITY/RANGE: Popularity range of shows allowed to use this round.\n\n"
                                          "VARIETY/POPULARITY/WEIGTH: How likely it should appear. Sometimes split by OP/ED.\n\n"
                                          "VARIETY/COOLDOWN: Settings for how often a round can/is forced to appear.\n\n"
                                          "VARIETY/COOLDOWN/MIN_GAP: How long a round must wait to appear again.\n\n"
-                                         "VARIETY/COOLDOWN/MAX_GAP: How logn before a round is forced to appear.\n\n"
+                                         "VARIETY/COOLDOWN/MAX_GAP: How long before a round is forced to appear.\n\n"
                                          "VARIETY/COOLDOWN/POPULARITY_FORCE_THRESHOLD: Minimum popularity a theme must be to be forced. Sometimes split by OP/ED.\n\n"
-                                         "VARIETY/COOLDOWN/NO_REPEAT_LIMIT: How long until this round can use the same content. This alss controls how much history of this lightnin round is stored in the playlist.\n\n"
+                                         "VARIETY/COOLDOWN/NO_REPEAT_LIMIT: How long until this round can use the same content. This also controls how much history of this lightning round is stored in the playlist.\n\n"
                                          "Changes will only stay between launches if saved."))
 
 
 show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE VIDEOS", show_youtube_playlist,
                               help_title="[Y]OUTUBE VIDEOS (Shortcut Key = 'y')",
-                              help_text=("Lists downloaded youtube videos to queue up.\n\nVideos are using the '➕' button."
+                              help_text=("Lists downloaded YouTube videos to queue up.\n\nVideos are added using the '➕' button. "
                                          "The downloads are stored in the youtube/ folder.\n\n"
                                          "Videos are queued with a UP NEXT popup when selected, and will play after the current theme. "
                                          "Only one video may be queued at a time, and selecting the same video will unqueue it."))
 manage_youtube_button = create_button(second_row_frame, "➕", open_youtube_editor, True,
                               help_title="MANAGE YOUTUBE VIDEOS",
-                              help_text=("Opens an interface for managing YouTube videos. Press [ADD VIDEO FROM URL] to add one. It takes a few to get the info, so wait a bit after. Heres's an explanation of each field."
+                              help_text=("Opens an interface for managing YouTube videos. Press [ADD VIDEO FROM URL] to add one. It takes a few seconds to retrieve the video information, so please wait after clicking. Here's an explanation of each field:"
                                          "\n\nVIDEO ID: ID of YouTube video from URL. "
                                          "\n\nTITLE: Title that will show in the interface. Can be changed freely. Use [⟳] to reset it back to default."
-                                         "\n\nSTART/END: Start/end time of video. Use the [NOW] button to set it to the player's current time."
-                                         "Useful if you want to cut out infros/outros. Use [⟳] to reset each back to default."
+                                         "\n\nSTART/END: Start/end time of video. Use the [NOW] button to set it to the player's current time. "
+                                         "Useful if you want to cut out intros/outros. Use [⟳] to reset each back to default."
                                          "\n\n[▶]: Play the video. Good for testing the video, and setting start/end times."
                                          "\n\n[ARCHIVE]: Archives the video. Useful if you don't want it to show up in the interface, but don't want to delete it."
                                          "\n\n[❌] Delete the video. Also deletes file if downloaded."
-                                         "\n\n[SAVE ALL] Save any changes. A lot of functions auto save, but any title, start, or end changes need to be saved manually."
-                                         "\n\n[SHOW ARCHIVED] Show archived videos. From here videos can be restored, or deleted."))
+                                         "\n\n[SAVE ALL] Save any changes. Many functions auto-save, but any title, start, or end changes need to be saved manually."
+                                         "\n\n[SHOW ARCHIVED] Show archived videos. From here, videos can be restored or deleted."))
 
 search_button = create_button(second_row_frame, "[S]EARCH DIRECTORY", search,
                             help_title="[S]EARCH (Shortcut Key = 's')",
@@ -14630,11 +16513,14 @@ fetch_missing_metadata_button = create_button(third_row_frame, "❓", fetch_all_
                               help_text=("Use this to check if metadata exists for all files in the chosen "
                                          "directory, and fetch metadata for any that are missing. You should do "
                                          "this whenever you have new videos in the directory.\n\n"
-                                         "It can take quite awhile depending on how many themes you have. "
+                                         "It can take quite a while depending on how many themes you have. "
                                          "It may need to be left overnight if you have thousands."))
 refresh_all_metadata_button = create_button(third_row_frame, "⭮", refresh_all_metadata, False,
                               help_title="REFRESH ALL JIKAN METADATA",
-                              help_text=("Refreshes the jikan metadata for all files in the directory. "
+                              help_text=("Refreshes the jikan metadata for files in your directory. "
+                                         "You can specify how many years back to refresh (e.g., '3' for last 3 years) "
+                                         "or leave empty to refresh all years. Only refreshes data for anime you actually have files for, "
+                                         "not everything in the metadata database.\n\n"
                                          "You may want to do this if you feel the score and members data are outdated, "
                                          "although you could also use the ♻ button to toggle auto refreshing the data "
                                          "as files are playing if you don't want to have it call for all the files at once."))
@@ -14642,9 +16528,9 @@ toggle_refresh_metadata_button = create_button(third_row_frame, "♻", toggle_au
                               help_title="TOGGLE AUTO REFRESH JIKAN METADATA",
                               help_text=("Toggle auto refreshing jikan metadata. This will refresh the "
                                          "jikan metadata for the currently playing theme, and the next "
-                                         "theme as you play them, It will never refresh the same anime in the same session."
-                                         "\n\nThis if for the score and members data, which changes "
-                                         "over time. It's not too nessessary if you don't care about it being up "
+                                         "theme as you play them. It will never refresh the same anime in the same session."
+                                         "\n\nThis is for the score and members data, which changes "
+                                         "over time. It's not too necessary if you don't care about it being up "
                                          "to date, or if you've already grabbed the metadata recently.\n\n"
                                          "It doesn't refetch everything, or call the AnimeThemes API like "
                                          "the regular [R]EFETCH does for the current theme. If you "
@@ -14663,16 +16549,16 @@ toggle_censor_bar_button = create_button(third_row_frame, "[C]ENSOR(0)", toggle_
                                          "when vlc isn't fulscreen, but checking that isn't reliable."))
 edit_censors_button = create_button(third_row_frame, "➕", open_censor_editor, True,
                               help_title="CENSORS EDITOR",
-                              help_text=("Opens an interface for editing censors. Press [ADD NEW CENSOR] to add one. Heres's an explanation of each field."
+                              help_text=("Opens an interface for editing censors. Press [ADD NEW CENSOR] to add one. Here's an explanation of each field."
                                          "\n\nSIZE/POSITION: The size/position of the censor box, in percent of screen. "
                                          "Use the [🎯] button to draw a censor box, and the SIZE/POSITION will be filled."
-                                         "\n\nSTART/END: Start/end time censor bos will appear. Use the [NOW] button to set it to the player's current time. "
-                                         "Use the [-]/[+] to adjust by 0.1 sec. The end time can usually be exact, but the start need to be a bit before to account for the time to pop up."
-                                         "\n\nCOLOR: Color of censor box. Will automatically pick the average color fo the screen. Use [PICK] to select a specific color from the screen. "
-                                         " Use [X] to rset back to AUTO."
+                                         "\n\nSTART/END: Start/end time censor box will appear. Use the [NOW] button to set it to the player's current time. "
+                                         "Use the [-]/[+] to adjust by 0.1 sec. The end time can usually be exact, but the start needs to be a bit before to account for the time to pop up."
+                                         "\n\nCOLOR: Color of censor box. Will automatically pick the average color of the screen. Use [PICK] to select a specific color from the screen. "
+                                         " Use [X] to reset back to AUTO."
                                          "\n\nNSFW: Used to mark a censor as NSFW. These censors will appear even when the Information Pop-up is up."
                                          "\n\nUse [TEST] to play the video from a second before the censor start time to test it. Censors will not appear until the [SAVE CENSOR(S)] button "
-                                         "is pressed. This must be pressed againa fter every change to have it reflect. To delete censors, use the [DELETE] button. this will also only save if the "
+                                         "is pressed. This must be pressed again after every change for it to take effect. To delete censors, use the [DELETE] button. This will also only save if the "
                                          "[SAVE CENSOR(S)] button is pressed. Lastly, censors are all linked to the filename."))
 
 toggle_progress_bar_button = create_button(third_row_frame, "PROGRESS BAR", toggle_progress_bar, True, enabled=progress_bar_enabled,
@@ -14712,9 +16598,9 @@ list_keyboard_shortcuts_button = create_button(third_row_frame, "[K]EYS", list_k
 
 end_button = create_button(third_row_frame, "[E]ND SCREEN", end_session,
                               help_title="[E]ND SESSION MESSAGE (Shortcut Key = 'e')",
-                              help_text="Diplays an end message 'THANKS FOR PLAYING!' slowly scrolling "
+                              help_text="Displays an end message 'THANKS FOR PLAYING!' slowly scrolling "
                               "up the right side of the screen. Just a nice way for me to end my trivia sessions.\n\n"
-                              "It also lists the 'TOTAL THEMED PLAYED:', which are tracked while the application is running.\n\n" \
+                              "It also lists the 'TOTAL THEMES PLAYED:', which are tracked while the application is running.\n\n" \
                               "The end message can be set by middle clicking this button.")
 end_button.bind("<Button-2>", prompt_end_session_text)
 
@@ -14748,6 +16634,36 @@ right_column = tk.Text(right_column_container, height=scl(20), width=scl(40), bg
                        insertbackground="white", state=tk.DISABLED,
                        selectbackground=HIGHLIGHT_COLOR, wrap="word")
 right_column.pack(fill="both", expand=True)
+
+# Add drag-and-drop bindings to the text widget for better drop detection
+right_column.bind("<B1-Motion>", lambda e: handle_drag_motion(e) if drag_start_index is not None else None)
+right_column.bind("<ButtonRelease-1>", lambda e: end_playlist_drag(e) if drag_start_index is not None else None)
+
+# Add mouse wheel bindings for any list pagination
+def handle_list_scroll(event):
+    if list_loaded:
+        if hasattr(event, 'delta') and event.delta > 0:  # Scroll up
+            list_scroll_up()
+        elif hasattr(event, 'delta') and event.delta < 0:  # Scroll down
+            list_scroll_down()
+        return "break"  # Prevent default scrolling behavior
+    return None
+
+def handle_btn_scroll_up(e):
+    if list_loaded:
+        list_scroll_up()
+        return "break"
+    return None
+
+def handle_btn_scroll_down(e):
+    if list_loaded:
+        list_scroll_down()
+        return "break"
+    return None
+
+right_column.bind("<MouseWheel>", handle_list_scroll)
+right_column.bind("<Button-4>", lambda e: handle_btn_scroll_up(e))  # Linux scroll up
+right_column.bind("<Button-5>", lambda e: handle_btn_scroll_down(e))  # Linux scroll down
 
 
 # Video controls
@@ -14845,7 +16761,7 @@ def on_press(key):
             pass
         # Arrow key movement for grow peek overlay (position only)
         elif grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values()):
-            move_amount = 5  # pixels per key press
+            move_amount = 10  # pixels per key press
             if key == key.up:
                 move_grow_position(0, -move_amount)
             elif key == key.down:
@@ -15032,14 +16948,103 @@ def on_release(key):
     except AttributeError as e:
         print(f"Error: {e}")
 
+# Mouse state tracking
+mouse_left_pressed = False
+mouse_dragging_grow_overlay = False
+target_mouse_position = None
+animation_after_id = None
+
+def smooth_move_grow_overlay():
+    """Smoothly animate the grow overlay toward the target mouse position."""
+    global grow_position, target_mouse_position, animation_after_id
+    
+    if not mouse_dragging_grow_overlay or not target_mouse_position:
+        animation_after_id = None
+        return
+    
+    current_x, current_y = grow_position if grow_position else (0, 0)
+    target_x, target_y = target_mouse_position
+    
+    # Calculate smooth movement (lerp with factor for smoothness)
+    lerp_factor = 0.15  # Adjust this value: lower = smoother/slower, higher = faster
+    new_x = current_x + (target_x - current_x) * lerp_factor
+    new_y = current_y + (target_y - current_y) * lerp_factor
+    
+    # Update position
+    grow_position = (int(new_x), int(new_y))
+    toggle_grow_overlay(block_percent=last_grow_block_percent, position=grow_position)
+    
+    # Continue animation if we're still dragging and not close enough to target
+    distance = ((target_x - new_x) ** 2 + (target_y - new_y) ** 2) ** 0.5
+    if mouse_dragging_grow_overlay and distance > 2:  # Stop when very close
+        animation_after_id = root.after(16, smooth_move_grow_overlay)  # ~60 FPS
+    else:
+        animation_after_id = None
+
+# Mouse event handlers
+def on_mouse_click(x, y, button, pressed):
+    """Handle mouse click events."""
+    global mouse_left_pressed, mouse_dragging_grow_overlay, target_mouse_position, animation_after_id, last_seek_time
+    
+    if pressed:
+        if button == mouse.Button.left:
+            mouse_left_pressed = True
+            # Check if grow overlay is active and start dragging
+            if (grow_overlay_boxes and 
+                any(box.winfo_exists() for box in grow_overlay_boxes.values())):
+                mouse_dragging_grow_overlay = True
+                target_mouse_position = (x, y)
+                # Start smooth animation if not already running
+                if animation_after_id is None:
+                    smooth_move_grow_overlay()
+        
+        elif button == mouse.Button.right:
+            widen_peek()
+    else:
+        if button == mouse.Button.left:
+            mouse_left_pressed = False
+            mouse_dragging_grow_overlay = False
+            target_mouse_position = None
+            # Cancel animation
+            if animation_after_id:
+                root.after_cancel(animation_after_id)
+                animation_after_id = None
+            if last_seek_time:
+                player.set_time(int(float(last_seek_time)) * 1000)
+                last_seek_time = None
+        # Add your mouse release handling logic here
+
+def on_mouse_move(x, y):
+    """Handle mouse move events - set target position for smooth animation."""
+    global target_mouse_position
+    
+    # If left mouse is pressed and we're dragging the grow overlay
+    if mouse_dragging_grow_overlay and mouse_left_pressed:
+        target_mouse_position = (x, y)
+        # Start animation if not already running
+        if animation_after_id is None:
+            smooth_move_grow_overlay()
+
+def on_mouse_scroll(x, y, dx, dy):
+    """Handle mouse scroll events."""
+    # Add your scroll handling logic here
+
 # =========================================
 #                *STARTUP
 # =========================================
 
-listener = keyboard.Listener(
+# Start keyboard listener
+keyboard_listener = keyboard.Listener(
     on_press=on_press,
     on_release=on_release)
-listener.start()
+keyboard_listener.start()
+
+# Start mouse listener
+mouse_listener = mouse.Listener(
+    on_click=on_mouse_click,
+    on_move=on_mouse_move,
+    on_scroll=on_mouse_scroll)
+mouse_listener.start()
 
 # Load saved configuration on startup
 load_config()
@@ -15049,13 +17054,26 @@ scan_directory(True)
 create_first_row_buttons()
 threading.Thread(target=load_default_char_images, daemon=True).start()
 
-# Start downloading videos in the background
-# download_thread = threading.Thread(target=download_videos, daemon=True)
-# download_thread.start()
+# Clean up any leftover updater files from previous updates
+def cleanup_updater_files():
+    """Remove updater.exe and updater.log files if they exist."""
+    files_to_clean = ["updater.exe", "updater.log"]
+    for filename in files_to_clean:
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+                print(f"Cleaned up: {filename}")
+            except Exception as e:
+                print(f"Could not clean up {filename}: {e}")
+
+# Clean up updater files on startup
+cleanup_updater_files()
 
 # Start updating the seek bar
 root.after(1000, update_seek_bar)
 # Schedule a check for when the video ends
 root.after(1000, check_video_end)
+# Check for updates on startup (after 3 seconds to let UI load)
+root.after(3000, check_for_updates_on_startup)
 
 root.mainloop()
