@@ -719,12 +719,22 @@
     ],
     "Bastard2022-OP1.webm": [
         {
+            "size_w": 8.87,
+            "size_h": 78.96,
+            "pos_x": 50.06,
+            "pos_y": 47.19,
+            "start": 3.6,
+            "end": 5.7,
+            "color": null,
+            "nsfw": false
+        },
+        {
             "size_w": 68.28,
             "size_h": 49.51,
             "pos_x": 53.33,
             "pos_y": 48.42,
-            "start": 9.6,
-            "end": 11.7,
+            "start": 9.5,
+            "end": 11.8,
             "color": "#000708",
             "nsfw": false
         }
@@ -742,6 +752,16 @@
         }
     ],
     "Bastard2022S2-OP1.webm": [
+        {
+            "size_w": 9.06,
+            "size_h": 70.42,
+            "pos_x": 50.0,
+            "pos_y": 33.8,
+            "start": 2.1,
+            "end": 7.7,
+            "color": null,
+            "nsfw": false
+        },
         {
             "size_w": 95.04,
             "size_h": 62.64,
@@ -6320,8 +6340,14 @@
             "pos_x": 49.67,
             "pos_y": 49.34,
             "start": 0.0,
-            "end": 9.5,
+            "end": 23.5,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 14.7,
             "nsfw": false
         }
     ],
@@ -13240,7 +13266,7 @@
             "pos_x": 51.86,
             "pos_y": 45.44,
             "start": 2.0,
-            "end": 2.8,
+            "end": 3.0,
             "color": null,
             "nsfw": false
         },
@@ -16025,9 +16051,15 @@
             "size_h": 26.88,
             "pos_x": 46.56,
             "pos_y": 39.6,
-            "start": 2.0,
-            "end": 8.7,
+            "start": 15.6,
+            "end": 22.1,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 14.6,
             "nsfw": false
         }
     ],
@@ -16633,12 +16665,18 @@
     ],
     "YoukaiWatchShadowSide-OP1.webm": [
         {
+            "skip": true,
+            "start": 0.0,
+            "end": 16.4,
+            "nsfw": false
+        },
+        {
             "size_w": 92.93,
             "size_h": 80.28,
             "pos_x": 48.07,
             "pos_y": 41.2,
-            "start": 4.8,
-            "end": 12.2,
+            "start": 21.5,
+            "end": 28.5,
             "color": null,
             "nsfw": false
         }
@@ -23154,9 +23192,15 @@
             "size_h": 82.64,
             "pos_x": 51.52,
             "pos_y": 39.6,
-            "start": 0.1,
-            "end": 10.1,
+            "start": 25.5,
+            "end": 35.8,
             "color": "#000000",
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 25.8,
             "nsfw": false
         }
     ],
@@ -23167,8 +23211,14 @@
             "pos_x": 49.92,
             "pos_y": 39.34,
             "start": 0.0,
-            "end": 6.8,
+            "end": 19.5,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 12.3,
             "nsfw": false
         }
     ],
@@ -29438,6 +29488,12 @@
             "end": 24.9,
             "color": null,
             "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 83.4,
+            "end": 98.5,
+            "nsfw": false
         }
     ],
     "GundamThe08thMSTeam-OP1.webm": [
@@ -30948,13 +31004,19 @@
     ],
     "DigimonBeatbreak-OP1.webm": [
         {
-            "size_w": 67.66,
-            "size_h": 37.71,
-            "pos_x": 51.57,
-            "pos_y": 54.85,
+            "size_w": 68.2,
+            "size_h": 80.07,
+            "pos_x": 51.35,
+            "pos_y": 16.03,
             "start": 0.0,
-            "end": 4.7,
+            "end": 28.1,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 22.8,
             "nsfw": false
         }
     ],
@@ -36703,6 +36765,12 @@
         }
     ],
     "DigimonFrontier-OP1-NCBD1080.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 15.2,
+            "nsfw": false
+        },
         {
             "size_w": 75.39,
             "size_h": 100.0,
@@ -45224,23 +45292,29 @@
     ],
     "BakuganBattleBrawlers-OP1.webm": [
         {
-            "size_w": 75.55,
+            "size_w": 75.12,
             "size_h": 100.0,
-            "pos_x": 50.0,
+            "pos_x": 50.08,
             "pos_y": 0.0,
-            "start": 1.9,
-            "end": 3.8,
+            "start": 35.8,
+            "end": 36.4,
             "color": "#006D60",
             "nsfw": false
         },
         {
-            "size_w": 60.04,
-            "size_h": 56.11,
+            "size_w": 60.12,
+            "size_h": 75.62,
             "pos_x": 50.64,
-            "pos_y": 45.57,
-            "start": 3.6,
-            "end": 7.4,
+            "pos_y": 44.16,
+            "start": 34.4,
+            "end": 40.0,
             "color": "#007767",
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 33.6,
             "nsfw": false
         }
     ],
@@ -45250,8 +45324,8 @@
             "size_h": 100.0,
             "pos_x": 50.32,
             "pos_y": 0.0,
-            "start": 1.4,
-            "end": 3.9,
+            "start": 34.1,
+            "end": 36.5,
             "color": "#008579",
             "nsfw": false
         },
@@ -45260,9 +45334,15 @@
             "size_h": 55.21,
             "pos_x": 50.29,
             "pos_y": 47.44,
-            "start": 3.7,
-            "end": 6.4,
+            "start": 36.3,
+            "end": 39.2,
             "color": "#007B6B",
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 32.6,
             "nsfw": false
         }
     ],
@@ -45272,9 +45352,15 @@
             "size_h": 100.0,
             "pos_x": 0.0,
             "pos_y": 0.0,
-            "start": 2.5,
-            "end": 4.1,
+            "start": 29.8,
+            "end": 32.5,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 28.5,
             "nsfw": false
         },
         {
@@ -45282,8 +45368,8 @@
             "size_h": 57.43,
             "pos_x": 50.89,
             "pos_y": 53.51,
-            "start": 3.9,
-            "end": 13.1,
+            "start": 32.3,
+            "end": 41.1,
             "color": null,
             "nsfw": false
         }
@@ -45295,7 +45381,7 @@
             "pos_x": 4.9,
             "pos_y": 43.31,
             "start": 0.0,
-            "end": 78.8,
+            "end": 107.2,
             "color": "#050505",
             "nsfw": false
         },
@@ -45305,8 +45391,14 @@
             "pos_x": 95.12,
             "pos_y": 44.26,
             "start": 0.0,
-            "end": 78.8,
+            "end": 107.2,
             "color": "#030505",
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 28.6,
             "nsfw": false
         },
         {
@@ -45314,8 +45406,8 @@
             "size_h": 100.0,
             "pos_x": 50.07,
             "pos_y": 0.0,
-            "start": 11.2,
-            "end": 11.8,
+            "start": 39.8,
+            "end": 40.4,
             "color": null,
             "nsfw": false
         },
@@ -45324,8 +45416,8 @@
             "size_h": 42.29,
             "pos_x": 50.06,
             "pos_y": 50.9,
-            "start": 11.6,
-            "end": 17.7,
+            "start": 40.2,
+            "end": 46.2,
             "color": null,
             "nsfw": false
         }
@@ -45337,31 +45429,49 @@
             "pos_x": 50.93,
             "pos_y": 50.31,
             "start": 0.0,
-            "end": 6.4,
+            "end": 30.9,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 24.9,
             "nsfw": false
         }
     ],
     "InuYasha-OP5.webm": [
         {
+            "skip": true,
+            "start": 0.0,
+            "end": 25.0,
+            "nsfw": false
+        },
+        {
             "size_w": 53.52,
             "size_h": 43.68,
             "pos_x": 50.0,
             "pos_y": 48.58,
-            "start": 13.5,
-            "end": 19.7,
+            "start": 38.7,
+            "end": 44.9,
             "color": null,
             "nsfw": false
         }
     ],
     "DotHackTasogare-OP1.webm": [
         {
+            "skip": true,
+            "start": 0.0,
+            "end": 4.6,
+            "nsfw": false
+        },
+        {
             "size_w": 100.0,
             "size_h": 100.0,
             "pos_x": 0.0,
             "pos_y": 0.0,
-            "start": 6.6,
-            "end": 8.6,
+            "start": 11.1,
+            "end": 13.3,
             "color": "#02015B",
             "nsfw": false
         },
@@ -45370,42 +45480,34 @@
             "size_h": 81.67,
             "pos_x": 51.65,
             "pos_y": 54.55,
-            "start": 8.4,
-            "end": 13.6,
+            "start": 13.1,
+            "end": 17.8,
             "color": null,
             "nsfw": false
         }
     ],
     "GundamUnicornRe0096-OP2.webm": [
         {
-            "size_w": 54.26,
-            "size_h": 39.72,
-            "pos_x": 0.0,
-            "pos_y": 0.0,
-            "start": 5.5,
-            "end": 7.5,
-            "color": "#F0EFE6",
-            "nsfw": false
-        },
-        {
-            "size_w": 27.34,
-            "size_h": 8.54,
-            "pos_x": 0.0,
-            "pos_y": 81.17,
-            "start": 5.5,
-            "end": 6.7,
-            "color": "#F0EFE6",
+            "skip": true,
+            "start": 0.0,
+            "end": 30.1,
             "nsfw": false
         }
     ],
     "JigokuShoujoFutakomori-OP1.webm": [
         {
+            "skip": true,
+            "start": 0.0,
+            "end": 20.0,
+            "nsfw": false
+        },
+        {
             "size_w": 38.12,
             "size_h": 80.21,
             "pos_x": 49.87,
             "pos_y": 55.79,
-            "start": 3.2,
-            "end": 15.0,
+            "start": 23.2,
+            "end": 34.6,
             "color": "#271615",
             "nsfw": false
         }
@@ -45974,9 +46076,15 @@
             "size_h": 44.72,
             "pos_x": 50.55,
             "pos_y": 54.27,
-            "start": 0.1,
-            "end": 8.4,
+            "start": 32.0,
+            "end": 40.4,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 20.0,
+            "end": 32.3,
             "nsfw": false
         }
     ],
@@ -45987,7 +46095,7 @@
             "pos_x": 48.98,
             "pos_y": 51.7,
             "start": 0.0,
-            "end": 1.5,
+            "end": 20.0,
             "color": null,
             "nsfw": false
         },
@@ -45996,9 +46104,15 @@
             "size_h": 48.68,
             "pos_x": 47.44,
             "pos_y": 53.72,
-            "start": 5.8,
-            "end": 9.0,
+            "start": 23.8,
+            "end": 26.8,
             "color": null,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 18.4,
             "nsfw": false
         }
     ],
@@ -54583,6 +54697,246 @@
             "skip": true,
             "start": 0.0,
             "end": 10.8,
+            "nsfw": false
+        }
+    ],
+    "BangDreamEpisodeOfRoseliaYakusoku-ED1.webm": [
+        {
+            "skip": true,
+            "start": 92.2,
+            "end": 300.0,
+            "nsfw": false
+        }
+    ],
+    "BubblegumCrisis-OP1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 25.0,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 112.0,
+            "end": 300.0,
+            "nsfw": false
+        }
+    ],
+    "BubblegumCrisis-OP2.webm": [
+        {
+            "skip": true,
+            "start": 92.3,
+            "end": 300.0,
+            "nsfw": false
+        }
+    ],
+    "CowboyBebopMovie-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 126.2,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 230.5,
+            "end": 350.0,
+            "nsfw": false
+        }
+    ],
+    "DetectiveConan-OP1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 16.1,
+            "nsfw": false
+        }
+    ],
+    "DetectiveConan-OP2.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 15.6,
+            "nsfw": false
+        }
+    ],
+    "DetectiveConan-OP57.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 14.8,
+            "nsfw": false
+        },
+        {
+            "size_w": 71.33,
+            "size_h": 49.44,
+            "pos_x": 51.91,
+            "pos_y": 52.75,
+            "start": 0.0,
+            "end": 16.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "DetectiveConan-OP59.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 15.4,
+            "nsfw": false
+        }
+    ],
+    "DetectiveConan-OP6.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 15.6,
+            "nsfw": false
+        }
+    ],
+    "DetectiveConan-OP9.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 15.5,
+            "nsfw": false
+        },
+        {
+            "size_w": 62.34,
+            "size_h": 45.9,
+            "pos_x": 52.8,
+            "pos_y": 43.9,
+            "start": 0.0,
+            "end": 23.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "DGrayManHollow-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 13.4,
+            "nsfw": false
+        }
+    ],
+    "DimensionW-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 11.5,
+            "nsfw": false
+        }
+    ],
+    "GuimiZhiZhuXiaochouPian-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 28.6,
+            "nsfw": false
+        }
+    ],
+    "KodomoNoOmocha-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 25.2,
+            "nsfw": false
+        }
+    ],
+    "KoutetsujouNoKabaneri-ED2.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 82.3,
+            "nsfw": false
+        }
+    ],
+    "LoveLive-ED3-NCBD1080Lyrics.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 18.4,
+            "nsfw": false
+        }
+    ],
+    "MunouNaNana-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 11.0,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 0.0,
+            "end": 11.0,
+            "color": "#040404",
+            "nsfw": false
+        }
+    ],
+    "NagekiNoBourei-OP1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 11.5,
+            "nsfw": false
+        },
+        {
+            "skip": true,
+            "start": 83.0,
+            "end": 93.2,
+            "nsfw": false
+        }
+    ],
+    "SenToChihiroNoKamikakushi-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 137.5,
+            "nsfw": false
+        }
+    ],
+    "ShiguangDailirenYingduPian-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 12.5,
+            "nsfw": false
+        }
+    ],
+    "SlamDunk-OP1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 13.5,
+            "nsfw": false
+        }
+    ],
+    "Supernatural-ED1-EN.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 29.7,
+            "nsfw": false
+        }
+    ],
+    "TalesOfTheAbyss-OP1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 20.2,
+            "nsfw": false
+        }
+    ],
+    "Tsukimichi-ED3.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 16.5,
             "nsfw": false
         }
     ]

@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "13.0"  # Update this when making releases
+APP_VERSION = "13.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -2086,20 +2086,20 @@ def update_up_next_display(widget, clear=False):
         widget.config(state=tk.DISABLED)
         return
     # Show placeholder if not showing up-next or if cleared
+    is_popout = widget == popout_up_next
     PLACEHOLDER_TEXT = "NEXT: CLICK TO SHOW/HIDE"
-    if not popout_show_up_next:
+    if is_popout and not popout_show_up_next:
         widget.config(height=1)
         widget.insert(tk.END, PLACEHOLDER_TEXT, "center")
         widget.config(state=tk.DISABLED)
         return
     if clear:
         widget.config(height=1)
-        widget.insert(tk.END, PLACEHOLDER_TEXT, "center")
+        widget.insert(tk.END, "", "center")
         widget.config(state=tk.DISABLED)
         return
     widget.config(height=0)
     if not clear:
-        is_popout = widget == popout_up_next
         if not is_docked() or is_popout:
             if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2:
                 reroll_button = tk.Button(
@@ -9107,28 +9107,106 @@ frame_light_round_pause = False
 def get_frame_light_round_frames():
     frames = []
     buffer = 5
-    length = player.get_length()-((buffer+light_round_answer_length+1)*1000)
-    start_time = buffer*1000
-    increment = round(length/4)
-    try_count = 0
-    for f in range(4):
+    video_length_ms = player.get_length()
+    total_length = video_length_ms - ((buffer + light_round_answer_length + 1) * 1000)
+    start_time_ms = buffer * 1000
+    end_time_ms = start_time_ms + total_length
+    
+    # Get file censors and build list of valid time ranges (excluding skip censors)
+    file_censors = get_file_censors(currently_playing.get('filename'))
+    
+    # Build list of valid time ranges by excluding skip censors
+    valid_ranges = []
+    current_start = start_time_ms / 1000
+    
+    # Sort censors by start time
+    skip_censors = [c for c in file_censors if c.get('skip')]
+    skip_censors.sort(key=lambda c: c['start'])
+    
+    for censor in skip_censors:
+        censor_start = censor['start']
+        censor_end = censor['end'] if censor['end'] else video_length_ms / 1000
+        
+        # Add the valid range before this skip censor
+        if current_start < censor_start and current_start < end_time_ms / 1000:
+            range_end = min(censor_start, end_time_ms / 1000)
+            if range_end > current_start:
+                valid_ranges.append((current_start, range_end))
+        
+        # Move past this skip censor
+        current_start = max(current_start, censor_end)
+    
+    # Add final range after all skip censors
+    if current_start < end_time_ms / 1000:
+        valid_ranges.append((current_start, end_time_ms / 1000))
+    
+    # If no valid ranges, fall back to original behavior
+    if not valid_ranges:
+        valid_ranges = [(start_time_ms / 1000, end_time_ms / 1000)]
+    
+    # Calculate total valid time
+    total_valid_time = sum(end - start for start, end in valid_ranges)
+    quadrant_time = total_valid_time / 4
+    
+    # Select one frame from each quadrant of valid time
+    for quadrant in range(4):
+        target_time_start = quadrant * quadrant_time
+        target_time_end = (quadrant + 1) * quadrant_time
+        
+        # Find which valid range(s) this quadrant falls into
         frame = None
-        while frame is None:
-            frame = random.randint(start_time, start_time + increment)/1000
-            try_count = try_count + 1
-            if try_count < 20:
-                if length > 60 and len(frames) > 0 and (frame - frames[len(frames)-1]) <= 5:
-                    frame = None
-                else:
-                    file_censors = censor_list.get(currently_playing.get('filename'))
-                    if file_censors != None:
-                        for censor in file_censors:
-                            if (frame) > censor['start'] and (frame) < censor['end']:
-                                frame = None
-                                break
-        start_time = start_time + increment
         try_count = 0
-        frames.append(frame)
+        
+        while frame is None and try_count < 20:
+            accumulated_time = 0
+            # Find the valid range that contains our target time
+            random_time_in_quadrant = random.uniform(target_time_start, target_time_end)
+            
+            for range_start, range_end in valid_ranges:
+                range_duration = range_end - range_start
+                if accumulated_time <= random_time_in_quadrant < accumulated_time + range_duration:
+                    # This range contains our random point
+                    offset = random_time_in_quadrant - accumulated_time
+                    frame = range_start + offset
+                    
+                    # Check for regular censors (not skip censors)
+                    is_censored = False
+                    for censor in file_censors:
+                        if not censor.get('skip') and not censor.get('mute'):
+                            if frame > censor['start'] and frame < censor['end']:
+                                is_censored = True
+                                break
+                    
+                    if is_censored:
+                        frame = None
+                        try_count += 1
+                        break
+                    
+                    # Check if too close to previous frame
+                    if total_length > 60000 and len(frames) > 0 and (frame - frames[-1]) <= 5:
+                        frame = None
+                        try_count += 1
+                        break
+                    
+                    break
+                
+                accumulated_time += range_duration
+        
+        # If we couldn't find a valid frame after 20 tries, pick any time in the quadrant
+        if frame is None:
+            accumulated_time = 0
+            random_time_in_quadrant = random.uniform(target_time_start, target_time_end)
+            for range_start, range_end in valid_ranges:
+                range_duration = range_end - range_start
+                if accumulated_time <= random_time_in_quadrant < accumulated_time + range_duration:
+                    offset = random_time_in_quadrant - accumulated_time
+                    frame = range_start + offset
+                    break
+                accumulated_time += range_duration
+        
+        if frame is not None:
+            frames.append(frame)
+    
     random.shuffle(frames)
     return frames
 
@@ -9191,7 +9269,7 @@ def update_frame_light_round(currently_playing_filename):
                 apply_censors(time/1000, length/1000)
                 player.set_time(time)
                 player.set_fullscreen(True)
-                update_progress_bar(time, length)
+                update_progress_bar(time, length, currently_playing.get("filename"))
                 set_frame_number(str(frame_light_round_frame_index+1) + "/" + str(len(frame_light_round_frames)))
             elif not is_title_window_up():
                 frame_light_round_frame_time = 0
@@ -16321,23 +16399,29 @@ def open_censor_editor(refresh=False):
             pos_frame.grid(row=display_idx+censor_start_row, column=1, padx=(0, 6), pady=4)
 
             # Frame for Start and End Times
-            def build_time_frame(var, row, col, back_color):
+            def build_time_frame(var, row, col, back_color, is_start=True):
                 frame = tk.Frame(censor_editor, bg=back_color)
                 tk.Button(frame, text="-", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() - 0.1, 1))).pack(side="left")
                 tk.Entry(frame, textvariable=var, width=6, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left")
                 tk.Button(frame, text="+", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() + 0.1, 1))).pack(side="left")
-                tk.Button(frame, text="NOW", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(current_time_func(), 1))).pack(side="left")
+                now_button = tk.Button(frame, text="NOW", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(current_time_func(), 1)))
+                now_button.pack(side="left")
+                # Right-click binding: start sets to 0, end sets to video length + 5 seconds
+                if is_start:
+                    now_button.bind("<Button-3>", lambda e, v=var: v.set(0.0))
+                else:
+                    now_button.bind("<Button-3>", lambda e, v=var: v.set(round((player.get_length() / 1000) + 5, 1)))
                 frame.grid(row=row, column=col, padx=6, pady=4)
                 return frame
 
             start_var = tk.DoubleVar(value=censor['start'])
             end_var = tk.DoubleVar(value=censor['end'])
-            start_frame = build_time_frame(start_var, display_idx+censor_start_row, 2, BACKGROUND_COLOR)
+            start_frame = build_time_frame(start_var, display_idx+censor_start_row, 2, BACKGROUND_COLOR, is_start=True)
             if censor['end']:
                 row_color = BACKGROUND_COLOR
             else:
                 row_color = "white"
-            end_frame = build_time_frame(end_var, display_idx+censor_start_row, 3, row_color)
+            end_frame = build_time_frame(end_var, display_idx+censor_start_row, 3, row_color, is_start=False)
 
             # Frame for Color and Buttons
             def remove_color(label):
@@ -19692,7 +19776,8 @@ edit_censors_button = create_button(third_row_frame, "➕", open_censor_editor, 
                                          "\n\nSIZE/POSITION: The size/position of the censor box, in percent of screen. "
                                          "Use the [🎯] button to draw a censor box, and the SIZE/POSITION will be filled. Middle-click the overlay to cancel."
                                          "\n\nSTART/END: Start/end time censor box will appear. Use the [NOW] button to set it to the player's current time. "
-                                         "Use the [-]/[+] to adjust by 0.1 sec. The end time can usually be exact, but the start needs to be a bit before to account for the time to pop up."
+                                         "Use the [-]/[+] to adjust by 0.1 sec. The end time can usually be exact, but the start needs to be a bit before to account for the time to pop up. "
+                                        "Right-clicking the start [NOW] button will set the time to 0, and the end [NOW] button will set it to the end of the video."
                                          "\n\nCOLOR: Color of censor box. Will automatically pick the average color of the screen. Use [PICK] to select a specific color from the screen. Middle-click the overlay to cancel."
                                          " Use [X] to reset back to AUTO."
                                          "\n\nNSFW: Used to mark a censor as NSFW. These censors will appear even when the Information Pop-up is up."
