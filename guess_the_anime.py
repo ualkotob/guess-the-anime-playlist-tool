@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "13.1"  # Update this when making releases
+APP_VERSION = "14.0"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -618,6 +618,7 @@ non_webm_opengl = False
 scale_main_ui = False
 auto_fetch_missing = False
 special_round_warning = True
+selected_rules_file = "rules.json"
 YOUTUBE_API_KEY = ""
 OPENAI_API_KEY = ""
 CONFIG_FILE = "files/config.json"
@@ -1661,6 +1662,23 @@ def update_metadata():
             button_seleted(mute_peek_mark_button, check_mute_peek_mark(filename))
             data = currently_playing.get('data')
             reset_metadata()
+            # count number of times file appears in playlist
+            if playlist.get("infinite"):
+                file_count = sum(1 for item in playlist.get("playlist", []) if item == filename)
+                # find last index of file that is less than the current index
+                themes_ago = ""
+                if file_count > 1:
+                    previous_indices = [i for i, item in enumerate(playlist.get("playlist", [])) if item == filename and i < playlist.get("current_index", 0)]
+                    if previous_indices:
+                        file_last_index = max(previous_indices)
+                        themes_ago += f" ({playlist.get("current_index", 0) - file_last_index} Themes Ago)"
+                l_file_count = sum(1 for item in playlist.get("playlist", []) if item == f"[L]{filename}")
+                if l_file_count > 0:
+                    themes_ago += f" ({l_file_count} L)"
+                left_column.insert(tk.END, "TOTAL PLAYS: ", "bold")
+                left_column.insert(tk.END, f"{file_count}{themes_ago}", "white")
+                left_column.insert(tk.END, "\n\n", "blank")
+
             if data:
                 add_single_data_line(left_column, data, "TITLE: ", 'title', False)
                 add_field_total_button(left_column, get_all_matching_field("mal", data.get("mal")), True)
@@ -1796,6 +1814,8 @@ def update_extra_metadata(data, column=None):
     if currently_playing.get("type") == "youtube":
         show_youtube_playlist()
         return
+    if data is None:
+        return
     if column is None:
         column = right_column
     column.config(state=tk.NORMAL, wrap="word")
@@ -1849,9 +1869,9 @@ def update_extra_metadata(data, column=None):
                 column,
                 text=name,
                 command=func,
-                padx=scl(2), pady=scl(1),
+                padx=scl(2, "UI"), pady=scl(1, "UI"),
                 bg="black", fg="white",
-                font=("Arial", scl(12))
+                font=("Arial", scl(12, "UI"))
             )
             column.window_create(tk.END, window=b)
             if new_line:
@@ -2127,9 +2147,16 @@ def update_up_next_display(widget, clear=False):
                 widget.insert(tk.END, "NEXT: ", "bold")
 
             next_up_text = "End of playlist"
-            if playlist["current_index"] + 1 < len(playlist["playlist"]):
+            fixed_coming_up = fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("current_index",0) + 1 < fixed_lightning_round_playlist_data.get("round_count", 0)
+            if playlist["current_index"] + 1 < len(playlist["playlist"]) or fixed_coming_up:
                 try:
-                    playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
+                    if fixed_coming_up:
+                        next_round = fixed_lightning_round_playlist_data["rounds"][fixed_lightning_round_playlist_data["current_index"] + 1]
+                        playlist_entry = next_round.get("theme")
+                        next_mode = next_round.get("type")
+                        widget.insert(tk.END, f"[{next_mode.upper()}] ", "white")
+                    else:
+                        playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
                     next_filename = get_clean_filename(playlist_entry)
                     next_up_data = get_metadata(next_filename)
                     version_num = next_up_data.get("version")
@@ -2771,10 +2798,10 @@ def update_youtube_metadata(data=None):
     insert_column_line(left_column, "TITLE: ", get_youtube_display_title(youtube_data))
     insert_column_line(left_column, "FULL TITLE: ", youtube_data.get('title'))
     insert_column_line(left_column, "UPLOAD DATE: ", f"{datetime.strptime(youtube_data.get('upload_date'), "%Y%m%d").strftime("%Y-%m-%d")}")
-    insert_column_line(left_column, "VIEWS: ", f"{youtube_data.get('view_count'):,}")
-    insert_column_line(left_column, "LIKES: ", f"{youtube_data.get('like_count'):,}")
+    insert_column_line(left_column, "VIEWS: ", f"{youtube_data.get('view_count') or 0:,}")
+    insert_column_line(left_column, "LIKES: ", f"{youtube_data.get('like_count') or 0:,}")
     insert_column_line(left_column, "CHANNEL: ", youtube_data.get('name'))
-    insert_column_line(left_column, "SUBSCRIBERS: ", f"{youtube_data.get('subscriber_count'):,}")
+    insert_column_line(left_column, "SUBSCRIBERS: ", f"{youtube_data.get('subscriber_count') or 0:,}")
     insert_column_line(left_column, "DURATION: ", str(format_seconds(get_youtube_duration(youtube_data))) + " mins")
     insert_column_line(middle_column, "DESCRIPTION: ", youtube_data.get('description'))
     show_youtube_playlist()
@@ -3642,7 +3669,7 @@ def weighted_shuffle(playlis):
         # Step 1: Generate all unique (pop, time) pairs
         pop_time_order = get_pop_time_order()
 
-        for o in range(0,9):
+        for o in range(9):
             t = pop_time_order[o][0]
             p = pop_time_order[o][1]
             if p < len(groups) and t < len(groups[p]) and groups[p][t]:  # Ensure list is not empty
@@ -3765,6 +3792,53 @@ def get_pop_time_order():
 #          *INFINITE PLAYLISTS
 # =========================================
 
+INFINITE_SETTINGS_DEFAULT = {
+    "max_history_check": 10000,
+    "difficulty_groups": {
+        "easy": {
+            "range": [1, 250],
+            "cooldown": [0.5, 0.6],
+            "file_boost_limit": 20
+        },
+        "medium": {
+            "range": [251, 1000],
+            "cooldown": [0.75, 0.9],
+            "file_boost_limit": 5
+        },
+        "hard": {
+            "range": [1001, float('inf')],
+            "cooldown": [1.0, 1.0],
+            "file_boost_limit": 1
+        },
+        "all": {
+            "range": [1, float('inf')],
+            "cooldown": [1.0, 1.5],
+            "file_boost_limit": 1
+        }
+    },
+    "ending_limit_ratio": 1.0,
+    "recent_boost_multiplier": [20,10,5],
+    "favorites_boost_multiplier": 2,
+    "score_boost": {
+        "min_score": 7.5,
+        "multiplier": 1.0
+    },
+    "group_series": False,
+    "tag_cooldown": 1
+}
+
+infinite_settings = INFINITE_SETTINGS_DEFAULT.copy()
+
+
+difficulty_ranges = [
+    ["easy"],
+    ["easy", "medium"],
+    ["easy", "medium", "hard"],
+    ["medium", "hard"],
+    ["hard"],
+    ["easy", "medium", "hard"]
+]
+
 def test_infinite_playlist(event=None):
     global playlist
     old_playlist = copy.deepcopy(playlist)
@@ -3773,7 +3847,7 @@ def test_infinite_playlist(event=None):
 
     # We'll collect output for analysis later
     track_logs = []
-    test_size = INFINITE_PLAYLIST_LIMIT
+    test_size = infinite_settings.get("max_history_check", 5000)
     for i in range(test_size):
         selected_file = get_next_infinite_track()
         p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
@@ -3835,7 +3909,7 @@ def get_last_three_seasons():
 def get_boost_multiplier(season_string):
     for i, s in enumerate(get_last_three_seasons()):
         if s == season_string:
-            return [20,10,5][i]
+            return infinite_settings["recent_boost_multiplier"][i]
     return 1
 
 difficulty_options = ["MODE: VERY EASY","MODE: EASY","MODE: NORMAL","MODE: HARD","MODE: VERY HARD","MODE: RANDOM"]
@@ -3871,37 +3945,7 @@ cached_boosted_show_files_map = None
 cached_pop_time_cooldown = 0
 cached_skipped_themes = []
 total_infinite_files = 0
-difficulty_ranges = [
-    ["easy"],
-    ["easy", "medium"],
-    ["easy", "medium", "hard"],
-    ["medium", "hard"],
-    ["hard"],
-    ["easy", "medium", "hard"]
-]
 
-difficulty_groups = {
-    "easy": {
-        "range": [1, 250],
-        "cooldown": [0.5, 0.6],
-        "file_boost_limit": 20
-    },
-    "medium": {
-        "range": [251, 1000],
-        "cooldown": [0.75, 0.9],
-        "file_boost_limit": 5
-    },
-    "hard": {
-        "range": [1001, INT_INF],
-        "cooldown": [1.0, 1.0],
-        "file_boost_limit": 1
-    },
-    "all": {
-        "range": [1, INT_INF],
-        "cooldown": [1.0, 1.5],
-        "file_boost_limit": 1
-    }
-}
 def get_pop_time_groups(refetch=False):
     global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map, cached_pop_time_cooldown, cached_skipped_themes, total_infinite_files
 
@@ -3920,7 +3964,7 @@ def get_pop_time_groups(refetch=False):
         
         # Build playlist history excluding lightning rounds from previous sessions
         playlist_mal_history = []
-        for f in playlist["playlist"]:
+        for f in playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]:
             clean_f = get_clean_filename(f)
             metadata = get_metadata(clean_f)
             if metadata and metadata.get("mal"):
@@ -3933,17 +3977,20 @@ def get_pop_time_groups(refetch=False):
             if not d or check_tagged(f) or check_theme(f, "New Themes"):
                 cached_skipped_themes.append(f)
                 continue
-
-            p = d.get("popularity") or INT_INF
+            
+            if infinite_settings["group_series"]:
+                p = get_series_popularity(d)
+            else:
+                p = d.get("popularity") or INT_INF
             mal = d.get("mal")
             placed = False
 
             for k, l in enumerate(group_limits):
-                difficulty_group = difficulty_groups.get(l)
+                difficulty_group = infinite_settings["difficulty_groups"].get(l)
                 if p >= difficulty_group["range"][0] and p <= difficulty_group["range"][1]:
                     boost = 0
                     if mal not in shows_files_map:
-                        boost += max(0, (d.get("score", 0) or 0) - 7)
+                        boost += (max(0, (d.get("score", 0) or 0) - infinite_settings["score_boost"]["min_score"]) % 0.5) * infinite_settings["score_boost"]["multiplier"]
                         boost += get_boost_multiplier(d.get("season", "Fall 2000"))
                         distance_from_end = 0
                         # More efficient: find exact position and calculate boost directly
@@ -3960,11 +4007,12 @@ def get_pop_time_groups(refetch=False):
                     elif len(shows_files_map[mal]) <= difficulty_group["file_boost_limit"]:
                         boost += 1
 
+                    if infinite_settings["favorites_boost_multiplier"] and check_favorited(f):
+                        boost += infinite_settings["favorites_boost_multiplier"]
+                        # sorted_groups[k].append(f"{f}[EXTRA]")
+                    
                     sorted_groups[k].extend([f] * int(boost))
                     shows_files_map.setdefault(mal, []).append(f)
-
-                    if check_favorited(f):
-                        sorted_groups[k].append(f"{f}[EXTRA]")
 
                     placed = True
                     break
@@ -4010,14 +4058,16 @@ def get_pop_time_groups(refetch=False):
                 # More efficient: find exact position and calculate boost directly
                 try:
                     # Find the last occurrence of this file in playlist history
-                    last_index = len(playlist["playlist"]) - 1 - playlist["playlist"][::-1].index(file)
+                    last_index = len(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]) - 1 - playlist["playlist"][-infinite_settings.get("max_history_check", 5000):][::-1].index(file)
                     # Calculate how far back it was (distance from end)
-                    distance_from_end = len(playlist["playlist"]) - 1 - last_index
+                    distance_from_end = len(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]) - 1 - last_index
                     # Give boost based on 1000-entry ranges
                 except ValueError:
                     # File not found in history, give maximum boost based on history length
-                    distance_from_end = len(playlist["playlist"])
+                    distance_from_end = len(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):])
                 file_boost += (distance_from_end // 2000) * (distance_from_end // 2000)
+                if infinite_settings["favorites_boost_multiplier"] and check_favorited(file):
+                    file_boost = file_boost * infinite_settings["favorites_boost_multiplier"]
                 boosted_show_files_map.setdefault(mal_id, []).extend([file] * int(file_boost))
         cached_pop_time_cooldown = 0
         cached_boosted_show_files_map = boosted_show_files_map
@@ -4039,7 +4089,6 @@ def next_playlist_order(increment=True):
             threading.Thread(target=worker, daemon=True).start()
             cached_pop_time_cooldown = 0
 
-INFINITE_PLAYLIST_LIMIT = 10000
 def get_next_infinite_track(increment=True):
     if not playlist.get("infinite", False):
         return
@@ -4057,14 +4106,16 @@ def get_next_infinite_track(increment=True):
     selected_file = None
     checked_mal_ids = []
     try_count = 0
+    tag_cooldown_failures = 0
+    max_tag_tries = len(groups[p][t]) // 3
     op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
 
     while not selected_file:
         group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
-        if group_ed_count == 0:
+        if group_ed_count == 0 or (ed_count + op_count) == 0:
             need_op = False
         else:
-            need_op = ed_count >= op_count and (group_op_count / (2 * group_ed_count)) > 0.05
+            need_op = ((ed_count / (ed_count+op_count)) > infinite_settings["ending_limit_ratio"]) and (group_op_count / (2 * group_ed_count)) > 0.05
 
         if p >= len(groups) or t >= len(groups[p]) or not groups[p][t]:
             if try_count > 18:
@@ -4073,6 +4124,8 @@ def get_next_infinite_track(increment=True):
             p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
             if groups[p][t]:
                 random.shuffle(groups[p][t])
+            max_tag_tries = len(groups[p][t]) // 3
+            tag_cooldown_failures = 0
             try_count += 1
             continue
         file = groups[p][t].pop(0)
@@ -4112,19 +4165,40 @@ def get_next_infinite_track(increment=True):
                     continue
                 series = d.get("series") or [d.get("title")]
                 boost = get_boost_multiplier(d.get("season", "Fall 2000"))
+                
+                if infinite_settings["tag_cooldown"]:
+                    # Tag cooldown check - prevent same tags within 3 entries
+                    # Skip check if we've failed too many times (no valid options available)
+                    selected_tags = set(get_tags(d))
+                    if selected_tags and len(playlist["playlist"]) >= 1 and tag_cooldown_failures < max_tag_tries:
+                        tag_cooldown_limit = infinite_settings["tag_cooldown"]
+                        recent_tracks = playlist["playlist"][-tag_cooldown_limit:]
+                        
+                        for recent_file in reversed(recent_tracks):
+                            clean_recent = get_clean_filename(recent_file)
+                            recent_d = get_metadata(clean_recent)
+                            recent_tags = set(get_tags(recent_d))
+                            
+                            # Check if any tags overlap
+                            if selected_tags & recent_tags:  # Set intersection
+                                selected_file = None
+                                tag_cooldown_failures += 1
+                                break
+                    if not selected_file:
+                        continue
                 if s_limit > 1 or f_limit > 1:
                     # Get current session lightning tracks for cooldown exclusion
                     current_session_lightning = get_current_session_lightning_tracks()
                     cooldown_count = 0
                     
-                    for f in reversed(playlist["playlist"]):
+                    for f in reversed(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]):
                         # Skip lightning rounds from previous sessions in cooldown calculations
                         clean_f = get_clean_filename(f)
                         if not light_mode and f.startswith("[L]") and clean_f not in current_session_lightning:
                             continue
                         
                         f_d = get_metadata(clean_f)
-                        if f == selected_file or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (cooldown_count < max(min_s_limit*s_limit_mod, (s_limit/boost)) and series == (f_d.get("series") or [f_d.get("title")])):
+                        if clean_f == selected_file or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (cooldown_count < max(min_s_limit*s_limit_mod, (s_limit/boost)) and series == (f_d.get("series") or [f_d.get("title")])):
                             selected_file = None
                             break
                         
@@ -4142,12 +4216,13 @@ def get_next_infinite_track(increment=True):
                     playlist["playlist"].append(selected_file)
                     if playlist["current_index"] == -1:
                         update_current_index(0)
-                    if len(playlist["playlist"]) > INFINITE_PLAYLIST_LIMIT:
-                        while len(playlist["playlist"]) > INFINITE_PLAYLIST_LIMIT:
-                            playlist["playlist"].pop(0)
-                            update_current_index(playlist["current_index"]-1)
                     else:
                         update_current_index()
+                    # if len(playlist["playlist"]) > infinite_settings.get("max_history_check", 5000):
+                    #     while len(playlist["playlist"]) > infinite_settings.get("max_history_check", 5000):
+                    #         playlist["playlist"].pop(0)
+                    #         update_current_index(playlist["current_index"]-1)
+                    # else:
                     
                     # Update list display if playlist is currently shown
                     if list_loaded == "playlist":
@@ -4161,6 +4236,7 @@ def get_next_infinite_track(increment=True):
             groups, shows_files_map = get_pop_time_groups()
             if p < len(groups) and t < len(groups[p]) and groups[p][t]:
                 random.shuffle(groups[p][t])
+                tag_cooldown_failures = 0
             checked_mal_ids = []
             s_limit_mod = s_limit_mod * 0.9
             f_limit_mod = f_limit_mod * 0.9
@@ -4216,16 +4292,16 @@ def get_cooldown_for_popularity(popularity_rank, difficulty_range, groups):
         series_cooldown = medium_series + (progress * (hard_series - medium_series))
         file_cooldown = medium_file + (progress * (hard_file - medium_file))
     else:
-        # Ranks >1000: Smooth transition from hard cooldowns to INFINITE_PLAYLIST_LIMIT
+        # Ranks >1000: Smooth transition from hard cooldowns to infinite cooldowns
         # Cap the transition at rank 10000 to avoid infinite scaling
-        max_rank_for_scaling = INFINITE_PLAYLIST_LIMIT
+        max_rank_for_scaling = infinite_settings.get("max_history_check", 10000)
         capped_rank = min(popularity_rank, max_rank_for_scaling)
         
         # Calculate progress from rank 1000 to max_rank_for_scaling
         progress = (capped_rank - 1000) / (max_rank_for_scaling - 1000)  # 0.0 to 1.0
         
-        # File cooldown transitions from hard_file to INFINITE_PLAYLIST_LIMIT
-        file_cooldown = hard_file + (progress * (INFINITE_PLAYLIST_LIMIT - hard_file))
+        # File cooldown transitions from hard_file to infinite cooldowns
+        file_cooldown = hard_file + (progress * (infinite_settings.get("max_history_check", 10000) - hard_file))
         
         # Series cooldown scales proportionately to maintain the same ratio
         # Calculate the ratio of series to file cooldown at the hard tier
@@ -4301,7 +4377,7 @@ def compute_cooldowns(groups, refetch=False):
             if i >= len(difficulty_range):
                 # Prevent index error
                 continue
-            difficulty_group = difficulty_groups[difficulty_range[i]]
+            difficulty_group = infinite_settings["difficulty_groups"][difficulty_range[i]]
             all_files = [f for subgroup in group for f in subgroup]
             unique_files = set(f.replace("[EXTRA]", "") for f in all_files)
             file_count = len(unique_files)
@@ -4328,6 +4404,39 @@ def compute_cooldowns(groups, refetch=False):
 #         *SAVING/LOADING DATA
 # =========================================
 
+def convert_infinities_to_markers(obj):
+    """Recursively convert infinity values to special markers before JSON serialization"""
+    if isinstance(obj, float):
+        if obj == float('inf'):
+            return "__INFINITY__"
+        elif obj == float('-inf'):
+            return "__NEG_INFINITY__"
+        return obj
+    elif isinstance(obj, dict):
+        return {k: convert_infinities_to_markers(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_infinities_to_markers(item) for item in obj]
+    return obj
+
+def convert_infinity_markers(obj):
+    """Recursively convert special infinity markers back to float('inf')"""
+    if isinstance(obj, str):
+        if obj == "__INFINITY__":
+            return float('inf')
+        elif obj == "__NEG_INFINITY__":
+            return float('-inf')
+        # Also handle legacy "inf" string if it exists
+        elif obj == "inf":
+            return float('inf')
+        elif obj == "-inf":
+            return float('-inf')
+        return obj
+    elif isinstance(obj, dict):
+        return {k: convert_infinity_markers(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_infinity_markers(item) for item in obj]
+    return obj
+
 def save_config():
     """Function to save configuration"""
     files_folder = os.path.dirname(CONFIG_FILE)  # Get the folder path
@@ -4335,6 +4444,28 @@ def save_config():
     # Create the folder if it does not exist
     if not os.path.exists(files_folder):
         os.makedirs(files_folder)
+    # Store only diffs for lightning settings to keep config compact
+    lightning_diff = compute_settings_diff(lightning_mode_settings_default, lightning_mode_settings) or {}
+    compact_saved = {}
+    for name, settings in saved_lightning_mode_settings.items():
+        # Ensure each saved entry is trimmed before saving
+        full = update_lightning_mode_settings(settings)
+        diff = compute_settings_diff(lightning_mode_settings_default, full)
+        compact_saved[name] = diff if diff is not None else {}
+    
+    # Store only diffs for infinite settings to keep config compact
+    infinite_diff = compute_settings_diff(INFINITE_SETTINGS_DEFAULT, infinite_settings) or {}
+    # Convert infinities in the diff before saving
+    infinite_diff = convert_infinities_to_markers(infinite_diff)
+    
+    compact_saved_infinite = {}
+    for name, settings in saved_infinite_settings.items():
+        # Ensure each saved entry is trimmed before saving
+        full = sync_with_default(copy.deepcopy(settings), INFINITE_SETTINGS_DEFAULT)
+        diff = compute_settings_diff(INFINITE_SETTINGS_DEFAULT, full)
+        # Convert infinities before storing
+        compact_saved_infinite[name] = convert_infinities_to_markers(diff if diff is not None else {})
+
     config = {
         "host": host,
         "volume_level": volume_level,
@@ -4348,31 +4479,38 @@ def save_config():
         "scale_main_ui": scale_main_ui,
         "auto_fetch_missing": auto_fetch_missing,
         "special_round_warning": special_round_warning,
+        "selected_rules_file": selected_rules_file,
         "youtube_api_key": YOUTUBE_API_KEY,
         "openai_api_key": OPENAI_API_KEY,
         "title_top_info_txt": title_top_info_txt,
         "end_session_txt": end_session_txt,
         "directory": directory,
-        "lightning_mode_settings": lightning_mode_settings,
+        "lightning_mode_settings": lightning_diff,
         "selected_light_mode_settings": selected_light_mode_settings,
-        "saved_lightning_mode_settings": saved_lightning_mode_settings,
+        "saved_lightning_mode_settings": compact_saved,
+        "infinite_settings": infinite_diff,
+        "selected_infinite_settings": selected_infinite_settings,
+        "saved_infinite_settings": compact_saved_infinite,
         "playlist": playlist,
         "directory_files": directory_files
     }
     update_current_index(save = False)
     with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4)
+        json.dump(config, f, indent=4, allow_nan=False)
 
 def load_config():
     """Function to load configuration"""
     global directory_files, directory, playlist, title_top_info_txt, end_session_txt, host, YOUTUBE_API_KEY, OPENAI_API_KEY
     global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings, bonus_points
+    global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
-    global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning
+    global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
                 config = json.load(f)
+            # Convert infinity markers back to float('inf')
+            config = convert_infinity_markers(config)
             host = config.get("host", "")
             title_top_info_txt = config.get("title_top_info_txt", "")
             end_session_txt = config.get("end_session_txt", "")
@@ -4384,9 +4522,20 @@ def load_config():
             directory = config.get("directory", "")
             YOUTUBE_API_KEY = config.get("youtube_api_key", "")
             OPENAI_API_KEY = config.get("openai_api_key", "")
+            selected_rules_file = config.get("selected_rules_file", "rules.json")
+            scoreboard_rules = load_rules(selected_rules_file)
+            set_rules()
             lightning_mode_settings = update_lightning_mode_settings(config.get("lightning_mode_settings", copy.deepcopy(lightning_mode_settings_default)))
             selected_light_mode_settings = config.get("selected_light_mode_settings", "")
             saved_lightning_mode_settings = config.get("saved_lightning_mode_settings", {})
+            
+            # Load infinite settings
+            loaded_infinite = config.get("infinite_settings", {})
+            infinite_settings.clear()
+            infinite_settings.update(sync_with_default(copy.deepcopy(loaded_infinite), INFINITE_SETTINGS_DEFAULT))
+            selected_infinite_settings = config.get("selected_infinite_settings", "")
+            saved_infinite_settings = config.get("saved_infinite_settings", {})
+            
             inverted_colors = config.get("inverted_colors", False)
             inverted_positions = config.get("inverted_positions", False)
             half_points = config.get("half_points", False)
@@ -4404,6 +4553,12 @@ def load_config():
                 lightning_mode_settings = update_lightning_mode_settings(copy.deepcopy(lightning_mode_settings_default))
             elif selected_light_mode_settings in saved_lightning_mode_settings:
                 lightning_mode_settings = update_lightning_mode_settings(saved_lightning_mode_settings[selected_light_mode_settings])
+            
+            # Load selected infinite preset if exists
+            if selected_infinite_settings and selected_infinite_settings in saved_infinite_settings:
+                infinite_settings.clear()
+                infinite_settings.update(sync_with_default(copy.deepcopy(saved_infinite_settings[selected_infinite_settings]), INFINITE_SETTINGS_DEFAULT))
+            
             if OPENAI_API_KEY:
                 set_openai_client_key()
             try:
@@ -4498,7 +4653,7 @@ def rgb_to_hex(rgb):
 def show_settings_popup():
     """Opens a settings popup for editing configuration values."""
     global volume_level, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
-    global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt
+    global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, selected_rules_file, scoreboard_rules
     
     def is_valid_color(color):
         """Validate if a color name or hex code is valid"""
@@ -4584,7 +4739,7 @@ def show_settings_popup():
     def save_settings():
         """Save all settings with visual feedback"""
         global volume_level, stream_volume_boost, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
-        global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning
+        global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
         
         try:
             # Capture original scale_main_ui value to detect changes
@@ -4601,6 +4756,8 @@ def show_settings_popup():
             scale_main_ui = scale_main_ui_var.get()
             auto_fetch_missing = auto_fetch_missing_var.get()
             special_round_warning = special_round_warning_var.get()
+            selected_rules_file = rules_file_var.get()
+            scoreboard_rules = load_rules(selected_rules_file)
             YOUTUBE_API_KEY = youtube_key_var.get()
             OPENAI_API_KEY = openai_key_var.get()
             title_top_info_txt = title_info_var.get()
@@ -4673,6 +4830,7 @@ def show_settings_popup():
         "Scale Main UI": "Scales the main UI based on screen resolution. Requires restart.",
         "Auto Fetch Missing": "Automatically fetches metadata if it's not found while playing themes.",
         "Special Round Warning": "Shows a warning before special rounds begin.",
+        "Rules File": "Select which rules file to use for the scoreboard. Files must end with 'rules.json'.",
         "YouTube API Key": "API key for YouTube integration features. Required for Clip and Ost lightning rounds.",
         "OpenAI API Key": "API key for OpenAI/ChatGPT integration features. Required for Trivia and Emoji lightning rounds.",
         "Title Only Info Text": "Custom text displayed above title when showing title-only information.",
@@ -4808,6 +4966,17 @@ def show_settings_popup():
                                            bg=BACKGROUND_COLOR, fg="white", selectcolor="black",
                                            command=lambda: special_round_warning_text.set("Enabled" if special_round_warning_var.get() else "Disabled"))
     special_round_warning_btn.pack(side="left", padx=(5, 0))
+    
+    # Rules File
+    rules_file_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    rules_file_frame.pack(fill="x", pady=5)
+    rules_file_label = tk.Label(rules_file_frame, text="Rules File:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    rules_file_label.pack(side="left")
+    ToolTip(rules_file_label, setting_descriptions["Rules File"])
+    available_rules = get_available_rules_files("files")
+    rules_file_var = tk.StringVar(value=selected_rules_file)
+    rules_file_dropdown = ttk.Combobox(rules_file_frame, textvariable=rules_file_var, values=available_rules, width=25, state='readonly')
+    rules_file_dropdown.pack(side="left", padx=(5, 0))
     
     # YouTube API Key
     youtube_key_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -5167,6 +5336,8 @@ def delete_playlist(index):
         os.remove(filename)
         if check_theme_cache.get("name"):
             del check_theme_cache["name"]
+        if check_theme_cache.get(name):
+            del check_theme_cache[name]
         print(f"Deleted playlist: {name}")
     except Exception as e:
         print(f"Error deleting playlist: {e}")
@@ -5441,7 +5612,7 @@ def convert_file_format_by_filename(filename):
     
     # Generate output filename
     base, _ = os.path.splitext(filepath)
-    output_filepath = f"{base}_converted.{output_format}"
+    output_filepath = f"{base}.{output_format}"
     
     # Confirm the operation
     confirm = messagebox.askyesno("Convert Format", 
@@ -5458,47 +5629,59 @@ def convert_file_format_by_filename(filename):
     try:
         # Determine appropriate codecs and settings for the output format
         if output_format in ['mp4', 'mov']:
-            # H.264 + AAC for MP4/MOV
+            # H.264 + AAC for MP4/MOV - higher quality settings
             video_codec = "libx264"
             audio_codec = "aac"
-            audio_settings = ["-b:a", "192k"]
+            audio_settings = ["-b:a", "256k"]  # Higher audio bitrate for better quality
+            video_settings = ["-crf", "18"]  # Lower CRF for better quality (18-23 is good, 18 is high quality)
         elif output_format == 'webm':
-            # VP9 + Vorbis for WebM
+            # VP9 + Opus for WebM - balanced quality and file size
             video_codec = "libvpx-vp9"
-            audio_codec = "libvorbis"
-            audio_settings = ["-q:a", "6"]
+            audio_codec = "libopus"  # Opus is better than Vorbis
+            audio_settings = ["-b:a", "128k"]  # Good quality for Opus at smaller size
+            video_settings = ["-crf", "25", "-b:v", "0"]  # CRF 31 is recommended default for VP9 (good quality, reasonable size)
         elif output_format in ['mkv', 'avi']:
             # H.264 + AAC for MKV/AVI
             video_codec = "libx264"
             audio_codec = "aac"
-            audio_settings = ["-b:a", "192k"]
+            audio_settings = ["-b:a", "256k"]
+            video_settings = ["-crf", "18"]
         elif output_format == 'mp3':
             # Audio only - MP3
             video_codec = None
             audio_codec = "libmp3lame"
-            audio_settings = ["-b:a", "192k"]
+            audio_settings = ["-b:a", "320k"]  # Maximum quality MP3
+            video_settings = []
         elif output_format == 'wav':
             # Audio only - WAV (uncompressed)
             video_codec = None
             audio_codec = "pcm_s16le"
             audio_settings = []
+            video_settings = []
         elif output_format in ['ogg', 'oga']:
             # Audio only - Ogg Vorbis
             video_codec = None
             audio_codec = "libvorbis"
-            audio_settings = ["-q:a", "6"]
+            audio_settings = ["-q:a", "8"]  # Higher quality (0-10 scale, 8 is very good)
+            video_settings = []
         else:
             # Let FFmpeg auto-detect best codecs for format
             video_codec = None
             audio_codec = None
-            audio_settings = ["-b:a", "192k"]  # Default audio bitrate
+            audio_settings = ["-b:a", "256k"]  # Higher default audio bitrate
+            video_settings = []
         
         # Build FFmpeg command
         ffmpeg_cmd = ["ffmpeg", "-i", filepath]
         
         # Add codec settings if specified
         if video_codec:
-            ffmpeg_cmd.extend(["-c:v", video_codec, "-preset", "fast"])
+            ffmpeg_cmd.extend(["-c:v", video_codec])
+            if output_format == 'webm':
+                ffmpeg_cmd.extend(["-deadline", "best", "-cpu-used", "0"])  # Highest quality (slowest encoding)
+            else:
+                ffmpeg_cmd.extend(["-preset", "slow"])  # Slower but better quality
+            ffmpeg_cmd.extend(video_settings)
         elif video_codec is None and output_format not in ['mp3', 'wav', 'ogg', 'oga']:
             ffmpeg_cmd.extend(["-c:v", "copy"])  # Copy video if not audio-only
         
@@ -5517,8 +5700,8 @@ def convert_file_format_by_filename(filename):
         print(f"Converting {filename} to {output_format.upper()} format...")
         print(f"FFmpeg command: {' '.join(ffmpeg_cmd)}")
         
-        # Run FFmpeg conversion with progress
-        result = subprocess.run(ffmpeg_cmd, text=True, encoding='utf-8', errors='ignore', timeout=900)  # 15 minute timeout
+        # Run FFmpeg conversion (no timeout for high-quality encoding)
+        result = subprocess.run(ffmpeg_cmd, text=True, encoding='utf-8', errors='ignore')
         
         if result.returncode == 0 and os.path.exists(output_filepath):
             # Success - show completion message
@@ -6072,33 +6255,42 @@ def open_github_releases():
                            f"Please manually visit:\n{releases_url}")
 
 def check_for_updates_on_startup():
-    """Check for updates on startup and prompt user if update is available."""
-    try:
-        # Check for updates in background
-        update_info = check_for_updates()
-        
-        if update_info.get("error"):
-            # Silently fail on startup - don't bother user with network errors
-            print(f"Update check failed: {update_info['error']}")
-            return
-        
-        if update_info.get("update_available"):
-            # Update is available, ask if user wants to open releases page
-            release_data = update_info.get("release_data", {})
-            release_body = release_data.get("body", "No release notes available.")
+    """Check for updates on startup in a background thread to avoid blocking UI."""
+    def background_check():
+        try:
+            # Check for updates in background
+            update_info = check_for_updates()
             
-            result = messagebox.askyesno("Update Available", 
-                                       f"New version available!\n\n"
-                                       f"Current version: {update_info['current_version']}\n"
-                                       f"Latest version: {update_info['latest_version']}\n\n"
-                                       f"Release Notes:\n{release_body[:200]}{'...' if len(release_body) > 200 else ''}\n\n"
-                                       "Would you like to open the GitHub releases page to download it?")
-            if result:
-                open_github_releases()
+            if update_info.get("error"):
+                # Silently fail on startup - don't bother user with network errors
+                print(f"Update check failed: {update_info['error']}")
+                return
+            
+            if update_info.get("update_available"):
+                # Update is available, schedule UI update on main thread
+                release_data = update_info.get("release_data", {})
+                release_body = release_data.get("body", "No release notes available.")
+                
+                def show_update_dialog():
+                    result = messagebox.askyesno("Update Available", 
+                                               f"New version available!\n\n"
+                                               f"Current version: {update_info['current_version']}\n"
+                                               f"Latest version: {update_info['latest_version']}\n\n"
+                                               f"Release Notes:\n{release_body[:200]}{'...' if len(release_body) > 200 else ''}\n\n"
+                                               "Would you like to open the GitHub releases page to download it?")
+                    if result:
+                        open_github_releases()
+                
+                # Schedule dialog on main thread
+                root.after(0, show_update_dialog)
+        
+        except Exception as e:
+            # Silently fail on startup - don't bother user with errors
+            print(f"Startup update check failed: {str(e)}")
     
-    except Exception as e:
-        # Silently fail on startup - don't bother user with errors
-        print(f"Startup update check failed: {str(e)}")
+    # Run check in background thread
+    update_thread = threading.Thread(target=background_check, daemon=True)
+    update_thread.start()
 
 # =========================================
 #           *STATS DISPLAY
@@ -7225,8 +7417,9 @@ def get_playlists_dict(exclude_system=False, system_only=False):
 light_round_started = False
 light_round_start_time = None
 light_round_number = 0
-light_round_length_default = 12
+LIGHT_ROUND_LENGTH_DEFAULT = 12
 light_round_length = 12
+LIGHT_ROUND_ANSWER_LENGTH_DEFAULT = 8
 light_round_answer_length = 8
 light_mode = None
 light_modes = {
@@ -7791,35 +7984,113 @@ lightning_mode_settings = {}
 selected_light_mode_settings = ""
 saved_lightning_mode_settings = {}
 selected_settings = ""
+saved_infinite_settings = {}
+selected_infinite_settings = ""
 
-def open_settings_editor():
-    global lightning_mode_settings, lightning_mode_settings_default, selected_light_mode_settings, saved_lightning_mode_settings, selected_settings
-
+def open_generic_settings_editor(
+    title,
+    current_settings_dict,
+    default_settings_dict,
+    saved_settings_dict,
+    selected_setting_name,
+    on_apply_callback,
+    on_save_config_callback
+):
+    """
+    Generic settings editor with tree UI.
+    
+    Args:
+        title: Window title
+        current_settings_dict: The current settings dictionary to edit (will be modified in-place)
+        default_settings_dict: The default settings dictionary for comparison
+        saved_settings_dict: Dictionary of saved preset settings
+        selected_setting_name: Current selected preset name
+        on_apply_callback: Callback(new_settings, selected_name) called when Apply is clicked
+        on_save_config_callback: Callback() called when settings need to be saved to config
+    """
+    
     def parse_literal(value):
         try:
-            return ast.literal_eval(value)
+            parsed = ast.literal_eval(value)
+            # Convert infinity markers back to float('inf')
+            if isinstance(parsed, str):
+                if parsed == "__INFINITY__":
+                    return float('inf')
+                elif parsed == "__NEG_INFINITY__":
+                    return float('-inf')
+                elif parsed == "inf":
+                    return float('inf')
+                elif parsed == "-inf":
+                    return float('-inf')
+            return parsed
         except Exception:
+            # If ast.literal_eval fails, check if it's an infinity marker
+            if isinstance(value, str):
+                if value == "__INFINITY__":
+                    return float('inf')
+                elif value == "__NEG_INFINITY__":
+                    return float('-inf')
+                elif value == "inf":
+                    return float('inf')
+                elif value == "-inf":
+                    return float('-inf')
             return value
 
-    def insert_into_tree(tree, parent, d):
+    def insert_into_tree(tree, parent, d, default_sub=None):
+        """Insert items into the tree. If `default_sub` is provided, compare values to it
+        and tag modified nodes with 'modified'."""
+        if default_sub is None:
+            default_sub = default_settings_dict if isinstance(default_settings_dict, dict) else {}
+
         if isinstance(d, dict):
             for key, val in d.items():
                 # Special display for 'range' lists of length 2
                 if key == "range" and isinstance(val, (list, tuple)) and len(val) == 2:
                     node_id = tree.insert(parent, 'end', text=str(key), open=False)
+                    # Compare with default
+                    def_range = default_sub.get(key) if isinstance(default_sub, dict) else None
+                    min_tag = None
+                    max_tag = None
                     tree.insert(node_id, 'end', text=f"min: {val[0]}", open=False)
                     tree.insert(node_id, 'end', text=f"max: {val[1]}", open=False)
+                    # If default range exists and differs, tag parent
+                    if isinstance(def_range, (list, tuple)) and len(def_range) == 2 and (def_range[0] != val[0] or def_range[1] != val[1]):
+                        tree.item(node_id, tags=('modified',))
                 elif isinstance(val, (bool, int, float, str)) or val is None:
-                    node_id = tree.insert(parent, 'end', text=f"{key}: {val}", open=False)
+                    node_text = f"{key}: {val}"
+                    node_id = tree.insert(parent, 'end', text=node_text, open=False)
+                    # Compare with default
+                    default_val = None
+                    if isinstance(default_sub, dict) and key in default_sub:
+                        default_val = default_sub[key]
+                    # For display types, parse_literal used elsewhere; we compare raw Python values
+                    if default_val is not None and val != default_val:
+                        tree.item(node_id, tags=('modified',))
                 else:
                     node_id = tree.insert(parent, 'end', text=str(key), open=False)
-                    insert_into_tree(tree, node_id, val)
+                    sub_default = default_sub.get(key) if isinstance(default_sub, dict) else {}
+                    insert_into_tree(tree, node_id, val, sub_default)
+                    # If any child is tagged modified, tag this parent too
+                    for child in tree.get_children(node_id):
+                        if 'modified' in tree.item(child, 'tags'):
+                            tree.item(node_id, tags=('modified',))
+                            break
         elif isinstance(d, (list, tuple)):
             for i, val in enumerate(d):
                 node_id = tree.insert(parent, 'end', text=f"[{i}]", open=False)
-                insert_into_tree(tree, node_id, val)
+                sub_default = None
+                if isinstance(default_sub, (list, tuple)) and i < len(default_sub):
+                    sub_default = default_sub[i]
+                insert_into_tree(tree, node_id, val, sub_default)
+                for child in tree.get_children(node_id):
+                    if 'modified' in tree.item(child, 'tags'):
+                        tree.item(node_id, tags=('modified',))
+                        break
         else:
-            tree.insert(parent, 'end', text=str(d), open=False)
+            node_id = tree.insert(parent, 'end', text=str(d), open=False)
+            # Compare with default if provided
+            if default_sub is not None and not isinstance(default_sub, dict) and d != default_sub:
+                tree.item(node_id, tags=('modified',))
 
     def tree_to_dict(tree, parent=''):
         children = tree.get_children(parent)
@@ -7875,7 +8146,7 @@ def open_settings_editor():
 
     def rebuild_tree(data):
         tree.delete(*tree.get_children())
-        insert_into_tree(tree, '', data)
+        insert_into_tree(tree, '', data, default_settings_dict)
 
     def on_double_click(event):
         item_id = tree.selection()[0]
@@ -7934,61 +8205,67 @@ def open_settings_editor():
         entry.focus()
 
     def apply_changes():
-        global selected_light_mode_settings
-        nonlocal current_settings
+        nonlocal current_settings, selected_settings
         current_settings = tree_to_dict(tree)
-        lightning_mode_settings.clear()
-        lightning_mode_settings.update(copy.deepcopy(current_settings))
+        current_settings_dict.clear()
+        # Store full settings in memory, but persistent storage will keep only diffs
+        current_settings_dict.update(copy.deepcopy(current_settings))
         apply_button.configure(text="APPLIED!")
-        selected_light_mode_settings = selected_settings
+        on_apply_callback(current_settings, selected_settings)
         root.after(300, lambda: apply_button.configure(text="Apply"))
-        save_config()
+        on_save_config_callback()
+        # Refresh tree to update modified highlighting (compare against defaults)
+        try:
+            tree.delete(*tree.get_children())
+            insert_into_tree(tree, '', current_settings_dict, default_settings_dict)
+        except Exception:
+            pass
 
     def save_as():
-        global selected_settings
+        nonlocal selected_settings
         name = simpledialog.askstring("Save Settings As", "Enter a name for these settings:", initialvalue=saved_var.get())
         if name:
-            saved_lightning_mode_settings[name] = copy.deepcopy(tree_to_dict(tree))
+            saved_settings_dict[name] = copy.deepcopy(tree_to_dict(tree))
             refresh_saved_dropdown()
             saved_var.set(name)
             selected_settings = name
-            save_config()
+            on_save_config_callback()
 
     def load_selected():
-        global selected_settings
+        nonlocal selected_settings
         name = saved_var.get()
-        if name in saved_lightning_mode_settings:
+        if name in saved_settings_dict:
             selected_settings = name
-            saved_lightning_mode_settings[name] = update_lightning_mode_settings(saved_lightning_mode_settings[name])
-            rebuild_tree(saved_lightning_mode_settings[name])
+            saved_settings_dict[name] = sync_with_default(saved_settings_dict[name], default_settings_dict)
+            rebuild_tree(saved_settings_dict[name])
 
     def delete_selected():
-        global selected_settings
+        nonlocal selected_settings
         name = saved_var.get()
-        if name in saved_lightning_mode_settings:
-            del saved_lightning_mode_settings[name]
+        if name in saved_settings_dict:
+            del saved_settings_dict[name]
             saved_var.set("")
             selected_settings = ""
             refresh_saved_dropdown()
-            save_config()
+            on_save_config_callback()
 
     def load_defaults():
-        global selected_settings
+        nonlocal selected_settings
         selected_settings = ""
         saved_var.set("")
         rebuild_tree(default_copy)
 
     def refresh_saved_dropdown():
-        global selected_settings
+        nonlocal selected_settings
         menu = saved_menu["menu"]
         menu.delete(0, "end")
-        for name in saved_lightning_mode_settings:
+        for name in saved_settings_dict:
             menu.add_command(label=name, command=lambda val=name: saved_var.set(val))
         saved_var.set(selected_settings)
 
     # Pop-out window
     window = tk.Toplevel()
-    window.title("Lightning Mode Settings Editor")
+    window.title(title)
     window.geometry("400x450")
     window.configure(bg="#1e1e1e")
 
@@ -7999,14 +8276,19 @@ def open_settings_editor():
     style.map("Treeview", background=[("selected", "#333")])
 
     tree = ttk.Treeview(window)
+    # Tag style for modified fields
+    try:
+        tree.tag_configure('modified', foreground='orange')
+    except Exception:
+        pass
     tree.pack(expand=True, fill='both', padx=10, pady=10)
     tree.bind('<Double-1>', on_double_click)
 
     # Load data
-    default_copy = copy.deepcopy(lightning_mode_settings_default)
-    current_settings = copy.deepcopy(lightning_mode_settings)
-    selected_settings = selected_light_mode_settings
-    insert_into_tree(tree, '', current_settings)
+    default_copy = copy.deepcopy(default_settings_dict)
+    current_settings = copy.deepcopy(current_settings_dict)
+    selected_settings = selected_setting_name
+    insert_into_tree(tree, '', current_settings, default_copy)
 
     # Control panel
     controls = tk.Frame(window, bg="#1e1e1e")
@@ -8016,6 +8298,7 @@ def open_settings_editor():
     apply_button.pack(side="left", padx=5)
     tk.Button(controls, text="Save As", command=save_as, bg="#444", fg="white").pack(side="left", padx=5)
     tk.Button(controls, text="Load Defaults", command=load_defaults, bg="#444", fg="white").pack(side="left", padx=5)
+    # Trim Saved button removed — trimming is performed automatically when saving.
 
     saved_var = tk.StringVar()
     saved_menu = tk.OptionMenu(controls, saved_var, "")
@@ -8027,6 +8310,51 @@ def open_settings_editor():
     tk.Button(controls, text="X", command=delete_selected, bg="#aa3333", fg="white").pack(side="left")
 
     refresh_saved_dropdown()
+
+def open_settings_editor():
+    """Open lightning mode settings editor"""
+    global selected_light_mode_settings
+    
+    def on_apply(new_settings, selected_name):
+        global selected_light_mode_settings
+        selected_light_mode_settings = selected_name
+    
+    open_generic_settings_editor(
+        title="Lightning Mode Settings Editor",
+        current_settings_dict=lightning_mode_settings,
+        default_settings_dict=lightning_mode_settings_default,
+        saved_settings_dict=saved_lightning_mode_settings,
+        selected_setting_name=selected_light_mode_settings,
+        on_apply_callback=on_apply,
+        on_save_config_callback=save_config
+    )
+
+def open_infinite_settings_editor():
+    """Open infinite playlist settings editor"""
+    global selected_infinite_settings, saved_infinite_settings
+    
+    # Initialize saved settings if not exists
+    if 'saved_infinite_settings' not in globals():
+        globals()['saved_infinite_settings'] = {}
+    if 'selected_infinite_settings' not in globals():
+        globals()['selected_infinite_settings'] = ""
+    
+    def on_apply(new_settings, selected_name):
+        global selected_infinite_settings, cached_pop_time_group, series_cooldowns_cache
+        selected_infinite_settings = selected_name
+        # Clear caches when settings change
+        cached_pop_time_group = None
+        series_cooldowns_cache = None
+    
+    open_generic_settings_editor(
+        title="Infinite Playlist Settings Editor",
+        current_settings_dict=infinite_settings,
+        default_settings_dict=INFINITE_SETTINGS_DEFAULT,
+        saved_settings_dict=saved_infinite_settings,
+        selected_setting_name=selected_infinite_settings,
+        on_apply_callback=on_apply,
+        on_save_config_callback=save_config
+    )
 
 def update_lightning_mode_settings(settings):
     settings = sync_with_default(settings, lightning_mode_settings_default)
@@ -8049,6 +8377,31 @@ def sync_with_default(saved, default):
             if not isinstance(saved[key], type(default_value)):
                 saved[key] = default_value
     return saved
+
+
+def compute_settings_diff(default, saved):
+    """Return a dict containing only the keys in `saved` that differ from `default`.
+    Works recursively for nested dicts. If a nested dict has no differing keys, it's omitted.
+    """
+    if not isinstance(saved, dict) or not isinstance(default, dict):
+        # For non-dict types, return saved only if different
+        return copy.deepcopy(saved) if saved != default else None
+
+    diff = {}
+    for key, val in saved.items():
+        if key not in default:
+            # Key not in default - store it
+            diff[key] = copy.deepcopy(val)
+            continue
+        default_val = default[key]
+        if isinstance(val, dict) and isinstance(default_val, dict):
+            sub = compute_settings_diff(default_val, val)
+            if sub:
+                diff[key] = sub
+        else:
+            if val != default_val:
+                diff[key] = copy.deepcopy(val)
+    return diff if diff else None
 
 def toggle_light_mode(type=None, queue=True):
     global light_mode, variety_light_mode_enabled, light_dropdown, start_light_mode_button
@@ -8082,19 +8435,19 @@ def toggle_light_mode(type=None, queue=True):
                 image = Image.open(image_path)
                 image = image.resize((400, 225), Image.LANCZOS)  # Resize if needed
                 image_tk = ImageTk.PhotoImage(image)  # Convert to Tkinter format
-            mode_length = lightning_mode_settings.get(light_mode, {}).get("length", light_round_length_default)
+            mode_length = lightning_mode_settings.get(light_mode, {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
             if "c. " in light_mode:
                 mode_type = 'character'
             else:
                 mode_type = 'anime'
             if type == "variety":
                 min_length = 0
-                max_length = light_round_length_default
+                max_length = LIGHT_ROUND_LENGTH_DEFAULT
                 for l in lightning_mode_settings:
-                    if min_length > lightning_mode_settings[l].get("length", light_round_length_default):
-                        min_length = lightning_mode_settings[l].get("length", light_round_length_default)
-                    if max_length < lightning_mode_settings[l].get("length", light_round_length_default):
-                        max_length = lightning_mode_settings[l].get("length", light_round_length_default)
+                    if min_length > lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT):
+                        min_length = lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT)
+                    if max_length < lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT):
+                        max_length = lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT)
                 mode_length = f"{min_length} - {max_length}"
             mode_desc = f"{mode.get("desc")}\nYou have {mode_length} seconds to guess.\n\n1 PT for the first to guess the {mode_type}!"
 
@@ -8116,6 +8469,12 @@ def unselect_light_modes():
 # =========================================
 
 def get_light_round_time():
+    if fixed_lightning_round_playlist_data and fixed_current_round:
+        start_time = fixed_current_round.get("start_time")
+        if fixed_current_round.get("type") not in ["regular", "peek", "blind", "song"]:
+            start_time = max(start_time - light_round_length, 1.1)
+        if start_time:
+            return start_time
     length = player.get_length()/1000
     buffer = 10
     need_censors = light_mode in ['regular', 'peek']
@@ -8146,10 +8505,9 @@ def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
     global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
-        if time < 1:
+        if time < 1 and not frame_light_round_started:
             player.pause()
-            if not frame_light_round_started:
-                setup_frame_light_round()
+            setup_frame_light_round()
         return
     if time > 1 and light_round_start_time != None and light_round_started:
         if time >= light_round_start_time+light_round_length+light_round_answer_length:
@@ -8157,21 +8515,24 @@ def update_light_round(time):
             light_round_started = False
         elif(time >= light_round_start_time+light_round_length):
             start_str = "next"
-            blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default)
+            blind_length = lightning_mode_settings.get("blind", {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
+            BLIND_ONE_SECOND_TIME = 4
             if light_blind_one_second_count != None and light_blind_one_second_count < blind_length:
-                if light_blind_one_second_count % 3 == 0:
+                if light_blind_one_second_count % BLIND_ONE_SECOND_TIME == 0:
                     light_blind_one_second_count += 1
                     player.pause()
                     set_progress_overlay(light_round_length*100, light_round_length*100)
                     def update_light_blind_count():
                         global light_blind_one_second_count
-                        if light_blind_one_second_count % 3 == 2:
+                        if not light_blind_one_second_count:
+                            return
+                        if (light_blind_one_second_count + 1) % BLIND_ONE_SECOND_TIME == 0:
                             player.set_time(int(float(light_round_start_time)) * 1000)
                             player.play()
                         light_blind_one_second_count += 1
                         set_countdown(round(blind_length - light_blind_one_second_count))
-                    root.after(1000, update_light_blind_count)
-                    root.after(2000, update_light_blind_count)
+                    for s in range(BLIND_ONE_SECOND_TIME-1):
+                        root.after(1000 * (s+1), update_light_blind_count)
                     set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 if not is_title_window_up():
@@ -8188,7 +8549,7 @@ def update_light_round(time):
                         top_info_data = None
                     toggle_title_popup(True)
                     set_black_screen(False)
-                    set_light_round_number("#" + str(light_round_number))
+                    update_light_round_number()
                     clean_up_light_round()
                     if top_info_data:
                         top_info(top_info_data, 20)
@@ -8199,7 +8560,7 @@ def update_light_round(time):
                         toggle_character_image_overlay(cover_answer)
                     if trivia_answer:
                         top_info(trivia_answer, width_max=0.55) 
-                if not light_mode:
+                if not light_mode or (fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("current_index") == fixed_lightning_round_playlist_data.get("round_count") - 1):
                     start_str = "end"
                 set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
         else:
@@ -8259,7 +8620,7 @@ def update_light_round(time):
                 toggle_emoji_overlay(emojis=emojis, max_emojis=emoji_count)
             elif light_progress_bar:
                 set_progress_overlay(round((time - light_round_start_time)*100), light_round_length*100)
-                if stream_player.is_playing():
+                if stream_player.is_playing() and (not fixed_current_round or fixed_current_round.get("reveal_title_halfway")):
                     half_time = (light_round_length / 2)
                     if time_left >= half_time:
                         set_frame_number(f"TRACK NAME in...{round(time_left-half_time)}")
@@ -8417,7 +8778,7 @@ def update_light_round(time):
             if edge_overlay_box:
                 set_countdown(round(time_left/light_speed_modifier), position="center")
             elif light_blind_one_second_count is not None:
-                blind_length = lightning_mode_settings.get("blind", {}).get("length", light_round_length_default)
+                blind_length = lightning_mode_settings.get("blind", {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
                 set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 set_countdown(round(time_left/light_speed_modifier), inverse=character_round_answer)
@@ -8443,16 +8804,19 @@ def update_light_round(time):
             if lightning_mode_settings.get(light_mode, {}).get("muted"):
                 toggle_mute(True)
             if light_mode == 'blind':
-                blind_variants = lightning_mode_settings.get("blind",{}).get("variants",{})
-                standard, double_speed, mismatch, one_second = blind_variants.get("standard"), blind_variants.get("double_speed"), blind_variants.get("mismatch"), blind_variants.get("one_second")
-                blind_modes = ['standard', 'standard', 'standard', 'mismatch']
-                allowed_blind_modes = []
-                for m in blind_modes:
-                    if blind_variants.get(m):
-                        allowed_blind_modes.append(m)
-                allowed_blind_modes = allowed_blind_modes or blind_modes
-                blind_mode = random.choice(allowed_blind_modes)
-                if blind_mode == "mismatch":
+                if fixed_current_round:
+                    blind_mode = fixed_current_round.get("blind_variant", "standard")
+                else:
+                    blind_variants = lightning_mode_settings.get("blind",{}).get("variants",{})
+                    standard, double_speed, mismatch, one_second = blind_variants.get("standard"), blind_variants.get("double_speed"), blind_variants.get("mismatch"), blind_variants.get("one_second")
+                    blind_modes = ['standard', 'standard', 'standard', 'mismatch']
+                    allowed_blind_modes = []
+                    for m in blind_modes:
+                        if blind_variants.get(m):
+                            allowed_blind_modes.append(m)
+                    allowed_blind_modes = allowed_blind_modes or blind_modes
+                    blind_mode = random.choice(allowed_blind_modes)
+                if (fixed_current_round or mismatch) and blind_mode == "mismatch":
                     media = instance.media_new(directory_files.get(get_mismatched_theme()))
                     mismatched_player.set_media(media)
                     mismatched_player.play()
@@ -8466,7 +8830,7 @@ def update_light_round(time):
                             def mismatch_overlay():
                                 top_info("MISMATCHED VISUALS")
                                 set_frame_number("GUESS BY MUSIC ONLY")
-                                set_light_round_number("#" + str(light_round_number))
+                                update_light_round_number()
                                 pulsating_note_window.attributes("-topmost", True)
                             def set_mismatch_start():
                                 mismatched_player.set_time(int(float(light_round_start_time))*1000)
@@ -8479,24 +8843,29 @@ def update_light_round(time):
                             root.after(100, wait_for_mismatch, filename)
                     wait_for_mismatch(currently_playing.get("filename"))
                 else:
-                    is_op = is_slug_op(currently_playing.get('data', {}).get('slug', ""))
-                    def pick_double_or_one_second(is_op):
-                        if double_speed and one_second:
-                            if not is_op or random.randint(1, 2) == 1:
-                                set_double_speed()
+                    if not fixed_current_round:
+                        is_op = is_slug_op(currently_playing.get('data', {}).get('slug', ""))
+                        def pick_double_or_one_second(is_op):
+                            if double_speed and one_second:
+                                if not is_op or random.randint(1, 2) == 1:
+                                    return "double_speed"
+                                else:
+                                    return "one_second"
+                            elif double_speed:
+                                return "double_speed"
+                            elif one_second:
+                                return "one_second"
+                        if double_speed or one_second:
+                            if not standard:
+                                blind_mode = pick_double_or_one_second(is_op)
                             else:
-                                set_one_second()
-                        elif double_speed:
-                            set_double_speed()
-                        elif one_second:
-                            set_one_second()
-                    if double_speed or one_second:
-                        if not standard:
-                            pick_double_or_one_second(is_op)
-                        else:
-                            popularity = currently_playing.get("data", {}).get("popularity", 1000) or 3000
-                            if (popularity <= 100 and random.randint(1, 3) == 1) or (popularity <= 250 and random.randint(1, 6) == 1):
-                                pick_double_or_one_second(is_op)
+                                popularity = currently_playing.get("data", {}).get("popularity", 1000) or 3000
+                                if (popularity <= 100 and random.randint(1, 3) == 1) or (popularity <= 250 and random.randint(1, 6) == 1):
+                                    blind_mode = pick_double_or_one_second(is_op)
+                    if blind_mode == "double_speed":
+                        set_double_speed()
+                    elif blind_mode == "one_second":
+                        set_one_second()
                     set_progress_overlay(0, light_round_length*100)
             elif light_mode == 'clues':
                 toggle_clues_overlay()
@@ -8600,23 +8969,27 @@ def update_light_round(time):
                 toggle_episode_overlay(1)
                 top_info("CHARACTER NAMES")
             elif light_mode in ['clip', 'ost']:
-                clip_variants = lightning_mode_settings.get("clip", {}).get("variants", {})
-                clip_enabled, trailer_enabled = clip_variants.get("random_clip"), clip_variants.get("trailer")
-                length = 0
-                is_ost = (light_mode == 'ost')
-                if is_ost:    
-                    url = lightning_queue_data.get(currently_playing.get("filename", {}), {}).get("ost_url")
+                if fixed_current_round:
+                    url, name, channel = fixed_current_round.get("clip_url"), fixed_current_round.get("clip_title"), fixed_current_round.get("clip_author") 
+                    length = stream_url(url, name, channel)
                 else:
-                    url = lightning_queue_data.get(currently_playing.get("filename", {}), {}).get("clip_url")
-                if not url:
-                    if not youtube_api_limited and YOUTUBE_API_KEY and (clip_enabled or is_ost):
-                        length = play_random_clip(ost=is_ost)
-                    elif currently_playing.get("data", {}).get("trailer") and trailer_enabled and is_ost:
+                    clip_variants = lightning_mode_settings.get("clip", {}).get("variants", {})
+                    clip_enabled, trailer_enabled = clip_variants.get("random_clip"), clip_variants.get("trailer")
+                    length = 0
+                    is_ost = (light_mode == 'ost')
+                    if is_ost:    
+                        url = lightning_queue_data.get(currently_playing.get("filename", {}), {}).get("ost_url")
+                    else:
+                        url = lightning_queue_data.get(currently_playing.get("filename", {}), {}).get("clip_url")
+                    if not url:
+                        if not youtube_api_limited and YOUTUBE_API_KEY and (clip_enabled or is_ost):
+                            length = play_random_clip(ost=is_ost)
+                        elif currently_playing.get("data", {}).get("trailer") and trailer_enabled and is_ost:
+                            length = play_trailer()
+                    elif trailer_enabled and url[1] == 'trailer':
                         length = play_trailer()
-                elif trailer_enabled and url[1] == 'trailer':
-                    length = play_trailer()
-                else:
-                    length = stream_url(url[0], url[1], url[2])
+                    else:
+                        length = stream_url(url[0], url[1], url[2])
                 if length > 0 and currently_streaming:
                     stream_start_time = get_stream_start_time(length)
                     test_print(f"Length: {length} | Stream Start Time: {stream_start_time}")
@@ -8635,22 +9008,28 @@ def update_light_round(time):
                         elif stream_player.is_playing() and stream_player.get_length() > 0:
                             def stream_overlay():
                                 if light_mode == 'ost':
-                                    top_info("SOUNDTRACK / OST")
+                                    if fixed_current_round and fixed_current_round.get("clip_header"):
+                                        top_info(fixed_current_round.get("clip_header").upper())
+                                    else:
+                                        top_info("SOUNDTRACK / OST")
                                     set_progress_overlay(0, light_round_length*100)
                                 else:
-                                    if last_streamed and last_streamed[3] and "Crunchyroll" in last_streamed[3]:
+                                    if (fixed_current_round and fixed_current_round.get("censor_bottom")) or (not fixed_current_round and last_streamed[3] and "Crunchyroll" in last_streamed[3]):
                                         toggle_outer_edge_overlay()
-                                    if last_streamed[1] == "Trailer":
+                                    if fixed_current_round and fixed_current_round.get("clip_header"):
+                                        top_info(fixed_current_round.get("clip_header").upper(), 40)
+                                    elif last_streamed[1] == "Trailer":
                                         top_info("TRAILER", 40)
                                     else:
                                         top_info("RANDOM CLIP", 40)
-                                set_light_round_number("#" + str(light_round_number))
+                                update_light_round_number()
                             def set_stream_start():
                                 stream_player.set_time(int(float(stream_start_time))*1000)
+                                volume_adjustment = fixed_current_round.get("volume_adjustment", 0) if fixed_current_round else 0
                                 if light_mode == 'ost':
-                                    stream_player.audio_set_volume(volume_level)
+                                    stream_player.audio_set_volume(volume_level + volume_adjustment)
                                 else:
-                                    stream_player.audio_set_volume(volume_level+stream_volume_boost)
+                                    stream_player.audio_set_volume(volume_level + stream_volume_boost + volume_adjustment)
                                 stream_player.set_fullscreen(False)
                                 stream_player.set_fullscreen(True)
                             def start_player():
@@ -8676,10 +9055,10 @@ def update_light_round(time):
                     root.after(500, set_black_screen, False)
             append_lightning_history()
         player.set_time(int(float(light_round_start_time))*1000)
-        set_countdown(light_round_length, inverse=character_round_answer)
+        set_countdown(int(light_round_length), inverse=character_round_answer)
         set_light_round_number()
         if light_mode != 'peek':
-            set_light_round_number("#" + str(light_round_number), inverse=character_round_answer)
+            update_light_round_number(inverse=character_round_answer)
 
 def start_title_round():
     title_mode = get_next_title_mode(get_base_title())
@@ -8726,18 +9105,21 @@ def get_char_types_by_popularity(data=None, mode=""):
     else:
         return valid_types
 
-def clean_up_light_round():
+def clean_up_light_round(new_round=False):
     global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay
     global frame_light_round_started, light_muted, character_round_answer, light_cover_image, light_trivia_answer, light_blind_one_second_count
     mismatched_player.stop()
     mismatched_player.set_media(None)  # Reset the media
-    stop_stream()
+    if new_round or not fixed_current_round or not fixed_current_round.get("clip_for_answer"):
+        stop_stream()
+        light_muted = False
+        if not disable_video_audio:
+            toggle_mute(False, True)
     mismatch_visuals = None
     character_round_answer = None
     light_cover_image = None
     light_trivia_answer = None
     light_name_overlay = False
-    light_muted = False
     frame_light_round_started = False
     character_round_characters = []
     tag_cloud_tags = []
@@ -8752,8 +9134,6 @@ def clean_up_light_round():
         overlay(destroy=True)
     for info in [set_frame_number, top_info]:
         info()
-    if not disable_video_audio:
-        toggle_mute(False, True)
     if black_overlay:
         black_overlay.attributes("-topmost", True)
     send_scoreboard_command("show")
@@ -8860,11 +9240,21 @@ def queue_next_lightning_mode():
     def queue_next_lightning_mode_worker():
         global lightning_queue, lightning_queue_data
         lightning_queue = None
-        next_index = playlist["current_index"] + 1
-        if next_index < len(playlist["playlist"]) and get_file_path(playlist["playlist"][next_index]):
-            next_filename = get_clean_filename(playlist["playlist"][next_index])
+        fixed_data = None
+        next_fixed_round = None
+        if fixed_lightning_queue or fixed_lightning_round_playlist_data:
+            fixed_data = fixed_lightning_round_playlist_data or fixed_lightning_queue
+
+            if fixed_data.get("current_index", 0)+1 >= len(fixed_data.get("rounds", [])):
+                return
+            next_fixed_round = fixed_data.get("rounds", [])[fixed_data.get("current_index", -1)+1]
+            next_filename = next_fixed_round.get("theme")
         else:
-            return
+            next_index = playlist["current_index"] + 1
+            if next_index < len(playlist["playlist"]) and get_file_path(playlist["playlist"][next_index]):
+                next_filename = get_clean_filename(playlist["playlist"][next_index])
+            else:
+                return
         
         data = get_metadata(next_filename)
         if next_filename not in lightning_queue_data:
@@ -8873,7 +9263,9 @@ def queue_next_lightning_mode():
         excluded_modes = []
         next_mode = None
         while not next_mode:
-            if variety_light_mode_enabled:
+            if next_fixed_round:
+                next_mode = next_fixed_round.get("type")
+            elif variety_light_mode_enabled:
                 next_mode = set_variety_light_mode(next_filename, excluded_modes=excluded_modes)
             else:
                 next_mode = light_mode
@@ -8881,22 +9273,29 @@ def queue_next_lightning_mode():
                 clip_variants = lightning_mode_settings.get("clip", {}).get("variants", {})
                 clip_enabled, trailer_enabled = clip_variants.get("random_clip"), clip_variants.get("trailer")
                 url, name, channel, length = None, None, None, None
-                if not youtube_api_limited and YOUTUBE_API_KEY and clip_enabled:
-                    url, name, channel = play_random_clip(data, True, ost=(next_mode=='ost'))
-                if url:
-                    length = get_youtube_stream_url(url)
-                elif next_mode != 'ost' and data.get("trailer") and trailer_enabled:
-                    url = f"https://www.youtube.com/watch?v={data.get("trailer")}"
-                    name = "trailer"
-                    channel = None
-                    length = get_youtube_stream_url(url)
-                elif variety_light_mode_enabled:
-                    excluded_modes.append(next_mode)
-                    next_mode = None
+                if next_fixed_round:
+                    clip_url = next_fixed_round.get("clip_url")
+                    url, length, name, channel = get_youtube_stream_url(clip_url, include_other_info=True)
+                    name = next_fixed_round.get("clip_title") or name
+                    channel = next_fixed_round.get("clip_author") or channel
+                else:
+                    if not youtube_api_limited and YOUTUBE_API_KEY and clip_enabled:
+                        url, name, channel = play_random_clip(data, True, ost=(next_mode=='ost'))
+                    if url:
+                        length = get_youtube_stream_url(url)
+                    elif next_mode != 'ost' and data.get("trailer") and trailer_enabled:
+                        url = f"https://www.youtube.com/watch?v={data.get("trailer")}"
+                        name = "trailer"
+                        channel = None
+                        length = get_youtube_stream_url(url)
+                    elif variety_light_mode_enabled:
+                        excluded_modes.append(next_mode)
+                        next_mode = None
                 if next_mode == "ost":
                     lightning_queue_data[next_filename]["ost_url"] = [url, name, channel, length]
                 else:
                     lightning_queue_data[next_filename]["clip_url"] = [url, name, channel, length]
+                    # print(name, url, channel)
             elif "c. " in next_mode:
                 min_desc = 0
                 if next_mode == 'c. profile':
@@ -8916,7 +9315,7 @@ def queue_next_lightning_mode():
                     get_emoji_clues_for_title(data)
         up_next_text()
     
-    if light_mode:
+    if light_mode or fixed_lightning_queue or fixed_lightning_round_playlist_data:
         threading.Thread(target=queue_next_lightning_mode_worker, daemon=True).start()
 
 def set_variety_light_mode(queue=None, excluded_modes=[]):
@@ -9027,7 +9426,7 @@ def has_lightning_mode_info(data, round_type):
     if round_type == "clues":
         return len(get_tags(data)) >= 3
     elif round_type == "song":
-        return get_song_string(data, "artist") != "N/A"
+        return get_song_string(data, "artist_string") != "N/A"
     elif round_type == "synopsis":
         return len((data.get("synopsis") or "").split()) > 40
     elif round_type == "title":
@@ -9106,6 +9505,10 @@ frame_light_round_pause = False
 
 def get_frame_light_round_frames():
     frames = []
+    if fixed_lightning_round_playlist_data and fixed_current_round:
+        for f in range(4):
+            frames.append(fixed_current_round.get('frame'+str(f+1)))
+        return frames
     buffer = 5
     video_length_ms = player.get_length()
     total_length = video_length_ms - ((buffer + light_round_answer_length + 1) * 1000)
@@ -9220,7 +9623,7 @@ def setup_frame_light_round():
     frame_light_round_frame_time = 5000
     frame_light_round_pause = False
     play_background_music(True)
-    set_light_round_number("#" + str(light_round_number))
+    update_light_round_number()
     root.after(500, update_frame_light_round, currently_playing.get('filename'))
     root.after(800, set_black_screen, False)
 
@@ -9249,7 +9652,7 @@ def update_frame_light_round(currently_playing_filename):
             player.pause()
     if frame_light_round_frame_index == 4:
         start_str = "next"
-        if not light_mode:
+        if not light_mode or (fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("current_index") == fixed_lightning_round_playlist_data.get("round_count") - 1):
             start_str = "end"
         set_countdown(start_str + " in..." + str(round(((light_round_answer_length*1000)-frame_light_round_frame_time)/1000)))
         if frame_light_round_frame_time >= light_round_answer_length*1000:
@@ -9393,7 +9796,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
     data = currently_playing.get("data", {})
     slug = format_slug(data.get("slug"))
     song = get_song_string(data, "title")
-    artist = get_song_string(data, "artist")
+    artist = get_song_string(data, "artist_string")
     theme_label = format_slug(slug).upper()  # e.g. "OPENING 2"
 
     # Each box: { key: (title, text, y_position, show?) }
@@ -9469,6 +9872,11 @@ def extract_response_text(response):
     return "\n".join(texts) if texts else None
 
 def generate_anime_trivia(data, display=False):
+    if fixed_current_round:
+        trivia = fixed_current_round.get("trivia_question", "No trivia found.")
+        trivia_answer = fixed_current_round.get("trivia_answer", "None")
+        return trivia, trivia_answer
+
     def no_trivia_available():
         return "No trivia available.", "None"
     
@@ -9769,10 +10177,17 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
 # =========================================
 
 synopsis_start_index = None
+synopsis_end_index = None
 synopsis_split = None
 def pick_synopsis():
-    global synopsis_start_index, synopsis_split
+    global synopsis_start_index, synopsis_split, synopsis_end_index
     if not synopsis_start_index:
+        if fixed_current_round:
+            synopsis = fixed_current_round.get("synopsis_text", "No synopsis found.")
+            synopsis_split = synopsis.split(" ")
+            synopsis_start_index = 0
+            synopsis_end_index = len(synopsis_split)
+            return
         synopsis = (currently_playing.get("data", {}).get("synopsis") or "No synopsis found.")
         for extra_characters in ["\n\n[Written by MAL Rewrite]", "\n\n(Source: adapted from ANN)", "\n\n(Source: Yen Press)", " \n\n", "\n \n", "\n\n", "\n"]:
             synopsis = synopsis.replace(extra_characters, " ")
@@ -9781,7 +10196,8 @@ def pick_synopsis():
         if length <= light_round_length*2:
             synopsis_start_index = 0
         else:
-            synopsis_start_index = random.randint(0, length-(light_round_length*2))
+            synopsis_start_index = random.randint(0, length-41)
+        synopsis_end_index = synopsis_start_index + 41
 
 def is_end_of_sentence(word):
     if word and len(word) > 0:
@@ -9790,12 +10206,14 @@ def is_end_of_sentence(word):
         True
 
 TITLE_GENERIC_WORDS = {"the", "a", "an", "as", "and", "of", "in", "on", "to", "with", "for", "by", "at", "from", "no", "his", "her", "he", "she", "so"}
-def get_light_synopsis_string(words = 41):
+def get_light_synopsis_string(words = None):
+    if not words:
+        words = (synopsis_end_index or len(synopsis_split)) - (synopsis_start_index or 0)
     if synopsis_start_index > 0 and not is_end_of_sentence(synopsis_split[synopsis_start_index-1]):
         text = "..."
     else:
         text = ""
-    for w in range(0, words):
+    for w in range(words):
         if len(synopsis_split) > (w+synopsis_start_index):
             word = synopsis_split[synopsis_start_index+w]
             if not light_trivia_answer:
@@ -9833,14 +10251,21 @@ def toggle_synopsis_overlay(text=None, destroy=False):
         return
 
     if synopsis_overlay is None and text:
+
         
         title_header_txt = "SYNOPSIS:"
         back_color = OVERLAY_BACKGROUND_COLOR
         front_color = OVERLAY_TEXT_COLOR
+
         if light_trivia_answer:
             title_header_txt = "TRIVIA:"
             back_color = MIDDLE_OVERLAY_BACKGROUND_COLOR
             front_color = OVERLAY_BACKGROUND_COLOR
+
+        if fixed_current_round:
+            fixed_title = fixed_current_round.get("synopsis_header") or fixed_current_round.get("trivia_header")
+            if fixed_title:
+                title_header_txt = f"{fixed_title.upper()}:"
 
         synopsis_overlay = tk.Toplevel(root)
         synopsis_overlay.overrideredirect(True)
@@ -10003,7 +10428,7 @@ def get_title_light_string(letters=0):
     for letter in title_light_string:
         if letter != " ":
             new_letter = "ˍ"
-            for l in range(0, min(len(title_light_letters), letters)):
+            for l in range(min(len(title_light_letters), letters)):
                 if title_light_letters[l] == letter.lower():
                     new_letter = letter
                     continue
@@ -11455,7 +11880,7 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
 
     # Get the current character-based lightning mode history
     char_history = []
-    if light_mode.startswith("c."):
+    if mode.startswith("c."):
         char_history = playlist.get("lightning_history", {}).get(mode, [])
 
     # Try types in priority order, fallback to 's' if not present already
@@ -12824,10 +13249,14 @@ currently_streaming = None
 last_streamed = ["","","",""]
 _cached_streams = {}
 
-def get_youtube_stream_url(youtube_url):
+def get_youtube_stream_url(youtube_url, include_other_info=False):
     try:
         if youtube_url in _cached_streams:
-            return _cached_streams[youtube_url]
+            cached_data = _cached_streams[youtube_url]
+            if include_other_info and len(cached_data) > 2:
+                return cached_data
+            elif not include_other_info:
+                return cached_data[:2]
 
         ydl_opts = {
             "format": "best[ext=mp4]/best",
@@ -12839,16 +13268,29 @@ def get_youtube_stream_url(youtube_url):
             info_dict = ydl.extract_info(youtube_url, download=False)
             stream_url = info_dict["url"]
             duration = info_dict.get("duration", 0)  # Duration in seconds
+            title = info_dict.get("title", "")
+            uploader = info_dict.get("uploader", "")
+            channel = info_dict.get("channel", uploader)  # fallback to uploader if channel not available
 
-            _cached_streams[youtube_url] = (stream_url, duration)
-            return stream_url, duration
+            _cached_streams[youtube_url] = (stream_url, duration, title, channel)
+            
+            if include_other_info:
+                return stream_url, duration, title, channel
+            else:
+                return stream_url, duration
     except:
-        _cached_streams[youtube_url] = (None, 0)
-        return None, 0
+        _cached_streams[youtube_url] = (None, 0, "", "")
+        if include_other_info:
+            return None, 0, "", ""
+        else:
+            return None, 0
 
-def stream_url(url, name, channel, new_player=True):
+def stream_url(url, name=None, channel=None, new_player=True):
     global currently_streaming, last_streamed, preset_media, video_stopped, stream_player
-    direct_stream, length = get_youtube_stream_url(url)
+    if not name or not channel:
+        direct_stream, length, name, channel = get_youtube_stream_url(url, include_other_info=True)
+    else:
+        direct_stream, length = get_youtube_stream_url(url)
     if direct_stream:
         currently_streaming = [name, url, channel]
         last_streamed = [currently_playing.get("filename"), name, url, channel]
@@ -12890,6 +13332,8 @@ def play_trailer(url=None):
     return 0
 
 def get_stream_start_time(length):
+    if fixed_current_round and fixed_current_round.get("clip_start_time"):
+        return fixed_current_round.get("clip_start_time")
     if last_streamed and last_streamed[3] and "Crunchyroll" in last_streamed[3]:
         start_buffer = 0
         end_buffer = 10
@@ -13026,10 +13470,10 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                 bad_keywords = [
                     "summary", "explained", "opening", "ending", "shorts", "amv",
                     "[amv]", "trailer", "comparison", "musicvideo", "music video", 
-                    "animate-it", "references", "extended", "review",
-                    "meet the english voice of", "theme song", "cd single", "[sub indo]",
+                    "animate-it", "references", "review", "anime haul", "anime unboxing",
+                    "meet the english voice of", "[sub indo]", "why you should watch ", "simulcast sampler",
                     "you should be reading", "& update", "getting a season", "in-depth",
-                    "full album", "full length", "explain in", "masterpiece", "unboxing",
+                    "full length", "explain in", "masterpiece", "unboxing",
                     "how to watch", "op1", "op2", "op3", "op4", "op5", "op6", "op7", "op8",
                     "op9", "ed1", "ed2", "ed3", "ed4", "ed5", "ed6", "ed7", "ed8", "ed9",
                     "ranting about", "1. ", "horrible season of", "was almost perfect",
@@ -13044,11 +13488,11 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "everything you need to know about", "seasons ranked", "#animeedit", "they need to remake",
                     "? watch these!", "must watch", "anime you should", "anime you must", "anime you need",
                     "anime you have to", "anime you gotta", "veggietales", "reacting to", "the anime effect #",
-                    "#animeexplain", "top 10", "why you should watch ", "simulcast sampler", "anime haul", "anime unboxing",
+                    "#animeexplain", "top 3", "top 5", "top 10", "top 11", "top 12", "top 13",
                     "anime mix", "english dub greeting video", "best of 20"
                 ]
                 ost_bad_keywords = [
-                    "insert song"
+                    "insert song", "anime songs", "cd single", "theme song", "full album", "extended"
                 ]
                 game_bad_keywords = [
                     "gameplay", "let's play", "walkthrough", "opening cinematic", "game trailer"
@@ -13355,6 +13799,15 @@ def set_countdown(value=None, position="top right", inverse=False):
         position = "top left"
     set_floating_text("Countdown", value, position=position, inverse=inverse)
 
+def update_light_round_number(inverse=False):
+    global light_round_number
+    if fixed_lightning_round_playlist_data:
+        light_round_number = fixed_lightning_round_playlist_data.get("current_index", 0) + 1
+        total_rounds = fixed_lightning_round_playlist_data.get("round_count", 1)
+        set_light_round_number(f"#{light_round_number}", inverse=inverse)
+    else:
+        set_light_round_number("#" + str(light_round_number), inverse=inverse)
+
 def set_light_round_number(value=None, inverse=False):
     size = 80
     if value:
@@ -13604,6 +14057,1448 @@ def generate_random_color(min = 0, max = 255):
     return color
 
 # =========================================
+#          *FIXED LIGHTNING ROUNDS
+# =========================================
+last_selected_round_type = None  # Track last selected round type for new rounds
+
+FIXED_LIGHTNING_ROUNDS = {
+    "global":[
+        "theme",
+        "start_time",
+        "duration",
+        "answer_duration"
+    ],
+    "regular": [],
+    "blind": [
+        "blind_variant"
+    ],
+    "frame": [
+        "frame1",
+        "frame2",
+        "frame3",
+        "frame4"
+    ],
+    "synopsis": [
+        "synopsis_header",
+        "synopsis_text"
+    ],
+    "trivia": [
+        "trivia_header",
+        "trivia_question",
+        "trivia_answer"
+    ],
+    "clip": [
+        "clip_header",
+        "clip_start_time",
+        "clip_url",
+        "clip_title",
+        "clip_author",
+        "censor_bottom",
+        "clip_for_answer",
+        "volume_adjustment"
+    ],
+    "ost": [
+        "clip_header",
+        "clip_start_time",
+        "clip_url",
+        "clip_title",
+        "clip_author",
+        "clip_for_answer",
+        "reveal_title_halfway",
+        "volume_adjustment"
+    ],
+    "clues": [
+        # Currently no fixed fields for clue rounds
+        # TODO add delay for clue reveal?
+    ]
+}
+
+# field_name: {type, required, options (for dropdown), default (for dropdown)}
+FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
+    "theme": {"type": "file", "required": True},
+    "start_time": {"type": "time", "required": False},
+    "duration": {"type": "duration", "required": False},
+    "answer_duration": {"type": "duration", "required": False},
+    "blind_variant": {"type": "dropdown", "required": False, "options": lightning_mode_settings_default.get("blind",{}).get("variants",{}), "default": "standard"},
+    "frame1": {"type": "time", "required": True},
+    "frame2": {"type": "time", "required": True},
+    "frame3": {"type": "time", "required": True},
+    "frame4": {"type": "time", "required": True},
+    "synopsis_header": {"type": "text", "required": False, "default": "Synopsis"},
+    "synopsis_text": {"type": "textarea", "required": True},
+    "trivia_header": {"type": "text", "required": False, "default": "Trivia"},
+    "trivia_question": {"type": "textarea", "required": True},
+    "trivia_answer": {"type": "text", "required": True},
+    "clip_header": {"type": "text", "required": False, "default": "Random Clip"},
+    "clip_start_time": {"type": "time", "required": False},
+    "clip_url": {"type": "video_url", "required": True},
+    "clip_title": {"type": "text", "required": False},
+    "clip_author": {"type": "text", "required": False},
+    "censor_bottom": {"type": "toggle", "required": False, "default": False},
+    "clip_for_answer": {"type": "toggle", "required": False, "default": False},
+    "reveal_title_halfway": {"type": "toggle", "required": False, "default": True},
+    "volume_adjustment": {"type": "integer", "required": False, "default": 0}
+}
+
+# Create fixed lightning rounds folder if it doesn't exist
+FIXED_LIGHTNING_FOLDER = "fixed_lightning_round_playlists"
+if not os.path.exists(FIXED_LIGHTNING_FOLDER):
+    os.makedirs(FIXED_LIGHTNING_FOLDER)
+
+# Global variables for fixed lightning round state
+fixed_lightning_queue = None  # {"name": str, "rounds": list, "current_index": int}
+fixed_lightning_round_playlist_data = {}  # Loaded JSON data for current fixed round
+fixed_current_round = None # Current round data
+fixed_lightning_rounds_list = []  # List of available fixed lightning rounds
+
+def load_fixed_lightning_rounds(filter_missing_themes=False):
+    """Load fixed lightning round playlists from folder"""
+    global fixed_lightning_rounds_list
+    fixed_lightning_rounds_list = []
+    
+    if os.path.exists(FIXED_LIGHTNING_FOLDER):
+        for filename in os.listdir(FIXED_LIGHTNING_FOLDER):
+            if filename.endswith(".json"):
+                try:
+                    filepath = os.path.join(FIXED_LIGHTNING_FOLDER, filename)
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        round_name = data.get("name", filename[:-5])
+                        
+                        # Calculate total duration and count valid rounds
+                        total_duration = 0
+                        valid_rounds = []
+                        
+                        for round_data in data.get("rounds", []):
+                            theme = round_data.get("theme", "")
+                            # Check if theme exists in directory_files
+                            if not filter_missing_themes or get_clean_filename(theme) in directory_files:
+                                # Get duration (default to settings if not specified)
+                                duration = round_data.get("duration", lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
+                                # Get answer duration (default to 8 if not specified)
+                                answer_duration = round_data.get("answer_duration", 8)
+                                
+                                total_duration += duration + answer_duration
+                                valid_rounds.append(round_data)
+                        
+                        # Update data with only valid rounds
+                        data["rounds"] = valid_rounds
+                        
+                        fixed_lightning_rounds_list.append({
+                            "name": round_name,
+                            "filename": filename,
+                            "filepath": filepath,
+                            "data": data,
+                            "creator": data.get("creator", "N/A"),
+                            "description": data.get("description", "No description"),
+                            "rounds": valid_rounds,
+                            "total_duration": total_duration,
+                            "round_count": len(valid_rounds)
+                        })
+                except Exception as e:
+                    print(f"Error loading fixed lightning round playlist {filename}: {e}")
+    
+    return fixed_lightning_rounds_list
+
+def show_fixed_lightning_list(update=False):
+    """Show fixed lightning round playlists list in right column"""
+    load_fixed_lightning_rounds(filter_missing_themes=True)
+    
+    # Create dict for show_list
+    rounds_dict = {i: round_info for i, round_info in enumerate(fixed_lightning_rounds_list)}
+
+    def get_round_name(key, value):
+        total_duration = value.get('total_duration', 0)
+        minutes = int(total_duration // 60)
+        seconds = int(total_duration % 60)
+        duration_str = f"[{minutes}:{seconds:02d}] "
+        return duration_str + value.get("name", "Unnamed Round")
+
+    selected = -1
+    if fixed_lightning_queue:
+        for i, round_info in enumerate(fixed_lightning_rounds_list):
+            if round_info.get("name") == fixed_lightning_queue.get("name"):
+                selected = i
+                break
+    
+    show_list("fixed_lightning", right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update)
+
+def queue_fixed_lightning_round(index):
+    """Queue a selected fixed lightning round playlist"""
+    global fixed_lightning_queue, fixed_lightning_round_playlist_data
+    
+    if 0 <= index < len(fixed_lightning_rounds_list):
+        round_info = fixed_lightning_rounds_list[index]
+        name = round_info.get('name', 'Unnamed Round')
+        if fixed_lightning_queue == round_info:
+            fixed_lightning_queue = None
+            toggle_coming_up_popup(False, name)
+        else:
+            fixed_lightning_queue = round_info
+            
+            desc = round_info.get('description')
+            creator = round_info.get('creator')
+            date_created = round_info.get("data").get('date_created', 'N/A').split(" ")[0]
+            date_modified = round_info.get("data").get('date_modified', 'N/A').split(" ")[0]
+            rounds_count = round_info.get('round_count', 0)
+            total_duration = round_info.get('total_duration', 0)
+            
+            created_string = f"Created: {date_created}"
+            if date_created != date_modified:
+                created_string += f" (Modified: {date_modified})"
+
+            # Format duration as minutes:seconds
+            minutes = int(total_duration // 60)
+            seconds = int(total_duration % 60)
+            duration_str = f"{minutes}:{seconds:02d}"
+            
+            details_text = f"Created by: {creator}\n{created_string}\nRounds: {rounds_count} | Duration: {duration_str} mins\n\n{desc}"
+            
+            toggle_coming_up_popup(True, f"{name}", details_text, queue=True)
+            queue_next_lightning_mode()
+
+    show_fixed_lightning_list(update=True)
+
+def open_fixed_lightning_manager():
+    """Open the fixed lightning round playlists manager window"""
+    global fixed_lightning_manager_window
+    
+    def manager_close():
+        global fixed_lightning_manager_window
+        button_seleted(manage_fixed_lightning_button, False)
+        manage_fixed_lightning_button.configure(text="➕")
+        fixed_lightning_manager_window.destroy()
+        fixed_lightning_manager_window = None
+    
+    button_seleted(manage_fixed_lightning_button, True)
+    manage_fixed_lightning_button.configure(text="❌")
+    
+    # Toggle - if window exists, close it
+    if 'fixed_lightning_manager_window' in globals() and fixed_lightning_manager_window:
+        manager_close()
+        return
+    
+    # Create new window
+    fixed_lightning_manager_window = tk.Toplevel()
+    fixed_lightning_manager_window.title("Fixed Lightning Round Playlists Manager")
+    fixed_lightning_manager_window.configure(bg=BACKGROUND_COLOR)
+    fixed_lightning_manager_window.geometry("600x400")
+    
+    # Position at root window location
+    root.update_idletasks()
+    x = root.winfo_x()
+    y = root.winfo_y()
+    fixed_lightning_manager_window.geometry(f"+{x}+{y}")
+    
+    fixed_lightning_manager_window.protocol("WM_DELETE_WINDOW", manager_close)
+    
+    font_big = ("Arial", 12)
+    font_button = ("Arial", 10, "bold")
+    fg_color = "white"
+    
+    selected_round = [None]  # Use list to allow modification in nested functions
+    
+    def refresh_ui():
+        """Refresh the manager UI"""
+        # Clear existing widgets
+        for widget in fixed_lightning_manager_window.winfo_children():
+            widget.destroy()
+        
+        # Reload rounds
+        load_fixed_lightning_rounds()
+        
+        # Main container
+        main_frame = tk.Frame(fixed_lightning_manager_window, bg=BACKGROUND_COLOR)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Left side - List of rounds
+        left_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        
+        # Listbox with scrollbar
+        list_scroll_frame = tk.Frame(left_frame, bg=BACKGROUND_COLOR)
+        list_scroll_frame.pack(fill="both", expand=True)
+        
+        scrollbar = tk.Scrollbar(list_scroll_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        rounds_listbox = tk.Listbox(list_scroll_frame, bg="black", fg=fg_color, font=font_big,
+                                    selectbackground=HIGHLIGHT_COLOR, yscrollcommand=scrollbar.set)
+        rounds_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=rounds_listbox.yview)
+        
+        # Populate listbox with color coding for missing files
+        for round_info in fixed_lightning_rounds_list:
+            rounds_listbox.insert(tk.END, round_info['name'])
+            # Check if any rounds have missing theme files
+            has_missing = False
+            for rnd in round_info['data'].get('rounds', []):
+                theme = rnd.get('theme', '')
+                if theme and theme not in directory_files:
+                    has_missing = True
+                    break
+            # Color the item red if missing files
+            if has_missing:
+                idx = rounds_listbox.size() - 1
+                rounds_listbox.itemconfig(idx, fg='red')
+        
+        # Details panel (bottom of left side)
+        details_frame = tk.Frame(left_frame, bg="black", relief="ridge", bd=2)
+        details_frame.pack(fill="x", pady=(10, 0))
+        
+        details_label = tk.Label(details_frame, text="Select a round to view details", 
+                                font=("Arial", 9), bg="black", fg=fg_color, 
+                                justify="left", anchor="w", wraplength=280)
+        details_label.pack(fill="x", padx=5, pady=5)
+        
+        def on_select(event):
+            """Handle round selection"""
+            selection = rounds_listbox.curselection()
+            if selection:
+                idx = selection[0]
+                selected_round[0] = idx
+                round_info = fixed_lightning_rounds_list[idx]
+                
+                # Update details
+                data = round_info['data']
+                desc = data.get('description', 'No description')
+                creator = data.get('creator', 'Unknown')
+                date_created = data.get('date_created', 'N/A')
+                date_modified = data.get('date_modified', 'N/A')
+                rounds_count = round_info.get('round_count', 0)
+                total_duration = round_info.get('total_duration', 0)
+                
+                # Format duration as minutes:seconds
+                minutes = int(total_duration // 60)
+                seconds = int(total_duration % 60)
+                duration_str = f"{minutes}:{seconds:02d}"
+                
+                details_text = f"Name: {round_info['name']}\nCreator: {creator}\nRounds: {rounds_count}\nTotal Duration: {duration_str}\nCreated: {date_created}\nModified: {date_modified}\n\n{desc}"
+                details_label.config(text=details_text)
+        
+        rounds_listbox.bind('<<ListboxSelect>>', on_select)
+        
+        # Right side - Action buttons
+        right_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+        right_frame.pack(side="right", fill="y")
+        
+        def show_metadata_dialog(title="New Fixed Round", existing_data=None):
+            """Show dialog to enter/edit metadata (name, description, creator)"""
+            dialog = tk.Toplevel(fixed_lightning_manager_window)
+            dialog.title(title)
+            dialog.configure(bg=BACKGROUND_COLOR)
+            dialog.transient(fixed_lightning_manager_window)
+            dialog.grab_set()
+            
+            # Center on parent
+            dialog.update_idletasks()
+            x = fixed_lightning_manager_window.winfo_x() + 50
+            y = fixed_lightning_manager_window.winfo_y() + 50
+            dialog.geometry(f"400x300+{x}+{y}")
+            
+            result = {}
+            
+            # Name
+            tk.Label(dialog, text="Name:", font=("Arial", 10), bg=BACKGROUND_COLOR, fg="white").pack(pady=(10, 0), padx=10, anchor="w")
+            name_entry = tk.Entry(dialog, font=("Arial", 10), bg="black", fg="white", width=45)
+            name_entry.pack(pady=(0, 10), padx=10)
+            if existing_data:
+                name_entry.insert(0, existing_data.get('name', ''))
+            
+            # Description
+            tk.Label(dialog, text="Description:", font=("Arial", 10), bg=BACKGROUND_COLOR, fg="white").pack(pady=(0, 0), padx=10, anchor="w")
+            desc_text = tk.Text(dialog, font=("Arial", 10), bg="black", fg="white", width=45, height=5)
+            desc_text.pack(pady=(0, 10), padx=10)
+            if existing_data:
+                desc_text.insert("1.0", existing_data.get('description', ''))
+            
+            # Creator
+            tk.Label(dialog, text="Creator:", font=("Arial", 10), bg=BACKGROUND_COLOR, fg="white").pack(pady=(0, 0), padx=10, anchor="w")
+            creator_entry = tk.Entry(dialog, font=("Arial", 10), bg="black", fg="white", width=45)
+            creator_entry.pack(pady=(0, 10), padx=10)
+            if existing_data:
+                creator_entry.insert(0, existing_data.get('creator', ''))
+            
+            # Buttons
+            button_frame = tk.Frame(dialog, bg=BACKGROUND_COLOR)
+            button_frame.pack(pady=10)
+            
+            def on_ok():
+                result['name'] = name_entry.get().strip()
+                result['description'] = desc_text.get("1.0", "end-1c").strip()
+                result['creator'] = creator_entry.get().strip()
+                result['confirmed'] = True
+                dialog.destroy()
+            
+            def on_cancel():
+                result['confirmed'] = False
+                dialog.destroy()
+            
+            ok_btn = tk.Button(button_frame, text="OK", font=("Arial", 10, "bold"), bg="black", fg="white", command=on_ok, width=10)
+            ok_btn.pack(side="left", padx=5)
+            
+            cancel_btn = tk.Button(button_frame, text="Cancel", font=("Arial", 10, "bold"), bg="black", fg="white", command=on_cancel, width=10)
+            cancel_btn.pack(side="left", padx=5)
+            
+            # Focus name field
+            name_entry.focus_set()
+            
+            # Wait for dialog to close
+            dialog.wait_window()
+            
+            return result
+        
+        def add_new_round():
+            """Add a new fixed lightning round playlist"""
+            # Show metadata dialog
+            metadata = show_metadata_dialog("New Fixed Round")
+            
+            if not metadata.get('confirmed'):
+                return
+            
+            name = metadata.get('name', '')
+            if not name:
+                messagebox.showwarning("Invalid Name", "Round name cannot be empty.")
+                return
+            
+            # Check for duplicate names
+            if any(r['name'].lower() == name.lower() for r in fixed_lightning_rounds_list):
+                messagebox.showwarning("Duplicate Name", "A round with this name already exists.")
+                return
+            
+            description = metadata.get('description', '')
+            creator = metadata.get('creator', '')
+            
+            # Create filename (sanitize)
+            filename = name.lower().replace(" ", "_")
+            filename = re.sub(r'[^a-z0-9_]', '', filename)
+            if not filename:
+                filename = "round"
+            filename = f"{filename}.json"
+            
+            filepath = os.path.join(FIXED_LIGHTNING_FOLDER, filename)
+            
+            # Check if file already exists
+            if os.path.exists(filepath):
+                messagebox.showwarning("File Exists", "A round file with this name already exists.")
+                return
+            
+            # Create JSON structure with metadata
+            from datetime import datetime
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            round_data = {
+                "name": name,
+                "description": description,
+                "creator": creator,
+                "date_created": now,
+                "date_modified": now,
+                "rounds": []
+            }
+            
+            # Save to file
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(round_data, f, indent=4)
+                refresh_ui()
+                # Refresh the main list
+                show_fixed_lightning_list(update=True)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to create round: {e}")
+        
+        def edit_metadata():
+            """Edit metadata for selected round"""
+            if selected_round[0] is None:
+                messagebox.showwarning("No Selection", "Please select a round to edit.")
+                return
+            
+            round_info = fixed_lightning_rounds_list[selected_round[0]]
+            
+            # Show metadata dialog with existing data
+            metadata = show_metadata_dialog("Edit Metadata", round_info['data'])
+            
+            if not metadata.get('confirmed'):
+                return
+            
+            name = metadata.get('name', '')
+            if not name:
+                messagebox.showwarning("Invalid Name", "Round name cannot be empty.")
+                return
+            
+            # Check for duplicate names (excluding current)
+            if any(r['name'].lower() == name.lower() and r['filepath'] != round_info['filepath'] 
+                   for r in fixed_lightning_rounds_list):
+                messagebox.showwarning("Duplicate Name", "A round with this name already exists.")
+                return
+            
+            # Update metadata
+            from datetime import datetime
+            round_info['data']['name'] = name
+            round_info['data']['description'] = metadata.get('description', '')
+            round_info['data']['creator'] = metadata.get('creator', '')
+            round_info['data']['date_modified'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Check if filename needs to be renamed
+            old_filepath = round_info['filepath']
+            expected_filename = f"{name}.json"
+            new_filepath = os.path.join(FIXED_LIGHTNING_FOLDER, expected_filename)
+            
+            # Save to file
+            try:
+                # If name changed and new file doesn't exist, rename
+                if old_filepath != new_filepath:
+                    if os.path.exists(new_filepath):
+                        messagebox.showwarning("File Exists", f"Cannot rename: {expected_filename} already exists.")
+                        return
+                    # Save to new location and delete old file
+                    with open(new_filepath, 'w', encoding='utf-8') as f:
+                        json.dump(round_info['data'], f, indent=4)
+                    os.remove(old_filepath)
+                    round_info['filepath'] = new_filepath
+                else:
+                    # Just save to existing file
+                    with open(round_info['filepath'], 'w', encoding='utf-8') as f:
+                        json.dump(round_info['data'], f, indent=4)
+                
+                refresh_ui()
+                show_fixed_lightning_list(update=True)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to update metadata: {e}")
+        
+        def edit_round():
+            """Edit the selected round"""
+            if selected_round[0] is None:
+                messagebox.showwarning("No Selection", "Please select a round to edit.")
+                return
+            
+            # Get manager window position
+            fixed_lightning_manager_window.update_idletasks()
+            x = fixed_lightning_manager_window.winfo_x()
+            y = fixed_lightning_manager_window.winfo_y()
+            
+            # Hide manager and open editor at same position
+            fixed_lightning_manager_window.withdraw()
+            round_info = fixed_lightning_rounds_list[selected_round[0]]
+            open_round_editor(round_info, fixed_lightning_manager_window, (x, y))
+        
+        def delete_round():
+            """Delete the selected round"""
+            if selected_round[0] is None:
+                messagebox.showwarning("No Selection", "Please select a round to delete.")
+                return
+            
+            round_info = fixed_lightning_rounds_list[selected_round[0]]
+            
+            # Confirm deletion
+            result = messagebox.askyesno("Confirm Delete", 
+                                        f"Are you sure you want to delete '{round_info['name']}'?\n\nThis cannot be undone.",
+                                        parent=fixed_lightning_manager_window)
+            if not result:
+                return
+            
+            # Delete file
+            try:
+                os.remove(round_info['filepath'])
+                selected_round[0] = None
+                refresh_ui()
+                # Refresh the main list
+                show_fixed_lightning_list(update=True)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to delete round: {e}")
+        
+        # Action buttons
+        add_button = tk.Button(right_frame, text="ADD NEW ROUND", font=font_button, bg="black", fg="white",
+                              command=add_new_round, width=18, pady=10)
+        add_button.pack(pady=(0, 10))
+        
+        edit_meta_button = tk.Button(right_frame, text="EDIT METADATA", font=font_button, bg="black", fg="white",
+                               command=edit_metadata, width=18, pady=10)
+        edit_meta_button.pack(pady=(0, 10))
+        
+        edit_button = tk.Button(right_frame, text="EDIT ROUNDS", font=font_button, bg="black", fg="white",
+                               command=edit_round, width=18, pady=10)
+        edit_button.pack(pady=(0, 10))
+        
+        delete_button = tk.Button(right_frame, text="DELETE", font=font_button, bg="black", fg="white",
+                                  command=delete_round, width=18, pady=10)
+        delete_button.pack(pady=(0, 10))
+    
+    # Initial UI load
+    refresh_ui()
+
+def open_round_editor(round_info, manager_window=None, position=None):
+    """Open the round editor for a specific fixed lightning round playlist"""
+    editor_window = tk.Toplevel()
+    editor_window.title(f"Edit Playlist: {round_info['name']}")
+    editor_window.configure(bg=BACKGROUND_COLOR)
+    editor_window.geometry("700x500")
+    
+    # Position at specified location if provided
+    if position:
+        editor_window.geometry(f"+{position[0]}+{position[1]}")
+    
+    # Handle window close to return to manager
+    def on_close():
+        editor_window.destroy()
+        if manager_window:
+            manager_window.deiconify()
+    
+    editor_window.protocol("WM_DELETE_WINDOW", on_close)
+    
+    font_big = ("Arial", 12)
+    font_button = ("Arial", 10, "bold")
+    fg_color = "white"
+    
+    selected_round_index = [None]
+    
+    def save_rounds():
+        """Save changes to the JSON file"""
+        try:
+            # Update date_modified
+            from datetime import datetime
+            round_info['data']['date_modified'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            with open(round_info['filepath'], 'w', encoding='utf-8') as f:
+                json.dump(round_info['data'], f, indent=4)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save: {e}")
+    
+    def refresh_editor():
+        """Refresh the editor UI"""
+        for widget in editor_window.winfo_children():
+            widget.destroy()
+        
+        # Main container
+        main_frame = tk.Frame(editor_window, bg=BACKGROUND_COLOR)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Left side - List of rounds within this fixed round
+        left_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+        left_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        
+        list_label = tk.Label(left_frame, text=f"Rounds in '{round_info['name']}'", 
+                             font=font_big, bg=BACKGROUND_COLOR, fg=fg_color)
+        list_label.pack(pady=(0, 5))
+        
+        # Listbox with scrollbar
+        list_scroll_frame = tk.Frame(left_frame, bg=BACKGROUND_COLOR)
+        list_scroll_frame.pack(fill="both", expand=True)
+        
+        scrollbar = tk.Scrollbar(list_scroll_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        rounds_listbox = tk.Listbox(list_scroll_frame, bg="black", fg=fg_color, font=("Arial", 10),
+                                    selectbackground=HIGHLIGHT_COLOR, yscrollcommand=scrollbar.set)
+        rounds_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=rounds_listbox.yview)
+        
+        # Populate listbox with color coding for missing files
+        rounds = round_info['data'].get('rounds', [])
+        for i, rnd in enumerate(rounds):
+            rnd_type = rnd.get('type', 'unknown').upper()
+            rnd_theme = rnd.get('theme', 'No theme')
+            # Use get_title for display name
+            display_name = get_title(rnd_theme, rnd_theme)
+            # Truncate if too long
+            if len(display_name) > 50:
+                display_name = display_name[:47] + "..."
+            rounds_listbox.insert(tk.END, f"{i+1}. [{rnd_type}] {display_name}")
+            # Color red if theme file is missing
+            if rnd_theme and rnd_theme not in directory_files:
+                rounds_listbox.itemconfig(i, fg='red')
+        
+        # Details panel
+        details_frame = tk.Frame(left_frame, bg="black", relief="ridge", bd=2)
+        details_frame.pack(fill="x", pady=(10, 0))
+        
+        details_label = tk.Label(details_frame, text="Select a round to view details", 
+                                font=("Arial", 9), bg="black", fg=fg_color, 
+                                justify="left", anchor="w", wraplength=350)
+        details_label.pack(fill="x", padx=5, pady=5)
+        
+        def on_select(event):
+            """Handle round selection"""
+            selection = rounds_listbox.curselection()
+            if selection:
+                idx = selection[0]
+                selected_round_index[0] = idx
+                rnd = rounds[idx]
+                
+                # Build details string
+                details_lines = [f"Type: {rnd.get('type', 'unknown')}"]
+                details_lines.append(f"Filename: {rnd.get('theme', 'N/A')}")
+                
+                if 'start_time' in rnd and rnd['start_time']:
+                    details_lines.append(f"Start: {rnd['start_time']}s")
+                if 'duration' in rnd and rnd['duration']:
+                    details_lines.append(f"Duration: {rnd['duration']}s")
+                if 'answer_duration' in rnd and rnd['answer_duration']:
+                    details_lines.append(f"Answer: {rnd['answer_duration']}s")
+                
+                # Type-specific fields
+                if rnd.get('type') == 'blind' and 'blind_variant' in rnd:
+                    details_lines.append(f"Variant: {rnd['blind_variant']}")
+                elif rnd.get('type') == 'frame':
+                    frames = [f"{k}: {v}s" for k, v in rnd.items() if k.startswith('frame')]
+                    if frames:
+                        details_lines.append("Frames: " + ", ".join(frames))
+                
+                details_label.config(text="\n".join(details_lines))
+        
+        rounds_listbox.bind('<<ListboxSelect>>', on_select)
+        
+        # Restore selection if there was one
+        if selected_round_index[0] is not None and selected_round_index[0] < len(rounds):
+            rounds_listbox.selection_set(selected_round_index[0])
+            # Scroll to show context: show 2 items before the selected item if possible
+            scroll_to_index = max(0, selected_round_index[0] - 5)
+            rounds_listbox.see(scroll_to_index)
+            # Trigger the selection event to update details
+            rounds_listbox.event_generate('<<ListboxSelect>>')
+        
+        # Right side - Action buttons
+        right_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+        right_frame.pack(side="right", fill="y")
+        
+        def add_round():
+            """Add a new round to this fixed lightning round playlist"""
+            # Get editor window position
+            editor_window.update_idletasks()
+            x = editor_window.winfo_x()
+            y = editor_window.winfo_y()
+            
+            # Close editor and open field editor at same position
+            editor_window.withdraw()
+            open_round_field_editor(round_info, None, refresh_editor, editor_window, (x, y))
+        
+        def edit_selected_round():
+            """Edit the selected round"""
+            if selected_round_index[0] is None:
+                messagebox.showwarning("No Selection", "Please select a round to edit.")
+                return
+            
+            # Get editor window position before closing
+            editor_window.update_idletasks()
+            x = editor_window.winfo_x()
+            y = editor_window.winfo_y()
+            
+            # Close editor and open field editor at same position
+            editor_window.withdraw()
+            open_round_field_editor(round_info, selected_round_index[0], refresh_editor, editor_window, (x, y))
+        
+        def delete_selected_round():
+            """Delete the selected round"""
+            if selected_round_index[0] is None:
+                messagebox.showwarning("No Selection", "Please select a round to delete.")
+                return
+            
+            result = messagebox.askyesno("Confirm Delete", 
+                                        "Are you sure you want to delete this round?",
+                                        parent=editor_window)
+            if result:
+                del round_info['data']['rounds'][selected_round_index[0]]
+                save_rounds()
+                selected_round_index[0] = None
+                refresh_editor()
+        
+        def move_up():
+            """Move selected round up"""
+            if selected_round_index[0] is None or selected_round_index[0] == 0:
+                return
+            idx = selected_round_index[0]
+            rounds[idx], rounds[idx-1] = rounds[idx-1], rounds[idx]
+            selected_round_index[0] = idx - 1
+            save_rounds()
+            refresh_editor()
+        
+        def move_down():
+            """Move selected round down"""
+            if selected_round_index[0] is None or selected_round_index[0] >= len(rounds) - 1:
+                return
+            idx = selected_round_index[0]
+            rounds[idx], rounds[idx+1] = rounds[idx+1], rounds[idx]
+            selected_round_index[0] = idx + 1
+            save_rounds()
+            refresh_editor()
+        
+        def randomize_rounds():
+            """Randomize the order of all rounds"""
+            if not rounds:
+                return
+            result = messagebox.askyesno("Confirm Randomize", 
+                                        "Are you sure you want to randomize the order of all rounds?",
+                                        parent=editor_window)
+            if result:
+                import random
+                random.shuffle(rounds)
+                selected_round_index[0] = None
+                save_rounds()
+                refresh_editor()
+        
+        def clone_and_edit_round():
+            """Clone the selected round and open it for editing"""
+            if selected_round_index[0] is None:
+                messagebox.showwarning("No Selection", "Please select a round to clone.")
+                return
+            
+            # Clone the selected round
+            import copy
+            cloned_round = copy.deepcopy(rounds[selected_round_index[0]])
+            rounds.append(cloned_round)
+            save_rounds()
+            
+            # Get editor window position before closing
+            editor_window.update_idletasks()
+            x = editor_window.winfo_x()
+            y = editor_window.winfo_y()
+            
+            # Select the new cloned round and open it for editing
+            new_index = len(rounds) - 1
+            editor_window.withdraw()
+            open_round_field_editor(round_info, new_index, refresh_editor, editor_window, (x, y))
+        
+        # Action buttons
+        add_button = tk.Button(right_frame, text="ADD ROUND", font=font_button, bg="black", fg="white",
+                              command=add_round, width=15, pady=8)
+        add_button.pack(pady=(0, 8))
+        
+        clone_edit_button = tk.Button(right_frame, text="CLONE & EDIT", font=font_button, bg="black", fg="white",
+                                      command=clone_and_edit_round, width=15, pady=8)
+        clone_edit_button.pack(pady=(0, 8))
+        
+        edit_button = tk.Button(right_frame, text="EDIT", font=font_button, bg="black", fg="white",
+                               command=edit_selected_round, width=15, pady=8)
+        edit_button.pack(pady=(0, 8))
+        
+        delete_button = tk.Button(right_frame, text="DELETE", font=font_button, bg="black", fg="white",
+                                  command=delete_selected_round, width=15, pady=8)
+        delete_button.pack(pady=(0, 8))
+        
+        tk.Frame(right_frame, bg=BACKGROUND_COLOR, height=10).pack()
+        
+        up_button = tk.Button(right_frame, text="▲ MOVE UP", font=font_button, bg="black", fg="white",
+                             command=move_up, width=15, pady=8)
+        up_button.pack(pady=(0, 8))
+        
+        down_button = tk.Button(right_frame, text="▼ MOVE DOWN", font=font_button, bg="black", fg="white",
+                               command=move_down, width=15, pady=8)
+        down_button.pack(pady=(0, 8))
+        
+        randomize_button = tk.Button(right_frame, text="🎲 RANDOMIZE", font=font_button, bg="black", fg="white",
+                                     command=randomize_rounds, width=15, pady=8)
+        randomize_button.pack(pady=(0, 8))
+        
+        tk.Frame(right_frame, bg=BACKGROUND_COLOR, height=20).pack()
+        
+        save_button = tk.Button(right_frame, text="SAVE", font=font_button, bg="black", fg="white",
+                               command=save_rounds, width=15, pady=8)
+        save_button.pack(pady=(0, 8))
+        
+        def close_and_return():
+            """Close editor and return to manager"""
+            editor_window.destroy()
+            if manager_window:
+                manager_window.deiconify()
+        
+        def save_and_return():
+            """Save changes and return to manager"""
+            save_rounds()
+            close_and_return()
+        
+        save_return_button = tk.Button(right_frame, text="SAVE & RETURN", font=font_button, bg="black", fg="white",
+                                      command=save_and_return, width=15, pady=8)
+        save_return_button.pack(pady=(0, 8))
+        
+        close_button = tk.Button(right_frame, text="RETURN", font=font_button, bg="black", fg="white",
+                                command=close_and_return, width=15, pady=8)
+        close_button.pack(pady=(0, 8))
+    
+    refresh_editor()
+
+def open_round_field_editor(round_info, round_index, refresh_callback, parent_window=None, position=None):
+    """Open field editor for adding/editing a single round"""
+    global last_selected_round_type
+    is_new = round_index is None
+    
+    if is_new:
+        round_data = {}
+    else:
+        round_data = round_info['data']['rounds'][round_index].copy()
+    
+    field_window = tk.Toplevel()
+    field_window.title("Add Round" if is_new else "Edit Round")
+    field_window.configure(bg=BACKGROUND_COLOR)
+    
+    # Position at specified location if provided
+    if position:
+        field_window.geometry(f"+{position[0]}+{position[1]}")
+    
+    # Handle window close to return to parent
+    def on_close():
+        field_window.destroy()
+        if parent_window:
+            parent_window.deiconify()
+    
+    field_window.protocol("WM_DELETE_WINDOW", on_close)
+    
+    font_label = ("Arial", 10)
+    font_entry = ("Arial", 10)
+    fg_color = "white"
+    
+    # Get available round types
+    round_types = [k for k in FIXED_LIGHTNING_ROUNDS.keys() if k != "global"]
+    
+    # Container
+    container = tk.Frame(field_window, bg=BACKGROUND_COLOR)
+    container.pack(fill="both", expand=False, padx=10, pady=10)
+    
+    # Type selection
+    type_frame = tk.Frame(container, bg=BACKGROUND_COLOR)
+    type_frame.pack(fill="x", pady=(0, 10))
+    
+    tk.Label(type_frame, text="Round Type:", font=font_label, bg=BACKGROUND_COLOR, fg=fg_color).pack(side="left", padx=(0, 10))
+    
+    # For new rounds, use last selected type if available, otherwise first in list
+    # For existing rounds, use the round's type
+    default_type = round_data.get('type', last_selected_round_type if last_selected_round_type else round_types[0])
+    type_var = tk.StringVar(value=default_type)
+    type_dropdown = ttk.Combobox(type_frame, textvariable=type_var, values=round_types, 
+                                 state='readonly', font=font_entry, width=20)
+    type_dropdown.pack(side="left")
+    
+    # Fields area (no scrollbar needed for dynamic sizing)
+    scrollable_frame = tk.Frame(container, bg=BACKGROUND_COLOR)
+    scrollable_frame.pack(fill="both", expand=True, pady=(5, 0))
+    
+    field_widgets = {}
+    
+    def rebuild_fields():
+        """Rebuild field widgets based on selected type"""
+        for widget in scrollable_frame.winfo_children():
+            widget.destroy()
+        field_widgets.clear()
+        
+        selected_type = type_var.get()
+        
+        # Get all fields for this type (global + type-specific)
+        all_fields = FIXED_LIGHTNING_ROUNDS['global'] + FIXED_LIGHTNING_ROUNDS.get(selected_type, [])
+        
+        # Exclude start_time for frame rounds (frame times are specified individually)
+        if selected_type == 'frame' and 'start_time' in all_fields:
+            all_fields = [f for f in all_fields if f != 'start_time']
+        
+        for field_name in all_fields:
+            field_info = FIXED_LIGHTNING_ROUND_FIELD_INDEX.get(field_name, {"type": "file", "required": True})
+            field_type = field_info.get("type", "file")
+            is_required = field_info.get("required", False)
+            
+            # Create field frame
+            field_frame = tk.Frame(scrollable_frame, bg=BACKGROUND_COLOR)
+            field_frame.pack(fill="x", pady=5)
+            
+            # Label
+            label_text = field_name.replace("_", " ").title()
+            if is_required:
+                label_text += " *"
+            tk.Label(field_frame, text=label_text, font=font_label, bg=BACKGROUND_COLOR, 
+                    fg=fg_color, width=20, anchor="w").pack(side="left", padx=(0, 10))
+            
+            # Input widget based on field type
+            if field_type == "file":
+                # Simple label with button to select currently playing
+                file_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                file_frame.pack(side="left")
+                
+                # Display current value with get_title
+                initial_value = round_data.get(field_name, "")
+                display_value = get_title(initial_value, initial_value) if initial_value else "(No theme selected)"
+                
+                label = tk.Label(file_frame, text=display_value, font=font_entry, 
+                               bg=BACKGROUND_COLOR, fg="white", anchor="w")
+                label.pack(side="left", padx=(0, 10))
+                
+                # Store the actual filename (not display name)
+                actual_filename = [initial_value]
+                
+                def set_currently_playing():
+                    filename = currently_playing.get("filename", "")
+                    if filename:
+                        actual_filename[0] = filename
+                        display_name = get_title(filename, filename)
+                        label.config(text=display_name)
+                
+                def play_selected():
+                    if actual_filename[0]:
+                        play_video_from_filename(actual_filename[0])
+                
+                select_btn = tk.Button(file_frame, text="SET TO CURRENT", font=font_entry, 
+                                      bg="black", fg="white", command=set_currently_playing)
+                select_btn.pack(side="left", padx=(0, 5))
+                
+                play_btn = tk.Button(file_frame, text="▶", font=font_entry, 
+                                    bg="black", fg="white", width=3, command=play_selected)
+                play_btn.pack(side="left")
+                
+                # Getter function returns actual filename
+                def get_filename():
+                    return actual_filename[0]
+                
+                field_widgets[field_name] = ("file_search", get_filename)
+            
+            elif field_type == "duration":
+                # Duration field with +/- buttons (increment by 1 second)
+                # Get default duration from lightning_mode_settings_default
+                round_type = type_var.get()
+                default_duration = lightning_mode_settings_default.get(round_type, {}).get("length", 12)
+                if field_name == "answer_duration":
+                    default_duration = 8  # Default answer duration
+                
+                duration_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                duration_frame.pack(side="left")
+                
+                minus_btn = tk.Button(duration_frame, text="-", font=font_entry, bg="black", fg="white", width=2)
+                minus_btn.pack(side="left")
+                
+                entry = tk.Entry(duration_frame, font=font_entry, bg="black", fg="white", width=8, justify="center")
+                current_val = round_data.get(field_name, default_duration)
+                entry.insert(0, str(current_val))
+                entry.pack(side="left", padx=3)
+                
+                plus_btn = tk.Button(duration_frame, text="+", font=font_entry, bg="black", fg="white", width=2)
+                plus_btn.pack(side="left", padx=(0, 5))
+                
+                default_btn = tk.Button(duration_frame, text="DEFAULT", font=font_entry, bg="black", fg="white", width=9)
+                default_btn.pack(side="left")
+                
+                def increment_duration(e=entry):
+                    try:
+                        val = float(e.get() or 0)
+                        e.delete(0, tk.END)
+                        e.insert(0, str(int(val + 1)))
+                    except:
+                        pass
+                
+                def decrement_duration(e=entry):
+                    try:
+                        val = float(e.get() or 0)
+                        e.delete(0, tk.END)
+                        e.insert(0, str(max(0, int(val - 1))))
+                    except:
+                        pass
+                
+                def set_to_default(e=entry, d=default_duration):
+                    e.delete(0, tk.END)
+                    e.insert(0, str(d))
+                
+                plus_btn.config(command=increment_duration)
+                minus_btn.config(command=decrement_duration)
+                default_btn.config(command=set_to_default)
+                
+                tk.Label(duration_frame, text="(sec)", font=("Arial", 8), bg=BACKGROUND_COLOR, 
+                        fg="gray").pack(side="left", padx=(5, 0))
+                
+                # Store default for comparison when saving
+                field_widgets[field_name] = ("duration", entry, default_duration)
+            
+            elif field_type == "integer":
+                # Integer field with +/- buttons (can go negative)
+                default_value = field_info.get("default", 0)
+                
+                integer_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                integer_frame.pack(side="left")
+                
+                minus_btn = tk.Button(integer_frame, text="-", font=font_entry, bg="black", fg="white", width=2)
+                minus_btn.pack(side="left")
+                
+                entry = tk.Entry(integer_frame, font=font_entry, bg="black", fg="white", width=8, justify="center")
+                current_val = round_data.get(field_name, default_value)
+                entry.insert(0, str(current_val))
+                entry.pack(side="left", padx=3)
+                
+                plus_btn = tk.Button(integer_frame, text="+", font=font_entry, bg="black", fg="white", width=2)
+                plus_btn.pack(side="left", padx=(0, 5))
+                
+                default_btn = tk.Button(integer_frame, text="DEFAULT", font=font_entry, bg="black", fg="white", width=9)
+                default_btn.pack(side="left")
+                
+                def increment_integer(e=entry):
+                    try:
+                        val = int(e.get() or 0)
+                        e.delete(0, tk.END)
+                        e.insert(0, str(val + 1))
+                    except:
+                        pass
+                
+                def decrement_integer(e=entry):
+                    try:
+                        val = int(e.get() or 0)
+                        e.delete(0, tk.END)
+                        e.insert(0, str(val - 1))
+                    except:
+                        pass
+                
+                def set_to_default(e=entry, d=default_value):
+                    e.delete(0, tk.END)
+                    e.insert(0, str(d))
+                
+                plus_btn.config(command=increment_integer)
+                minus_btn.config(command=decrement_integer)
+                default_btn.config(command=set_to_default)
+                
+                # Store default for comparison when saving
+                field_widgets[field_name] = ("integer", entry, default_value)
+            
+            elif field_type == "time":
+                # Time field with +/- buttons (increment by 0.1), NOW button, and GO TO button
+                time_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                time_frame.pack(side="left")
+                
+                minus_btn = tk.Button(time_frame, text="-", font=font_entry, bg="black", fg="white", width=2)
+                minus_btn.pack(side="left")
+                
+                entry = tk.Entry(time_frame, font=font_entry, bg="black", fg="white", width=8, justify="center")
+                entry.insert(0, str(round_data.get(field_name, "")))
+                entry.pack(side="left", padx=3)
+                
+                plus_btn = tk.Button(time_frame, text="+", font=font_entry, bg="black", fg="white", width=2)
+                plus_btn.pack(side="left", padx=(0, 5))
+                
+                now_btn = tk.Button(time_frame, text="NOW", font=font_entry, bg="black", fg="white", width=5)
+                now_btn.pack(side="left", padx=(0, 5))
+                
+                set_btn = tk.Button(time_frame, text="GO TO", font=font_entry, bg="black", fg="white", width=6)
+                set_btn.pack(side="left")
+                
+                def increment_time(e=entry):
+                    try:
+                        val = float(e.get() or 0)
+                        e.delete(0, tk.END)
+                        e.insert(0, f"{val + 0.1:.1f}")
+                    except:
+                        pass
+                
+                def decrement_time(e=entry):
+                    try:
+                        val = float(e.get() or 0)
+                        e.delete(0, tk.END)
+                        e.insert(0, f"{max(0, val - 0.1):.1f}")
+                    except:
+                        pass
+                
+                def set_now(e=entry):
+                    try:
+                        current_time = player.get_time() / 1000.0  # Convert ms to seconds
+                        if current_time > 0:
+                            e.delete(0, tk.END)
+                            e.insert(0, f"{current_time:.1f}")
+                    except:
+                        pass
+                
+                def set_to_time(e=entry):
+                    try:
+                        time_val = float(e.get() or 0)
+                        player.set_time(int(time_val * 1000))  # Convert seconds to ms
+                    except:
+                        pass
+                
+                plus_btn.config(command=increment_time)
+                minus_btn.config(command=decrement_time)
+                now_btn.config(command=set_now)
+                set_btn.config(command=set_to_time)
+                
+                tk.Label(time_frame, text="(sec)", font=("Arial", 8), bg=BACKGROUND_COLOR, 
+                        fg="gray").pack(side="left", padx=(5, 0))
+                
+                field_widgets[field_name] = ("entry", entry)
+            
+            elif field_type == "dropdown":
+                # Dropdown field
+                options = list(field_info.get("options", {}).keys())
+                default_value = field_info.get("default", "")
+                current_value = round_data.get(field_name, default_value)
+                
+                var = tk.StringVar(value=current_value)
+                dropdown = ttk.Combobox(field_frame, textvariable=var, values=options, 
+                                       state='readonly', font=font_entry, width=32)
+                dropdown.pack(side="left")
+                field_widgets[field_name] = ("dropdown", var)
+            
+            elif field_type == "text":
+                # Single-line text field
+                entry = tk.Entry(field_frame, font=font_entry, bg="black", fg="white", width=35)
+                current_value = round_data.get(field_name, "")
+                if current_value:
+                    entry.insert(0, current_value)
+                entry.pack(side="left")
+                field_widgets[field_name] = ("text", entry)
+            
+            elif field_type == "textarea":
+                # Textarea field for multi-line text input
+                text_widget = tk.Text(field_frame, font=font_entry, bg="black", fg="white", 
+                                     width=40, height=4, wrap="word")
+                text_widget.pack(side="left")
+                
+                # Insert existing value if any
+                current_value = round_data.get(field_name, "")
+                if current_value:
+                    text_widget.insert("1.0", current_value)
+                
+                field_widgets[field_name] = ("textarea", text_widget)
+            
+            elif field_type == "toggle":
+                # Toggle field (checkbox)
+                default_value = field_info.get("default", False)
+                current_value = round_data.get(field_name, default_value)
+                
+                var = tk.BooleanVar(value=current_value)
+                checkbox = tk.Checkbutton(field_frame, variable=var, bg=BACKGROUND_COLOR, 
+                                         activebackground=BACKGROUND_COLOR, selectcolor="black",
+                                         fg="white", activeforeground="white")
+                checkbox.pack(side="left")
+                field_widgets[field_name] = ("toggle", var)
+            
+            elif field_type == "video_url":
+                # Video URL field with two buttons
+                url_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                url_frame.pack(side="left")
+                
+                entry = tk.Entry(url_frame, font=font_entry, bg="black", fg="white", width=35)
+                current_value = round_data.get(field_name, "")
+                if current_value:
+                    entry.insert(0, current_value)
+                entry.pack(side="left", padx=(0, 5))
+                
+                def open_url_in_browser(e=entry):
+                    url = e.get().strip()
+                    if url:
+                        import webbrowser
+                        webbrowser.open(url)
+                
+                def stream_in_player(e=entry):
+                    url = e.get().strip()
+                    if url:
+                        # Stream YouTube URL using stream_url (same as YOUTUBE CLIP LIST)
+                        stream_url(url, "Clip", "", new_player=False)
+                
+                open_btn = tk.Button(url_frame, text="GO TO URL", font=font_entry, 
+                                    bg="black", fg="white", command=open_url_in_browser)
+                open_btn.pack(side="left", padx=(0, 5))
+                
+                stream_btn = tk.Button(url_frame, text="STREAM", font=font_entry, 
+                                      bg="black", fg="white", command=stream_in_player)
+                stream_btn.pack(side="left")
+                
+                field_widgets[field_name] = ("video_url", entry)
+    
+    type_dropdown.bind('<<ComboboxSelected>>', lambda e: rebuild_fields())
+    
+    # Initial field build
+    rebuild_fields()
+    
+    # Buttons
+    button_frame = tk.Frame(field_window, bg=BACKGROUND_COLOR)
+    button_frame.pack(fill="x", padx=10, pady=(10, 10))
+    
+    def save_round():
+        """Save the round data"""
+        global last_selected_round_type
+        # Collect data
+        new_round_data = {"type": type_var.get()}
+        
+        # Track the selected round type for next time
+        last_selected_round_type = type_var.get()
+        
+        # Get all fields for validation
+        selected_type = type_var.get()
+        all_fields = FIXED_LIGHTNING_ROUNDS['global'] + FIXED_LIGHTNING_ROUNDS.get(selected_type, [])
+        
+        # Exclude start_time for frame rounds (frame times are specified individually)
+        if selected_type == 'frame' and 'start_time' in all_fields:
+            all_fields = [f for f in all_fields if f != 'start_time']
+        
+        # Validate and collect field data
+        for field_name in all_fields:
+            field_info = FIXED_LIGHTNING_ROUND_FIELD_INDEX.get(field_name, {"type": "file", "required": True})
+            field_type = field_info.get("type", "file")
+            is_required = field_info.get("required", False)
+            
+            if field_name not in field_widgets:
+                continue
+            
+            widget_data = field_widgets[field_name]
+            widget_type = widget_data[0]
+            
+            if widget_type == "entry":
+                widget = widget_data[1]
+                value = widget.get().strip()
+            elif widget_type == "text":
+                widget = widget_data[1]
+                value = widget.get().strip()
+            elif widget_type == "duration":
+                widget = widget_data[1]
+                default_val = widget_data[2]
+                value = widget.get().strip()
+                # Convert to number
+                if value:
+                    try:
+                        value = int(float(value))
+                        # Skip if equals default
+                        if value == default_val:
+                            continue
+                    except ValueError:
+                        messagebox.showwarning("Invalid Value", f"'{field_name.replace('_', ' ').title()}' must be a number.")
+                        return False
+            elif widget_type == "integer":
+                widget = widget_data[1]
+                default_val = widget_data[2]
+                value = widget.get().strip()
+                # Convert to number
+                if value:
+                    try:
+                        value = int(float(value))
+                        # Skip if equals default
+                        if value == default_val:
+                            continue
+                    except ValueError:
+                        messagebox.showwarning("Invalid Value", f"'{field_name.replace('_', ' ').title()}' must be a number.")
+                        return False
+            elif widget_type == "dropdown":
+                widget = widget_data[1]
+                value = widget.get()
+            elif widget_type == "textarea":
+                widget = widget_data[1]
+                value = widget.get("1.0", "end-1c").strip()
+            elif widget_type == "file_search":
+                # widget is a getter function
+                widget = widget_data[1]
+                value = widget().strip()
+            elif widget_type == "toggle":
+                widget = widget_data[1]
+                value = widget.get()
+            elif widget_type == "video_url":
+                widget = widget_data[1]
+                value = widget.get().strip()
+            else:
+                value = ""
+            
+            # Validate required fields
+            if is_required and not value:
+                messagebox.showwarning("Required Field", f"'{field_name.replace('_', ' ').title()}' is required.")
+                return False
+            
+            # Convert time fields to numbers
+            if field_type == "time" and value:
+                try:
+                    value = float(value)
+                except ValueError:
+                    messagebox.showwarning("Invalid Value", f"'{field_name.replace('_', ' ').title()}' must be a number.")
+                    return False
+            
+            # Only add non-empty values (or toggles which can be False)
+            if value or field_type == "toggle":
+                new_round_data[field_name] = value
+        
+        # Save to round info
+        nonlocal is_new, round_index
+        if is_new:
+            if 'rounds' not in round_info['data']:
+                round_info['data']['rounds'] = []
+            round_info['data']['rounds'].append(new_round_data)
+            round_index = len(round_info['data']['rounds']) - 1
+            is_new = False
+            field_window.title("Edit Round")
+        else:
+            round_info['data']['rounds'][round_index] = new_round_data
+        
+        # Update date_modified
+        from datetime import datetime
+        round_info['data']['date_modified'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Save to file
+        try:
+            with open(round_info['filepath'], 'w', encoding='utf-8') as f:
+                json.dump(round_info['data'], f, indent=4)
+            refresh_callback()
+            save_button.configure(text="SAVED!")
+            field_window.after(300, lambda: save_button.configure(text="SAVE"))
+            return True
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save: {e}")
+            return False
+    
+    def return_to_editor():
+        """Close field editor and return to parent editor window"""
+        field_window.destroy()
+        if parent_window:
+            parent_window.deiconify()
+    
+    def save_and_return():
+        """Save round and return to parent editor window"""
+        if save_round():  # Only return if save was successful
+            field_window.after(400, return_to_editor)
+    
+    def test_round():
+        """Test this single round by queueing it as a temporary fixed lightning round playlist"""
+        global fixed_lightning_queue, fixed_lightning_round_playlist_data
+        
+        # If this is a new round (not saved yet), require saving first
+        if is_new:
+            messagebox.showwarning("Save Required", "Please save the round before testing.")
+            return
+        
+        # Use the existing saved round data
+        test_round_data = round_info['data']['rounds'][round_index].copy()
+        selected_type = test_round_data.get('type', 'regular')
+        
+        # Create a temporary fixed lightning round structure
+        from datetime import datetime
+        temp_round_info = {
+            'name': f'[TEST] {selected_type.upper()}',
+            'description': 'Test round - single round from saved data',
+            'creator': 'Test',
+            'round_count': 1,
+            'rounds': [test_round_data],
+            'total_duration': test_round_data.get('duration', 0) + test_round_data.get('answer_duration', 0),
+            'data': {
+                'name': f'[TEST] {selected_type.upper()}',
+                'description': 'Test round - single round from saved data',
+                'creator': 'Test',
+                'date_created': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'date_modified': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'rounds': [test_round_data]
+            },
+            'filepath': None  # No file path for temp round
+        }
+        
+        # Queue the test round
+        fixed_lightning_queue = temp_round_info
+        fixed_lightning_round_playlist_data = None  # Reset any existing data
+        play_video(playlist["current_index"])
+        # toggle_coming_up_popup(True, f"[TEST] {selected_type.upper()}", 
+        #                      "Test round - this will play only the current saved round.\nMake sure to save any changes first.", 
+        #                      queue=True)
+        
+        # Show confirmation
+        # test_button.configure(text="QUEUED!")
+        # field_window.after(1000, lambda: test_button.configure(text="TEST ROUND"))
+    
+    save_button = tk.Button(button_frame, text="SAVE", font=("Arial", 10, "bold"), 
+                           bg="black", fg="white", command=save_round, width=15, pady=8)
+    save_button.pack(side="left", padx=(0, 10))
+    
+    save_return_button = tk.Button(button_frame, text="SAVE & RETURN", font=("Arial", 10, "bold"), 
+                                   bg="black", fg="white", command=save_and_return, width=15, pady=8)
+    save_return_button.pack(side="left", padx=(0, 10))
+    
+    test_button = tk.Button(button_frame, text="TEST ROUND", font=("Arial", 10, "bold"), 
+                           bg="green", fg="white", command=test_round, width=15, pady=8)
+    test_button.pack(side="left", padx=(0, 10))
+    
+    return_button = tk.Button(button_frame, text="RETURN", font=("Arial", 10, "bold"), 
+                             bg="black", fg="white", command=return_to_editor, width=15, pady=8)
+    return_button.pack(side="left")
+
+# =========================================
 #            *MUSIC
 # =========================================
 
@@ -13730,7 +15625,58 @@ def toggle_info_popup():
     toggle_title_popup(not is_title_window_up() or title_info_only)
 
 def toggle_title_info_popup():
-    toggle_title_popup(not is_title_window_up(), title_only=True)
+    # If info popup is already up, toggle to artist info instead
+    if is_title_window_up() and not title_info_only and not artist_info_display and not studio_info_display:
+        toggle_artist_info_popup()
+    elif is_title_window_up() and artist_info_display:
+        toggle_studio_info_popup()
+    elif is_title_window_up() and studio_info_display:
+        # If showing artist info, go back to title only
+        toggle_title_popup(True)
+    else:
+        # If popup is down or showing title only, toggle it
+        toggle_title_popup(not is_title_window_up(), info_type="title_only")
+
+def toggle_artist_info_popup():
+    if artist_info_display:
+        toggle_title_popup(True)
+    else:
+        toggle_title_popup(True, info_type="artist")
+
+def update_popout_title_button_text(show=None):
+    """Update the title_info_button text in popout based on popup state."""
+    global popout_buttons_by_name, title_info_button
+    
+    if not popout_controls or title_info_button not in popout_buttons_by_name:
+        return
+    
+    popout_button = popout_buttons_by_name[title_info_button]
+    
+    # Determine what text to show
+    if show and not title_info_only and not artist_info_display and not studio_info_display:
+        # Info popup is up showing title - offer artist info
+        new_text = "ARTIST INFO"
+    elif show and (artist_info_display or studio_info_display):
+        new_text = "STUDIO INFO"
+        if studio_info_display:
+            try:
+                popout_button.configure(bg=HIGHLIGHT_COLOR, fg="white")
+            except (tk.TclError, AttributeError):
+                pass
+    else:
+        # Default state - show title only
+        new_text = "TITLE ONLY"
+    
+    try:
+        popout_button.configure(text=new_text)
+    except (tk.TclError, AttributeError):
+        pass
+
+def toggle_studio_info_popup():
+    if studio_info_display:
+        toggle_title_popup(True)
+    else:
+        toggle_title_popup(True, info_type="studio")
 
 def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, fade="in", destroy=False, callback=None):
     """Smoothly moves a Tkinter window to a new position with optional bounce, fade effects, and a completion callback."""
@@ -13796,12 +15742,19 @@ def is_title_window_up():
     return not (title_window is None or title_window.attributes("-alpha") == 0)
 
 title_info_only = False
-def toggle_title_popup(show, title_only=False):
+artist_info_display = False
+studio_info_display = False
+def toggle_title_popup(show, info_type=None):
     """Creates or destroys the title popup at the bottom middle of the screen."""
-    global title_window, title_row_label, top_row_label, bottom_row_label, info_button, light_mode, title_info_only, pre_censor
-    title_info_only = title_only
+    global title_window, title_row_label, top_row_label, bottom_row_label, info_button
+    global light_mode, title_info_only, pre_censor, artist_info_display, studio_info_display
+    title_info_only = info_type == "title_only"
+    artist_info_display = info_type == "artist"
+    studio_info_display = info_type == "studio"
     if not is_title_window_up() and not show:
         title_info_only = False
+        artist_info_display = False
+        studio_info_display = False
         return
     if title_window:
         screen_width = title_window.winfo_screenwidth()
@@ -13810,13 +15763,29 @@ def toggle_title_popup(show, title_only=False):
         window_height = title_window.winfo_reqheight()
         if not show:
             title_info_only = False
+            artist_info_display = False
+            studio_info_display = False
             animate_window(title_window, (screen_width - window_width) // 2, screen_height, fade="out")
-    if title_only:
+    
+    if info_type == "artist":
+        button_seleted(artist_info_button, True)
+    else:
+        button_seleted(artist_info_button, False)
+
+    if info_type == "studio":
+        button_seleted(studio_info_button, True)
+    else:
+        button_seleted(studio_info_button, False)
+        
+    if info_type == "title_only":
         button_seleted(info_button, False)
         button_seleted(title_info_button, show)
     else: 
         button_seleted(info_button, show and not light_mode)
         button_seleted(title_info_button, False)
+
+    # Update popout button text
+    update_popout_title_button_text(show)
 
     if not show:
         return
@@ -13837,6 +15806,9 @@ def toggle_title_popup(show, title_only=False):
         title_window.attributes("-topmost", True)  
         title_window.wm_attributes("-alpha", 0.8)  
         title_window.configure(bg="black")
+    else:
+        title_window.attributes("-topmost", True)  
+        title_window.lift()
 
     top_row = ""
     title_row = ""
@@ -13909,9 +15881,68 @@ def toggle_title_popup(show, title_only=False):
                     episodes = str(episodes) + " Episodes"
                 members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
                 score = f"Score: {data.get("score")} (#{data.get("rank")})"
-            if not title_only:
+            if info_type != "title_only":
                 title_row = title
                 top_row = f"{marks}{theme}{version_num}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
+
+                if info_type == "artist":
+                    artists = get_song_string(data, type="artist")
+                    for artist in artists:
+                        artist_themes_string = ""
+                        same_artists = get_filenames_from_artist(artist)
+                        for f in same_artists:
+                            if f != currently_playing.get("filename"):
+                                artist_themes_string += f"{get_title(None, f)}\n"
+                        if artist_themes_string:
+                            top_row = f"Other themes by {artist}:\n{artist_themes_string}\n{top_row}"
+                elif info_type == "studio":
+                    studios_num = len(data.get("studios", [])) or 1
+                    studio_max = (37 // studios_num) - 2
+                    for studio in data.get("studios", []):
+                        same_studio = get_filenames_from_studio(studio)
+                        unique_titles = []
+                        unique_shows = []
+                        header_type = "titles"
+                        for f in same_studio:
+                            d = get_metadata(f)
+                            t = get_display_title(d)
+                            if t != title and t not in unique_titles:
+                                popularity = d.get("popularity", INT_INF)
+                                series = (d.get("series") or [d.get("title")])
+                                unique_shows.append([t, popularity, series])
+                                unique_titles.append(t)
+
+                        series_dict = {}
+                        if len(unique_shows) > studio_max:
+                            #only use most popular of each series
+                            for t, p, s in unique_shows:
+                                series_key = s[0] if s else t
+                                count = series_dict[series_key][2] + 1 if series_key in series_dict else 1
+                                if count > 1:
+                                    count_string = f" [{count} seasons]"
+                                else:
+                                    count_string = ""
+                                if series_key not in series_dict or p < series_dict[series_key][1]:
+                                    series_dict[series_key] = [f"{t}{count_string}", p, count]
+                                else:
+                                    series_dict[series_key][0] = f"{series_dict[series_key][0].split(' [')[0]}{count_string}"
+                                series_dict[series_key][2] = count
+
+                            unique_titles = [v[0] for v in series_dict.values()]
+                            header_type = "series"
+                        if len(unique_titles) > studio_max:
+                            #limit to 35 most popular in series_dict
+                            unique_titles = sorted(unique_titles, key=lambda x: next((p for t, p, c in series_dict.values() if t == x), INT_INF))[:studio_max]
+
+                        #sort alphabetically
+                        unique_titles.sort()
+
+                        if len(unique_titles) < len(series_dict):
+                            unique_titles.append(f"...and {len(series_dict) - len(unique_titles)} more series")
+
+                        if unique_titles:
+                            top_row = f"Other {header_type} by {studio}:\n{'\n'.join(unique_titles)}\n\n{top_row}"
+
                 middle_row_string = f"{score} | {japanese_title} | {members}\n"
                 if not score and not members:
                     if japanese_title != title:
@@ -13981,7 +16012,7 @@ def get_song_string(data, type=None, totals=False, artist_limit=3):
     for theme in data.get("songs", []):
         if theme.get("slug") == data.get("slug"):
             if type:
-                if type == "artist":
+                if type == "artist_string":
                     return get_artists_string(theme.get("artist"), total=totals, limit=artist_limit)
                 else:
                     return theme.get(type)
@@ -14319,7 +16350,7 @@ def get_random_titles(amount=4):
         series = anime.get("series") or [anime.get("title")]
         if isinstance(series, str):
             series = [series]
-        if not seen_series.intersection(series):
+        if not seen_series.intersection(series) and not is_game(anime):
             unique_series_anime.append(anime)
             seen_series.update(series)
         if len(unique_series_anime) >= 30:
@@ -14560,17 +16591,36 @@ def destroy_bonus_characters():
 #         *RULES
 # =========================================
 
-def load_rules(filename="rules.json", folder="files"):
+def get_available_rules_files(folder="files"):
+    """
+    Get all files ending with 'rules.json' in the specified folder (case-insensitive).
+    
+    Args:
+        folder (str): The folder to search in.
+    
+    Returns:
+        list: List of rule filenames.
+    """
+    try:
+        files = [f for f in os.listdir(folder) if f.lower().endswith("rules.json") and os.path.isfile(os.path.join(folder, f))]
+        return sorted(files) if files else ["rules.json"]
+    except FileNotFoundError:
+        return ["rules.json"]
+
+def load_rules(filename=None, folder="files"):
     """
     Loads the rules JSON file from the specified folder.
 
     Args:
-        filename (str): The name of the JSON file.
+        filename (str): The name of the JSON file. If None, uses selected_rules_file.
         folder (str): The folder where the file is located.
 
     Returns:
         dict: Parsed JSON data as a Python dictionary.
     """
+    global selected_rules_file
+    if filename is None:
+        filename = selected_rules_file
     file_path = os.path.join(folder, filename)
     
     try:
@@ -14597,7 +16647,8 @@ def set_rules(type=None):
         rules_txt += "\n".join(scoreboard_rules.get("lightning_trivia", []))
     else:
         rules_txt += "\n".join(scoreboard_rules.get("standard", []))
-    rules_txt += "\n" + "\n".join(scoreboard_rules.get("global_end", [])) 
+    if scoreboard_rules.get("global_end"):
+        rules_txt += "\n" + "\n".join(scoreboard_rules.get("global_end", [])) 
 
     send_scoreboard_command(rules_txt)
 
@@ -14608,12 +16659,14 @@ def set_rules(type=None):
 currently_playing = {}
 def play_video(index=playlist["current_index"]):
     """Function to play a specific video by index"""
-    global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time, synopsis_start_index, title_light_letters, playlist_loaded, playing_next_error, light_round_started
+    global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time
+    global synopsis_start_index, title_light_letters, playlist_loaded, playing_next_error, light_round_started
+    global fixed_lightning_queue, fixed_lightning_round_playlist_data, light_mode, fixed_current_round, light_round_answer_length
     playlist_loaded = False
     light_round_start_time = None
     synopsis_start_index = None
     title_light_letters = None
-    clean_up_light_round()
+    clean_up_light_round(True)
     light_round_started = False
     video_stopped = True
     playing_next_error = False
@@ -14623,11 +16676,36 @@ def play_video(index=playlist["current_index"]):
     toggle_coming_up_popup(False)
 
     if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]):
-        if len(playlist["playlist"]) >= INFINITE_PLAYLIST_LIMIT:
-            index -= len(playlist["playlist"]) - INFINITE_PLAYLIST_LIMIT + 1
+        # if len(playlist["playlist"]) >= infinite_settings.get("max_history_check", 5000):
+        #     index -= len(playlist["playlist"]) - infinite_settings.get("max_history_check", 5000) + 1
         get_next_infinite_track()
-        
-    if youtube_queue is not None:
+    
+    if fixed_lightning_queue or fixed_lightning_round_playlist_data:
+        if fixed_lightning_queue and (not fixed_lightning_round_playlist_data or (fixed_lightning_round_playlist_data.get("name") != fixed_lightning_queue.get("name"))):
+            fixed_lightning_round_playlist_data = copy.deepcopy(fixed_lightning_queue)
+            fixed_lightning_round_playlist_data["current_index"] = 0
+        else:
+            fixed_lightning_round_playlist_data["current_index"] += skip_direction
+        index = fixed_lightning_round_playlist_data["current_index"]
+        if index < 0 or index >= len(fixed_lightning_round_playlist_data.get("rounds", [])):
+            fixed_lightning_round_playlist_data = None
+            fixed_lightning_queue = None
+            fixed_current_round = None
+            light_round_answer_length = LIGHT_ROUND_ANSWER_LENGTH_DEFAULT
+            toggle_light_mode()
+            play_video(playlist["current_index"] + skip_direction)
+            return
+        fixed_current_round = fixed_lightning_round_playlist_data.get("rounds", [])[index]
+        filename = fixed_current_round.get("theme")
+        rnd_mode = fixed_current_round.get("type", "regular")
+        light_round_answer_length = fixed_current_round.get("answer_duration", LIGHT_ROUND_ANSWER_LENGTH_DEFAULT)
+        if light_mode != rnd_mode:
+            toggle_light_mode(rnd_mode, queue=False)
+        if play_filename(filename):
+            root.after(3000, thread_prefetch_metadata)
+            root.after(1000, queue_next_lightning_mode)
+        up_next_text()
+    elif youtube_queue is not None:
         currently_playing = {
             "type":"youtube",
             "filename": youtube_queue.get("filename"),
@@ -14798,8 +16876,11 @@ def play_filename(playlist_entry, fullscreen=True):
             next_background_track()
         light_round_number = light_round_number + 1
         if light_mode != 'peek':
-            set_light_round_number("#" + str(light_round_number))
-        light_round_length = lightning_mode_settings.get(light_mode, {}).get("length", light_round_length_default)
+            update_light_round_number()
+            
+        light_round_length = lightning_mode_settings.get(light_mode, {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
+        if fixed_lightning_round_playlist_data and fixed_current_round:
+            light_round_length = fixed_current_round.get("duration", light_round_length)
         if not black_overlay:
             set_black_screen(True)
             root.after(500, lambda: player.play())
@@ -14843,18 +16924,19 @@ def play_filename(playlist_entry, fullscreen=True):
     
     # Mark lightning status for infinite playlists only
     if playlist.get("infinite", False):
-        current_entry = playlist["playlist"][playlist["current_index"]]
         lightning_changed = False
-        if light_mode:  # Lightning round
-            # Add [L] if not already there
-            if not current_entry.startswith("[L]"):
-                playlist["playlist"][playlist["current_index"]] = "[L]" + current_entry
-                lightning_changed = True
-        else:  # Normal round
-            # Remove [L] if it's there
-            if current_entry.startswith("[L]"):
-                playlist["playlist"][playlist["current_index"]] = current_entry[3:]
-                lightning_changed = True
+        current_entry = playlist["playlist"][playlist["current_index"]]
+        if not fixed_current_round and currently_playing.get("filename") == get_clean_filename(current_entry):
+            if light_mode:  # Lightning round
+                # Add [L] if not already there
+                if not current_entry.startswith("[L]"):
+                    playlist["playlist"][playlist["current_index"]] = "[L]" + current_entry
+                    lightning_changed = True
+            else:  # Normal round
+                # Remove [L] if it's there
+                if current_entry.startswith("[L]"):
+                    playlist["playlist"][playlist["current_index"]] = current_entry[3:]
+                    lightning_changed = True
         
         # Refresh playlist display if lightning status changed
         if lightning_changed:
@@ -15082,8 +17164,8 @@ def load_recent_session():
         current_time = datetime.now()
         time_diff = (current_time - file_mod_time).total_seconds() / 60  # minutes
         
-        if time_diff <= 120:  # Within # minutes
-            if time_diff > 15:
+        if time_diff <= 180:  # Within # minutes
+            if time_diff > 5:
                 confirm = messagebox.askyesno("Continue Session", "A recent session was found. Do you want to continue it?")
                 if not confirm:
                     # delete the existing session file
@@ -15132,7 +17214,6 @@ def add_session_history():
         session_entry.update({
             "id": data.get("mal"),
             "title": get_display_title(data),
-            "name": data.get("name"),
             "slug": data.get("slug")
         })
         
@@ -15385,6 +17466,7 @@ def play_previous():
 def stop():
     """Function to stop the video"""
     global video_stopped, currently_playing
+    global fixed_lightning_queue, fixed_lightning_round_playlist_data, fixed_current_round
     video_stopped = True
     toggle_light_mode()
     clean_up_light_round()
@@ -15392,11 +17474,15 @@ def stop():
     set_light_round_number()
     set_black_screen(False)
     toggle_title_popup(False)
+    fixed_lightning_queue = None
+    fixed_lightning_round_playlist_data = None
+    fixed_current_round = None
     guess_extra()
     player.stop()
     player.set_media(None)  # Reset the media
     update_progress_bar(0,1)
     remove_all_censor_boxes()
+    toggle_coming_up_popup(False, title=(coming_up_queue or {}).get("title", ""))
     seek_bar.set(0)
 
 last_seek_time = None
@@ -15460,8 +17546,8 @@ def update_seek_bar():
                     elif end != 0 and time >= end:
                         player.pause()
                         play_next()
-                    else:
-                        set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
+                    # else:
+                    #     set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
                 else:
                     if not light_mode and (length - time) <= 8:
                         if (not is_title_window_up() or title_info_only) and auto_info_end:
@@ -15683,7 +17769,8 @@ def blind(manual = False):
         set_black_screen(True)
     else:  # Destroy the black overlay to reveal VLC
         manual_blind = False
-        toggle_mute(False, True)
+        if not stream_player.is_playing():
+            toggle_mute(False, True)
         set_black_screen(False)
         set_progress_overlay(destroy=True)
 
@@ -16410,7 +18497,7 @@ def open_censor_editor(refresh=False):
                 if is_start:
                     now_button.bind("<Button-3>", lambda e, v=var: v.set(0.0))
                 else:
-                    now_button.bind("<Button-3>", lambda e, v=var: v.set(round((player.get_length() / 1000) + 5, 1)))
+                    now_button.bind("<Button-3>", lambda e, v=var: v.set(round((player.get_length() / 1000) + 0.1, 1)))
                 frame.grid(row=row, column=col, padx=6, pady=4)
                 return frame
 
@@ -18308,11 +20395,12 @@ def toggle_end_message(speed=500):
                                    justify="center")
         breakdown_label.pack(pady=(0, scl(10)))
 
-        additional_stats_label = tk.Label(main_frame, text=f"{additional_stats_text}", 
-                                   font=("Arial", scl(35), "normal"),
-                                   fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                   justify="center")
-        additional_stats_label.pack(pady=(scl(10), scl(10)))
+        if additional_stats_text:
+            additional_stats_label = tk.Label(main_frame, text=f"{additional_stats_text}", 
+                                    font=("Arial", scl(35), "normal"),
+                                    fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
+                                    justify="center")
+            additional_stats_label.pack(pady=(scl(10), scl(10)))
 
         # Top Series section
         series_counts = {}
@@ -18604,7 +20692,20 @@ def create_popout_controls(columns=5, title="Popout Controls"):
     popout_controls = tk.Toplevel()
     popout_controls.title(title)
     popout_controls.configure(bg=BACKGROUND_COLOR)
-    popout_controls.geometry("1440x810")
+    
+    # Position popout on the same monitor as the main window
+    root.update_idletasks()  # Ensure main window geometry is updated
+    main_x = root.winfo_x()
+    main_y = root.winfo_y()
+    main_width = root.winfo_width()
+    
+    # Center the popout relative to the main window's monitor
+    popout_width = 1440
+    popout_height = 810
+    popout_x = main_x + (main_width - popout_width) // 2
+    popout_y = main_y + 50  # Slightly below the main window
+    
+    popout_controls.geometry(f"{popout_width}x{popout_height}+{popout_x}+{popout_y}")
     popout_controls.protocol("WM_DELETE_WINDOW", on_popout_close)
     popout_controls.bind("<Configure>", on_popout_resize)
 
@@ -19096,7 +21197,7 @@ def setup_main_window_drag_drop():
 # Setup drag-and-drop after window is fully initialized
 root.after(500, setup_main_window_drag_drop)
 
-def blank_space(row, size=2):
+def blank_space(row, size=1):
     space_label = tk.Label(row, text="", bg=BACKGROUND_COLOR, fg="white")
     space_label.pack(side="left", padx=size)
 
@@ -19198,8 +21299,14 @@ def create_first_row_buttons():
                                 "the extension if it's .mp4.\n\nYou'll want to hit the CREATE " + 
                                 "button after to create the playlist.")
 
+    
+    if playlist.get("infinite", False):
+        directory_width = 28
+    else:
+        directory_width = 30
+
     global directory_entry
-    directory_entry = tk.Entry(first_row_frame, width=scl(29, "UI"), bg="black", fg="white", insertbackground="white", textvariable=directory)
+    directory_entry = tk.Entry(first_row_frame, width=scl(directory_width, "UI"), bg="black", fg="white", insertbackground="white", textvariable=directory)
     directory_entry.pack(side="left")
     directory_entry.delete(0, tk.END)
     directory_entry.insert(0, directory)
@@ -19213,7 +21320,7 @@ def create_first_row_buttons():
                                 "to be able to use all the other playlist functions, "
                                 "you'll need to fetch the metadata for all the files. "
                                 "You can do this by hitting the '?' button next to the "
-                                "RE[F]ETCH METADATA button. It may take a while "
+                                "FETCH METADATA button. It may take a while "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
     
@@ -19359,14 +21466,33 @@ def create_first_row_buttons():
         difficulty_dropdown = ttk.Combobox(first_row_frame,
                                 values=difficulty_options,
                                 textvariable=selected_difficulty,
-                                width=17,
-                                height=len(difficulty_options),
+                                width=17, 
+                                height=len(difficulty_options), 
                                 state="readonly",
                                 style="Black.TCombobox",
                                 font=ROOT_FONT)
         difficulty_dropdown.pack(side="left")
         difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
-        blank_space(first_row_frame)
+
+        global infinite_settings_button
+        infinite_settings_button = create_button(first_row_frame, "🛠", open_infinite_settings_editor, True,
+                                    help_title="INFINITE PLAYLIST SETTINGS",
+                                    help_text=("Edit settings for infinite playlist mode and manage preset configurations.\n\n"
+                                               "DIFFICULTY_GROUPS: Settings for each difficulty tier (easy/medium/hard/all).\n\n"
+                                               "DIFFICULTY_GROUPS/RANGE: Popularity range for this difficulty tier. Format: [min, max].\n\n"
+                                               "DIFFICULTY_GROUPS/COOLDOWN: Multipliers for series and file cooldowns. Format: [series_mult, file_mult]. Lower values = more repeats.\n\n"
+                                               "DIFFICULTY_GROUPS/FILE_BOOST_LIMIT: Maximum boost a show can get from having more files(0 = no boost).\n\n"
+                                               "ENDING_LIMIT_RATIO: Ratio limiting how many endings vs openings appear(1.0 = no limit, 0.5 = limit to no more than 50%).\n\n"
+                                               "RECENT_BOOST_MULTIPLIER: Boost multipliers for recent seasonal anime. Format: [current_season, 1_season_ago, 2_seasons_ago].\n\n"
+                                               "FAVORITES_BOOST_MULTIPLIER: Multiplier for favorited themes' selection weight.\n\n"
+                                               "SCORE_BOOST: Settings for boosting highly-rated anime.\n\n"
+                                               "SCORE_BOOST/MIN_SCORE: Minimum MAL score to receive boost.\n\n"
+                                               "SCORE_BOOST/MULTIPLIER: Weight multiplier for anime above min_score.\n\n"
+                                               "GROUP_SERIES: If True, all files from same series go in the same difficulty group(causing them to play more).\n\n"
+                                               "TAG_COOLDOWN: Number of rounds before a tag can repeat in the playlist(0 = disabled).\n\n"
+                                               "Changes will only stay between launches if saved."))
+        infinite_settings_button.pack(side="left")
+
         if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
             popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid()
         if popout_buttons_by_name.get("SEARCH QUEUE"):
@@ -19605,6 +21731,16 @@ light_mode_settings_button = create_button(second_row_frame, "🛠", open_settin
                                          "VARIETY/COOLDOWN/NO_REPEAT_LIMIT: How long until this round can use the same content. This also controls how much history of this lightning round is stored in the playlist.\n\n"
                                          "Changes will only stay between launches if saved."))
 
+show_fixed_lightning_button = create_button(second_row_frame, "[F]IXED", show_fixed_lightning_list,
+                              help_title="[F]IXED LIGHTNING ROUND PLAYLISTS (Shortcut Key = 'f')",
+                              help_text=("Lists available fixed lightning round playlists to queue up.\n\n"
+                                         "Fixed lightning round playlists are curated collections of lightning rounds "
+                                         "with specific parameters for each round."))
+manage_fixed_lightning_button = create_button(second_row_frame, "➕", open_fixed_lightning_manager, True,
+                              help_title="MANAGE FIXED LIGHTNING ROUND PLAYLISTS",
+                              help_text=("Opens an interface for managing fixed lightning round playlists.\n\n"
+                                         "Fixed lightning round playlists are curated collections of lightning rounds "
+                                         "with specific parameters for each round."))
 
 show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE VIDEOS", show_youtube_playlist,
                               help_title="[Y]OUTUBE VIDEOS (Shortcut Key = 'y')",
@@ -19638,7 +21774,7 @@ search_button = create_button(second_row_frame, "[S]EARCH DIRECTORY", search,
                                         "the search takes all keypresses and refreshes the search with each keypress. "
                                         "You must hit ESC to exit this mode. Lists also function different with shortcuts " 
                                         "enabled. You can read about the controls by hitting the SHORTCUT [K]EYS button."))
-add_search_button = create_button(second_row_frame, "➕ADD TO PLAYLIST", search_add, True,
+add_search_button = create_button(second_row_frame, "➕ADD", search_add, True,
                             help_title="SEARCH ADD",
                             help_text=("The same as the SEARCH, but will add the theme to the playlist "
                                         "instead of just queueing it.\n\nThis was more of an after thought feature "
@@ -19668,6 +21804,12 @@ title_info_button = create_button(third_row_frame, "𝕋", toggle_title_info_pop
                                          "Additional text can be set/added to the top by middle clicking this button."))
 title_info_button.bind("<Button-2>", prompt_title_top_info_text)
 
+artist_info_button = create_button(third_row_frame, "🎤", toggle_artist_info_popup,
+                              help_title="SHOW/HIDE ARTIST POPUP (Shortcut Key = 'o'(when info-popup open))",
+                              help_text=("Show or hide the info popup with list of themes done by artist."))
+studio_info_button = create_button(third_row_frame, "🏢", toggle_studio_info_popup,
+                              help_title="SHOW/HIDE STUDIO POPUP",
+                              help_text=("Show or hide the info popup with list of anime done by studio."))
 start_info_button = create_button(third_row_frame, "⏪", toggle_auto_info_start,
                               help_title="TOGGLE AUTO INFO POPUP AT START",
                               help_text=("When enabled, will show the theme's info popup at the start.\n\n"
@@ -19724,9 +21866,9 @@ mute_peek_mark_button = create_button(third_row_frame, "🔇", mute_peek_mark, T
 mute_peek_mark_button.bind("<Button-2>", bulk_mute_peek_mark_playlist)
 
 
-refetch_metadata_button = create_button(third_row_frame, "RE[F]ETCH METADATA", refetch_metadata,
-                              help_title="RE[F]ETCH THEME METADATA (Shortcut Key = 'f')",
-                              help_text=("Refetch the metadata for the currently playing theme.\n\n"
+refetch_metadata_button = create_button(third_row_frame, "FETCH METADATA", refetch_metadata,
+                              help_title="FETCH THEME METADATA (Shortcut Key = 'f')",
+                              help_text=("Fetch the metadata for the currently playing theme.\n\n"
                                          "You may want to do this if there's mising information that "
                                          "may have been filled by now, or you want to update the score/ "
                                          "members stats. For that purpose though, you can enable auto refresh "
@@ -20001,7 +22143,7 @@ right_column.tag_configure("highlight", background=HIGHLIGHT_COLOR, foreground="
 right_column.tag_configure("highlightreg", background=HIGHLIGHT_COLOR, foreground="white", font=(right_font_name, scl(12, "UI")))  # Dark gray highlight
 right_column.tag_configure("underline", underline=True)
 left_column.tag_configure("white", foreground="white", font=(left_font_name, scl(12, "UI")))
-left_column.tag_configure("blank", foreground="white", font=(left_font_name, scl(6, "UI")))
+left_column.tag_configure("blank", foreground="white", font=(left_font_name, scl(3, "UI")))
 middle_column.tag_configure("white", foreground="white", font=(middle_font_name, scl(12, "UI")))
 middle_column.tag_configure("blank", foreground="white", font=(middle_font_name, scl(6, "UI")))
 right_column.tag_configure("white", foreground="white", font=(right_font_name, scl(12, "UI")))
@@ -20021,6 +22163,7 @@ list_buttons = [
     {"button":"sort_button", "label":"sort", "func":sort},
     {"button":"search_button", "label":"search", "func":search},
     {"button":"add_search_button", "label":"search_add", "func":search_add},
+    {"button":"show_fixed_lightning_button", "label":"fixed_lightning", "func":show_fixed_lightning_list},
     {"button":"show_youtube_playlist_button", "label":"youtube", "func":show_youtube_playlist}
 ]
 
@@ -20154,7 +22297,7 @@ def on_release(key):
                     else:
                         toggle_light_mode(mode)
                 elif key.char == 'f':
-                    refetch_metadata()
+                    show_fixed_lightning_list()
                 elif key.char == 'n':
                     guess_extra("tags")
                 elif key.char == 'u':
@@ -20177,7 +22320,12 @@ def on_release(key):
                 elif key.char == 'i':
                     toggle_info_popup()
                 elif key.char == 'o':
-                    toggle_title_info_popup()
+                    if not is_title_window_up():
+                        toggle_title_info_popup()
+                    elif not artist_info_display and not studio_info_display:
+                        toggle_artist_info_popup()
+                    else:
+                        toggle_studio_info_popup()
                 elif key.char == 'e':
                     end_session()
                 elif key.char == 's':
@@ -20214,9 +22362,9 @@ def on_release(key):
                     send_scoreboard_command("align")
                 elif key.char == 'x':
                     send_scoreboard_command("extend")
-                elif key.char == 'w':
-                    send_scoreboard_command("shrink")
                 elif key.char == 'z':
+                    send_scoreboard_command("shrink")
+                elif key.char == 'w':
                     send_scoreboard_command("grow")
                 elif key.char == 'q':
                     send_scoreboard_command("toggle")
