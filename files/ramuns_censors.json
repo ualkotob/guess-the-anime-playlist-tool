@@ -3989,11 +3989,21 @@
     ],
     "FugouKeiji-ED1-NCBD1080.webm": [
         {
+            "size_w": 58.75,
+            "size_h": 39.86,
+            "pos_x": 85.13,
+            "pos_y": 31.18,
+            "start": 4.8,
+            "end": 6.3,
+            "color": null,
+            "nsfw": false
+        },
+        {
             "size_w": 78.83,
             "size_h": 25.76,
             "pos_x": 49.63,
             "pos_y": 37.14,
-            "start": 7.3,
+            "start": 7.1,
             "end": 9.3,
             "color": null,
             "nsfw": false
@@ -4749,6 +4759,16 @@
             "pos_y": 49.03,
             "start": 15.0,
             "end": 20.5,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 68.12,
+            "pos_x": 0.0,
+            "pos_y": 63.83,
+            "start": 60.5,
+            "end": 61.8,
             "color": null,
             "nsfw": false
         }
@@ -6721,12 +6741,22 @@
             "nsfw": false
         },
         {
-            "size_w": 92.42,
-            "size_h": 96.25,
+            "size_w": 40.51,
+            "size_h": 98.4,
+            "pos_x": 25.87,
+            "pos_y": 0.0,
+            "start": 4.1,
+            "end": 5.4,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 40.16,
+            "size_h": 94.51,
             "pos_x": 100.0,
             "pos_y": 0.0,
-            "start": 4.0,
-            "end": 7.8,
+            "start": 5.0,
+            "end": 7.4,
             "color": null,
             "nsfw": false
         },
@@ -6735,8 +6765,8 @@
             "size_h": 97.36,
             "pos_x": 12.2,
             "pos_y": 0.0,
-            "start": 10.5,
-            "end": 13.0,
+            "start": 10.7,
+            "end": 12.9,
             "color": null,
             "nsfw": false
         }
@@ -11405,12 +11435,22 @@
     ],
     "StandMyHeroes-OP1-NCBD1080.webm": [
         {
-            "size_w": 74.45,
-            "size_h": 63.19,
-            "pos_x": 51.38,
-            "pos_y": 100.0,
+            "size_w": 78.83,
+            "size_h": 27.92,
+            "pos_x": 50.55,
+            "pos_y": 50.0,
             "start": 3.5,
-            "end": 8.3,
+            "end": 7.7,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 99.5,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 7.5,
+            "end": 8.2,
             "color": null,
             "nsfw": false
         }
@@ -23790,7 +23830,7 @@
             "size_h": 100.0,
             "pos_x": 0.0,
             "pos_y": 0.0,
-            "start": 44.4,
+            "start": 44.3,
             "end": 48.7,
             "color": null,
             "nsfw": true
@@ -27450,6 +27490,26 @@
             "pos_y": 77.88,
             "start": 8.0,
             "end": 10.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 45.47,
+            "size_h": 100.0,
+            "pos_x": 92.19,
+            "pos_y": 0.0,
+            "start": 27.8,
+            "end": 31.0,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 44.84,
+            "size_h": 46.11,
+            "pos_x": 91.86,
+            "pos_y": 43.81,
+            "start": 30.8,
+            "end": 35.0,
             "color": null,
             "nsfw": false
         }
@@ -46597,7 +46657,7 @@
             "pos_x": 50.0,
             "pos_y": 52.55,
             "start": 28.7,
-            "end": 33.5,
+            "end": 33.6,
             "color": "#0F0D0D",
             "nsfw": false
         }
@@ -54660,7 +54720,7 @@
         {
             "skip": true,
             "start": 230.5,
-            "end": 350.0,
+            "end": 267.0,
             "nsfw": false
         }
     ],
@@ -55955,6 +56015,884 @@
             "start": 0.0,
             "end": 7.1,
             "color": "#000000",
+            "nsfw": false
+        }
+    ],
+    "Atri-OP1-NCBD1080.webm": [
+        {
+            "size_w": 76.25,
+            "size_h": 17.36,
+            "pos_x": 49.67,
+            "pos_y": 32.52,
+            "start": 12.2,
+            "end": 15.6,
+            "color": "#C6DAE0",
+            "nsfw": false
+        },
+        {
+            "size_w": 34.77,
+            "size_h": 32.71,
+            "pos_x": 17.9,
+            "pos_y": 61.82,
+            "start": 12.2,
+            "end": 15.6,
+            "color": "#C4DAE3",
+            "nsfw": false
+        },
+        {
+            "size_w": 34.41,
+            "size_h": 35.07,
+            "pos_x": 81.77,
+            "pos_y": 60.32,
+            "start": 12.2,
+            "end": 15.6,
+            "color": "#C1D7E2",
+            "nsfw": false
+        },
+        {
+            "size_w": 9.41,
+            "size_h": 9.24,
+            "pos_x": 49.59,
+            "pos_y": 71.77,
+            "start": 12.2,
+            "end": 15.6,
+            "color": "#C4DAE3",
+            "nsfw": false
+        }
+    ],
+    "AjinS2-OP1.webm": [
+        {
+            "size_w": 7.5,
+            "size_h": 88.61,
+            "pos_x": 49.92,
+            "pos_y": 50.0,
+            "start": 20.7,
+            "end": 21.2,
+            "color": "#010101",
+            "nsfw": false
+        },
+        {
+            "size_w": 47.07,
+            "size_h": 72.85,
+            "pos_x": 49.3,
+            "pos_y": 50.13,
+            "start": 21.0,
+            "end": 22.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "AjinS2-OP2.webm": [
+        {
+            "size_w": 66.21,
+            "size_h": 100.0,
+            "pos_x": 47.05,
+            "pos_y": 0.0,
+            "start": 17.8,
+            "end": 19.1,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 49.38,
+            "size_h": 74.58,
+            "pos_x": 50.39,
+            "pos_y": 53.28,
+            "start": 18.9,
+            "end": 20.0,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "ShiunjiKeNoKodomotachi-OP1-NCBD1080.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 1.6,
+            "end": 3.0,
+            "color": "#F8C99D",
+            "nsfw": true
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 10.5,
+            "end": 13.2,
+            "color": "#5C77D6",
+            "nsfw": false
+        },
+        {
+            "size_w": 82.93,
+            "size_h": 68.19,
+            "pos_x": 44.39,
+            "pos_y": 52.62,
+            "start": 13.0,
+            "end": 15.3,
+            "color": "#4165E2",
+            "nsfw": false
+        },
+        {
+            "size_w": 49.3,
+            "size_h": 37.57,
+            "pos_x": 50.23,
+            "pos_y": 51.28,
+            "start": 15.1,
+            "end": 20.1,
+            "color": "#5453E1",
+            "nsfw": false
+        }
+    ],
+    "BangDreamAveMujica-OP1-NCBD1080.webm": [
+        {
+            "size_w": 92.58,
+            "size_h": 63.61,
+            "pos_x": 66.32,
+            "pos_y": 69.08,
+            "start": 10.0,
+            "end": 12.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "ArneNoJikenbo-OP1.webm": [
+        {
+            "size_w": 74.26,
+            "size_h": 78.75,
+            "pos_x": 48.71,
+            "pos_y": 54.9,
+            "start": 10.1,
+            "end": 12.7,
+            "color": "#050303",
+            "nsfw": false
+        }
+    ],
+    "KireiNiShitemoraemasuKa-OP1.webm": [
+        {
+            "size_w": 55.27,
+            "size_h": 40.49,
+            "pos_x": 59.04,
+            "pos_y": 52.51,
+            "start": 10.9,
+            "end": 22.5,
+            "color": "#FEFEFA",
+            "nsfw": false
+        }
+    ],
+    "KizokuTensei-OP1.webm": [
+        {
+            "size_w": 84.73,
+            "size_h": 42.64,
+            "pos_x": 52.17,
+            "pos_y": 38.74,
+            "start": 6.8,
+            "end": 9.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 77.93,
+            "size_h": 47.5,
+            "pos_x": 51.86,
+            "pos_y": 8.73,
+            "start": 9.3,
+            "end": 16.9,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 55.86,
+            "size_h": 78.12,
+            "pos_x": 13.01,
+            "pos_y": 45.71,
+            "start": 16.2,
+            "end": 17.2,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 55.86,
+            "size_h": 78.12,
+            "pos_x": 13.01,
+            "pos_y": 45.71,
+            "start": 19.3,
+            "end": 20.1,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "MajutsushiKunonWaMieteiru-OP1.webm": [
+        {
+            "size_w": 67.81,
+            "size_h": 48.33,
+            "pos_x": 54.49,
+            "pos_y": 54.17,
+            "start": 4.5,
+            "end": 9.0,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "MaouNoMusumeWaYasashiSugiru-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 93.75,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 9.0,
+            "end": 13.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 82.11,
+            "size_h": 93.68,
+            "pos_x": 41.05,
+            "pos_y": 98.9,
+            "start": 13.6,
+            "end": 16.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 81.29,
+            "size_h": 84.38,
+            "pos_x": 40.92,
+            "pos_y": 49.78,
+            "start": 16.6,
+            "end": 20.1,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "BokuNoHeroAcademiaVigilanteS2-OP1.webm": [
+        {
+            "size_w": 24.34,
+            "size_h": 1.88,
+            "pos_x": 49.77,
+            "pos_y": 55.7,
+            "start": 2.8,
+            "end": 5.9,
+            "color": "#C0C194",
+            "nsfw": false
+        },
+        {
+            "size_w": 27.73,
+            "size_h": 3.54,
+            "pos_x": 50.22,
+            "pos_y": 44.71,
+            "start": 2.8,
+            "end": 5.9,
+            "color": "#243D93",
+            "nsfw": false
+        },
+        {
+            "size_w": 92.11,
+            "size_h": 51.53,
+            "pos_x": 50.99,
+            "pos_y": 48.42,
+            "start": 15.4,
+            "end": 19.5,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "FateStrangeFake-OP1.webm": [
+        {
+            "size_w": 39.3,
+            "size_h": 13.89,
+            "pos_x": 49.81,
+            "pos_y": 50.32,
+            "start": 0.3,
+            "end": 4.3,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 79.77,
+            "size_h": 27.71,
+            "pos_x": 58.88,
+            "pos_y": 50.24,
+            "start": 4.1,
+            "end": 9.5,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 85.55,
+            "size_h": 100.0,
+            "pos_x": 42.97,
+            "pos_y": 0.0,
+            "start": 8.9,
+            "end": 9.3,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "IkokuNikki-OP1.webm": [
+        {
+            "size_w": 62.19,
+            "size_h": 6.88,
+            "pos_x": 51.34,
+            "pos_y": 49.52,
+            "start": 3.0,
+            "end": 8.2,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 11.48,
+            "size_h": 88.33,
+            "pos_x": 49.51,
+            "pos_y": 39.88,
+            "start": 5.9,
+            "end": 12.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "JigokurakuS2-OP1.webm": [
+        {
+            "size_w": 70.55,
+            "size_h": 63.33,
+            "pos_x": 55.84,
+            "pos_y": 38.07,
+            "start": 14.0,
+            "end": 14.9,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 99.8,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 14.7,
+            "end": 15.3,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "MayonakaHeartTune-OP1.webm": [
+        {
+            "size_w": 51.05,
+            "size_h": 87.78,
+            "pos_x": 48.92,
+            "pos_y": 74.43,
+            "start": 2.3,
+            "end": 8.6,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 52.71,
+            "pos_x": 50.0,
+            "pos_y": 35.68,
+            "start": 6.5,
+            "end": 8.3,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 75.31,
+            "size_h": 26.53,
+            "pos_x": 31.8,
+            "pos_y": 54.63,
+            "start": 16.5,
+            "end": 19.5,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "OkirakuRyoushu-OP1.webm": [
+        {
+            "size_w": 96.91,
+            "size_h": 80.07,
+            "pos_x": 75.95,
+            "pos_y": 53.66,
+            "start": 11.3,
+            "end": 16.6,
+            "color": "#2B82C5",
+            "nsfw": false
+        }
+    ],
+    "SeihantaiNaKimiToBoku-OP1.webm": [
+        {
+            "size_w": 45.23,
+            "size_h": 75.28,
+            "pos_x": 48.93,
+            "pos_y": 48.31,
+            "start": 0.0,
+            "end": 5.2,
+            "color": "#BFC9F0",
+            "nsfw": false
+        },
+        {
+            "size_w": 89.61,
+            "size_h": 28.54,
+            "pos_x": 53.38,
+            "pos_y": 49.76,
+            "start": 12.2,
+            "end": 17.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "DoraTama-OP1.webm": [
+        {
+            "size_w": 76.25,
+            "size_h": 30.69,
+            "pos_x": 49.18,
+            "pos_y": 47.49,
+            "start": 10.2,
+            "end": 14.0,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "JingaiKyoushitsu-OP1.webm": [
+        {
+            "size_w": 70.04,
+            "size_h": 72.99,
+            "pos_x": 52.15,
+            "pos_y": 59.9,
+            "start": 48.3,
+            "end": 54.1,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "MabotaiS2-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 80.0,
+            "pos_x": 66.67,
+            "pos_y": 51.74,
+            "start": 14.0,
+            "end": 18.5,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "OmaGoto-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 25.5,
+            "end": 30.5,
+            "color": "#FFFFFF",
+            "nsfw": false
+        }
+    ],
+    "SousouNoFrierenS2-OP1.webm": [
+        {
+            "size_w": 66.41,
+            "size_h": 41.74,
+            "pos_x": 51.63,
+            "pos_y": 51.01,
+            "start": 24.4,
+            "end": 32.2,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "TamonKunImaDocchi-ED1.webm": [
+        {
+            "size_w": 16.95,
+            "size_h": 8.26,
+            "pos_x": 22.15,
+            "pos_y": 50.34,
+            "start": 11.8,
+            "end": 22.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 7.54,
+            "size_h": 13.12,
+            "pos_x": 43.39,
+            "pos_y": 49.88,
+            "start": 11.8,
+            "end": 22.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 21.84,
+            "size_h": 10.21,
+            "pos_x": 55.67,
+            "pos_y": 91.96,
+            "start": 22.6,
+            "end": 28.1,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 10.08,
+            "size_h": 16.88,
+            "pos_x": 95.57,
+            "pos_y": 68.17,
+            "start": 22.6,
+            "end": 28.1,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 10.9,
+            "size_h": 17.64,
+            "pos_x": 62.95,
+            "pos_y": 14.42,
+            "start": 33.0,
+            "end": 36.2,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 21.88,
+            "size_h": 11.67,
+            "pos_x": 24.75,
+            "pos_y": 92.77,
+            "start": 33.0,
+            "end": 36.2,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 10.35,
+            "size_h": 16.67,
+            "pos_x": 91.11,
+            "pos_y": 11.17,
+            "start": 38.3,
+            "end": 41.6,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 5.55,
+            "size_h": 38.68,
+            "pos_x": 11.0,
+            "pos_y": 44.62,
+            "start": 38.3,
+            "end": 41.6,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 10.23,
+            "size_h": 17.36,
+            "pos_x": 5.09,
+            "pos_y": 71.01,
+            "start": 43.5,
+            "end": 46.6,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 21.33,
+            "size_h": 10.35,
+            "pos_x": 87.04,
+            "pos_y": 9.99,
+            "start": 43.5,
+            "end": 46.6,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 10.12,
+            "size_h": 15.97,
+            "pos_x": 89.22,
+            "pos_y": 10.33,
+            "start": 48.8,
+            "end": 51.5,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 21.21,
+            "size_h": 10.49,
+            "pos_x": 55.43,
+            "pos_y": 92.4,
+            "start": 48.8,
+            "end": 51.5,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "TamonKunImaDocchi-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 0.0,
+            "end": 1.7,
+            "color": "#EBCCD5",
+            "nsfw": false
+        }
+    ],
+    "ToumeiOtokoToNingenOnna-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 3.1,
+            "end": 4.5,
+            "color": "#E4E3EC",
+            "nsfw": false
+        },
+        {
+            "size_w": 73.95,
+            "size_h": 39.79,
+            "pos_x": 54.57,
+            "pos_y": 50.75,
+            "start": 4.3,
+            "end": 9.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 88.67,
+            "size_h": 34.17,
+            "pos_x": 51.38,
+            "pos_y": 49.26,
+            "start": 12.1,
+            "end": 17.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "YuushaPartyWoOidasaretaKiyouBinbou-OP1.webm": [
+        {
+            "size_w": 84.92,
+            "size_h": 67.5,
+            "pos_x": 44.04,
+            "pos_y": 48.5,
+            "start": 9.3,
+            "end": 10.3,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 75.76,
+            "pos_x": 0.0,
+            "pos_y": 49.28,
+            "start": 10.4,
+            "end": 15.2,
+            "color": "#000000",
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 75.76,
+            "pos_x": 0.0,
+            "pos_y": 49.28,
+            "start": 15.0,
+            "end": 17.8,
+            "color": "#FBFBFC",
+            "nsfw": false
+        }
+    ],
+    "YuuKawa-OP1.webm": [
+        {
+            "size_w": 54.49,
+            "size_h": 66.32,
+            "pos_x": 48.41,
+            "pos_y": 52.78,
+            "start": 14.6,
+            "end": 18.3,
+            "color": "#F3F3F3",
+            "nsfw": false
+        }
+    ],
+    "OnePiece-OP1.webm": [
+        {
+            "mute": true,
+            "start": 11.3,
+            "end": 12.3,
+            "nsfw": false
+        },
+        {
+            "size_w": 95.51,
+            "size_h": 79.24,
+            "pos_x": 36.52,
+            "pos_y": 64.21,
+            "start": 11.1,
+            "end": 17.6,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "KinnikumanNisei-OP1.webm": [
+        {
+            "size_w": 75.16,
+            "size_h": 86.81,
+            "pos_x": 50.0,
+            "pos_y": 42.11,
+            "start": 8.5,
+            "end": 15.1,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "HitoriNoShita-OP1.webm": [
+        {
+            "size_w": 52.03,
+            "size_h": 27.85,
+            "pos_x": 50.57,
+            "pos_y": 49.09,
+            "start": 14.7,
+            "end": 20.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "HakyuuHoushinEngi-OP2.webm": [
+        {
+            "size_w": 61.48,
+            "size_h": 56.46,
+            "pos_x": 49.49,
+            "pos_y": 47.37,
+            "start": 8.0,
+            "end": 15.3,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "AkudamaDrive-OP1-NCBD1080.webm": [
+        {
+            "size_w": 82.3,
+            "size_h": 63.19,
+            "pos_x": 48.57,
+            "pos_y": 50.0,
+            "start": 9.1,
+            "end": 14.8,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "Tokyo24Ku-OP1.webm": [
+        {
+            "size_w": 92.97,
+            "size_h": 92.22,
+            "pos_x": 54.44,
+            "pos_y": 58.93,
+            "start": 0.8,
+            "end": 7.8,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 68.91,
+            "size_h": 93.61,
+            "pos_x": 50.88,
+            "pos_y": 42.39,
+            "start": 7.6,
+            "end": 14.3,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 89.22,
+            "size_h": 55.56,
+            "pos_x": 47.1,
+            "pos_y": 53.12,
+            "start": 14.1,
+            "end": 21.8,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "SengokuYoukoSenmaKontonHen-OP1.webm": [
+        {
+            "size_w": 98.4,
+            "size_h": 77.29,
+            "pos_x": 82.93,
+            "pos_y": 23.85,
+            "start": 12.9,
+            "end": 18.3,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "UruwashiNoYoiNoTsuki-ED1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 15.7,
+            "nsfw": false
+        }
+    ],
+    "UruwashiNoYoiNoTsuki-OP1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 9.5,
+            "nsfw": false
+        },
+        {
+            "size_w": 33.36,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 28.9,
+            "end": 33.4,
+            "color": "#FFFFFF",
+            "nsfw": false
+        },
+        {
+            "size_w": 33.05,
+            "size_h": 100.0,
+            "pos_x": 100.0,
+            "pos_y": 0.0,
+            "start": 30.7,
+            "end": 33.2,
+            "color": "#FFFFFF",
+            "nsfw": false
+        },
+        {
+            "size_w": 70.82,
+            "size_h": 60.21,
+            "pos_x": 44.58,
+            "pos_y": 54.62,
+            "start": 33.0,
+            "end": 36.3,
+            "color": "#FFFFFF",
+            "nsfw": false
+        }
+    ],
+    "YuushaNoKuzu-OP1.webm": [
+        {
+            "size_w": 67.38,
+            "size_h": 30.14,
+            "pos_x": 50.18,
+            "pos_y": 46.62,
+            "start": 2.2,
+            "end": 6.2,
+            "color": "#563010",
+            "nsfw": false
+        }
+    ],
+    "HokutoNoKen-OP1.webm": [
+        {
+            "skip": true,
+            "start": 0.0,
+            "end": 6.6,
+            "nsfw": false
+        }
+    ],
+    "OnePieceFanLetter-ED1.webm": [
+        {
+            "skip": true,
+            "start": 88.0,
+            "end": 93.2,
             "nsfw": false
         }
     ]

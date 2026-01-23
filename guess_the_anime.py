@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.0"  # Update this when making releases
+APP_VERSION = "14.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -34,6 +34,7 @@ import webbrowser
 from PIL import Image, ImageTk, ImageFilter, ImageFont, ImageDraw
 import threading  # For asynchronous metadata loading
 import vlc
+from tinytag import TinyTag
 from yt_dlp import YoutubeDL
 from pynput import keyboard, mouse
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
@@ -2292,7 +2293,7 @@ def get_overall_theme_number(filename):
                     if song["type"] == theme_type:
                         if not (slug_extra == get_slug_extra(song.get("slug"))):
                             continue
-                        elif (song.get("overlap") == "Over") or song.get("special"):
+                        elif (song.get("overlap") == "Over") or song.get("special") or (song.get("overlap") == "Transition" and song.get("spoiler")):
                             decimal += 0.1
                         elif song.get("skip"):
                             continue
@@ -3816,7 +3817,7 @@ INFINITE_SETTINGS_DEFAULT = {
             "file_boost_limit": 1
         }
     },
-    "ending_limit_ratio": 1.0,
+    "ending_limit_ratio": 0.5,
     "recent_boost_multiplier": [20,10,5],
     "favorites_boost_multiplier": 2,
     "score_boost": {
@@ -3926,10 +3927,10 @@ def select_difficulty(event=None):
         popout_buttons_by_name["DIFFICULTY DROPDOWN"].set(value)
     save_config()
 
-def refresh_pop_time_groups():
+def refresh_pop_time_groups(refetch_next=True):
     get_pop_time_groups(refetch=True)
     update_current_index(save=False)
-    if playlist["current_index"] == len(playlist["playlist"])-2:
+    if refetch_next and playlist["current_index"] == len(playlist["playlist"])-2:
         refetch_next_track()
 
 def refetch_next_track():
@@ -3948,7 +3949,8 @@ total_infinite_files = 0
 
 def get_pop_time_groups(refetch=False):
     global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map, cached_pop_time_cooldown, cached_skipped_themes, total_infinite_files
-
+    
+    playlist_history = playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]
     if refetch or not cached_pop_time_group:
         group_limits = difficulty_ranges[playlist["difficulty"]]
         sorted_groups = [[] for _ in range(3)]
@@ -3964,7 +3966,7 @@ def get_pop_time_groups(refetch=False):
         
         # Build playlist history excluding lightning rounds from previous sessions
         playlist_mal_history = []
-        for f in playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]:
+        for f in playlist_history:
             clean_f = get_clean_filename(f)
             metadata = get_metadata(clean_f)
             if metadata and metadata.get("mal"):
@@ -4058,13 +4060,13 @@ def get_pop_time_groups(refetch=False):
                 # More efficient: find exact position and calculate boost directly
                 try:
                     # Find the last occurrence of this file in playlist history
-                    last_index = len(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]) - 1 - playlist["playlist"][-infinite_settings.get("max_history_check", 5000):][::-1].index(file)
+                    last_index = len(playlist_history) - 1 - playlist_history[::-1].index(file)
                     # Calculate how far back it was (distance from end)
-                    distance_from_end = len(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]) - 1 - last_index
+                    distance_from_end = len(playlist_history) - 1 - last_index
                     # Give boost based on 1000-entry ranges
                 except ValueError:
                     # File not found in history, give maximum boost based on history length
-                    distance_from_end = len(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):])
+                    distance_from_end = len(playlist_history)
                 file_boost += (distance_from_end // 2000) * (distance_from_end // 2000)
                 if infinite_settings["favorites_boost_multiplier"] and check_favorited(file):
                     file_boost = file_boost * infinite_settings["favorites_boost_multiplier"]
@@ -4109,6 +4111,7 @@ def get_next_infinite_track(increment=True):
     tag_cooldown_failures = 0
     max_tag_tries = len(groups[p][t]) // 3
     op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
+    playlist_history = playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]
 
     while not selected_file:
         group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
@@ -4124,7 +4127,7 @@ def get_next_infinite_track(increment=True):
             p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
             if groups[p][t]:
                 random.shuffle(groups[p][t])
-            max_tag_tries = len(groups[p][t]) // 3
+            max_tag_tries = len(groups[p][t]) // 4
             tag_cooldown_failures = 0
             try_count += 1
             continue
@@ -4191,7 +4194,7 @@ def get_next_infinite_track(increment=True):
                     current_session_lightning = get_current_session_lightning_tracks()
                     cooldown_count = 0
                     
-                    for f in reversed(playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]):
+                    for f in reversed(playlist_history):
                         # Skip lightning rounds from previous sessions in cooldown calculations
                         clean_f = get_clean_filename(f)
                         if not light_mode and f.startswith("[L]") and clean_f not in current_session_lightning:
@@ -4298,7 +4301,7 @@ def get_cooldown_for_popularity(popularity_rank, difficulty_range, groups):
         capped_rank = min(popularity_rank, max_rank_for_scaling)
         
         # Calculate progress from rank 1000 to max_rank_for_scaling
-        progress = (capped_rank - 1000) / (max_rank_for_scaling - 1000)  # 0.0 to 1.0
+        progress = (capped_rank - 1000) / max(max_rank_for_scaling - 1000, 1)  # 0.0 to 1.0
         
         # File cooldown transitions from hard_file to infinite cooldowns
         file_cooldown = hard_file + (progress * (infinite_settings.get("max_history_check", 10000) - hard_file))
@@ -5270,7 +5273,7 @@ def load_playlist(index):
     playlist_loaded = True
     create_first_row_buttons()
     if playlist.get("infinite"):
-        refresh_pop_time_groups()
+        refresh_pop_time_groups(False)
     if name.lower() == "missing artists":
         check_missing_artists()
     update_current_index()
@@ -13762,32 +13765,133 @@ def toggle_outer_edge_overlay(destroy=False, pixels=65, color="black"):
 
 def extract_track_name_from_youtube_title(youtube_title, data):
     """
-    Extracts the likely track name from a YouTube title by removing all words from the anime's Japanese and English titles and common separators.
+    Extracts the likely track name from a YouTube title by aggressively removing all words from the anime's titles.
+    Very stringent to ensure anime title doesn't remain.
     """
     if not youtube_title:
         return ""
-    # Get possible anime titles
-    titles = [data.get("title", ""), data.get("eng_title", "")]
-    # Remove each word from both titles (case-insensitive)
-    for anime_title in titles:
-        if anime_title:
-            for word in anime_title.split():
-                # Remove word surrounded by word boundaries (case-insensitive)
-                youtube_title = re.sub(rf"\b{re.escape(word)}\b", "", youtube_title, flags=re.IGNORECASE)
-    # Remove common separators
-    for sep in ["OST", "-", "—", "|", "(", ")", "[", "]", "Official", "Theme", "Soundtrack"]:
-        youtube_title = youtube_title.replace(sep, "")
-    # Remove extra spaces
-    track_name = youtube_title.strip()
-    # Remove multiple spaces
-    track_name = re.sub(r"\s+", " ", track_name)
-    # Try to filter out generic words if multiple parts
-    parts = [p.strip() for p in track_name.split() if p.strip()]
-    GENERIC_WORDS = {"ost", "official", "theme", "soundtrack"}
-    filtered = [p for p in parts if p.lower() not in GENERIC_WORDS]
-    if filtered:
-        track_name = " ".join(filtered)
-    return track_name
+    
+    # Collect all possible title variations
+    titles_to_remove = []
+    
+    # Add main titles
+    if data.get("title"):
+        titles_to_remove.append(data.get("title"))
+    if data.get("eng_title") and data.get("eng_title") != "N/A":
+        titles_to_remove.append(data.get("eng_title"))
+    
+    # Add synonyms
+    if data.get("synonyms"):
+        titles_to_remove.extend(data.get("synonyms", []))
+    
+    # Add series titles if available
+    if data.get("series"):
+        series = data.get("series")
+        if isinstance(series, list):
+            titles_to_remove.extend(series)
+        else:
+            titles_to_remove.append(series)
+    
+    # Collect all individual words AND fragments (including punctuation) from all titles
+    all_title_words = set()
+    all_title_fragments = set()
+    
+    for title in titles_to_remove:
+        if title and title != "N/A":
+            # Split on spaces to get word+punctuation fragments
+            fragments = title.lower().split()
+            all_title_fragments.update(fragments)
+            
+            # Also split on spaces and punctuation to get pure words
+            words = re.findall(r'\w+', title.lower())
+            all_title_words.update(words)
+    
+    # Convert youtube_title to lowercase for processing
+    result = youtube_title.lower()
+    
+    # First pass: Remove exact title matches (case-insensitive)
+    for title in titles_to_remove:
+        if title and title != "N/A":
+            result = re.sub(re.escape(title.lower()), "", result, flags=re.IGNORECASE)
+    
+    # Second pass: Remove fragments with punctuation (like "re:", "no.", etc.)
+    for fragment in all_title_fragments:
+        if fragment:
+            # Remove as exact match with word boundaries
+            result = re.sub(rf"\b{re.escape(fragment)}\b", "", result, flags=re.IGNORECASE)
+            # Also try removing from start/end of string
+            if result.startswith(fragment):
+                result = result[len(fragment):].lstrip()
+            if result.endswith(fragment):
+                result = result[:-len(fragment)].rstrip()
+    
+    # Third pass: Remove individual words with word boundaries
+    for word in all_title_words:
+        if len(word) > 2:  # Only remove words longer than 2 characters
+            result = re.sub(rf"\b{re.escape(word)}\b", "", result, flags=re.IGNORECASE)
+    
+    # Fourth pass: Remove words as substrings (more aggressive)
+    for word in all_title_words:
+        if len(word) > 3:  # Only do substring removal for words longer than 3 chars
+            result = result.replace(word.lower(), "")
+    
+    # Fifth pass: Aggressively clean start of string for common patterns
+    # Remove any remaining title fragments or single characters at the start
+    while True:
+        old_result = result
+        result = result.lstrip(":/-–—|~ ")
+        # Remove single letters or short fragments at the start
+        result = re.sub(r'^[a-z]{1,2}[\s:]+', '', result, flags=re.IGNORECASE)
+        if result == old_result:
+            break
+    
+    # Remove common OST-related words and separators
+    remove_patterns = [
+        r'\bost\b', r'\bofficial\b', r'\btheme\b', r'\bsoundtrack\b',
+        r'\bopening\b', r'\bending\b', r'\bop\b', r'\bed\b',
+        r'\bfull\b', r'\bversion\b', r'\baudio\b', r'\bmusic\b',
+        r'\banime\b', r'\bmanga\b', r'\bseries\b', r'\bseason\b',
+        r'\bepisode\b', r'\bep\b', r'\bvol\b', r'\bvolume\b',
+        r'\boriginal\b', r'\binsert\b', r'\bsong\b', r'\btrack\b',
+        r'\bii\b', r'\biii\b', r'\biv\b'  # Roman numerals often from season numbers
+    ]
+    
+    for pattern in remove_patterns:
+        result = re.sub(pattern, "", result, flags=re.IGNORECASE)
+    
+    # Remove separators and special characters but keep essential punctuation
+    for sep in ["-", "—", "–", "|", "~", "×", "✕", "･", "・"]:
+        result = result.replace(sep, " ")
+    
+    # Remove parentheses and brackets and their contents if they're empty or contain removed words
+    result = re.sub(r'\([^)]*\)', '', result)
+    result = re.sub(r'\[[^\]]*\]', '', result)
+    result = re.sub(r'\{[^}]*\}', '', result)
+    
+    # Clean up extra spaces
+    result = re.sub(r'\s+', ' ', result).strip()
+    
+    # Final cleanup: Remove any remaining title fragments from start/end
+    for fragment in all_title_fragments:
+        if fragment and len(fragment) > 1:
+            if result.lower().startswith(fragment):
+                result = result[len(fragment):].lstrip(":/-–—|~ ")
+            if result.lower().endswith(fragment):
+                result = result[:-len(fragment)].rstrip(":/-–—|~ ")
+    
+    # Final validation: If result still contains too many title words, return empty
+    remaining_words = set(re.findall(r'\w+', result.lower()))
+    overlap = remaining_words & all_title_words
+    
+    # If more than 30% of remaining words are title words, it's not clean enough
+    if remaining_words and len(overlap) / len(remaining_words) > 0.3:
+        return ""
+    
+    # If the result is too short or empty, return empty string
+    if len(result) < 2:
+        return ""
+    
+    return result.strip()
 
 # =========================================
 #          *LIGHTNING ROUND OVERLAYS
@@ -13825,7 +13929,7 @@ def top_info(value=None, size=80, width_max=0.7, inverse=False):
 
 floating_windows = {}  # Dictionary to store windows and labels
 
-def set_floating_text(name, value, position="top right", size=80, width_max=0.7, inverse=False):
+def set_floating_text(name, value, position="top right", size=80, width_max=0.7, inverse=False, align="center"):
     """
     Creates, updates, or removes a floating overlay window with text.
 
@@ -13833,6 +13937,7 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         name (str): A unique identifier for the floating window (e.g., "countdown", "light_round").
         value (str or int): The text to display. If None or '0', the window is removed.
         position (str): Where to place the window (e.g., "top left", "bottom center", "middle right").
+        align (str): Text alignment - "left", "center", or "right" (default: "center").
     """
     global floating_windows
     size = scl(size)
@@ -13859,7 +13964,7 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         window.wm_attributes("-alpha", 0.7)  # Semi-transparent background
         window.configure(bg=back_color)
 
-        label = tk.Label(window, font=("Arial", size, "bold"), fg=front_color, bg=back_color)
+        label = tk.Label(window, font=("Arial", size, "bold"), fg=front_color, bg=back_color, justify=align)
         label.pack(padx=20, pady=10)
 
         floating_windows[name] = {"window": window, "label": label}
@@ -13883,7 +13988,7 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
 
     # Update the label text
     window.config(bg=back_color)
-    label.config(text=str(value), font=test_font, fg=front_color, bg=back_color)
+    label.config(text=str(value), font=test_font, fg=front_color, bg=back_color, justify=align)
 
     # Function to set position after Tkinter updates
     def update_position():
@@ -15508,6 +15613,7 @@ current_music_index = 0
 music_loaded = False
 music_changed = False
 valid_music_ext = (".mp3", ".wav", ".ogg")
+BACKGROUND_CHANGE_ROUNDS = 10  # Number of rounds between background music changes
 
 def load_music_files():
     """Load all music files from the "music" folder"""
@@ -15611,11 +15717,34 @@ def now_playing_background_music(track = None):
     if not frame_light_round_started and (light_mode == 'peek' or not light_muted or peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
         track = None
     if track:
-        basename = os.path.basename(track)
-        for ext in valid_music_ext:
-            basename = basename.replace(ext, "")
-        track = "BGM: " + basename
-    set_floating_text("Now Playing Background Music", track, position="bottom left", size=14, inverse=character_round_answer)
+        # Try to extract metadata using tinytag
+        display_text = None
+        try:
+            tag = TinyTag.get(track)
+            if tag.album and " [OST]" in tag.album:
+                # Build display text from available metadata
+                parts = []
+                if tag.title:
+                    parts.append(tag.title)
+                if tag.artist:
+                    parts.append(f"by {tag.artist}")
+                if tag.album:
+                    parts.append(tag.album)
+                
+                if parts:
+                    display_text = "\n".join(parts)
+        except:
+            pass
+        
+        # Fallback to filename if metadata not available
+        if not display_text:
+            basename = os.path.basename(track)
+            for ext in valid_music_ext:
+                basename = basename.replace(ext, "")
+            display_text = basename
+        
+        track = "NOW PLAYING:\n" + display_text
+    set_floating_text("Now Playing Background Music", track, position="bottom left", size=14, inverse=character_round_answer, align="left")
 
 # =========================================
 #            *INFORMATION POPUP
@@ -16331,7 +16460,7 @@ def get_random_titles(amount=4):
         # Add bonus for non-generic word overlap
         anime_words = get_words(get_base_title(anime))
         overlap = len(correct_words & anime_words)
-        score += overlap * 2
+        # score += overlap * 2
         return score
 
     # Step 1: Filter and score
@@ -16872,7 +17001,7 @@ def play_filename(playlist_entry, fullscreen=True):
             set_rules("trivia")
         else:
             set_rules("anime")
-        if light_round_number%10 == 0:
+        if light_round_number%BACKGROUND_CHANGE_ROUNDS == 0:
             next_background_track()
         light_round_number = light_round_number + 1
         if light_mode != 'peek':
@@ -17448,6 +17577,8 @@ def set_skip_direction(dir):
     skip_direction = dir
 
 def play_next():
+    if special_repeat_track_mode:
+        toggle_special_repeat()
     set_skip_direction(1)
     if playlist_loaded:
         play_video(playlist["current_index"])
@@ -22111,6 +22242,9 @@ next_button.pack(side="left", padx=0)
 autoplay_toggle = 0
 def toggle_autoplay():
     global autoplay_toggle
+    if special_repeat_track_mode:
+        toggle_special_repeat()
+        return
     autoplay_toggle += 1
     if autoplay_toggle == 3:
         autoplay_toggle = 0
@@ -22121,8 +22255,22 @@ def toggle_autoplay():
     elif autoplay_toggle == 2:
         autoplay_button.configure(text="🔁", fg=HIGHLIGHT_COLOR)
 
+special_repeat_track_mode = False
+def toggle_special_repeat(event=None):
+    """Right-click handler for autoplay_button to toggle a special repeat-track mode.
+    The mode stores the current track filename and is cleared when `play_next` is called."""
+    global special_repeat_track_mode, autoplay_toggle
+    special_repeat_track_mode = not special_repeat_track_mode
+    if special_repeat_track_mode:
+        autoplay_toggle = 1
+        autoplay_button.configure(text="🔂", fg="green")
+    else:
+        autoplay_toggle = 0
+        autoplay_button.configure(text="🔁", fg="white")
+
 autoplay_button = tk.Button(controls_frame, text="🔁", command=toggle_autoplay, bg="black", fg="white", font=("Arial", scl(30, "UI"), "bold"), border=0, width=2, anchor="center", justify="center")
 autoplay_button.pack(side="left", padx=0, pady=(0,scl(15, "UI")))
+autoplay_button.bind('<Button-3>', toggle_special_repeat)
 
 # Seek bar
 seek_bar = tk.Scale(controls_frame, from_=0, to=1000, orient=tk.HORIZONTAL, command=seek, length=2000, resolution=0.1, bg="black", fg="white")
@@ -22318,7 +22466,10 @@ def on_release(key):
                 elif key.char == 'v':
                     toggle_light_mode("variety")
                 elif key.char == 'i':
-                    toggle_info_popup()
+                    if is_title_window_up() and (artist_info_display or studio_info_display):
+                        toggle_title_popup(True)
+                    else:
+                        toggle_info_popup()
                 elif key.char == 'o':
                     if not is_title_window_up():
                         toggle_title_info_popup()
@@ -22329,7 +22480,7 @@ def on_release(key):
                 elif key.char == 'e':
                     end_session()
                 elif key.char == 's':
-                    search()
+                    search(add=playlist.get("infinite", False))
                 elif key.char == 'g':
                     if guessing_extra not in ["year", "score", "popularity", "members"]:
                         guess_extra("year")
