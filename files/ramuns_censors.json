@@ -27832,6 +27832,16 @@
     ],
     "Bullbuster-OP1.webm": [
         {
+            "size_w": 9.06,
+            "size_h": 2.36,
+            "pos_x": 15.46,
+            "pos_y": 86.34,
+            "start": 1.8,
+            "end": 5.2,
+            "color": "#050305",
+            "nsfw": false
+        },
+        {
             "size_w": 100.0,
             "size_h": 53.75,
             "pos_x": 50.0,
@@ -34394,8 +34404,8 @@
             "size_h": 31.46,
             "pos_x": 52.92,
             "pos_y": 50.05,
-            "start": 17.4,
-            "end": 20.9,
+            "start": 17.2,
+            "end": 19.9,
             "color": null,
             "nsfw": false
         },
@@ -56893,6 +56903,110 @@
             "skip": true,
             "start": 88.0,
             "end": 93.2,
+            "nsfw": false
+        }
+    ],
+    "OshiNoKoS3-ED1.webm": [
+        {
+            "size_w": 83.91,
+            "size_h": 82.57,
+            "pos_x": 0.0,
+            "pos_y": 47.81,
+            "start": 0.0,
+            "end": 2.1,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "OshiNoKoS3-OP2.webm": [
+        {
+            "size_w": 67.19,
+            "size_h": 30.14,
+            "pos_x": 49.76,
+            "pos_y": 50.7,
+            "start": 0.0,
+            "end": 3.3,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "YuushakeiNiShosu-OP1.webm": [
+        {
+            "size_w": 69.73,
+            "size_h": 37.78,
+            "pos_x": 47.87,
+            "pos_y": 58.15,
+            "start": 9.8,
+            "end": 15.9,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "YoujoSenki-ED2.webm": [
+        {
+            "size_w": 25.66,
+            "size_h": 4.65,
+            "pos_x": 50.92,
+            "pos_y": 86.89,
+            "start": 57.3,
+            "end": 62.9,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "HeroicAge-OP1.webm": [
+        {
+            "size_w": 83.24,
+            "size_h": 41.04,
+            "pos_x": 56.41,
+            "pos_y": 24.62,
+            "start": 15.1,
+            "end": 27.4,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "HellMode-OP1.webm": [
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 8.6,
+            "end": 10.4,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 91.02,
+            "size_h": 63.82,
+            "pos_x": 56.96,
+            "pos_y": 56.24,
+            "start": 10.2,
+            "end": 19.4,
+            "color": null,
+            "nsfw": false
+        },
+        {
+            "size_w": 100.0,
+            "size_h": 100.0,
+            "pos_x": 0.0,
+            "pos_y": 0.0,
+            "start": 19.2,
+            "end": 19.7,
+            "color": null,
+            "nsfw": false
+        }
+    ],
+    "KayaChanWaKowakunai-OP1.webm": [
+        {
+            "size_w": 80.51,
+            "size_h": 88.75,
+            "pos_x": 35.87,
+            "pos_y": 33.95,
+            "start": 10.2,
+            "end": 14.6,
+            "color": null,
             "nsfw": false
         }
     ]

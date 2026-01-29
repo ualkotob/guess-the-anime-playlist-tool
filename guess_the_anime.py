@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.1"  # Update this when making releases
+APP_VERSION = "14.2"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -2278,6 +2278,9 @@ def get_overall_theme_number(filename):
     base_title = None
     display_base_title = None
     for anime_id, anime in related_anime:
+        last_slug_num = 0  # Track previous slug number to detect gaps
+        current_slug_num = 0
+        theme_gap = 0
         anime_title = clean_title(anime.get("title"))
         anime_display_title = clean_title(get_display_title(anime))
         if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes")) and data.get("type") == anime.get("type")):
@@ -2291,14 +2294,24 @@ def get_overall_theme_number(filename):
             if (base_title and base_title in anime_title) or (display_base_title and display_base_title in anime_display_title):
                 for song in anime.get("songs", []):
                     if song["type"] == theme_type:
+                        # Extract number from slug like "OP1", "ED23", etc.
+                        last_slug_num = current_slug_num
+                        song_slug = song.get("slug", "")
+                        slug_num = int(''.join(filter(str.isdigit, song_slug.split('-')[0].split('_')[0][2:])))
+                        current_slug_num = slug_num
+                        theme_gap += current_slug_num - last_slug_num
                         if not (slug_extra == get_slug_extra(song.get("slug"))):
+                            theme_gap -= 1
                             continue
                         elif (song.get("overlap") == "Over") or song.get("special") or (song.get("overlap") == "Transition" and song.get("spoiler")):
+                            theme_gap -= 1
                             decimal += 0.1
                         elif song.get("skip"):
+                            theme_gap -= 1
                             continue
                         else:
-                            overall_index += 1
+                            overall_index += theme_gap
+                            theme_gap = 0
                             decimal = 0
                         if anime_id == mal_id and song["slug"] == target_slug:
                             return overall_index+decimal
@@ -4109,6 +4122,7 @@ def get_next_infinite_track(increment=True):
     checked_mal_ids = []
     try_count = 0
     tag_cooldown_failures = 0
+    tag_failed_files = []
     max_tag_tries = len(groups[p][t]) // 3
     op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
     playlist_history = playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]
@@ -4154,10 +4168,11 @@ def get_next_infinite_track(increment=True):
                 checked_files.append(selected_file)
                 d = get_metadata(selected_file)
                 s_pop = get_series_popularity(d)
-                
+                f_pop = d.get("popularity") or INT_INF
                 # Get smooth cooldowns based on popularity rank
 
-                base_series_cooldown, base_file_cooldown = get_cooldown_for_popularity(s_pop, effective_difficulty_range, groups)
+                base_series_cooldown, series_file_cooldown = get_cooldown_for_popularity(s_pop, effective_difficulty_range, groups)
+                real_series_cooldown, base_file_cooldown = get_cooldown_for_popularity(f_pop, effective_difficulty_range, groups)
 
                 # Apply modifiers like the original system
                 s_limit = int(base_series_cooldown * s_limit_mod)
@@ -4186,6 +4201,11 @@ def get_next_infinite_track(increment=True):
                             if selected_tags & recent_tags:  # Set intersection
                                 selected_file = None
                                 tag_cooldown_failures += 1
+                                tag_failed_files.append(selected_file)
+                                if tag_cooldown_failures >= max_tag_tries:
+                                    #merge with group
+                                    groups[p][t].extend(tag_failed_files)
+                                    tag_failed_files = []
                                 break
                     if not selected_file:
                         continue
@@ -7981,14 +8001,20 @@ lightning_mode_settings_default = {
         "series_mode_limit": True,
         "mode_weight": True,
         "mode_cooldowns": True
+    },
+    "_background_music": {
+        "rounds_per_track": 10,
+        "random_start": False
     }
 }
+
 lightning_mode_settings = {}
 selected_light_mode_settings = ""
 saved_lightning_mode_settings = {}
 selected_settings = ""
 saved_infinite_settings = {}
 selected_infinite_settings = ""
+generic_settings_editor_window = None
 
 def open_generic_settings_editor(
     title,
@@ -8266,11 +8292,25 @@ def open_generic_settings_editor(
             menu.add_command(label=name, command=lambda val=name: saved_var.set(val))
         saved_var.set(selected_settings)
 
+    # Destroy previous window if it exists
+    global generic_settings_editor_window
+    if generic_settings_editor_window and generic_settings_editor_window.winfo_exists():
+        generic_settings_editor_window.destroy()
+    
     # Pop-out window
     window = tk.Toplevel()
     window.title(title)
     window.geometry("400x450")
     window.configure(bg="#1e1e1e")
+    
+    # Position at root window location
+    root.update_idletasks()
+    x = root.winfo_x()
+    y = root.winfo_y()
+    window.geometry(f"+{x}+{y}")
+    
+    # Track this window globally
+    generic_settings_editor_window = window
 
     style = ttk.Style(window)
     style.theme_use("clam")
@@ -9224,7 +9264,7 @@ def get_series_popularity(data):
                 series = series[0] if series else None
             if not series:
                 continue
-            pop = anime.get("popularity") or 3000
+            pop = anime.get("popularity") or 10000
             if series not in _series_popularity_cache or pop < _series_popularity_cache[series]:
                 _series_popularity_cache[series] = pop
 
@@ -9232,7 +9272,7 @@ def get_series_popularity(data):
     if isinstance(series, list):
         series = series[0] if series else None
 
-    return _series_popularity_cache.get(series, data.get("popularity") or 3000)
+    return _series_popularity_cache.get(series, data.get("popularity") or 10000)
 
 def is_slug_op(slug):
     return slug.startswith("OP")
@@ -13238,14 +13278,14 @@ stream_instance = vlc.Instance(
     "--video-on-top",
     "--no-xlib", 
     "-q", 
-    "--fullscreen",
-    "--vout=opengl"
+    "--vout=opengl",
+    "--fullscreen"
 )
 ost_stream_instance = vlc.Instance(
     "--aout=directsound",
     "--no-xlib", 
-    "-q",
-    "--vout=opengl"
+    "--vout=opengl",
+    "-q"
 )
 stream_player = stream_instance.media_player_new()
 currently_streaming = None
@@ -15612,8 +15652,8 @@ music_files = []  # List to store music files
 current_music_index = 0
 music_loaded = False
 music_changed = False
+background_music_rounds = 0  # Track rounds where background music is actually playing
 valid_music_ext = (".mp3", ".wav", ".ogg")
-BACKGROUND_CHANGE_ROUNDS = 10  # Number of rounds between background music changes
 
 def load_music_files():
     """Load all music files from the "music" folder"""
@@ -15682,16 +15722,38 @@ def play_background_music(toggle):
     else:
         if toggle:
             music_loaded = True
-            pygame.mixer.music.load(music_files[current_music_index])
-            pygame.mixer.music.play(-1)  # -1 loops indefinitely
+            track_path = music_files[current_music_index]
+            pygame.mixer.music.load(track_path)
+            
+            # Set random start position if enabled
+            if lightning_mode_settings.get("_background_music", {}).get("random_start", False):
+                try:
+                    # Get track duration using tinytag
+                    tag = TinyTag.get(track_path)
+                    duration = tag.duration if tag.duration else 0
+                    
+                    # Start at random position (leave 10 seconds at end to avoid abrupt restart)
+                    play_length = LIGHT_ROUND_LENGTH_DEFAULT*2*lightning_mode_settings["_background_music"]["rounds_per_track"]
+                    if duration > play_length:
+                        max_start = duration - play_length
+                        random_start_pos = random.uniform(0, max_start)
+                        pygame.mixer.music.play(-1, start=random_start_pos)  # -1 loops indefinitely
+                    else:
+                        pygame.mixer.music.play(-1)  # -1 loops indefinitely
+                except Exception:
+                    # Fallback if duration can't be determined
+                    pygame.mixer.music.play(-1)  # -1 loops indefinitely
+            else:
+                pygame.mixer.music.play(-1)  # -1 loops indefinitely
+            
             if disable_video_audio:
                 pygame.mixer.music.set_volume(0)
             else:
                 pygame.mixer.music.set_volume(0.15*(volume_level/100))  # Adjust volume
             music_changed = False
             # Record track usage only when actually played
-            record_background_track_usage(music_files[current_music_index])
-            now_playing_background_music(music_files[current_music_index])
+            record_background_track_usage(track_path)
+            now_playing_background_music(track_path)
 
 def record_background_track_usage(track_path):
     """Record the usage of a background track in the current playlist's history"""
@@ -16993,7 +17055,7 @@ def play_filename(playlist_entry, fullscreen=True):
         media = instance.media_new(filepath, ":avcodec-hw=none")
     previous_media = media
     player.set_media(media)
-    global light_round_number, light_round_length
+    global light_round_number, light_round_length, background_music_rounds
     if light_mode:
         if "c." in light_mode:
             set_rules("character")
@@ -17001,8 +17063,14 @@ def play_filename(playlist_entry, fullscreen=True):
             set_rules("trivia")
         else:
             set_rules("anime")
-        if light_round_number%BACKGROUND_CHANGE_ROUNDS == 0:
-            next_background_track()
+        
+        # Only check for track change if this round will play background music
+        # Exclude modes that don't play background music: clip, ost (streaming), regular, blind (play theme audio)
+        if light_mode not in ['clip', 'ost', 'regular', 'blind']:
+            if background_music_rounds > 0 and background_music_rounds % lightning_mode_settings["_background_music"]["rounds_per_track"] == 0:
+                next_background_track()
+            background_music_rounds += 1
+        
         light_round_number = light_round_number + 1
         if light_mode != 'peek':
             update_light_round_number()
@@ -20386,6 +20454,10 @@ def get_op_ed_counts(themes):
     ending_count = 0
 
     for filename in themes:
+        # Skip None values
+        if filename is None:
+            continue
+            
         # Try to get slug and version from metadata first, fallback to filename parsing
         file_data = get_file_metadata_by_name(filename)
         if file_data and file_data.get('slug'):
