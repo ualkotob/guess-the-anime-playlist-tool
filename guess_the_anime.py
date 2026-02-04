@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.2"  # Update this when making releases
+APP_VERSION = "14.3"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -619,6 +619,8 @@ non_webm_opengl = False
 scale_main_ui = False
 auto_fetch_missing = False
 special_round_warning = True
+skip_play_seconds = 0
+skip_jump_seconds = 5
 selected_rules_file = "rules.json"
 YOUTUBE_API_KEY = ""
 OPENAI_API_KEY = ""
@@ -4493,6 +4495,8 @@ def save_config():
         "host": host,
         "volume_level": volume_level,
         "stream_volume_boost": stream_volume_boost,
+        "skip_play_seconds": skip_play_seconds,
+        "skip_jump_seconds": skip_jump_seconds,
         "back_color": OVERLAY_BACKGROUND_COLOR,
         "text_color": OVERLAY_TEXT_COLOR,
         "color_options": OVERLAY_COLOR_OPTIONS,
@@ -4528,6 +4532,7 @@ def load_config():
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
+    global skip_play_seconds, skip_jump_seconds
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -4568,6 +4573,8 @@ def load_config():
             special_round_warning = config.get("special_round_warning", True)
             volume_level = config.get("volume_level", 100)
             stream_volume_boost = config.get("stream_volume_boost", 0)
+            skip_play_seconds = config.get("skip_play_seconds", 0)
+            skip_jump_seconds = config.get("skip_jump_seconds", 5)
             try:
                 set_volume(volume_level)
             except Exception as e:
@@ -4677,6 +4684,7 @@ def show_settings_popup():
     """Opens a settings popup for editing configuration values."""
     global volume_level, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
     global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, selected_rules_file, scoreboard_rules
+    global skip_play_seconds, skip_jump_seconds
     
     def is_valid_color(color):
         """Validate if a color name or hex code is valid"""
@@ -4763,6 +4771,7 @@ def show_settings_popup():
         """Save all settings with visual feedback"""
         global volume_level, stream_volume_boost, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
         global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
+        global skip_play_seconds, skip_jump_seconds
         
         try:
             # Capture original scale_main_ui value to detect changes
@@ -4771,6 +4780,8 @@ def show_settings_popup():
             # Update global variables
             volume_level = int(volume_var.get())
             stream_volume_boost = int(stream_volume_var.get())
+            skip_play_seconds = max(0, float(skip_play_seconds_var.get()))
+            skip_jump_seconds = max(0, float(skip_jump_seconds_var.get()))
             OVERLAY_BACKGROUND_COLOR = back_color_var.get()
             OVERLAY_TEXT_COLOR = text_color_var.get()
             inverted_positions = inverted_pos_var.get()
@@ -4806,7 +4817,7 @@ def show_settings_popup():
                                    "Please restart the application for this change to take effect.")
             
         except ValueError as e:
-            messagebox.showerror("Invalid Value", f"Volume levels must be valid integers.\nError: {e}")
+            messagebox.showerror("Invalid Value", f"Settings must be valid numbers.\nError: {e}")
     
     # Create popup window
     settings_window = tk.Toplevel(bg=BACKGROUND_COLOR)
@@ -4845,6 +4856,8 @@ def show_settings_popup():
     setting_descriptions = {
         "Volume Level": "Master volume level for all audio playback (0-100).",
         "Stream Volume Boost": "Additional volume boost specifically for stream audio from youtube clips/trailers.",
+        "Skip Play Seconds": "Seconds to play before skipping forward. Set to 0 to disable auto-skip.",
+        "Skip Jump Seconds": "Seconds to jump ahead when auto-skip triggers.",
         "Background Color": "Background color of overlay windows.",
         "Text Color": "Text color displayed in overlay windows.",
         "Inverted Positions": "Swaps alignment of some elements to adjust for scoreboard position. Enable if scoreboard is aligned right.",
@@ -4883,6 +4896,26 @@ def show_settings_popup():
     stream_volume_var = tk.StringVar(value=str(stream_volume_boost))
     stream_volume_entry = tk.Entry(stream_volume_frame, textvariable=stream_volume_var, bg="black", fg="white", width=10)
     stream_volume_entry.pack(side="left", padx=(5, 0))
+
+    # Skip Play Seconds
+    skip_play_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    skip_play_frame.pack(fill="x", pady=5)
+    skip_play_label = tk.Label(skip_play_frame, text="Skip Play Seconds:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    skip_play_label.pack(side="left")
+    ToolTip(skip_play_label, setting_descriptions["Skip Play Seconds"])
+    skip_play_seconds_var = tk.StringVar(value=str(skip_play_seconds))
+    skip_play_entry = tk.Entry(skip_play_frame, textvariable=skip_play_seconds_var, bg="black", fg="white", width=10)
+    skip_play_entry.pack(side="left", padx=(5, 0))
+
+    # Skip Jump Seconds
+    skip_jump_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    skip_jump_frame.pack(fill="x", pady=5)
+    skip_jump_label = tk.Label(skip_jump_frame, text="Skip Jump Seconds:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    skip_jump_label.pack(side="left")
+    ToolTip(skip_jump_label, setting_descriptions["Skip Jump Seconds"])
+    skip_jump_seconds_var = tk.StringVar(value=str(skip_jump_seconds))
+    skip_jump_entry = tk.Entry(skip_jump_frame, textvariable=skip_jump_seconds_var, bg="black", fg="white", width=10)
+    skip_jump_entry.pack(side="left", padx=(5, 0))
     
     # Background Color
     back_color_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -8003,7 +8036,7 @@ lightning_mode_settings_default = {
         "mode_cooldowns": True
     },
     "_background_music": {
-        "rounds_per_track": 10,
+        "rounds_per_track": 3,
         "random_start": False
     }
 }
@@ -11442,8 +11475,6 @@ def add_score_changes_to_session():
         # Add to session_data so it appears in the session log
         session_data.append(score_entry)
 
-
-
 # =========================================
 #          *GROW LIGHTNING ROUND
 # =========================================
@@ -14286,7 +14317,7 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
 }
 
 # Create fixed lightning rounds folder if it doesn't exist
-FIXED_LIGHTNING_FOLDER = "fixed_lightning_round_playlists"
+FIXED_LIGHTNING_FOLDER = "fixed_playlists"
 if not os.path.exists(FIXED_LIGHTNING_FOLDER):
     os.makedirs(FIXED_LIGHTNING_FOLDER)
 
@@ -17481,6 +17512,10 @@ def save_session_history(create_text_file=True, silent=True):
         if not silent:
             print(f"Session log saved to: {txt_filename}")
 
+# =========================================
+#         *PLAYBACK
+# =========================================
+
 def thread_prefetch_metadata():
     if auto_fetch_missing:
         threading.Thread(target=pre_fetch_metadata, daemon=True).start()
@@ -17694,15 +17729,24 @@ def seek(value):
     else:
         can_seek = True
 
+def seek_to(time_ms):
+    """Function to seek the video to a specific time in milliseconds"""
+    global projected_vlc_time
+    time_ms = int(time_ms)
+    apply_censors(time_ms/1000, player.get_length()/1000)
+    projected_vlc_time = time_ms
+    player.set_time(time_ms)
+
 last_vlc_time = 0
 projected_vlc_time = 0
+last_skip_anchor_ms = None
 SEEK_POLLING = 50
 last_error = None
 last_error_count = 0
 playing_next_error = False
 def update_seek_bar():
     """Function to update the seek bar"""
-    global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek
+    global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms
     try:
         if not player.is_playing():
             vlc_time = player.get_time()
@@ -17719,44 +17763,60 @@ def update_seek_bar():
                 projected_vlc_time = vlc_time
             else:
                 projected_vlc_time = projected_vlc_time + SEEK_POLLING * light_speed_modifier
-            length = player.get_length()/1000
-            time = projected_vlc_time/1000
-            if manual_blind and not light_round_started:
-                set_progress_overlay(time, length)
-            if peek_overlay1 and not light_round_started:
-                gap = get_peek_gap(currently_playing.get("data"))
-                progress = ((time+peek_modifier)%24/12)*100
-                if progress >= 100:
-                    direction = "right"
-                    progress -= 100
-                else:
-                    direction = "down"
-                toggle_peek_overlay(direction=direction, progress=progress, gap=gap)
-            if length > 0:
-                if not last_seek_time:
-                    can_seek = False
-                    seek_bar.config(to=length)
-                    seek_bar.set(time)
-                if currently_playing.get("type") == "youtube":
-                    start = currently_playing.get("data").get("start")
-                    end = currently_playing.get("data").get("end")
-                    if time < start:
-                        player.set_time(int(start*1000)+100)
-                    elif end != 0 and time >= end:
-                        player.pause()
-                        play_next()
-                    # else:
-                    #     set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
-                else:
-                    if not light_mode and (length - time) <= 8:
-                        if (not is_title_window_up() or title_info_only) and auto_info_end:
-                            toggle_title_popup(True)
-                        if coming_up_queue:
-                            toggle_coming_up_popup(True, title=coming_up_queue["title"], details=coming_up_queue["details"], image=coming_up_queue["image"], up_next=coming_up_queue["up_next"])
-                            coming_up_queue = None
-                    update_light_round(time)
-                    apply_censors(time, length)
-            update_progress_bar(projected_vlc_time, player.get_length(), currently_playing.get("filename"))
+            skip_play_ms = int(max(0, float(skip_play_seconds)) * 1000)
+            skip_jump_ms = int(max(0, float(skip_jump_seconds)) * 1000)
+            skip_triggered = False
+            if not light_round_started and skip_play_ms > 0 and skip_jump_ms > 0:
+                if last_skip_anchor_ms is None or last_seek_time or projected_vlc_time < last_skip_anchor_ms:
+                    last_skip_anchor_ms = projected_vlc_time
+                if projected_vlc_time - last_skip_anchor_ms >= (skip_play_ms - SEEK_POLLING):
+                    # Nudge past the boundary so it doesn't immediately re-trigger
+                    skip_offset = max(SEEK_POLLING, 1)
+                    seek_to(projected_vlc_time + skip_jump_ms + skip_offset)
+                    last_skip_anchor_ms = projected_vlc_time + skip_jump_ms
+                    skip_triggered = True
+            else:
+                last_skip_anchor_ms = None
+
+            if not skip_triggered:
+                length = player.get_length()/1000
+                time = projected_vlc_time/1000
+                if manual_blind and not light_round_started:
+                    set_progress_overlay(time, length)
+                if peek_overlay1 and not light_round_started:
+                    gap = get_peek_gap(currently_playing.get("data"))
+                    progress = ((time+peek_modifier)%24/12)*100
+                    if progress >= 100:
+                        direction = "right"
+                        progress -= 100
+                    else:
+                        direction = "down"
+                    toggle_peek_overlay(direction=direction, progress=progress, gap=gap)
+                if length > 0:
+                    if not last_seek_time:
+                        can_seek = False
+                        seek_bar.config(to=length)
+                        seek_bar.set(time)
+                    if currently_playing.get("type") == "youtube":
+                        start = currently_playing.get("data").get("start")
+                        end = currently_playing.get("data").get("end")
+                        if time < start:
+                            player.set_time(int(start*1000)+100)
+                        elif end != 0 and time >= end:
+                            player.pause()
+                            play_next()
+                        # else:
+                        #     set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
+                    else:
+                        if not light_mode and (length - time) <= 8:
+                            if (not is_title_window_up() or title_info_only) and auto_info_end:
+                                toggle_title_popup(True)
+                            if coming_up_queue:
+                                toggle_coming_up_popup(True, title=coming_up_queue["title"], details=coming_up_queue["details"], image=coming_up_queue["image"], up_next=coming_up_queue["up_next"])
+                                coming_up_queue = None
+                        update_light_round(time)
+                        apply_censors(time, length)
+                update_progress_bar(projected_vlc_time, player.get_length(), currently_playing.get("filename"))
     except Exception as e:
         error_str = str(e)
         if not playing_next_error:
@@ -18081,12 +18141,24 @@ other_censor_lists = []
 censors_enabled = True
 
 censor_boxes = {}
-def toggle_censor_box(filename, censor, enabled):
+def toggle_censor_box(filename, censor, enabled, time=None):
     censor_id = f"{filename}:{censor['pos_x']}x{censor['pos_y']}--{censor['size_w']}x{censor['size_h']}-{censor['start']}-{censor['end']}"
     if censor_id in censor_boxes and censor_boxes[censor_id] and censor_boxes[censor_id].get("box") and censor_boxes[censor_id].get("box").winfo_exists():
-        if not enabled:
-            censor_boxes[censor_id]["box"].destroy()
-            del censor_boxes[censor_id]
+        if not enabled and censor_boxes[censor_id].get("destroying") != True:
+            if time is None:
+                time = projected_vlc_time/1000
+            censor_boxes[censor_id]["destroying"] = True
+            def delete_censor(cid, cen):
+                pj_time = projected_vlc_time/1000
+                if pj_time <= cen.get("end") and pj_time >= cen.get("start"):
+                    censor_boxes[cid]["destroying"] = False
+                else: 
+                    censor_boxes[cid]["box"].destroy()
+                    del censor_boxes[cid]
+            if time > censor.get("end") + 0.2:
+                root.after(200, delete_censor, censor_id, censor)
+            else:
+                delete_censor(censor_id, censor)
     elif enabled:
         censor_box = tk.Toplevel()
         censor_box.configure(bg="black")
@@ -18200,10 +18272,12 @@ def check_file_censors(filename, time, video_end, check_title=True):
                             play_next()
                     censor_found = True
                 elif not censor.get("mute"):
-                    censor_box = toggle_censor_box(filename, censor, True)["box"]
-                    censor_box.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
-                    censor_box.configure(bg=(censor.get("color") or get_image_color()))
-                    set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
+                    censor_entry = toggle_censor_box(filename, censor, True)
+                    censor_box = censor_entry.get("box") if censor_entry else None
+                    if censor_box:
+                        censor_box.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
+                        censor_box.configure(bg=(censor.get("color") or get_image_color()))
+                        set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
                 else:
                     player.audio_set_mute(True)
                     mute_censor_used = True
@@ -18213,7 +18287,10 @@ def check_file_censors(filename, time, video_end, check_title=True):
                 toggle_censor_box(filename, censor, False)
 
     if not censor_found and censor_editor:
-        censor_editor.attributes("-topmost", False)
+        try:
+            censor_editor.attributes("-topmost", False)
+        except tk.TclError:
+            pass
 
     if not mute_found and not light_round_started and mute_censor_used:
         player.audio_set_mute(disable_video_audio)
@@ -18230,12 +18307,17 @@ def lift_windows():
 
 def set_window_position(window, pos_x, pos_y):
     """Moves the Tkinter root window to the bottom-left corner with accurate positioning."""
-    root.update_idletasks()  # Ensure correct window size calculations
+    if not window or not window.winfo_exists():
+        return
+    try:
+        root.update_idletasks()  # Ensure correct window size calculations
 
-    screen_width = window.winfo_screenwidth()
-    screen_height = window.winfo_screenheight()
-    window_width = window.winfo_width()
-    window_height = window.winfo_height()
+        screen_width = window.winfo_screenwidth()
+        screen_height = window.winfo_screenheight()
+        window_width = window.winfo_width()
+        window_height = window.winfo_height()
+    except tk.TclError:
+        return
 
     y_position = (screen_height - window_height)*(pos_y/100)
     x_position = (screen_width - window_width)*(pos_x/100)
@@ -22496,7 +22578,7 @@ def on_release(key):
                         list_select()
                     else:
                         seek_value = player.get_length()-((player.get_length()/10)*(10-int(key.char)))
-                        player.set_time(int(seek_value))
+                        seek_to(int(seek_value))
                 elif key.char == 'r':
                     if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"])-2:
                         refetch_next_track()
@@ -22669,7 +22751,8 @@ def on_mouse_click(x, y, button, pressed):
                 root.after_cancel(animation_after_id)
                 animation_after_id = None
             if last_seek_time:
-                player.set_time(int(float(last_seek_time)) * 1000)
+                seek_time = int(float(last_seek_time)) * 1000
+                seek_to(seek_time)
                 last_seek_time = None
                 def clear_last_seek_time():
                     global last_seek_time
