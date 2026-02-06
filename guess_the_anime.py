@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.3"  # Update this when making releases
+APP_VERSION = "14.3.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -4497,6 +4497,8 @@ def save_config():
         "stream_volume_boost": stream_volume_boost,
         "skip_play_seconds": skip_play_seconds,
         "skip_jump_seconds": skip_jump_seconds,
+        "skip_fade_out_ms": SKIP_FADE_WINDOW_MS,
+        "skip_fade_in_ms": SKIP_FADE_IN_WINDOW_MS,
         "back_color": OVERLAY_BACKGROUND_COLOR,
         "text_color": OVERLAY_TEXT_COLOR,
         "color_options": OVERLAY_COLOR_OPTIONS,
@@ -4532,7 +4534,7 @@ def load_config():
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
-    global skip_play_seconds, skip_jump_seconds
+    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -4575,6 +4577,8 @@ def load_config():
             stream_volume_boost = config.get("stream_volume_boost", 0)
             skip_play_seconds = config.get("skip_play_seconds", 0)
             skip_jump_seconds = config.get("skip_jump_seconds", 5)
+            SKIP_FADE_WINDOW_MS = int(config.get("skip_fade_out_ms", SKIP_FADE_WINDOW_MS))
+            SKIP_FADE_IN_WINDOW_MS = int(config.get("skip_fade_in_ms", SKIP_FADE_IN_WINDOW_MS))
             try:
                 set_volume(volume_level)
             except Exception as e:
@@ -4607,7 +4611,7 @@ def load_config():
             INVERSE_OVERLAY_TEXT_COLOR = config.get("back_color", "black")
             MIDDLE_OVERLAY_BACKGROUND_COLOR = interpolate_color(OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, 0.6)
             send_scoreboard_colors()
-            send_scoreboard_align()
+            # send_scoreboard_align()
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -4684,7 +4688,7 @@ def show_settings_popup():
     """Opens a settings popup for editing configuration values."""
     global volume_level, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
     global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, selected_rules_file, scoreboard_rules
-    global skip_play_seconds, skip_jump_seconds
+    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
     
     def is_valid_color(color):
         """Validate if a color name or hex code is valid"""
@@ -4771,7 +4775,7 @@ def show_settings_popup():
         """Save all settings with visual feedback"""
         global volume_level, stream_volume_boost, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
         global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
-        global skip_play_seconds, skip_jump_seconds
+        global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
         
         try:
             # Capture original scale_main_ui value to detect changes
@@ -4782,6 +4786,8 @@ def show_settings_popup():
             stream_volume_boost = int(stream_volume_var.get())
             skip_play_seconds = max(0, float(skip_play_seconds_var.get()))
             skip_jump_seconds = max(0, float(skip_jump_seconds_var.get()))
+            SKIP_FADE_WINDOW_MS = max(0, int(skip_fade_out_ms_var.get()))
+            SKIP_FADE_IN_WINDOW_MS = max(0, int(skip_fade_in_ms_var.get()))
             OVERLAY_BACKGROUND_COLOR = back_color_var.get()
             OVERLAY_TEXT_COLOR = text_color_var.get()
             inverted_positions = inverted_pos_var.get()
@@ -4858,6 +4864,8 @@ def show_settings_popup():
         "Stream Volume Boost": "Additional volume boost specifically for stream audio from youtube clips/trailers.",
         "Skip Play Seconds": "Seconds to play before skipping forward. Set to 0 to disable auto-skip.",
         "Skip Jump Seconds": "Seconds to jump ahead when auto-skip triggers.",
+        "Skip Fade Out (ms)": "Milliseconds to fade volume down before the skip triggers.",
+        "Skip Fade In (ms)": "Milliseconds to fade volume back in after the skip triggers.",
         "Background Color": "Background color of overlay windows.",
         "Text Color": "Text color displayed in overlay windows.",
         "Inverted Positions": "Swaps alignment of some elements to adjust for scoreboard position. Enable if scoreboard is aligned right.",
@@ -4916,6 +4924,26 @@ def show_settings_popup():
     skip_jump_seconds_var = tk.StringVar(value=str(skip_jump_seconds))
     skip_jump_entry = tk.Entry(skip_jump_frame, textvariable=skip_jump_seconds_var, bg="black", fg="white", width=10)
     skip_jump_entry.pack(side="left", padx=(5, 0))
+
+    # Skip Fade Out (ms)
+    skip_fade_out_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    skip_fade_out_frame.pack(fill="x", pady=5)
+    skip_fade_out_label = tk.Label(skip_fade_out_frame, text="Skip Fade Out (ms):", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    skip_fade_out_label.pack(side="left")
+    ToolTip(skip_fade_out_label, setting_descriptions["Skip Fade Out (ms)"])
+    skip_fade_out_ms_var = tk.StringVar(value=str(SKIP_FADE_WINDOW_MS))
+    skip_fade_out_entry = tk.Entry(skip_fade_out_frame, textvariable=skip_fade_out_ms_var, bg="black", fg="white", width=10)
+    skip_fade_out_entry.pack(side="left", padx=(5, 0))
+
+    # Skip Fade In (ms)
+    skip_fade_in_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    skip_fade_in_frame.pack(fill="x", pady=5)
+    skip_fade_in_label = tk.Label(skip_fade_in_frame, text="Skip Fade In (ms):", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    skip_fade_in_label.pack(side="left")
+    ToolTip(skip_fade_in_label, setting_descriptions["Skip Fade In (ms)"])
+    skip_fade_in_ms_var = tk.StringVar(value=str(SKIP_FADE_IN_WINDOW_MS))
+    skip_fade_in_entry = tk.Entry(skip_fade_in_frame, textvariable=skip_fade_in_ms_var, bg="black", fg="white", width=10)
+    skip_fade_in_entry.pack(side="left", padx=(5, 0))
     
     # Background Color
     back_color_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -11415,7 +11443,7 @@ def send_scoreboard_command(cmd):
                 send_scoreboard_colors()
             if not scoreboard_align_sent:
                 scoreboard_align_sent = True
-                send_scoreboard_align()
+                # send_scoreboard_align()
         except ConnectionRefusedError:
             pass
     threading.Thread(target=send_scoreboard_command_worker, daemon=True).start()
@@ -17114,6 +17142,7 @@ def play_filename(playlist_entry, fullscreen=True):
             root.after(500, lambda: player.play())
         else:
             player.play()
+            set_volume(volume_level)
     else:
         set_rules()
         light_round_number = 0
@@ -17737,6 +17766,11 @@ def seek_to(time_ms):
     projected_vlc_time = time_ms
     player.set_time(time_ms)
 
+# Skip fade window (milliseconds)
+SKIP_FADE_WINDOW_MS = 350
+SKIP_FADE_IN_WINDOW_MS = 300
+skip_fade_in_elapsed_ms = None
+
 last_vlc_time = 0
 projected_vlc_time = 0
 last_skip_anchor_ms = None
@@ -17746,7 +17780,7 @@ last_error_count = 0
 playing_next_error = False
 def update_seek_bar():
     """Function to update the seek bar"""
-    global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms
+    global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms, skip_fade_in_elapsed_ms
     try:
         if not player.is_playing():
             vlc_time = player.get_time()
@@ -17766,19 +17800,40 @@ def update_seek_bar():
             skip_play_ms = int(max(0, float(skip_play_seconds)) * 1000)
             skip_jump_ms = int(max(0, float(skip_jump_seconds)) * 1000)
             skip_triggered = False
-            if not light_round_started and skip_play_ms > 0 and skip_jump_ms > 0:
+            if currently_playing.get("type") != "youtube" and not light_round_started and skip_play_ms > 0 and skip_jump_ms > 0:
                 if last_skip_anchor_ms is None or last_seek_time or projected_vlc_time < last_skip_anchor_ms:
                     last_skip_anchor_ms = projected_vlc_time
-                if projected_vlc_time - last_skip_anchor_ms >= (skip_play_ms - SEEK_POLLING):
+                time_since_anchor = projected_vlc_time - last_skip_anchor_ms
+                time_to_skip = skip_play_ms - time_since_anchor
+                fade_window_ms = min(skip_play_ms, SKIP_FADE_WINDOW_MS)
+                if skip_fade_in_elapsed_ms is None and not disable_video_audio and fade_window_ms > 0:
+                    if time_to_skip <= fade_window_ms:
+                        fade_factor = max(0.0, min(1.0, time_to_skip / fade_window_ms))
+                        player.audio_set_volume(int(volume_level * fade_factor))
+                    else:
+                        player.audio_set_volume(volume_level)
+                if time_since_anchor >= (skip_play_ms - SEEK_POLLING):
                     # Nudge past the boundary so it doesn't immediately re-trigger
                     skip_offset = max(SEEK_POLLING, 1)
-                    seek_to(projected_vlc_time + skip_jump_ms + skip_offset)
+                    total_length_ms = player.get_length()
+                    if total_length_ms > 0 and (projected_vlc_time + skip_jump_ms + skip_offset) >= total_length_ms:
+                        play_next()
+                    else:
+                        seek_to(projected_vlc_time + skip_jump_ms + skip_offset)
                     last_skip_anchor_ms = projected_vlc_time + skip_jump_ms
+                    skip_fade_in_elapsed_ms = 0
                     skip_triggered = True
             else:
                 last_skip_anchor_ms = None
+                skip_fade_in_elapsed_ms = None
 
             if not skip_triggered:
+                if not disable_video_audio and skip_fade_in_elapsed_ms is not None:
+                    skip_fade_in_elapsed_ms += (SEEK_POLLING * light_speed_modifier)
+                    fade_factor = max(0.0, min(1.0, skip_fade_in_elapsed_ms / max(1, SKIP_FADE_IN_WINDOW_MS)))
+                    player.audio_set_volume(int(volume_level * fade_factor))
+                    if fade_factor >= 1.0:
+                        skip_fade_in_elapsed_ms = None
                 length = player.get_length()/1000
                 time = projected_vlc_time/1000
                 if manual_blind and not light_round_started:
@@ -22864,6 +22919,8 @@ root.after(1000, create_new_session)
 root.after(1000, update_seek_bar)
 # Schedule a check for when the video ends
 root.after(1000, check_video_end)
+# Set initial volume
+root.after(1000, set_volume, volume_level)
 # Check for updates on startup (after 3 seconds to let UI load)
 root.after(3000, check_for_updates_on_startup)
 
