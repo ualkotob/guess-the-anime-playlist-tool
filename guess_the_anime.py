@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.4"  # Update this when making releases
+APP_VERSION = "14.5"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -2150,35 +2150,55 @@ def update_up_next_display(widget, clear=False):
                 widget.insert(tk.END, "NEXT: ", "bold")
 
             next_up_text = "End of playlist"
-            fixed_coming_up = fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("current_index",0) + 1 < fixed_lightning_round_playlist_data.get("round_count", 0)
-            if playlist["current_index"] + 1 < len(playlist["playlist"]) or fixed_coming_up:
+            fixed_data = fixed_lightning_round_playlist_data or fixed_lightning_queue
+            fixed_rounds = fixed_data.get("rounds", []) if fixed_data else []
+            fixed_current_index = fixed_data.get("current_index", -1) if fixed_data else -1
+            fixed_coming_up = fixed_data and (fixed_current_index + 1) < len(fixed_rounds)
+            if youtube_queue or search_queue or fixed_coming_up or playlist["current_index"] + 1 < len(playlist["playlist"]):
                 try:
-                    if fixed_coming_up:
-                        next_round = fixed_lightning_round_playlist_data["rounds"][fixed_lightning_round_playlist_data["current_index"] + 1]
+                    if youtube_queue:
+                        playlist_entry = youtube_queue.get("filename")
+                    elif search_queue:
+                        playlist_entry = search_queue
+                    elif fixed_coming_up:
+                        next_round = fixed_rounds[fixed_current_index + 1]
                         playlist_entry = next_round.get("theme")
                         next_mode = next_round.get("type")
                         widget.insert(tk.END, f"[{next_mode.upper()}] ", "white")
                     else:
                         playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
                     next_filename = get_clean_filename(playlist_entry)
-                    next_up_data = get_metadata(next_filename)
-                    version_num = next_up_data.get("version")
-                    if version_num and version_num != 1:
-                        version_num = f"v{version_num}"
+                    if youtube_queue or is_youtube_file(next_filename):
+                        youtube_data = youtube_queue or get_youtube_metadata_by_filename(next_filename) or {}
+                        yt_title = get_youtube_display_title(youtube_data) or next_filename
+                        yt_duration = format_seconds(get_youtube_duration(youtube_data)) if youtube_data else ""
+                        next_up_text = f"{yt_title}"
+                        if yt_duration:
+                            next_up_text += f"\nDuration: {yt_duration}"
                     else:
-                        version_num = ""
-                    if lightning_queue and lightning_queue[0] == next_filename and variety_light_mode_enabled:
-                        widget.insert(tk.END, f"[{lightning_queue[1].upper()}] ", "white")
-                    next_up_text = (
-                        f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n"
-                        f"{format_slug(next_up_data.get('slug'))}{version_num} | {next_up_data.get('members') or 0:,} "
-                        f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
-                    )
+                        next_up_data = get_metadata(next_filename)
+                        version_num = next_up_data.get("version")
+                        if version_num and version_num != 1:
+                            version_num = f"v{version_num}"
+                        else:
+                            version_num = ""
+                        if lightning_queue and lightning_queue[0] == next_filename and variety_light_mode_enabled:
+                            widget.insert(tk.END, f"[{lightning_queue[1].upper()}] ", "white")
+                        next_up_text = (
+                            f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n"
+                            f"{format_slug(next_up_data.get('slug'))}{version_num} | {next_up_data.get('members') or 0:,} "
+                            f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
+                        )
                     if is_popout:
                         next_up_text = f"NEXT: {next_up_text.replace("\n", " - ")}"
                 except Exception:
-                    playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
-                    next_up_text = get_clean_filename(playlist_entry)
+                    if youtube_queue:
+                        next_up_text = youtube_queue.get("filename")
+                    elif search_queue:
+                        next_up_text = search_queue
+                    else:
+                        playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
+                        next_up_text = get_clean_filename(playlist_entry)
             widget.insert(tk.END, f"{next_up_text}", "white")
             adjust_up_next_height(widget, is_popout)
             widget.config(state=tk.DISABLED)
@@ -2803,6 +2823,7 @@ def load_youtube_video(index):
     else:
         unload_youtube_video()
     show_youtube_playlist(True)
+    up_next_text()
 
 def update_youtube_metadata(data=None):
     global youtube_queue
@@ -6478,8 +6499,8 @@ def year_stats(column):
         count = year_counter[group]
         percent = round(count / len(directory_files) * 100, 2)
         column.insert(tk.END, f"{group}: ", "bold")
-        # column.insert(tk.END, f"{count} ({percent}%)", "white")
-        add_field_total_button(column, year_to_filenames[group], False, False, button_text=f"{count} ({percent}%)")
+        column.insert(tk.END, f"{count} ({percent}%)", "white")
+        add_field_total_button(column, year_to_filenames[group], False, False)
         column.insert(tk.END, "\n")
 
     column.config(state=tk.DISABLED)
@@ -7487,6 +7508,7 @@ def set_search_queue(index):
                 play_video()
                 return
         search(True, False)
+        up_next_text()
 
 def search_playlist(search_term):
     """Returns a list of filenames where the search term matches the title or english_title.
@@ -7693,6 +7715,20 @@ light_modes = {
 }
 
 lightning_mode_settings_default = {
+    "variety": {
+        "popularity_limit": True,
+        "series_mode_limit": True,
+        "mode_weight": True,
+        "mode_cooldowns": True
+    },
+    "_misc_settings": {
+        "answer_length": 8,
+        "background_music": {
+            "rounds_per_track": 3,
+            "random_start": False,
+            "hide_display_during_peek": False
+        }
+    },
     "blind": {
         "length": 12,
         "muted": False,
@@ -8104,16 +8140,6 @@ lightning_mode_settings_default = {
                 "no_repeat_limit": 40
             }
         }
-    },
-    "variety": {
-        "popularity_limit": True,
-        "series_mode_limit": True,
-        "mode_weight": True,
-        "mode_cooldowns": True
-    },
-    "_background_music": {
-        "rounds_per_track": 3,
-        "random_start": False
     }
 }
 
@@ -14510,6 +14536,7 @@ def queue_fixed_lightning_round(index):
             queue_next_lightning_mode()
 
     show_fixed_lightning_list(update=True)
+    up_next_text()
 
 def open_fixed_lightning_manager():
     """Open the fixed lightning round playlists manager window"""
@@ -15833,14 +15860,14 @@ def play_background_music(toggle):
             pygame.mixer.music.load(track_path)
             
             # Set random start position if enabled
-            if lightning_mode_settings.get("_background_music", {}).get("random_start", False):
+            if lightning_mode_settings.get("_misc_settings", {}).get("background_music", {}).get("random_start", False):
                 try:
                     # Get track duration using tinytag
                     tag = TinyTag.get(track_path)
                     duration = tag.duration if tag.duration else 0
                     
                     # Start at random position (leave 10 seconds at end to avoid abrupt restart)
-                    play_length = LIGHT_ROUND_LENGTH_DEFAULT*2*lightning_mode_settings["_background_music"]["rounds_per_track"]
+                    play_length = LIGHT_ROUND_LENGTH_DEFAULT*2*lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"]
                     if duration > play_length:
                         max_start = duration - play_length
                         random_start_pos = random.uniform(0, max_start)
@@ -15883,7 +15910,9 @@ def record_background_track_usage(track_path):
         playlist["background_track_history"] = playlist["background_track_history"][-max_history:]
 
 def now_playing_background_music(track = None):
-    if not frame_light_round_started and (light_mode == 'peek' or not light_muted or peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
+    hide_during_peek = lightning_mode_settings.get("_misc_settings", {}).get("background_music", {}).get("hide_display_during_peek", False)
+    is_peek_mode = (light_mode == 'peek' or not light_muted or peek_overlay1 or edge_overlay_box or grow_overlay_boxes)
+    if not frame_light_round_started and (hide_during_peek and is_peek_mode):
         track = None
     if track:
         # Try to extract metadata using tinytag
@@ -16989,14 +17018,14 @@ def play_video(index=playlist["current_index"]):
             fixed_lightning_round_playlist_data = None
             fixed_lightning_queue = None
             fixed_current_round = None
-            light_round_answer_length = LIGHT_ROUND_ANSWER_LENGTH_DEFAULT
+            light_round_answer_length = lightning_mode_settings["_misc_settings"].get("answer_length", LIGHT_ROUND_ANSWER_LENGTH_DEFAULT)
             toggle_light_mode()
             play_video(playlist["current_index"] + skip_direction)
             return
         fixed_current_round = fixed_lightning_round_playlist_data.get("rounds", [])[index]
         filename = fixed_current_round.get("theme")
         rnd_mode = fixed_current_round.get("type", "regular")
-        light_round_answer_length = fixed_current_round.get("answer_duration", LIGHT_ROUND_ANSWER_LENGTH_DEFAULT)
+        light_round_answer_length = fixed_current_round.get("answer_duration", lightning_mode_settings["_misc_settings"].get("answer_length", LIGHT_ROUND_ANSWER_LENGTH_DEFAULT))
         if light_mode != rnd_mode:
             toggle_light_mode(rnd_mode, queue=False)
         if play_filename(filename):
@@ -17174,7 +17203,7 @@ def play_filename(playlist_entry, fullscreen=True):
         # Only check for track change if this round will play background music
         # Exclude modes that don't play background music: clip, ost (streaming), regular, blind (play theme audio)
         if light_mode not in ['clip', 'ost', 'regular', 'blind']:
-            if background_music_rounds > 0 and background_music_rounds % lightning_mode_settings["_background_music"]["rounds_per_track"] == 0:
+            if background_music_rounds > 0 and background_music_rounds % lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"] == 0:
                 next_background_track()
             background_music_rounds += 1
         
@@ -19542,12 +19571,12 @@ def show_field_themes(update = False, group=[]):
     field_list.sort(key=lambda file: get_title(file, file).lower())
     last_themes_listed = field_list
     selected = -1
-    for index, filename in enumerate(field_list):
-        if filename == currently_playing.get('filename'):
-            selected = index
-            break
-
-    show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_title, play_video_from_last, selected, update)
+    if search_queue:
+        for index, filename in enumerate(field_list):
+            if get_clean_filename(filename) == search_queue or filename == search_queue:
+                selected = index
+                break
+    show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_title, set_field_queue, selected, update, right_click_func=add_field_to_playlist)
 
 def get_title(key, value):
     try:
@@ -19595,9 +19624,30 @@ def get_title(key, value):
         lightning_icon = "⚡" if is_lightning else ""
         return lightning_icon + (("📁 " + filename) if os.path.isabs(value) else filename)
 
-def play_video_from_last(index):
+def play_video_from_list(index):
     if last_themes_listed:
         play_video_from_filename(last_themes_listed[index])
+
+def set_field_queue(index):
+    global search_queue
+    if last_themes_listed and index >= 0:
+        filename = get_clean_filename(last_themes_listed[index])
+        if search_queue == filename:
+            search_queue = None
+        else:
+            search_queue = filename
+            if not player.is_playing():
+                play_video()
+                return
+        show_field_themes(True)
+        up_next_text()
+
+def add_field_to_playlist(index):
+    if last_themes_listed and index >= 0:
+        filename = get_clean_filename(last_themes_listed[index])
+        playlist["playlist"].insert(playlist["current_index"]+1, filename)
+        up_next_text()
+        save_config()
 
 def show_playlist(update = False):
     show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=remove_theme)
