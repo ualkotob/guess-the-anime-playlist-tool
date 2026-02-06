@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.3.1"  # Update this when making releases
+APP_VERSION = "14.4"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -5392,6 +5392,54 @@ def delete(update = False):
             break
         
     show_list("delete_playlist", right_column, playlists, get_playlist_name, delete_playlist, selected, update)
+
+def get_mergeable_playlists():
+    playlists = get_playlists_dict()
+    current_name = playlist.get("name", "")
+    mergeable = []
+    for _, name in playlists.items():
+        if current_name and name == current_name:
+            continue
+        data = get_playlist(name)
+        if data.get("infinite"):
+            continue
+        mergeable.append(name)
+    return {i: name for i, name in enumerate(mergeable)}
+
+def merge_playlist(update=False):
+    if playlist.get("infinite", False):
+        return
+    playlists = get_mergeable_playlists()
+    if not playlists:
+        messagebox.showinfo("Merge Playlist", "No non-infinite playlists available to merge.")
+        return
+    show_list("merge_playlist", right_column, playlists, get_playlist_name, merge_playlist_select, -1, update)
+
+def merge_playlist_select(index):
+    playlists = get_mergeable_playlists()
+    if index not in playlists:
+        return
+    name = playlists[index]
+    data = get_playlist(name)
+    if data.get("infinite"):
+        return
+    confirm = messagebox.askyesno("Merge Playlist", f"Add themes from '{name}' to the current playlist?")
+    if not confirm:
+        return
+    existing = set(playlist.get("playlist", []))
+    added = 0
+    for item in data.get("playlist", []):
+        if item not in existing:
+            playlist["playlist"].append(item)
+            existing.add(item)
+            added += 1
+    if added > 0:
+        global playlist_changed
+        playlist_changed = True
+        save_config()
+        update_current_index(save=False)
+        reload_playlist(True)
+    messagebox.showinfo("Merge Playlist", f"Added {added} new theme(s) from '{name}'.")
 
 def delete_playlist(index):
     """Deletes a playlist by index after confirmation."""
@@ -21643,7 +21691,7 @@ def create_first_row_buttons():
     if playlist.get("infinite", False):
         directory_width = 28
     else:
-        directory_width = 30
+        directory_width = 26
 
     global directory_entry
     directory_entry = tk.Entry(first_row_frame, width=scl(directory_width, "UI"), bg="black", fg="white", insertbackground="white", textvariable=directory)
@@ -21764,6 +21812,12 @@ def create_first_row_buttons():
                                 "so I can load up another playlist, then go back while keeping the position. I don't "
                                 "have a shortcut for saving, but if you were not using shortcuts you could just save manually "
                                 "before loading a playlist if you want to."))
+    if not playlist.get("infinite", False):
+        global merge_playlist_button
+        merge_playlist_button = create_button(first_row_frame, "➕", merge_playlist,
+                                    help_title="MERGE PLAYLIST",
+                                    help_text=("Merge another playlist into the current playlist.\n\n"
+                                               "Only non-infinite playlists are listed, and duplicates are skipped."))
     global load_system_button
     load_system_button = create_button(first_row_frame, "📋", load_system_playlist,
                                 help_title="LOAD SYSTEM PLAYLIST",
@@ -22513,6 +22567,7 @@ list_buttons = [
     {"button":None, "label":"field_list", "func":show_field_themes},
     {"button":"remove_button", "label":"remove", "func":remove_theme},
     {"button":"load_button", "label":"load_playlist", "func":load},
+    {"button":"merge_playlist_button", "label":"merge_playlist", "func":merge_playlist},
     {"button":"load_system_button", "label":"load_system_playlist", "func":load_system_playlist},
     {"button":"delete_button", "label":"delete_playlist", "func":delete},
     {"button":"load_filters_button", "label":"load_filters", "func":load_filter},
