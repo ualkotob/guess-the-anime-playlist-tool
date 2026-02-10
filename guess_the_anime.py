@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.5"  # Update this when making releases
+APP_VERSION = "14.6"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -3949,6 +3949,31 @@ def get_boost_multiplier(season_string):
             return infinite_settings["recent_boost_multiplier"][i]
     return 1
 
+def get_series_boost_multiplier(series, cache=None):
+    """Return the lowest seasonal boost across a series."""
+    if not series:
+        return 1
+    if isinstance(series, str):
+        series = [series]
+    series_key = tuple(series)
+    if cache is not None and series_key in cache:
+        return cache[series_key]
+    series_boost = 1
+    for _filename in directory_files:
+        _data = get_metadata(_filename)
+        if not _data:
+            continue
+        _series = _data.get("series") or [_data.get("title")]
+        if isinstance(_series, str):
+            _series = [_series]
+        if any(s in _series for s in series):
+            series_boost = min(series_boost, get_boost_multiplier(_data.get("season", "Fall 2000")))
+            if series_boost <= 1:
+                break
+    if cache is not None:
+        cache[series_key] = series_boost
+    return series_boost
+
 difficulty_options = ["MODE: VERY EASY","MODE: EASY","MODE: NORMAL","MODE: HARD","MODE: VERY HARD","MODE: RANDOM"]
 def select_difficulty(event=None):
     value = difficulty_dropdown.get()
@@ -4149,6 +4174,7 @@ def get_next_infinite_track(increment=True):
     max_tag_tries = len(groups[p][t]) // 3
     op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
     playlist_history = playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]
+    series_boost_cache = {}
 
     while not selected_file:
         group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
@@ -4205,7 +4231,10 @@ def get_next_infinite_track(increment=True):
                     selected_file = None
                     continue
                 series = d.get("series") or [d.get("title")]
-                boost = get_boost_multiplier(d.get("season", "Fall 2000"))
+                if isinstance(series, str):
+                    series = [series]
+                file_boost = get_boost_multiplier(d.get("season", "Fall 2000"))
+                series_boost = get_series_boost_multiplier(series, cache=series_boost_cache)
                 
                 if infinite_settings["tag_cooldown"]:
                     # Tag cooldown check - prevent same tags within 3 entries
@@ -4244,12 +4273,12 @@ def get_next_infinite_track(increment=True):
                             continue
                         
                         f_d = get_metadata(clean_f)
-                        if clean_f == selected_file or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (cooldown_count < max(min_s_limit*s_limit_mod, (s_limit/boost)) and series == (f_d.get("series") or [f_d.get("title")])):
+                        if clean_f == selected_file or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (cooldown_count < max(min_s_limit*s_limit_mod, (s_limit/series_boost)) and series == (f_d.get("series") or [f_d.get("title")])):
                             selected_file = None
                             break
                         
                         cooldown_count += 1
-                        if cooldown_count >= max(min_f_limit*f_limit_mod, ((f_limit)/boost)):
+                        if cooldown_count >= max(min_f_limit*f_limit_mod, ((f_limit)/file_boost)):
                             break
                 if selected_file:
                     # Debug print for selected tracks
@@ -4555,7 +4584,7 @@ def load_config():
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
-    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
+    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, stream_instance, ost_stream_instance
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -4591,6 +4620,23 @@ def load_config():
             inverted_positions = config.get("inverted_positions", False)
             half_points = config.get("half_points", False)
             non_webm_opengl = config.get("non_webm_opengl", False)
+            stream_params = [
+                "--aout=directsound",
+                "--video-on-top",
+                "--no-xlib",
+                "-q",
+                "--fullscreen"
+            ]
+            ost_params = [
+                "--aout=directsound",
+                "--no-xlib",
+                "-q"
+            ]
+            if non_webm_opengl:
+                stream_params.insert(-1, "--vout=opengl")
+                ost_params.insert(-1, "--vout=opengl")
+            stream_instance = vlc.Instance(*stream_params)
+            ost_stream_instance = vlc.Instance(*ost_params)
             scale_main_ui = config.get("scale_main_ui", False)
             auto_fetch_missing = config.get("auto_fetch_missing", False)
             special_round_warning = config.get("special_round_warning", True)
@@ -8855,6 +8901,7 @@ def update_light_round(time):
                 progress = (light_round_length - time_left) / light_round_length
                 block_percent = 100 - (edge_max * progress)  # from 100% to 80%
                 toggle_edge_overlay(block_percent=block_percent)
+                now_playing_background_music(music_files[current_music_index])
             elif grow_overlay_boxes:
                 grow_max = max(20, min(60, (currently_playing.get("data").get('popularity') or 3000)/10))
                 progress = (light_round_length - time_left) / light_round_length
@@ -11372,9 +11419,12 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
             
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
+    video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
+    if not has_video:
+        video_x, video_y, video_w, video_h = 0, 0, screen_width, screen_height
 
     # Calculate the gap in pixels as a percentage of the screen size
-    gap_pixels = int((((gap+gap_modifier) / 100) * screen_width))
+    gap_pixels = int((((gap+gap_modifier) / 100) * video_w))
     # Initialize overlay dimensions and positions
     first_width = first_height = first_x = first_y = None
     second_width = second_height = second_x = second_y = None
@@ -11382,48 +11432,48 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
     cover_margin = scl(20)  # pixels to ensure full screen edge coverage
 
     if direction == "left":
-        first_width = screen_width * (1 - progress / 100)
-        first_height = screen_height
-        first_x = 0
-        first_y = 0
+        first_width = video_w * (1 - progress / 100)
+        first_height = video_h
+        first_x = video_x
+        first_y = video_y
 
-        second_width = max(0, screen_width * (progress / 100) - gap_pixels)
-        second_height = screen_height
-        second_x = first_width + gap_pixels
-        second_y = 0
+        second_width = max(0, video_w * (progress / 100) - gap_pixels)
+        second_height = video_h
+        second_x = video_x + first_width + gap_pixels
+        second_y = video_y
 
     elif direction == "right":
-        first_width = screen_width * (1 - progress / 100)
-        first_height = screen_height
-        first_x = screen_width - first_width + cover_margin  # Extra cover on edge
-        first_y = 0
+        first_width = video_w * (1 - progress / 100)
+        first_height = video_h
+        first_x = video_x + (video_w - first_width) + cover_margin  # Extra cover on edge
+        first_y = video_y
 
-        second_width = max(0, screen_width * (progress / 100) - gap_pixels)
-        second_height = screen_height
-        second_x = 0
-        second_y = 0
+        second_width = max(0, video_w * (progress / 100) - gap_pixels)
+        second_height = video_h
+        second_x = video_x
+        second_y = video_y
 
     elif direction == "up":
-        first_width = screen_width
-        first_height = screen_height * (1 - progress / 100)
-        first_x = 0
-        first_y = 0
+        first_width = video_w
+        first_height = video_h * (1 - progress / 100)
+        first_x = video_x
+        first_y = video_y
 
-        second_width = screen_width
-        second_height = max(0, screen_height * (progress / 100) - gap_pixels)
-        second_x = 0
-        second_y = first_height + gap_pixels
+        second_width = video_w
+        second_height = max(0, video_h * (progress / 100) - gap_pixels)
+        second_x = video_x
+        second_y = video_y + first_height + gap_pixels
 
     elif direction == "down":
-        first_width = screen_width
-        first_height = screen_height * (1 - progress / 100)
-        first_x = 0
-        first_y = screen_height - first_height + cover_margin  # Extra cover on edge
+        first_width = video_w
+        first_height = video_h * (1 - progress / 100)
+        first_x = video_x
+        first_y = video_y + (video_h - first_height) + cover_margin  # Extra cover on edge
 
-        second_width = screen_width
-        second_height = max(0, screen_height * (progress / 100) - gap_pixels)
-        second_x = 0
-        second_y = 0
+        second_width = video_w
+        second_height = max(0, video_h * (progress / 100) - gap_pixels)
+        second_x = video_x
+        second_y = video_y
     else:
         # If direction is invalid, do not proceed to use uninitialized variables
         print("Invalid direction.")
@@ -11457,11 +11507,44 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
 # =========================================
 
 edge_overlay_box = None
+edge_overlay_after_id = None
+last_edge_block_percent = 100
+
+def get_video_display_rect():
+    """Return (x, y, w, h, has_video) for the visible video area on screen."""
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    try:
+        vw, vh = player.video_get_size(0)
+    except Exception:
+        vw, vh = (0, 0)
+    if not vw or not vh:
+        return 0, 0, screen_w, screen_h, False
+    video_ar = vw / vh
+    screen_ar = screen_w / screen_h
+    if video_ar >= screen_ar:
+        video_w = screen_w
+        video_h = int(screen_w / video_ar)
+        x = 0
+        y = (screen_h - video_h) // 2
+    else:
+        video_h = screen_h
+        video_w = int(screen_h * video_ar)
+        x = (screen_w - video_w) // 2
+        y = 0
+    return x, y, video_w, video_h, True
 
 def toggle_edge_overlay(block_percent=100, destroy=False):
-    global edge_overlay_box
+    global edge_overlay_box, edge_overlay_after_id, last_edge_block_percent
+    last_edge_block_percent = block_percent
 
     if destroy:
+        if edge_overlay_after_id:
+            try:
+                root.after_cancel(edge_overlay_after_id)
+            except Exception:
+                pass
+            edge_overlay_after_id = None
         if edge_overlay_box and edge_overlay_box.winfo_exists():
             edge_overlay_box.destroy()
         edge_overlay_box = None
@@ -11471,20 +11554,25 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
     # Clamp block_percent
     block_percent = max(0, min(100, block_percent))
 
-    # Get screen dimensions
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
+    video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
+    if not has_video:
+        if edge_overlay_after_id:
+            try:
+                root.after_cancel(edge_overlay_after_id)
+            except Exception:
+                pass
+        edge_overlay_after_id = root.after(250, lambda: toggle_edge_overlay(block_percent=last_edge_block_percent))
 
     # Determine uniform margin based on the smallest screen dimension
     visible_percent = 100 - block_percent
-    margin = int(min(screen_w, screen_h) * (visible_percent / 100 / 2))
+    margin = int(min(video_w, video_h) * (visible_percent / 100 / 2))
 
     # Calculate final box size
-    width = screen_w - margin * 2
-    height = screen_h - margin * 2
+    width = max(0, video_w - margin * 2)
+    height = max(0, video_h - margin * 2)
 
-    x = margin
-    y = margin
+    x = video_x + margin
+    y = video_y + margin
 
     # Create or update overlay
     if not edge_overlay_box or not edge_overlay_box.winfo_exists():
@@ -13411,13 +13499,11 @@ stream_instance = vlc.Instance(
     "--video-on-top",
     "--no-xlib", 
     "-q", 
-    "--vout=opengl",
     "--fullscreen"
 )
 ost_stream_instance = vlc.Instance(
     "--aout=directsound",
     "--no-xlib", 
-    "--vout=opengl",
     "-q"
 )
 stream_player = stream_instance.media_player_new()
@@ -13665,7 +13751,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "? watch these!", "must watch", "anime you should", "anime you must", "anime you need",
                     "anime you have to", "anime you gotta", "veggietales", "reacting to", "the anime effect #",
                     "#animeexplain", "top 3", "top 5", "top 10", "top 11", "top 12", "top 13",
-                    "anime mix", "english dub greeting video", "best of 20"
+                    "anime mix", "english dub greeting video", "best of 20", "reacts to"
                 ]
                 ost_bad_keywords = [
                     "insert song", "anime songs", "cd single", "theme song", "full album", "extended"
@@ -17302,6 +17388,81 @@ def parse_timestamp_flexible(timestamp_str):
 session_data = []  # JSON session data
 session_start_time = None
 
+def get_top_series_from_session(session_entries):
+    series_counts = {}
+    unique_themes_per_series = {}
+
+    for entry in session_entries:
+        if entry.get("type") == "theme" and entry.get("id") and entry.get("slug"):
+            theme_id = f"{entry.get('id')}_{entry.get('slug')}"
+
+            theme_data = get_metadata(entry.get("filename", ""))
+            series_name = None
+
+            if theme_data:
+                series_raw = theme_data.get("series") or theme_data.get("title")
+                if isinstance(series_raw, list):
+                    series_name = series_raw[0] if series_raw else None
+                else:
+                    series_name = series_raw
+
+            if not series_name:
+                series_name = entry.get("title")
+
+            if series_name:
+                if series_name not in unique_themes_per_series:
+                    unique_themes_per_series[series_name] = set()
+                    series_counts[series_name] = 0
+
+                if theme_id not in unique_themes_per_series[series_name]:
+                    unique_themes_per_series[series_name].add(theme_id)
+                    series_counts[series_name] += 1
+
+    top_series = [(series, count) for series, count in series_counts.items() if count > 1]
+    top_series.sort(key=lambda x: x[1], reverse=True)
+    if not top_series:
+        return None, 0
+
+    top_count = top_series[0][1]
+    tied_series = [series for series, count in top_series if count == top_count]
+    if len(tied_series) != 1:
+        return None, 0
+
+    top_series_name, count = top_series[0]
+    return top_series_name, count
+
+def get_top_artist_from_session(session_entries):
+    artist_counts = {}
+    unique_themes = set()
+
+    for entry in session_entries:
+        if entry.get("type") == "theme" and entry.get("id") and entry.get("slug"):
+            theme_id = f"{entry.get('id')}_{entry.get('slug')}"
+
+            if theme_id not in unique_themes:
+                unique_themes.add(theme_id)
+
+                theme_data = get_metadata(entry.get("filename", ""))
+                if theme_data:
+                    for theme in theme_data.get("songs", []):
+                        if theme.get("slug") == entry.get("slug"):
+                            for artist in theme.get("artist", []):
+                                if artist:
+                                    artist_counts[artist] = artist_counts.get(artist, 0) + 1
+
+    top_artists = [(artist, count) for artist, count in artist_counts.items() if count > 1]
+    top_artists.sort(key=lambda x: x[1], reverse=True)
+    if not top_artists:
+        return None, 0
+
+    top_count = top_artists[0][1]
+    tied_artists = [artist for artist, count in top_artists if count == top_count]
+    if len(tied_artists) != 1:
+        return None, 0
+
+    top_artist, count = top_artists[0]
+    return top_artist, count
+
 def generate_session_stats():
     """Generate session statistics header for text file"""
     if not session_data:
@@ -17352,6 +17513,16 @@ def generate_session_stats():
     youtube_count = sum(1 for entry in session_data if entry.get("type") == "youtube")
     if youtube_count > 0:
         stats_lines.append(f"YouTube Videos: {youtube_count}")
+
+    # Most played series (clear winner only)
+    top_series_name, top_series_count = get_top_series_from_session(session_data)
+    if top_series_name:
+        stats_lines.append(f"Most Played Series: {top_series_name} ({top_series_count})")
+
+    # Most played artist (clear winner only)
+    top_artist, top_artist_count = get_top_artist_from_session(session_data)
+    if top_artist:
+        stats_lines.append(f"Most Played Artist: {top_artist} ({top_artist_count})")
     
     # Add scoreboard section if there are any score changes
     scoreboard_entries = [entry for entry in session_data if entry.get("type") == "scoreboard_score"]
@@ -18282,15 +18453,17 @@ def toggle_censor_box(filename, censor, enabled, time=None):
             censor_boxes[censor_id]["destroying"] = True
             def delete_censor(cid, cen):
                 pj_time = projected_vlc_time/1000
-                if pj_time <= cen.get("end") and pj_time >= cen.get("start"):
+                if show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
                     censor_boxes[cid]["destroying"] = False
-                else: 
+                elif censor_boxes[censor_id]["destroying"]: 
                     censor_boxes[cid]["box"].destroy()
                     del censor_boxes[cid]
             if time > censor.get("end") + 0.2:
                 root.after(200, delete_censor, censor_id, censor)
             else:
                 delete_censor(censor_id, censor)
+        elif enabled:
+            censor_boxes[censor_id]["destroying"] = False
     elif enabled:
         censor_box = tk.Toplevel()
         censor_box.configure(bg="black")
@@ -18299,16 +18472,21 @@ def toggle_censor_box(filename, censor, enabled, time=None):
         censor_box.attributes("-topmost", True)
         censor_boxes[censor_id] = {
             "box": censor_box,
-            "used": True
+            "used": True,
+            "destroying": False
         }
-        root.after(100, lift_peek)
-        root.after(100, lift_windows)
+        root.after(10, lift_peek)
+        root.after(10, lift_windows)
         if censor_editor:
             censor_editor.attributes("-topmost", True)
     return censor_boxes.get(censor_id)
 
 def lift_peek():
-    for p in [peek_overlay1, peek_overlay2]:
+    if isinstance(grow_overlay_boxes, dict):
+        for box in grow_overlay_boxes.values():
+            if box:
+                box.lift()
+    for p in [peek_overlay1, peek_overlay2, edge_overlay_box]:
         if p:
             p.lift()
 
@@ -18362,7 +18540,7 @@ def apply_censors(time, length):
     global censors_enabled
     if censors_enabled and not mismatch_visuals and not currently_streaming:
         check_file_censors(currently_playing.get('filename'), time, False, not pre_censor)
-        if not video_stopped and length - time <= 0.3 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(get_clean_filename(playlist["playlist"][playlist["current_index"]+1]), time, True, auto_info_start):
+        if not video_stopped and not (mute_peek_round_toggle or peek_round_toggle or blind_round_toggle) and length - time <= 0.3 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(get_clean_filename(playlist["playlist"][playlist["current_index"]+1]), time, True, auto_info_start):
             pre_censor = True
         else:
             remove_all_censor_boxes(filename=currently_playing.get('filename'))
@@ -18385,6 +18563,9 @@ def get_file_censors(filename):
             return file_censors
     return []
 
+def show_censor(censor, check_title=True):
+    return (not check_title or not is_title_window_up() or censor.get("nsfw") or censor.get("skip"))
+
 def check_file_censors(filename, time, video_end, check_title=True):
     global censor_used, mute_censor_used
     screen_width = root.winfo_screenwidth()
@@ -18394,7 +18575,7 @@ def check_file_censors(filename, time, video_end, check_title=True):
     mute_found = False
     if file_censors:
         for censor in file_censors:
-            if (not blind_enabled or censor.get("mute")) and (not check_title or not is_title_window_up() or censor.get("nsfw") or censor.get("skip")) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
+            if (not blind_enabled or censor.get("mute")) and show_censor(censor, check_title) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
                 if censor.get("skip"):
                     skip_length = censor['end'] - censor['start']
                     if not light_round_started and time < censor['start']+(skip_length / 4):
@@ -18406,10 +18587,13 @@ def check_file_censors(filename, time, video_end, check_title=True):
                 elif not censor.get("mute"):
                     censor_entry = toggle_censor_box(filename, censor, True)
                     censor_box = censor_entry.get("box") if censor_entry else None
-                    if censor_box:
-                        censor_box.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
-                        censor_box.configure(bg=(censor.get("color") or get_image_color()))
-                        set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
+                    if censor_box and censor_box.winfo_exists():
+                        try:
+                            censor_box.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
+                            censor_box.configure(bg=(censor.get("color") or get_image_color()))
+                            set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
+                        except tk.TclError:
+                            pass
                 else:
                     player.audio_set_mute(True)
                     mute_censor_used = True
@@ -20841,124 +21025,46 @@ def toggle_end_message(speed=500):
             additional_stats_label.pack(pady=(scl(10), scl(10)))
 
         # Top Series section
-        series_counts = {}
-        unique_themes_per_series = {}  # Track unique themes per series to avoid double counting same theme
-        
-        for entry in session_data:
-            if entry.get("type") == "theme" and entry.get("id") and entry.get("slug"):
-                # Create unique identifier for this theme
-                theme_id = f"{entry.get('id')}_{entry.get('slug')}"
-                
-                # Get theme data from metadata using ID and slug to find series info
-                theme_data = get_metadata(entry.get("filename", ""))
-                series_name = None
-                
-                if theme_data:
-                    # Use series parameter from top level metadata, fallback to title
-                    series_raw = theme_data.get("series") or theme_data.get("title")
-                    
-                    # Handle case where series might be a list
-                    if isinstance(series_raw, list):
-                        series_name = series_raw[0] if series_raw else None
-                    else:
-                        series_name = series_raw
-                
-                # Further fallback to entry title if still nothing found
-                if not series_name:
-                    series_name = entry.get("title")
-                
-                if series_name:
-                    # Initialize series tracking if not exists
-                    if series_name not in unique_themes_per_series:
-                        unique_themes_per_series[series_name] = set()
-                        series_counts[series_name] = 0
-                    
-                    # Only count if we haven't seen this specific theme for this series
-                    if theme_id not in unique_themes_per_series[series_name]:
-                        unique_themes_per_series[series_name].add(theme_id)
-                        series_counts[series_name] += 1
-        # Filter series with more than one theme and sort by count
-        top_series = [(series, count) for series, count in series_counts.items() if count > 1]
-        top_series.sort(key=lambda x: x[1], reverse=True)
-        # Only show if there's exactly one clear winner (no ties for first place)
-        if top_series and len(top_series) >= 1:
-            top_count = top_series[0][1]
-            # Check if there's a tie for first place
-            tied_series = [series for series, count in top_series if count == top_count]
+        top_series_name, top_series_count = get_top_series_from_session(session_data)
+        if top_series_name:
+            # Add separator line
+            separator4 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
+            separator4.pack(fill="x", padx=scl(0), pady=(scl(10), scl(10)))
             
-            if len(tied_series) == 1:  # No ties, show the single top series
-                top_series_name, count = top_series[0]
-                
-                # Add separator line
-                separator4 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
-                separator4.pack(fill="x", padx=scl(0), pady=(scl(10), scl(10)))
-                
-                # Top Series Header (singular)
-                series_header = tk.Label(main_frame, text="MOST PLAYED SERIES:", 
-                                        font=("Arial", scl(35), "bold underline"),
-                                        fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
-                                        justify="center")
-                series_header.pack(pady=(0, scl(10)))
-                
-                # Display the single top series
-                series_label = tk.Label(main_frame, text=f"{top_series_name} ({count})", 
-                                       font=("Arial", scl(28), "normal"),
-                                       fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                       justify="center")
-                series_label.pack(pady=(0, scl(10)))
+            # Top Series Header (singular)
+            series_header = tk.Label(main_frame, text="MOST PLAYED SERIES:", 
+                                    font=("Arial", scl(35), "bold underline"),
+                                    fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
+                                    justify="center")
+            series_header.pack(pady=(0, scl(10)))
+            
+            # Display the single top series
+            series_label = tk.Label(main_frame, text=f"{top_series_name} ({top_series_count})", 
+                                   font=("Arial", scl(28), "normal"),
+                                   fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
+                                   justify="center")
+            series_label.pack(pady=(0, scl(10)))
 
         # Top Artists section
-        artist_counts = {}
-        unique_themes = set()  # Track unique themes to avoid double counting
-        
-        for entry in session_data:
-            if entry.get("type") == "theme" and entry.get("id") and entry.get("slug"):
-                # Create unique identifier for this theme
-                theme_id = f"{entry.get('id')}_{entry.get('slug')}"
-                
-                # Only process if we haven't seen this theme before
-                if theme_id not in unique_themes:
-                    unique_themes.add(theme_id)
-                    
-                    # Get theme data from metadata using ID and slug
-                    theme_data = get_metadata(entry.get("filename", ""))
-                    if theme_data:
-                        for theme in theme_data.get("songs", []):
-                            if theme.get("slug") == entry.get("slug"):
-                                for artist in theme.get("artist", []):
-                                    if artist:  # Skip empty artist names
-                                        artist_counts[artist] = artist_counts.get(artist, 0) + 1
-        
-        # Filter artists played more than once and sort by count
-        top_artists = [(artist, count) for artist, count in artist_counts.items() if count > 1]
-        top_artists.sort(key=lambda x: x[1], reverse=True)
-        
-        # Only show if there's exactly one clear winner (no ties for first place)
-        if top_artists and len(top_artists) >= 1:
-            top_count = top_artists[0][1]
-            # Check if there's a tie for first place
-            tied_artists = [artist for artist, count in top_artists if count == top_count]
+        top_artist, top_artist_count = get_top_artist_from_session(session_data)
+        if top_artist:
+            # Add separator line
+            separator3 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
+            separator3.pack(fill="x", padx=scl(0), pady=(scl(10), scl(10)))
             
-            if len(tied_artists) == 1:  # No ties, show the single top artist
-                top_artist, count = top_artists[0]
-                
-                # Add separator line
-                separator3 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
-                separator3.pack(fill="x", padx=scl(0), pady=(scl(10), scl(10)))
-                
-                # Top Artist Header (singular)
-                artists_header = tk.Label(main_frame, text="MOST PLAYED ARTIST:", 
-                                         font=("Arial", scl(35), "bold underline"),
-                                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
-                                         justify="center")
-                artists_header.pack(pady=(0, scl(10)))
-                
-                # Display the single top artist
-                artists_label = tk.Label(main_frame, text=f"{top_artist} ({count})", 
-                                        font=("Arial", scl(28), "normal"),
-                                        fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                        justify="center")
-                artists_label.pack(pady=(0, scl(10)))
+            # Top Artist Header (singular)
+            artists_header = tk.Label(main_frame, text="MOST PLAYED ARTIST:", 
+                                     font=("Arial", scl(35), "bold underline"),
+                                     fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
+                                     justify="center")
+            artists_header.pack(pady=(0, scl(10)))
+            
+            # Display the single top artist
+            artists_label = tk.Label(main_frame, text=f"{top_artist} ({top_artist_count})", 
+                                    font=("Arial", scl(28), "normal"),
+                                    fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
+                                    justify="center")
+            artists_label.pack(pady=(0, scl(10)))
 
         # Update window positioning to use the main frame
         end_message_window.update_idletasks()
