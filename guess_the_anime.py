@@ -4,7 +4,7 @@
 # =========================================
 
 # Version for auto-update functionality
-APP_VERSION = "14.6"  # Update this when making releases
+APP_VERSION = "14.7"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -51,6 +51,35 @@ import platform
 from tkinter.font import Font
 
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
+
+# =========================================
+#        *MODAL DIALOG SHORTCUT GUARD
+# =========================================
+
+modal_dialog_open = False
+
+def _wrap_modal_dialog(fn):
+    def _wrapped(*args, **kwargs):
+        global modal_dialog_open
+        modal_dialog_open = True
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            modal_dialog_open = False
+    return _wrapped
+
+# Wrap common messagebox/simpledialog calls so shortcuts are suspended while dialogs are open
+messagebox.showinfo = _wrap_modal_dialog(messagebox.showinfo)
+messagebox.showwarning = _wrap_modal_dialog(messagebox.showwarning)
+messagebox.showerror = _wrap_modal_dialog(messagebox.showerror)
+messagebox.askyesno = _wrap_modal_dialog(messagebox.askyesno)
+messagebox.askokcancel = _wrap_modal_dialog(messagebox.askokcancel)
+messagebox.askretrycancel = _wrap_modal_dialog(messagebox.askretrycancel)
+messagebox.askquestion = _wrap_modal_dialog(messagebox.askquestion)
+messagebox.askyesnocancel = _wrap_modal_dialog(messagebox.askyesnocancel)
+simpledialog.askstring = _wrap_modal_dialog(simpledialog.askstring)
+simpledialog.askinteger = _wrap_modal_dialog(simpledialog.askinteger)
+simpledialog.askfloat = _wrap_modal_dialog(simpledialog.askfloat)
 
 # Explicitly load libvlc.dll and its dependencies
 vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installation path
@@ -619,6 +648,7 @@ non_webm_opengl = False
 scale_main_ui = False
 auto_fetch_missing = False
 special_round_warning = True
+special_round_playlist = True
 skip_play_seconds = 0
 skip_jump_seconds = 5
 selected_rules_file = "rules.json"
@@ -4558,6 +4588,7 @@ def save_config():
         "scale_main_ui": scale_main_ui,
         "auto_fetch_missing": auto_fetch_missing,
         "special_round_warning": special_round_warning,
+        "special_round_playlist": special_round_playlist,
         "selected_rules_file": selected_rules_file,
         "youtube_api_key": YOUTUBE_API_KEY,
         "openai_api_key": OPENAI_API_KEY,
@@ -4583,7 +4614,7 @@ def load_config():
     global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings, bonus_points
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
-    global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
+    global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
     global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, stream_instance, ost_stream_instance
     try:
         if os.path.exists(CONFIG_FILE):
@@ -4640,6 +4671,7 @@ def load_config():
             scale_main_ui = config.get("scale_main_ui", False)
             auto_fetch_missing = config.get("auto_fetch_missing", False)
             special_round_warning = config.get("special_round_warning", True)
+            special_round_playlist = config.get("special_round_playlist", True)
             volume_level = config.get("volume_level", 100)
             stream_volume_boost = config.get("stream_volume_boost", 0)
             skip_play_seconds = config.get("skip_play_seconds", 0)
@@ -4751,11 +4783,20 @@ def rgb_to_hex(rgb):
     """Convert RGB tuple to hex color"""
     return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
+settings_window = None
 def show_settings_popup():
     """Opens a settings popup for editing configuration values."""
+    global settings_window
     global volume_level, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
     global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, selected_rules_file, scoreboard_rules
     global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
+
+    if settings_window and settings_window.winfo_exists():
+        try:
+            settings_window.destroy()
+        except tk.TclError:
+            pass
+        settings_window = None
     
     def is_valid_color(color):
         """Validate if a color name or hex code is valid"""
@@ -4841,7 +4882,7 @@ def show_settings_popup():
     def save_settings():
         """Save all settings with visual feedback"""
         global volume_level, stream_volume_boost, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
-        global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, selected_rules_file, scoreboard_rules
+        global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
         global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
         
         try:
@@ -4863,6 +4904,7 @@ def show_settings_popup():
             scale_main_ui = scale_main_ui_var.get()
             auto_fetch_missing = auto_fetch_missing_var.get()
             special_round_warning = special_round_warning_var.get()
+            special_round_playlist = special_round_playlist_var.get()
             selected_rules_file = rules_file_var.get()
             scoreboard_rules = load_rules(selected_rules_file)
             YOUTUBE_API_KEY = youtube_key_var.get()
@@ -4896,6 +4938,21 @@ def show_settings_popup():
     settings_window = tk.Toplevel(bg=BACKGROUND_COLOR)
     settings_window.title("Configuration Settings")
     settings_window.resizable(False, False)
+
+    def on_settings_close():
+        global settings_window
+        if settings_window and settings_window.winfo_exists():
+            settings_window.destroy()
+        settings_window = None
+
+    settings_window.protocol("WM_DELETE_WINDOW", on_settings_close)
+
+    try:
+        settings_window.transient(root)
+        root.update_idletasks()
+        settings_window.geometry(f"+{root.winfo_x()}+{root.winfo_y()}")
+    except tk.TclError:
+        pass
     
     # Tooltip class for hover explanations
     class ToolTip:
@@ -4941,6 +4998,7 @@ def show_settings_popup():
         "Scale Main UI": "Scales the main UI based on screen resolution. Requires restart.",
         "Auto Fetch Missing": "Automatically fetches metadata if it's not found while playing themes.",
         "Special Round Warning": "Shows a warning before special rounds begin.",
+        "Special Round Playlist": "Auto-queue special rounds based on system playlist marks.",
         "Rules File": "Select which rules file to use for the scoreboard. Files must end with 'rules.json'.",
         "YouTube API Key": "API key for YouTube integration features. Required for Clip and Ost lightning rounds.",
         "OpenAI API Key": "API key for OpenAI/ChatGPT integration features. Required for Trivia and Emoji lightning rounds.",
@@ -5117,6 +5175,19 @@ def show_settings_popup():
                                            bg=BACKGROUND_COLOR, fg="white", selectcolor="black",
                                            command=lambda: special_round_warning_text.set("Enabled" if special_round_warning_var.get() else "Disabled"))
     special_round_warning_btn.pack(side="left", padx=(5, 0))
+
+    # Special Round Playlist
+    special_round_playlist_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    special_round_playlist_frame.pack(fill="x", pady=5)
+    special_round_playlist_label = tk.Label(special_round_playlist_frame, text="Special Round Playlist:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    special_round_playlist_label.pack(side="left")
+    ToolTip(special_round_playlist_label, setting_descriptions["Special Round Playlist"])
+    special_round_playlist_var = tk.BooleanVar(value=special_round_playlist)
+    special_round_playlist_text = tk.StringVar(value="Enabled" if special_round_playlist else "Disabled")
+    special_round_playlist_btn = tk.Checkbutton(special_round_playlist_frame, variable=special_round_playlist_var, textvariable=special_round_playlist_text, 
+                                           bg=BACKGROUND_COLOR, fg="white", selectcolor="black",
+                                           command=lambda: special_round_playlist_text.set("Enabled" if special_round_playlist_var.get() else "Disabled"))
+    special_round_playlist_btn.pack(side="left", padx=(5, 0))
     
     # Rules File
     rules_file_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -5177,7 +5248,7 @@ def show_settings_popup():
                         bg="black", fg="white", font=("Arial", 12, "bold"), width=15)
     save_btn.pack(side="left", padx=(3, 10))
     
-    cancel_btn = tk.Button(button_frame, text="CANCEL", command=settings_window.destroy, 
+    cancel_btn = tk.Button(button_frame, text="CANCEL", command=on_settings_close, 
                           bg="black", fg="white", font=("Arial", 12, "bold"), width=15)
     cancel_btn.pack(side="left")
 
@@ -5410,10 +5481,9 @@ def load_playlist(index):
         data = json.load(f)
     
     global playlist, playlist_changed
-    if playlist["name"] != "" and not disable_shortcuts:
-        save(True)
-    else:
-        confirm_save_playlist("loading a new playlist")
+    
+    confirm_save_playlist("loading a new playlist")
+    
     playlist_changed = False
     playlist = data
     update_playlist_name()
@@ -9861,9 +9931,10 @@ def update_frame_light_round(currently_playing_filename):
     show_frame_length = (light_round_length/4)*1000
     if not frame_light_round_pause:
         if not player.is_playing():
-            time = int(frame_light_round_frames[frame_light_round_frame_index]*1000)
-            length = player.get_length()
-            apply_censors(time/1000,length/1000)
+            if frame_light_round_frames and 0 <= frame_light_round_frame_index < len(frame_light_round_frames):
+                time = int(frame_light_round_frames[frame_light_round_frame_index]*1000)
+                length = player.get_length()
+                apply_censors(time/1000,length/1000)
         frame_light_round_frame_time = frame_light_round_frame_time + SEEK_POLLING
         if frame_light_round_frame_index < 4:
             play_background_music(True)
@@ -17217,12 +17288,13 @@ def check_next_queue_round(next_filename_set):
     if playlist["current_index"]+1 < len(playlist["playlist"]):
         next_filename = get_clean_filename(playlist["playlist"][playlist["current_index"]+1])
         if next_filename_set == next_filename:
-            if check_blind_mark(next_filename):
-                toggle_blind_round()
-            elif check_peek_mark(next_filename):
-                toggle_peek_round()
-            elif check_mute_peek_mark(next_filename):
-                toggle_mute_peek_round()
+            if special_round_playlist:
+                if check_blind_mark(next_filename):
+                    toggle_blind_round()
+                elif check_peek_mark(next_filename):
+                    toggle_peek_round()
+                elif check_mute_peek_mark(next_filename):
+                    toggle_mute_peek_round()
 
 skip_limit = 0
 def skip_filename():
@@ -17956,7 +18028,35 @@ def set_skip_direction(dir):
     global skip_direction
     skip_direction = dir
 
+def skip_to_lightning_answer():
+    global light_round_started, light_round_start_time, light_round_length
+    global frame_light_round_started, frame_light_round_frame_index, frame_light_round_frame_time
+    if frame_light_round_started:
+        try:
+            if frame_light_round_frame_index is None or frame_light_round_frame_index < 4:
+                frame_light_round_frame_index = 4
+                frame_light_round_frame_time = 0
+                set_frame_number()
+                play_background_music(False)
+                set_black_screen(False)
+                toggle_title_popup(True)
+                return True
+        except Exception:
+            pass
+    if light_round_started and light_round_start_time is not None:
+        try:
+            current_time = player.get_time() / 1000
+            answer_time = light_round_start_time + light_round_length
+            if current_time < answer_time:
+                seek_to(int((answer_time + 0.05) * 1000))
+                return True
+        except Exception:
+            pass
+    return False
+
 def play_next():
+    if skip_to_lightning_answer():
+        return
     if special_repeat_track_mode:
         toggle_special_repeat()
     set_skip_direction(1)
@@ -22741,8 +22841,10 @@ list_buttons = [
 
 disable_shortcuts = True
 def on_press(key):
-    global disable_shortcuts
+    global disable_shortcuts, modal_dialog_open
     try:
+        if modal_dialog_open:
+            pass
         if disable_shortcuts:
             pass
         # Arrow key movement for grow peek overlay (position only)
@@ -22772,8 +22874,10 @@ def on_press(key):
             print(f"Error: {e}")
 
 def on_release(key):
-    global disable_shortcuts
+    global disable_shortcuts, modal_dialog_open
     try:
+        if modal_dialog_open:
+            pass
         if popout_searching:
             pass
         elif disable_shortcuts:
