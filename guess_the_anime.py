@@ -3,8 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-# Version for auto-update functionality
-APP_VERSION = "14.7"  # Update this when making releases
+APP_VERSION = "15.0"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -49,6 +48,10 @@ import openai
 import subprocess
 import platform
 from tkinter.font import Font
+import gzip
+import zipfile
+import tempfile
+import unicodedata
 
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
 
@@ -68,7 +71,6 @@ def _wrap_modal_dialog(fn):
             modal_dialog_open = False
     return _wrapped
 
-# Wrap common messagebox/simpledialog calls so shortcuts are suspended while dialogs are open
 messagebox.showinfo = _wrap_modal_dialog(messagebox.showinfo)
 messagebox.showwarning = _wrap_modal_dialog(messagebox.showwarning)
 messagebox.showerror = _wrap_modal_dialog(messagebox.showerror)
@@ -111,7 +113,6 @@ def load_vlc_parameters(override_vout=None):
             # "--vout=opengl"
         ]
 
-    # Normalize removal of existing --vout if override requested
     if override_vout is not None:
         parameters = [p for p in parameters if not p.startswith('--vout=')]
         if override_vout and override_vout != 'automatic':
@@ -139,14 +140,12 @@ def _recreate_vlc(params, restore_media=None, restore_time=0, was_playing=False)
     # Create new instance; python-vlc expects args expanded
     instance = vlc.Instance(*params)
     player_new = instance.media_player_new()
-    # Restore media if requested
     if restore_media is not None:
         try:
             player_new.set_media(restore_media)
             if was_playing:
                 player_new.play()
             else:
-                # Start then pause later if we need to seek
                 player_new.play()
         except Exception as e:
             print(f"Failed to restore media after vout change: {e}")
@@ -235,7 +234,6 @@ def check_ffmpeg_availability():
     """Check if ffmpeg is available in system PATH"""
     global ffmpeg_available
     try:
-        # Try to run ffmpeg -version to check if it's available
         result = subprocess.run(['ffmpeg', '-version'], 
                               capture_output=True, 
                               text=True, 
@@ -263,7 +261,6 @@ def enable_drag_and_drop(widget, callback):
     # Method 1: Try tkinterdnd2 (best option)
     try:
         
-        # Check if root is tkinterdnd2-enabled
         root = widget.winfo_toplevel()
         if hasattr(root, 'drop_target_register') or isinstance(root, tkdnd.Tk):
             widget.drop_target_register(tkdnd.DND_FILES)
@@ -274,7 +271,6 @@ def enable_drag_and_drop(widget, callback):
                 
                 files = widget.tk.splitlist(event.data)
                 if files and callback:
-                    # Pass event coordinates to callback for position detection
                     callback(files, event=event)
                 return "copy"
             
@@ -383,7 +379,6 @@ def handle_dropped_files(files, event=None):
     # Try to detect drop position using coordinates (since hover events don't work during external drag)
     insert_position = None
     
-    # Method 1: Use event coordinates if available (tkinterdnd2)
     if event is not None and list_loaded == "playlist":
         try:
             if 'right_column' in globals():
@@ -394,7 +389,6 @@ def handle_dropped_files(files, event=None):
                 widget_width = right_column.winfo_width()
                 widget_height = right_column.winfo_height()
                 
-                # Check if drop is within playlist bounds
                 if (widget_x <= event.x_root <= widget_x + widget_width and
                     widget_y <= event.y_root <= widget_y + widget_height):
                     
@@ -403,19 +397,15 @@ def handle_dropped_files(files, event=None):
                     relative_y = event.y_root - widget_y
                     
                     # Use Text widget's index method to get the line at the drop position
-                    # This automatically accounts for scrolling
                     try:
                         text_index = right_column.index(f"@{relative_x},{relative_y}")
                         drop_line = int(text_index.split('.')[0])
                         
-                        # Account for pagination in playlist view
                         if list_loaded == "playlist":
-                            # Convert line to actual playlist index (0-based) accounting for pagination
                             insert_position = max(0, drop_line - 1 + playlist_page_offset)
                             playlist_size = len(playlist.get("playlist", []))
                             insert_position = min(insert_position, playlist_size)
                         else:
-                            # Account for the "items above" indicator if present
                             content = right_column.get("1.0", "2.0")
                             if "items above" in content:
                                 drop_line = max(1, drop_line - 1)
@@ -425,7 +415,6 @@ def handle_dropped_files(files, event=None):
                             playlist_size = len(playlist.get("playlist", []))
                             insert_position = min(insert_position, playlist_size)
                     except (ValueError, tk.TclError):
-                        # Fallback to simple calculation if Text index fails
                         button_height = scl(12) + 8
                         insert_position = max(0, int(relative_y / button_height))
                         playlist_size = len(playlist.get("playlist", []))
@@ -433,7 +422,6 @@ def handle_dropped_files(files, event=None):
         except Exception as e:
             print(f"DEBUG: Event position detection failed: {e}")
     
-    # Method 2: Use mouse coordinates if event method failed
     if insert_position is None and list_loaded == "playlist":
         try:
             mouse_x, mouse_y = pyautogui.position()
@@ -445,7 +433,6 @@ def handle_dropped_files(files, event=None):
                 widget_width = right_column.winfo_width()
                 widget_height = right_column.winfo_height()
                 
-                # Check if mouse is over the playlist area
                 if (widget_x <= mouse_x <= widget_x + widget_width and
                     widget_y <= mouse_y <= widget_y + widget_height):
                     
@@ -454,19 +441,15 @@ def handle_dropped_files(files, event=None):
                     relative_y = mouse_y - widget_y
                     
                     # Use Text widget's index method to get the line at the mouse position
-                    # This automatically accounts for scrolling
                     try:
                         text_index = right_column.index(f"@{relative_x},{relative_y}")
                         drop_line = int(text_index.split('.')[0])
                         
-                        # Account for pagination in playlist view
                         if list_loaded == "playlist":
-                            # Convert line to actual playlist index (0-based) accounting for pagination
                             insert_position = max(0, drop_line - 1 + playlist_page_offset)
                             playlist_size = len(playlist.get("playlist", []))
                             insert_position = min(insert_position, playlist_size)
                         else:
-                            # Account for the "items above" indicator if present
                             content = right_column.get("1.0", "2.0")
                             if "items above" in content:
                                 drop_line = max(1, drop_line - 1)
@@ -476,7 +459,6 @@ def handle_dropped_files(files, event=None):
                             playlist_size = len(playlist.get("playlist", []))
                             insert_position = min(insert_position, playlist_size)
                     except (ValueError, tk.TclError):
-                        # Fallback to simple calculation if Text index fails
                         button_height = scl(12) + 8
                         relative_position = max(0, int(relative_y / button_height))
                         if list_loaded == "playlist":
@@ -501,13 +483,11 @@ def handle_dropped_files(files, event=None):
             # Get just the filename without path
             filename = os.path.basename(file_path)
             
-            # Filter for media files (optional - you can remove this filter if you want all files)
             media_extensions = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', 
                               '.mp3', '.wav', '.flac', '.m4a', '.ogg', '.aac'}
             file_ext = os.path.splitext(filename)[1].lower()
             
             # Always add to playlist (allow duplicates)
-            # Check if file is from the current directory
             if filename in directory_files:
                 # Local file - store just filename
                 playlist_entry = filename
@@ -519,7 +499,6 @@ def handle_dropped_files(files, event=None):
             playlist["playlist"].insert(insert_position, playlist_entry)
             added_files.append(filename)  # Still show just filename in messages
             
-            # Update current_index if we inserted before it
             current_index = playlist.get("current_index", -1)
             if current_index >= 0 and insert_position <= current_index:
                 playlist["current_index"] = current_index + 1
@@ -541,7 +520,6 @@ def handle_dropped_files(files, event=None):
     # Clear hover state after drop
     hovered_button_index = None
         
-    # Refresh playlist display if it's currently shown
     if list_loaded == "playlist":
         show_playlist(True)
 
@@ -563,7 +541,31 @@ BLANK_PLAYLIST = {
 playlist = copy.deepcopy(BLANK_PLAYLIST)
 video_stopped = True
 can_seek = True
-file_metadata = {}
+
+class FileMetadataDict(dict):
+    """Dict subclass that auto-invalidates cache on mutations"""
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        invalidate_file_metadata_cache()
+    
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        invalidate_file_metadata_cache()
+    
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        invalidate_file_metadata_cache()
+    
+    def pop(self, *args):
+        result = super().pop(*args)
+        invalidate_file_metadata_cache()
+        return result
+    
+    def clear(self):
+        super().clear()
+        invalidate_file_metadata_cache()
+
+file_metadata = FileMetadataDict()
 FILE_METADATA_FILE = "metadata/file_metadata.json"
 anime_metadata = {}
 ANIME_METADATA_FILE = "metadata/anime_metadata.json"
@@ -576,7 +578,9 @@ ANIME_METADATA_OVERRIDES_FILE = "metadata/anime_metadata_overrides.json"
 manual_metadata_file = "metadata/manual_metadata.json"
 youtube_metadata = {}
 YOUTUBE_METADATA_FILE = "metadata/youtube_metadata.json"
-directory = ""
+anilist_metadata = {}
+ANILIST_METADATA_FILE = "metadata/anilist_metadata.json"
+directory = "themes"
 directory_files = {}
 
 def get_file_path(playlist_entry):
@@ -588,7 +592,6 @@ def get_file_path(playlist_entry):
     Returns:
         Full file path or None if file doesn't exist
     """
-    # Remove [L] prefix if present
     clean_entry = playlist_entry[3:] if playlist_entry.startswith("[L]") else playlist_entry
     
     if os.path.isabs(clean_entry):
@@ -600,7 +603,6 @@ def get_file_path(playlist_entry):
 
 def is_external_file(playlist_entry):
     """Check if a playlist entry is an external file (full path) or local file (filename)."""
-    # Remove [L] prefix if present before checking
     clean_entry = playlist_entry[3:] if playlist_entry.startswith("[L]") else playlist_entry
     return os.path.isabs(clean_entry)
 
@@ -618,7 +620,6 @@ def is_youtube_file(filename):
     if not youtube_metadata.get("videos"):
         return False
     
-    # Check if any YouTube video has this filename
     for video_id, video in youtube_metadata.get("videos", {}).items():
         if video.get("filename") == filename:
             return True
@@ -654,6 +655,7 @@ skip_jump_seconds = 5
 selected_rules_file = "rules.json"
 YOUTUBE_API_KEY = ""
 OPENAI_API_KEY = ""
+SERPAPI_KEY = ""
 CONFIG_FILE = "files/config.json"
 YOUTUBE_FOLDER = "youtube"
 ARCHIVE_FILE = "files/youtube_archive.txt"
@@ -804,7 +806,6 @@ def fetch_anidb_metadata(aid):
                 title = title_elem.text.strip()
                 break
 
-        # fallback if not found
         if not title:
             title = f"Episode {number}"
 
@@ -862,6 +863,213 @@ def fetch_anilist_user_ids(username, watched_only=False):
         print("Failed to parse AniList response:", e)
         return set()
 
+def fetch_anilist_metadata(anilist_id):
+    """Fetches detailed metadata for a specific AniList anime ID."""
+    query = '''
+    query ($id: Int) {
+      Media(id: $id, type: ANIME) {
+        idMal
+        title {
+          romaji
+          english
+        }
+        format
+        meanScore
+        popularity
+        rankings {
+          rank
+          type
+          format
+          year
+          season
+          allTime
+          context
+        }
+        tags {
+          name
+          category
+          rank
+          isMediaSpoiler
+        }
+        characters(sort: ROLE, perPage: 25) {
+          edges {
+            role
+            node {
+              name {
+                full
+              }
+              gender
+              age
+              description
+              image {
+                large
+                medium
+              }
+            }
+            voiceActors(language: JAPANESE) {
+              name {
+                full
+              }
+            }
+          }
+        }
+      }
+    }
+    '''
+    variables = {"id": int(anilist_id)}
+
+    try:
+        response = requests.post(
+            "https://graphql.anilist.co",
+            json={"query": query, "variables": variables}
+        )
+
+        if response.status_code != 200:
+            print(f"AniList API error for ID {anilist_id}: {response.text}")
+            return None
+
+        data = response.json()
+        media = data.get("data", {}).get("Media")
+        
+        if not media:
+            return None
+
+        # Extract and format the metadata in desired order
+        metadata = {
+            "mal_id": media.get("idMal"),
+            "title": media.get("title", {}).get("romaji"),
+            "title_english": media.get("title", {}).get("english"),
+            "format": media.get("format"),
+            "score": media.get("meanScore"),
+            "popularity": media.get("popularity")
+        }
+
+        # Extract rankings - store all-time, yearly, and seasonal rankings
+        # Add these before tags to maintain order
+        if media.get("rankings"):
+            for ranking in media["rankings"]:
+                rank_type = ranking.get("type")
+                is_all_time = ranking.get("allTime", False)
+                year = ranking.get("year")
+                season = ranking.get("season")
+                rank_value = ranking.get("rank")
+                
+                if rank_type == "RATED":
+                    if is_all_time:
+                        metadata["score_rank_all"] = rank_value
+                    elif season:
+                        # Seasonal ranking
+                        metadata["score_rank_season"] = rank_value
+                    elif year:
+                        # Yearly ranking
+                        metadata["score_rank_year"] = rank_value
+                        
+                elif rank_type == "POPULAR":
+                    if is_all_time:
+                        metadata["popularity_rank_all"] = rank_value
+                    elif season:
+                        # Seasonal ranking
+                        metadata["popularity_rank_season"] = rank_value
+                    elif year:
+                        # Yearly ranking
+                        metadata["popularity_rank_year"] = rank_value
+
+        # Now add tags after rankings
+        metadata["tags"] = []
+        
+        if media.get("tags"):
+            sorted_tags = sorted(media["tags"], key=lambda x: x.get("rank", 0), reverse=True)
+            metadata["tags"] = [
+                {
+                    "name": tag.get("name"),
+                    "category": tag.get("category"),
+                    "rank": tag.get("rank"),
+                    "spoiler": tag.get("isMediaSpoiler", False)
+                }
+                for tag in sorted_tags
+            ]
+
+        # Finally add characters
+        metadata["characters"] = []
+        
+        # Extract character information (top 15, sorted by role)
+        if media.get("characters", {}).get("edges"):
+            for edge in media["characters"]["edges"]:
+                char_node = edge.get("node", {})
+                character_data = {
+                    "name": char_node.get("name", {}).get("full"),
+                    "role": edge.get("role"),
+                    "gender": char_node.get("gender"),
+                    "age": char_node.get("age"),
+                    "description": char_node.get("description"),
+                    "image": char_node.get("image", {}).get("large")
+                }
+                
+                voice_actors = edge.get("voiceActors", [])
+                if voice_actors:
+                    character_data["voice_actors"] = [
+                        va.get("name", {}).get("full") for va in voice_actors
+                    ]
+                
+                metadata["characters"].append(character_data)
+
+        return metadata
+
+    except Exception as e:
+        print(f"Failed to fetch AniList metadata for ID {anilist_id}: {e}")
+        return None
+
+def fetch_all_anilist_metadata():
+    """Fetches AniList metadata for all unique AniList IDs in file_metadata."""
+    global anilist_metadata
+    
+    # Collect all unique AniList IDs from file_metadata (new nested structure)
+    anilist_ids = set()
+    for mal_id, mal_data in file_metadata.items():
+        anilist_id = mal_data.get("anilist")
+        if anilist_id and str(anilist_id) not in anilist_metadata:
+            anilist_ids.add(str(anilist_id))
+    
+    if not anilist_ids:
+        print("No new AniList IDs to fetch.")
+        messagebox.showinfo("AniList Metadata", "No new AniList IDs found to fetch metadata for.")
+        return
+    
+    total = len(anilist_ids)
+    print(f"\nFetching AniList metadata for {total} anime...")
+    
+    fetched_count = 0
+    failed_count = 0
+    
+    for i, anilist_id in enumerate(sorted(anilist_ids), 1):
+        print(f"[{i}/{total}] Fetching AniList ID {anilist_id}...", end=" ", flush=True)
+        
+        metadata = fetch_anilist_metadata(anilist_id)
+        if metadata:
+            anilist_metadata[anilist_id] = metadata
+            fetched_count += 1
+            print(f"✓ ({metadata.get('title', 'Unknown')})")
+        else:
+            failed_count += 1
+            print("✗ Failed")
+        
+        # Rate limiting - AniList has rate limits
+        time.sleep(1.0)  # ~60 requests per minute
+    
+    # Save the metadata
+    save_metadata()
+    
+    print(f"\nAniList metadata fetch complete!")
+    print(f"Successfully fetched: {fetched_count}")
+    print(f"Failed: {failed_count}")
+    
+    messagebox.showinfo(
+        "AniList Metadata Fetch Complete",
+        f"Successfully fetched metadata for {fetched_count} anime.\n"
+        f"Failed: {failed_count}\n\n"
+        f"Metadata saved to {ANILIST_METADATA_FILE}"
+    )
+
 def pre_fetch_metadata():
     for i in range(playlist["current_index"]-1, playlist["current_index"]+3):
         playlist_entry = playlist["playlist"][i] if i >= 0 and i < len(playlist["playlist"]) else None
@@ -871,14 +1079,13 @@ def pre_fetch_metadata():
             if fetching_metadata.get(filename) is None and filepath and os.path.exists(filepath):
                 get_metadata(filename, refresh=True, fetch=True)
 
-# Global cache for merged metadata
 _metadata_cache = {}
 # Make sure this is initialized as a set!
 fetched_metadata = set()
 
-# Performance optimization: cache for file metadata base name lookups
 _file_metadata_base_cache = {}
 _file_metadata_cache_valid = False
+filename_to_mal = {}
 
 def invalidate_file_metadata_cache():
     """Call this when file_metadata changes"""
@@ -900,14 +1107,45 @@ def build_file_metadata_base_cache():
         
     _file_metadata_cache_valid = True
 
+def build_filename_to_mal_map():
+    """Build lookup map from filename to MAL ID/slug/version for fast access.
+    Returns the count of actual files (not including base name lookups)."""
+    global filename_to_mal
+    filename_to_mal = {}
+    actual_file_count = 0
+    
+    for mal_id, mal_data in file_metadata.items():
+        themes = mal_data.get("themes", {})
+        for slug, slug_data in themes.items():
+            for version, version_data in slug_data.items():
+                for filename in version_data.keys():
+                    filename_to_mal[filename] = {
+                        "mal_id": mal_id,
+                        "slug": slug,
+                        "version": version
+                    }
+                    actual_file_count += 1
+                    # Also store base name without extension for lookup
+                    base_name = os.path.splitext(filename)[0]
+                    if base_name not in filename_to_mal:
+                        filename_to_mal[base_name] = {
+                            "mal_id": mal_id,
+                            "slug": slug,
+                            "version": version
+                        }
+    
+    return actual_file_count
+
 def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     global fetched_metadata
 
-    # Fast return if already cached and no refresh/fetch needed
+    if not filename:
+        return {}
+
     if not (refresh or fetch) and filename in _metadata_cache:
         return _metadata_cache[filename]
 
-    if filename and not ("-OP" in filename or "-ED" in filename):
+    if not ("-OP" in filename or "-ED" in filename):
         return {}
 
     file_data = get_file_metadata_by_name(filename)
@@ -916,6 +1154,7 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
 
     mal_id = file_data.get('mal')
     anidb_id = file_data.get('anidb')
+    anilist_id = file_data.get('anilist')
     anime_data = anime_metadata.get(mal_id) or {}
     anidb_data = anidb_metadata.get(anidb_id, {}) if anidb_id else {}
     ai_data = ai_metadata.get(mal_id, {}) if mal_id else {}
@@ -929,6 +1168,15 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
         if refresh and fetch and anidb_id and (anidb_id not in anidb_metadata or auto_refresh_toggle) and not anidb_cooldown and (variety_light_mode_enabled or light_mode in ['character', 'tags', 'episodes', 'names'] or (light_mode and "c." in light_mode)):
             refresh_anidb_data(anidb_id, anime_data)
             re_queue_lightning_mode = True
+        if refresh and fetch and anilist_id and auto_refresh_toggle and str(anilist_id) in anilist_metadata:
+            # Refresh AniList metadata when auto refresh is enabled
+            try:
+                anilist_data = fetch_anilist_metadata(anilist_id)
+                if anilist_data:
+                    anilist_metadata[str(anilist_id)] = anilist_data
+                    save_metadata()
+            except Exception as e:
+                print(f" [AniList auto-refresh ✗: {e}]", end="")
 
     result = file_data | anime_data | anidb_data | ai_data
     _metadata_cache[filename] = result
@@ -938,23 +1186,43 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
 
 def get_file_metadata_by_name(filename):
     """
-    Get file metadata for a filename, trying exact match first, then matching without extension.
-    This allows files with different extensions (e.g., .mp4 vs .webm) to share metadata.
+    Get file metadata for a filename using the filename_to_mal lookup map.
+    Returns the full MAL entry with all themes, plus a 'current' key for this file's specific data.
     """
-    # First try exact match
-    file_data = file_metadata.get(filename)
-    if file_data:
-        return file_data
+    if not filename:
+        return None
     
-    # If no exact match, try cached base name lookup
-    if filename:
-        build_file_metadata_base_cache()
+    if not filename_to_mal:
+        build_filename_to_mal_map()
+    
+    # Try exact match first
+    lookup_data = filename_to_mal.get(filename)
+    
+    # Try base name without extension
+    if not lookup_data:
         base_name = os.path.splitext(filename)[0]
-        cached_filename = _file_metadata_base_cache.get(base_name)
-        if cached_filename:
-            return file_metadata[cached_filename]
+        lookup_data = filename_to_mal.get(base_name)
     
-    return None
+    if not lookup_data:
+        return None
+    
+    mal_id = lookup_data["mal_id"]
+    slug = lookup_data["slug"]
+    version = lookup_data["version"]
+    
+    # Get the full MAL entry
+    mal_entry = file_metadata.get(mal_id)
+    if not mal_entry:
+        return None
+    
+    # Return MAL entry with current file info added
+    result = dict(mal_entry)  # Copy the entry
+    result["mal"] = mal_id
+    result["slug"] = slug
+    result["version"] = version
+    result["anidb"] = mal_entry.get("anidb")
+    result["anilist"] = mal_entry.get("anilist")
+    return result
 
 def get_version_from_filename(filename):
     """Extract version information from filename, with metadata lookup as priority."""
@@ -975,6 +1243,78 @@ def get_version_from_filename(filename):
     
     return None
 
+def extract_video_file_properties(filename):
+    """Extract actual video properties from the file using ffmpeg/ffprobe."""
+    
+    # Get the file path
+    filepath = directory_files.get(filename)
+    if not filepath or not os.path.exists(filepath):
+        return {}
+    
+    if not is_ffmpeg_available():
+        return {}
+    
+    try:
+        # Use ffprobe to get video stream information
+        cmd = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_streams',
+            '-select_streams', 'v:0',  # First video stream
+            filepath
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode != 0:
+            return {}
+        
+        data = json.loads(result.stdout)
+        
+        if not data.get('streams') or len(data['streams']) == 0:
+            return {}
+        
+        stream = data['streams'][0]
+        
+        # Extract properties
+        properties = {}
+        
+        # Resolution (height in pixels, e.g., "720", "1080")
+        if stream.get('height'):
+            properties['resolution'] = str(stream['height'])
+        
+        if stream.get('bit_rate'):
+            bit_rate_mbps = int(stream['bit_rate']) / 1_000_000
+            properties['bitrate'] = f"{bit_rate_mbps:.1f}"
+        
+        return properties
+        
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, json.JSONDecodeError, Exception) as e:
+        print(f"Failed to extract video properties for {filename}: {e}")
+        return {}
+
+def extract_video_properties(anime_themes, filename):
+    """Extract video properties (lyrics, nc, resolution, source) from AnimThemes API response."""
+    properties = {}
+    
+    if not anime_themes or not anime_themes.get("animethemes"):
+        return properties
+    
+    # Find the matching video in the themes
+    for theme in anime_themes.get("animethemes", []):
+        for entry in theme.get("animethemeentries", []):
+            for video in entry.get("videos", []):
+                if video.get("basename") and filename.split(".")[0] == video.get("basename", "").split(".")[0]:
+                    # Extract properties from video
+                    properties["lyrics"] = video.get("lyrics", False)
+                    properties["nc"] = video.get("nc", False)
+                    properties["resolution"] = video.get("resolution")
+                    properties["source"] = video.get("source")
+                    return properties
+    
+    return properties
+
 def refetch_metadata():
     if currently_playing and currently_playing.get('type') == 'theme':
         filename = currently_playing.get('filename')
@@ -993,9 +1333,37 @@ def get_external_site_id(anime_themes, site):
                 return site_id
     return None
 
+def reorder_file_metadata_entry(mal_id):
+    """Reorder file_metadata entry to have name first, then IDs, then themes last."""
+    if mal_id not in file_metadata:
+        return
+    
+    entry = file_metadata[mal_id]
+    ordered_entry = {}
+    
+    if "name" in entry and entry["name"] is not None:
+        ordered_entry["name"] = entry["name"]
+    
+    # 2. IDs
+    for key in ["mal", "anidb", "anilist"]:
+        if key in entry:
+            ordered_entry[key] = entry[key]
+    
+    # 3. AnimThemes IDs (optional)
+    for key in ["animethemes_id", "animethemes_slug"]:
+        if key in entry:
+            ordered_entry[key] = entry[key]
+    
+    # 4. Themes last
+    if "themes" in entry:
+        ordered_entry["themes"] = entry["themes"]
+    
+    # Replace the entry with ordered version
+    file_metadata[mal_id] = ordered_entry
+
 anidb_cooldown = False
 fetching_metadata = {}
-def fetch_metadata(filename = None, refetch = False, label=""):
+def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False):
     global currently_playing, anidb_cooldown, anidb_delay
     if filename is None:
         playlist_entry = get_clean_filename(playlist["playlist"][playlist["current_index"]])
@@ -1005,12 +1373,51 @@ def fetch_metadata(filename = None, refetch = False, label=""):
     print(f"{label}Fetching metadata for {filename}...", end="", flush=True)
 
     fetching_metadata[filename] = True
-    slug = filename.split("-")[1].split(".")[0].split("v")[0]
+    
+    if not refetch and filename in filename_to_mal:
+        lookup_data = filename_to_mal[filename]
+        mal_id = lookup_data["mal_id"]
+        slug = lookup_data["slug"]
+        version = lookup_data["version"]
+        
+        anime_data = anime_metadata.get(mal_id)
+        if anime_data and anime_data.get("title"):
+            file_data = get_file_metadata_by_name(filename)
+            anidb_id = file_data.get('anidb')
+            anilist_id = file_data.get('anilist')
+            
+            # Get override-applied anime_data
+            anime_data = dict(anime_data)
+            if mal_id in anime_metadata_overrides:
+                deep_merge(anime_data, anime_metadata_overrides[mal_id])
+            
+            data = {
+                "mal": mal_id,
+                "anidb": anidb_id,
+                "anilist": anilist_id,
+                "slug": slug,
+                "version": version
+            }
+            data.update(anime_data)
+            
+            if currently_playing.get('filename') == filename:
+                currently_playing["data"] = data
+                update_metadata()
+            
+            print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
+            return data
+    
+    slug = filename.split("-")[1].split(".")[0].split("v")[0] if "-" in filename else None
     version = None
     mal_id = None
     anidb_id = None
     anilist_id = None
+    anime_themes = None
+    is_animethemes_file = False
+    
     if (not "[MAL]" in filename) and (not "[ID]" in filename):
+        # AnimThemes file
+        is_animethemes_file = True
         anime_themes = fetch_animethemes_metadata(filename)
         # Extract slug and version from animethemes data instead of filename
         slug_found = False
@@ -1038,10 +1445,12 @@ def fetch_metadata(filename = None, refetch = False, label=""):
         anidb_id = get_external_site_id(anime_themes, "aniDB")
         anilist_id = get_external_site_id(anime_themes, "AniList")
     elif ("[MAL]" in filename):
+        # Manual [MAL] file
         filename_metadata = get_filename_metadata(filename)
         mal_id = filename_metadata.get('mal_id')
         anidb_id = filename_metadata.get('anidb_id')
         anilist_id = filename_metadata.get('anilist_id')
+        version = get_version_from_filename(filename)
         anime_themes = fetch_animethemes_metadata(mal_id=mal_id)
         if not anime_themes:
             anime_themes = {
@@ -1063,7 +1472,7 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                     {"name":art}
                 )
             anime_themes["animethemes"].append({
-                "type": slug[:2],
+                "type": slug[:2] if slug else None,
                 "slug": slug,
                 "song": {
                     "title": filename_metadata.get("song", "N/A"),
@@ -1074,22 +1483,111 @@ def fetch_metadata(filename = None, refetch = False, label=""):
             anime_themes["season"] = filename_metadata["season"]
             anime_themes["year"] = filename_metadata["year"]
     else:
+        # [ID] file
         mal_id = re.search(r"\[ID](.*?)(?=\[|$|\.)", filename).group(1)
-        anime_themes = {}
+        version = get_version_from_filename(filename)
+        # Try to fetch AnimThemes metadata by MAL ID
+        anime_themes = fetch_animethemes_metadata(mal_id=mal_id)
+        if not anime_themes:
+            anime_themes = {}
+        
     if mal_id:
-        file_data = {
-            "mal":mal_id,
-            "anidb":anidb_id,
-            "anilist":anilist_id,
-            "slug":slug,
-            "version":version
-        }
+        # Create or get MAL entry
+        if mal_id not in file_metadata:
+            file_metadata[mal_id] = {
+                "name": None,  # Will be populated later
+                "mal": mal_id,
+                "anidb": anidb_id,
+                "anilist": anilist_id,
+                "themes": {}
+            }
+        
+        mal_entry = file_metadata[mal_id]
+        
+        if anidb_id:
+            mal_entry["anidb"] = anidb_id
+        if anilist_id:
+            mal_entry["anilist"] = anilist_id
+        
+        if is_animethemes_file:
+            if anime_themes and anime_themes.get("id"):
+                mal_entry["animethemes_id"] = anime_themes.get("id")
+            if anime_themes and anime_themes.get("slug"):
+                mal_entry["animethemes_slug"] = anime_themes.get("slug")
+        
+        # Store all themes from AnimThemes API
+        if anime_themes and anime_themes.get("animethemes"):
+            for theme in anime_themes.get("animethemes", []):
+                theme_slug = theme.get("slug")
+                if not theme_slug:
+                    continue
+                    
+                if theme_slug not in mal_entry["themes"]:
+                    mal_entry["themes"][theme_slug] = {}
+                
+                for entry in theme.get("animethemeentries", []):
+                    entry_version = entry.get("version")
+                    version_key = str(entry_version) if entry_version is not None else "null"
+                    
+                    if version_key not in mal_entry["themes"][theme_slug]:
+                        mal_entry["themes"][theme_slug][version_key] = {}
+                    
+                    for video in entry.get("videos", []):
+                        video_basename = video.get("basename")
+                        if not video_basename:
+                            continue
+                        
+                        # Store video properties
+                        video_props = {
+                            "lyrics": video.get("lyrics", False),
+                            "nc": video.get("nc", False),
+                            "resolution": video.get("resolution"),
+                            "source": video.get("source")
+                        }
+                        
+                        mal_entry["themes"][theme_slug][version_key][video_basename] = video_props
+        
+        # For manual [MAL] files, add this file to the themes structure
+        if "[MAL]" in filename and slug:
+            if slug not in mal_entry["themes"]:
+                mal_entry["themes"][slug] = {}
+            
+            version_key = str(version) if version is not None else "null"
+            if version_key not in mal_entry["themes"][slug]:
+                mal_entry["themes"][slug][version_key] = {}
+            
+            # Add manual file with video properties
+            if filename not in mal_entry["themes"][slug][version_key]:
+                video_properties = extract_video_file_properties(filename)
+                mal_entry["themes"][slug][version_key][filename] = video_properties
+        
+        # For [ID] files, add this file to the themes structure
+        if "[ID]" in filename and slug:
+            if slug not in mal_entry["themes"]:
+                mal_entry["themes"][slug] = {}
+            
+            version_key = str(version) if version is not None else "null"
+            if version_key not in mal_entry["themes"][slug]:
+                mal_entry["themes"][slug][version_key] = {}
+            
+            # Add ID file with video properties
+            if filename not in mal_entry["themes"][slug][version_key]:
+                video_properties = extract_video_file_properties(filename)
+                mal_entry["themes"][slug][version_key][filename] = video_properties
+        
+        # Fetch and store anime metadata
         anime_data = anime_metadata.get(mal_id)
         old_songs = []
         if anime_data:
             old_songs = anime_data.get("songs", [])
-        file_metadata[filename] = file_data
-        invalidate_file_metadata_cache()  # Invalidate cache when file_metadata changes
+            
+        # Store anime name in file_metadata
+        if anime_themes and anime_themes.get("name"):
+            mal_entry["name"] = anime_themes.get("name")
+        elif anime_data and anime_data.get("title"):
+            mal_entry["name"] = anime_data.get("title")
+        
+        # Cache invalidation now automatic via FileMetadataDict
         if refetch or not anime_data or not anime_data.get("title"):
             jikan_data = fetch_jikan_metadata(mal_id)
             if jikan_data:
@@ -1123,6 +1621,9 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                 else:
                     anime_data["season"] = anime_data["season"].capitalize()
                 anime_metadata[mal_id] = anime_data
+                # Update name in file_metadata
+                if anime_data.get("title"):
+                    mal_entry["name"] = anime_data.get("title")
         if anidb_id:
             anidb_data = anidb_metadata.get(anidb_id, {})
             if anime_data and (refetch or not anidb_data.get("characters") or not anidb_data.get("tags") or not anidb_data.get("episode_info")):
@@ -1133,10 +1634,28 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                         print("[aniDB cooldown reached!]")
                     else:
                         anidb_delay = 5
-                        anidb_data["tags"] = anidb["tags"]
-                        anidb_data["characters"] = anidb["characters"]
-                        anidb_data["episode_info"] = anidb["episodes"]
-                        anidb_metadata[anidb_id] = anidb_data
+                        anidb_entry = {
+                            "tags": anidb["tags"],
+                            "characters": anidb["characters"],
+                            "episode_info": anidb["episodes"]
+                        }
+                        
+                        if mal_id:
+                            anidb_metadata[anidb_id] = {"mal_id": mal_id}
+                            anidb_metadata[anidb_id].update(anidb_entry)
+                        else:
+                            anidb_metadata[anidb_id] = anidb_entry
+        
+        anilist_fetched = False
+        if anilist_id and (refetch or str(anilist_id) not in anilist_metadata):
+            try:
+                anilist_data = fetch_anilist_metadata(anilist_id)
+                if anilist_data:
+                    anilist_metadata[str(anilist_id)] = anilist_data
+                    anilist_fetched = True
+            except Exception as e:
+                print(f" [AniList ✗: {e}]", end="")
+        
         if anime_data:
             # Get new songs from the current fetch
             new_songs = get_theme_list(anime_themes, slug, version)
@@ -1170,16 +1689,70 @@ def fetch_metadata(filename = None, refetch = False, label=""):
                 sorted(endings, key=slug_sort_key) +
                 sorted(other, key=slug_sort_key)
             )
-            anime_data["series"] = get_name_list(anime_themes, "series")
-            save_metadata()
-            data = file_data | anime_data
-            if currently_playing.get('filename') == filename:
-                currently_playing["data"] = data
-                update_metadata()
-            print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
+            anime_data["series"] = get_name_list(anime_themes, "series") or anime_metadata_overrides.get(mal_id, {}).get("series") or anime_data.get("series")
+            # Store updated anime_data back into anime_metadata before saving
+            # This ensures overrides can be applied to the updated data
+            anime_metadata[mal_id] = anime_data
+            if not batch_mode:
+                save_metadata()
+        
+        reorder_file_metadata_entry(mal_id)
+        
+        if not batch_mode:
+            # Rebuild filename_to_mal map to reflect the reordered entry
+            build_filename_to_mal_map()
         else:
-            data = {}
-            print(f"\r{label}Fetching metadata for {filename}...FAILED")
+            # In batch mode, incrementally update the map instead of full rebuild
+            # This allows subsequent files to benefit from early return
+            if mal_id in file_metadata:
+                themes = file_metadata[mal_id].get("themes", {})
+                for theme_slug, versions in themes.items():
+                    for version_key, files in versions.items():
+                        for file_name in files.keys():
+                            # Add this file to the lookup map
+                            filename_to_mal[file_name] = {
+                                "mal_id": mal_id,
+                                "slug": theme_slug,
+                                "version": None if version_key == "null" else int(version_key) if version_key.isdigit() else version_key
+                            }
+        
+        if mal_id in file_metadata:
+            themes = file_metadata[mal_id].get("themes", {})
+            for slug_data in themes.values():
+                for version_data in slug_data.values():
+                    for cache_filename in list(version_data.keys()):
+                        _metadata_cache.pop(cache_filename, None)
+        
+        if not batch_mode:
+            # Save all metadata is persisted
+            save_metadata()
+        
+        # Now get the anime_data with overrides applied
+        anime_data = anime_metadata.get(mal_id, {})
+        
+        if mal_id in anime_metadata_overrides:
+            # Create a fresh copy of anime_data to avoid reference issues
+            anime_data = dict(anime_data)
+            # Apply overrides directly using deep_merge on our local copy  
+            deep_merge(anime_data, anime_metadata_overrides[mal_id])
+        
+        # This needs to use the override-applied anime_data
+        data = {
+            "mal": mal_id,
+            "anidb": anidb_id,
+            "anilist": anilist_id,
+            "slug": slug,
+            "version": version
+        }
+        if anime_data:
+            data.update(anime_data)
+        
+        if currently_playing.get('filename') == filename:
+            currently_playing["data"] = data
+            update_metadata()
+        
+        print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
+        return data
     else:
         data = {}
         print(f"\r{label}Fetching metadata for {filename}...FAILED")
@@ -1217,7 +1790,6 @@ def get_theme_list(data, file_slug=None, file_version=None):
                         "nsfw": entry.get("nsfw", False)
                     }
                     
-                    # Get overlap from first video if available
                     overlap = None
                     if entry.get("videos") and entry["videos"]:
                         overlap = entry["videos"][0].get("overlap")
@@ -1237,7 +1809,6 @@ def get_theme_list(data, file_slug=None, file_version=None):
                         no_overlap = True
 
             theme_data["versions"] = versions
-            # Keep legacy fields for backward compatibility (from first version)
             if versions:
                 if not no_spoiler and versions[0].get("spoiler"):
                     theme_data["spoiler"] = versions[0]["spoiler"]
@@ -1260,14 +1831,12 @@ def get_filename_metadata(filename):
     """Extracts MAL ID, artist, and song name from a filename with optional bracketed tags."""
     metadata = {"mal_id": None, "anidb_id": None, "artist": None, "song": None}
     
-    # Define patterns for each tag
     mal_match = re.search(r"\[MAL](\d+)", filename)
     anidb_match = re.search(r"\[ADB](\d+)", filename)
     anilist_match = re.search(r"\[ALT](\d+)", filename)
     artist_match = re.search(r"\[ART](.*?)(?=\[|$|\.)", filename)
     song_match = re.search(r"\[SNG](.*?)(?=\[|$|\.)", filename)
     
-    # Extract values if found
     if mal_match:
         metadata["mal_id"] = mal_match.group(1)
 
@@ -1335,11 +1904,20 @@ def refresh_anidb_data(anidb_id, data, label=""):
             anidb_cooldown = True
             print(f"\rRefreshing aniDB data for {data['title']}...FAILED[aniDB cooldown reached!]")
         else:
-            anidb_metadata[anidb_id] = {
+            mal_id = data.get("mal")
+            
+            anidb_entry = {
                 "tags": anidb["tags"],
                 "characters": anidb["characters"],
                 "episode_info": anidb["episodes"]
             }
+            
+            if mal_id:
+                anidb_metadata[anidb_id] = {"mal_id": mal_id}
+                anidb_metadata[anidb_id].update(anidb_entry)
+            else:
+                anidb_metadata[anidb_id] = anidb_entry
+                
             save_metadata()
             anidb_delay = 5
             print(f"\r{label}{fetch_string} aniDB data for {data['title']}...COMPLETE")
@@ -1400,12 +1978,10 @@ def get_name_list(data, get):
     return name_list
 
 def get_artists_string(artists, total = False, limit=None):
-    #lists artists as a string, optionally with total count in brackets if limited display rest as & 1 more
     artists_string = "N/A"
     if artists:
         displayed_count = 0
         for artist in artists:
-            # Check if we've reached the limit
             if limit is not None and displayed_count >= limit:
                 remaining = len(artists) - displayed_count
                 if remaining > 0:
@@ -1444,21 +2020,29 @@ def fetch_all_metadata(delay=0):
 
         refresh_jikan = []
         refresh_anidb = []
+        refresh_anilist = []
         fetch_data = []
+        print(f"{len(directory_files)} files found in directory, checking for missing metadata...")
         for filename in directory_files:
             total_checked += 1
-            # Skip if metadata already exists
             file_data = get_file_metadata_by_name(filename)
             if file_data:
                 mal_id = file_data.get('mal')
                 anidb_id = file_data.get('anidb')
-                if mal_id in anime_metadata and (not anidb_id or anidb_id in anidb_metadata):
+                anilist_id = file_data.get('anilist')
+                
+                if mal_id in anime_metadata:
                     if not anime_metadata.get(mal_id, {}).get("title"):
                         jikan_append = [mal_id, anime_metadata.get(mal_id)]
                         if jikan_append not in refresh_jikan:
                             refresh_jikan.append(jikan_append)
                             total_missing += 1
-                    continue
+                
+                if anilist_id and str(anilist_id) not in anilist_metadata:
+                    if anilist_id not in refresh_anilist:
+                        refresh_anilist.append(str(anilist_id))
+                        total_missing += 1
+
                 if anidb_id and (not anidb_id in anidb_metadata):
                     if anidb_cooldown:
                         total_skipped += 1
@@ -1467,21 +2051,54 @@ def fetch_all_metadata(delay=0):
                         if anidb_append not in refresh_anidb:
                             refresh_anidb.append(anidb_append)
                             total_missing += 1
-                    continue
-            fetch_data.append(filename)
-            total_missing += 1
+            else:
+                fetch_data.append(filename)
+                total_missing += 1
+        
         if total_missing > 0:
             if fetch_data:
                 save_new_theme = messagebox.askyesno("Save Missing Entries To New Themes", f"Would you like to save all missing entries to the 'New Themes' playlist? Entries in the 'New Themes' will not appear in infinite playlists until removed from the 'New Themes' playlist. (Select 'NO' if unsure)")
+            
+            BATCH_SAVE_INTERVAL = 100
+            files_since_last_save = 0
+            
             for filename in fetch_data:
-                if total_fetched > 0 and delay+anidb_delay > 0: 
+                needs_api_call = True
+                temp_slug = filename.split("-")[1].split(".")[0].split("v")[0] if "-" in filename else None
+                if temp_slug and not ("[MAL]" in filename or "[ID]" in filename):
+                    # For AnimThemes files, check cache
+                    temp_filename = filename.split("-")[0]
+                    if temp_filename in animethemes_cache:
+                        temp_anime = animethemes_cache.get(temp_filename)
+                        if temp_anime:
+                            temp_mal_id = get_external_site_id(temp_anime, "MyAnimeList")
+                            if temp_mal_id and temp_mal_id in anime_metadata and anime_metadata[temp_mal_id].get("title"):
+                                needs_api_call = False
+                elif "[MAL]" in filename or "[ID]" in filename:
+                    if "[MAL]" in filename:
+                        temp_match = re.search(r"\[MAL](\d+)", filename)
+                    else:
+                        temp_match = re.search(r"\[ID](.*?)(?=\[|$|\.)", filename)
+                    if temp_match:
+                        temp_mal_id = temp_match.group(1)
+                        if temp_mal_id in anime_metadata and anime_metadata[temp_mal_id].get("title"):
+                            needs_api_call = False
+                
+                if total_fetched > 0 and needs_api_call and delay+anidb_delay > 0: 
                     time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
                     anidb_delay = 0
                 try:
-                    fetch_metadata(filename, label=f"[{total_fetched+1}/{total_missing}]")  # Call your existing metadata function
+                    fetch_metadata(filename, label=f"[{total_fetched+1}/{total_missing}]", batch_mode=True)  # Call your existing metadata function
                     if save_new_theme:
                         toggle_theme("New Themes", filename=filename, quiet=True)
                     total_fetched += 1
+                    files_since_last_save += 1
+                    
+                    # Periodic save every BATCH_SAVE_INTERVAL files
+                    if files_since_last_save >= BATCH_SAVE_INTERVAL:
+                        save_metadata()
+                        build_filename_to_mal_map()
+                        files_since_last_save = 0
                 except Exception as e:
                     print(e)
                     time.sleep(3)  # Delay to avoid API rate limits
@@ -1509,6 +2126,34 @@ def fetch_all_metadata(delay=0):
                     print(e)
                     time.sleep(3)  # Delay to avoid API rate limits
                     total_skipped += 1
+            
+            for anilist_id in refresh_anilist:
+                try:
+                    if anilist_id not in anilist_metadata:
+                        print(f"[{total_fetched+1}/{total_missing}] Fetching AniList metadata for ID {anilist_id}...", end=" ", flush=True)
+                        anilist_data = fetch_anilist_metadata(anilist_id)
+                        if anilist_data:
+                            anilist_metadata[anilist_id] = anilist_data
+                            print(f"✓ ({anilist_data.get('title', 'Unknown')})")
+            
+                            # Save all metadata after fetching
+                            save_metadata()
+                        else:
+                            print("✗ Failed")
+                        total_fetched += 1
+                        time.sleep(1.0)
+                except Exception as e:
+                    print(f"✗ Error: {e}")
+                    time.sleep(1.0)
+                    total_skipped += 1
+
+        # After all fetching is done, save any remaining unsaved changes
+        if total_fetched > 0 and files_since_last_save > 0:
+            save_metadata()
+            build_filename_to_mal_map()
+        elif total_fetched > 0:
+            if not filename_to_mal:
+                build_filename_to_mal_map()
 
         print("Metadata fetching complete! - Checked:" + str(total_checked) + " Missing:" + str(total_fetched+total_skipped) + " Skipped:" + str(total_skipped))
         if save_new_theme and total_fetched > 0:
@@ -1516,6 +2161,93 @@ def fetch_all_metadata(delay=0):
 
     # Run in a separate thread so it doesn’t freeze the UI
     threading.Thread(target=fetch_all_metadata_worker, daemon=True).start()
+
+def refresh_all_anilist_metadata(delay=2):
+    """Refreshes all AniList metadata for files in the directory, spacing out API calls."""
+    confirm = messagebox.askyesno("Refresh All AniList Metadata", f"Are you sure you want to refresh all AniList metadata for files in your directory?")
+    if not confirm:
+        return  # User canceled
+    
+    current_year = datetime.now().year
+    
+    # Get year limit from user input (must be done on main thread)
+    year_input = simpledialog.askstring(
+        "Year Limit", 
+        f"Enter how many years back to refresh (leave empty for all years):\n\nCurrent year: {current_year}",
+        initialvalue=""
+    )
+    
+    # If user cancelled the dialog, return
+    if year_input is None:
+        return
+    
+    def worker(year_input):
+        current_year = datetime.now().year
+        # Parse year limit
+        year_limit = None
+        if year_input and year_input.strip():
+            try:
+                years_back = int(year_input.strip())
+                if years_back > 0:
+                    year_limit = current_year - years_back
+                    print(f"Refreshing AniList metadata for files from {year_limit} onwards...")
+                else:
+                    print("Invalid input. Refreshing all AniList metadata...")
+            except ValueError:
+                print("Invalid input. Refreshing all AniList metadata...")
+        else:
+            print("Refreshing all AniList metadata...")
+        
+        # Get list of AniList IDs that we actually have files for
+        anilist_ids_in_directory = set()
+        for filename in directory_files:
+            file_data = get_file_metadata_by_name(filename) or {}
+            anilist_id = file_data.get('anilist')
+            mal_id = file_data.get('mal')
+            
+            if year_limit is not None and mal_id and mal_id in anime_metadata:
+                data = anime_metadata[mal_id]
+                season = data.get("season", "")
+                try:
+                    season_year = int(season[-4:] if season and season[-4:].isdigit() else 0)
+                    if season_year < year_limit:
+                        continue
+                except (ValueError, IndexError):
+                    pass
+            
+            if anilist_id:
+                anilist_ids_in_directory.add(str(anilist_id))
+        
+        total_to_refresh = len(anilist_ids_in_directory)
+        total_refreshed = 0
+        total_failed = 0
+        
+        print(f"Found {total_to_refresh} AniList entries to refresh from your directory files...")
+        
+        for anilist_id in sorted(anilist_ids_in_directory):
+            try:
+                print(f"[{total_refreshed + 1}/{total_to_refresh}] Refreshing AniList ID {anilist_id}...", end=" ", flush=True)
+                anilist_data = fetch_anilist_metadata(anilist_id)
+                if anilist_data:
+                    anilist_metadata[anilist_id] = anilist_data
+                    print(f"✓ ({anilist_data.get('title', 'Unknown')})")
+                    total_refreshed += 1
+                else:
+                    print("✗ Failed")
+                    total_failed += 1
+                time.sleep(delay)
+            except Exception as e:
+                print(f"✗ Error: {e}")
+                total_failed += 1
+                time.sleep(delay)
+        
+        # Save metadata
+        save_metadata()
+        
+        print(f"\nAniList metadata refresh complete! - Refreshed: {total_refreshed}/{total_to_refresh} - Failed: {total_failed}")
+
+    # Run in a separate thread so it doesn't freeze the UI
+    threading.Thread(target=worker, args=(year_input,), daemon=True).start()
 
 def refresh_all_metadata(delay=1):
     """Refreshes all jikan metadata for files in the directory, spacing out API calls."""
@@ -1568,7 +2300,6 @@ def refresh_all_metadata(delay=1):
                 data = anime_metadata[mal_id]
                 season = data.get("season", "")
                 
-                # Check year limit if specified
                 if year_limit is None:
                     entries_to_refresh.append((mal_id, data))
                 else:
@@ -1604,41 +2335,6 @@ def refresh_all_metadata(delay=1):
 #        *METADATA DISPLAY
 # =========================================
 
-def move_new_files():
-    for filename in playlist:
-        data = get_metadata(filename)
-        if not data:
-            continue
-
-        filepath = directory_files[filename]
-        parent_dir = os.path.abspath(os.path.join(os.path.dirname(filepath), ".."))
-
-        if is_game(data):
-            dest_dir = os.path.join(parent_dir, "Games")
-        else:
-            season_info = data.get("season", "")
-            if not season_info or " " not in season_info:
-                print(f"Missing or malformed season for: {filename}")
-                continue
-
-            season, year_str = season_info.split(" ")
-            try:
-                year = int(year_str)
-            except ValueError:
-                print(f"Invalid year in season info: {season_info}")
-                continue
-
-            if year < 2000:
-                decade = f"{str(year)[-2]}0s"  # e.g., 1995 → "90s"
-                dest_dir = os.path.join(parent_dir, decade)
-            else:
-                dest_dir = os.path.join(parent_dir, str(year), season)
-
-        os.makedirs(dest_dir, exist_ok=True)
-        dest_path = os.path.join(dest_dir, filename)
-        print(f"Moving {filename} → {dest_path}")
-        shutil.move(filepath, dest_path)
-
 def clear_metadata():
     """Function to clear metadata fields"""
     global list_loaded
@@ -1656,8 +2352,16 @@ def anime_themes_video(filename):
     url = f"https://v.animethemes.moe/{filename}"
     webbrowser.open(url)
 
+def open_animethemes_anime_page(slug):
+    url = f"https://animethemes.moe/anime/{slug}"
+    webbrowser.open(url)
+
 def open_anidb_page(anidb_id):
     url = f"https://anidb.net/anime/{anidb_id}"
+    webbrowser.open(url)
+
+def open_anilist_page(anilist_id):
+    url = f"https://anilist.co/anime/{anilist_id}"
     webbrowser.open(url)
 
 def reset_metadata(filename = None):
@@ -1685,7 +2389,7 @@ def update_metadata_queue(index):
 updating_metadata = False
 def update_metadata():
     global updating_metadata
-    try:
+    if True:
         filename = currently_playing.get("filename")
         if filename:
             button_seleted(tag_button, check_tagged(filename))
@@ -1734,14 +2438,58 @@ def update_metadata():
                     left_column.insert(tk.END, ") ", "white")
                     left_column.insert(tk.END, "MEMBERS: ", "bold")
                     left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
+                
+                anilist_id = data.get("anilist")
+                if anilist_id and str(anilist_id) in anilist_metadata:
+                    anilist_data = anilist_metadata[str(anilist_id)]
+                    anilist_score = anilist_data.get("score")
+                    anilist_popularity = anilist_data.get("popularity")
+                    
+                    if anilist_score or anilist_popularity:
+                        left_column.insert(tk.END, "\n\n", "blank")
+                        
+                        # AniList Score with all rankings
+                        if anilist_score:
+                            left_column.insert(tk.END, "ANILIST SCORE: ", "bold")
+                            score_str = f"{anilist_score}%"
+                            rank_parts = []
+                            if anilist_data.get("score_rank_season"):
+                                rank_parts.append(f"#{anilist_data['score_rank_season']} Season")
+                            if anilist_data.get("score_rank_year"):
+                                rank_parts.append(f"#{anilist_data['score_rank_year']} Year")
+                            if anilist_data.get("score_rank_all"):
+                                rank_parts.append(f"#{anilist_data['score_rank_all']} All-Time")
+                            if rank_parts:
+                                score_str += f" ({' / '.join(rank_parts)})"
+                            left_column.insert(tk.END, f"{score_str} ", "white")
+                        
+                        # AniList Popularity with all rankings
+                        if anilist_popularity:
+                            left_column.insert(tk.END, "MEMBERS: ", "bold")
+                            pop_str = f"{anilist_popularity:,}"
+                            rank_parts = []
+                            if anilist_data.get("popularity_rank_season"):
+                                rank_parts.append(f"#{anilist_data['popularity_rank_season']} Season")
+                            if anilist_data.get("popularity_rank_year"):
+                                rank_parts.append(f"#{anilist_data['popularity_rank_year']} Year")
+                            if anilist_data.get("popularity_rank_all"):
+                                rank_parts.append(f"#{anilist_data['popularity_rank_all']} All-Time")
+                            if rank_parts:
+                                pop_str += f" ({' / '.join(rank_parts)})"
+                            left_column.insert(tk.END, f"{pop_str}", "white")
+                        
+                        left_column.insert(tk.END, "\n", "blank")
+                
                 left_column.insert(tk.END, "\n\n", "blank")
                 if data.get("platforms"):
                     add_multiple_data_line(left_column, data, "PLATFORMS: ", 'platforms', True)
-                    add_single_data_line(left_column, data, "TYPE: ", 'type', False) 
+                    left_column.insert(tk.END, "TYPE: ", "bold")
+                    left_column.insert(tk.END, f"{get_format(data) or 'N/A'}", "white") 
                 else:
                     left_column.insert(tk.END, "EPISODES: ", "bold")
                     left_column.insert(tk.END, f"{data.get("episodes") or "Airing"}", "white")
-                    add_single_data_line(left_column, data, " TYPE: ", 'type', False) 
+                    left_column.insert(tk.END, f" TYPE: ", "bold")
+                    left_column.insert(tk.END, f"{get_format(data) or 'N/A'}", "white") 
                 add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
                 left_column.insert(tk.END, "TAGS: ", "bold")
                 tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
@@ -1765,14 +2513,12 @@ def update_metadata():
                 update_series_song_information(data, data.get("mal"))
 
             if list_loaded != "playlist":
-                update_extra_metadata(data)
+                update_extra_metadata()
                 
             toggleColumnEdit(False)
 
             if popout_currently_playing:
                 update_popout_currently_playling(data)
-    except Exception as e:
-        print("Error updating metadata display: " + str(e))
     updating_metadata = False
 
 def update_popout_currently_playling(data, clear=False):
@@ -1799,16 +2545,14 @@ def update_popout_currently_playling(data, clear=False):
             studio = youtube_queue.get('name')
         else:
             studio = ", ".join(data.get("studios", []))
-        type = data.get("type")
+        type = get_format(data)
         source = data.get("source")
         marks = get_file_marks(currently_playing.get("filename", ""))
-        # Fallbacks for YouTube or missing fields
         if data.get("platforms"):
             episodes = ", ".join(data.get("platforms"))
             members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
             score = f"Score: {data.get("score")}" if data.get("score") else ""
         elif is_youtube:
-            # YouTube video: show duration, views, likes, etc. if available
             duration = data.get("duration")
             if duration:
                 episodes = f"{format_seconds(duration)}"
@@ -1843,12 +2587,12 @@ def update_popout_currently_playling(data, clear=False):
         popout_currently_playing.configure(text="", fg="white")
     popout_currently_playing_extra.config(state=tk.DISABLED)
 
-def update_extra_metadata(data, column=None):
+def update_extra_metadata(column=None):
     if currently_playing.get("type") == "youtube":
         show_youtube_playlist()
         return
-    if data is None:
-        return
+    
+    data = currently_playing.get("data")
     if column is None:
         column = right_column
     column.config(state=tk.NORMAL, wrap="word")
@@ -1857,7 +2601,7 @@ def update_extra_metadata(data, column=None):
         "synopsis", "characters", "episode_info", "tags", "links"
     ]
     column.insert(tk.END, "   ", "blank")
-    if currently_playing.get("data"):
+    if data:
         for e in extra_data:
             if selected_extra_metadata == e:
                 bg=HIGHLIGHT_COLOR
@@ -1865,9 +2609,15 @@ def update_extra_metadata(data, column=None):
                 bg="black"
             column.window_create(tk.END, window=tk.Button(column, text=(f"{e.upper().replace("EPISODE_INFO", "EPS").replace("CsHARACTERS", "")}"), font=("Arial", scl(11, "UI"), "bold", "underline"), command=lambda x=e: select_extra_metadata(x), padx=scl(2), bg=bg, fg="white"))
         column.insert(tk.END, "\n\n", "blank")
-    if not currently_playing.get("data") or selected_extra_metadata == "links":
-        data = currently_playing.get("data")
+    if not data or selected_extra_metadata == "links":
         filename = currently_playing.get("filename")
+        if not filename:
+            column.config(state=tk.DISABLED, wrap="word")
+            return
+        playlist_entry = currently_playing.get("playlist_entry", filename)
+        filepath = get_file_path(playlist_entry) if playlist_entry else None
+        is_local_file = filepath and os.path.exists(filepath) if filepath else False
+        is_animethemes_stream = is_animethemes_stream_file(filename) and not is_local_file if filename else False
         _cached_id = f"{get_display_title(data)}-{data.get("season", "9999")[-4:]}"
         _cached_id_base = f"{get_base_title(title=get_display_title(data))}-{data.get("season", "9999")[-4:]}"
         _cached_clips_links = _cached_clips.get(_cached_id) or _cached_clips.get(_cached_id_base) or []
@@ -1875,17 +2625,20 @@ def update_extra_metadata(data, column=None):
         links = [
             ["FILE ACTIONS", "header", True],
             ["⎘COPY FILENAME", lambda: pyperclip.copy(filename), True],
-            ["📁OPEN FOLDER", lambda: open_file_folder_by_filename(filename), True],
-            ["✂️CUT BEFORE", lambda: cut_before_current_time(filename), ffmpeg_available],
-            ["✂️CUT AFTER", lambda: cut_after_current_time(filename), ffmpeg_available],
-            ["✏️RENAME", lambda: rename_file_by_filename(filename), True],
-            ["🔄CONVERT", lambda: convert_file_format_by_filename(filename), ffmpeg_available],
-            ["🔊EDIT VOLUME", lambda: edit_file_volume_by_filename(filename), ffmpeg_available],
-            ["❌DELETE", lambda: delete_file_by_filename(filename), True],
+            ["📁OPEN FOLDER", lambda: open_file_folder_by_filename(filename), is_local_file],
+            ["⬇️DOWNLOAD", None, is_animethemes_stream],  # Command set during button creation
+            ["✂️CUT BEFORE", lambda: cut_before_current_time(filename), ffmpeg_available and is_local_file],
+            ["✂️CUT AFTER", lambda: cut_after_current_time(filename), ffmpeg_available and is_local_file],
+            ["✏️RENAME", lambda: rename_file_by_filename(filename), is_local_file],
+            ["🔄CONVERT", lambda: convert_file_format_by_filename(filename), ffmpeg_available and is_local_file],
+            ["🔊EDIT VOLUME", lambda: edit_file_volume_by_filename(filename), ffmpeg_available and is_local_file],
+            ["❌DELETE", lambda: delete_file_by_filename(filename), is_local_file],
             ["EXTERNAL SITES", "header", data and not is_game(data)],
-            ["ANIMETHEMES", lambda: anime_themes_video(filename), data and "[MAL]" not in filename and "[ID]" not in filename and currently_playing.get("type") == "theme"],
             ["MYANIMELIST", lambda: open_mal_page(data.get("mal")), data.get("mal") and not is_game(data)],
             ["ANIDB", lambda: open_anidb_page(data.get("anidb")), not is_game(data) and data.get("anidb")],
+            ["ANILIST", lambda: open_anilist_page(data.get("anilist")), not is_game(data) and data.get("anilist")],
+            ["ANIMETHEMES", lambda: open_animethemes_anime_page(data.get("animethemes_slug")), data and data.get("animethemes_slug") and "[MAL]" not in filename and "[ID]" not in filename and currently_playing.get("type") == "theme"],
+            ["▶", lambda: anime_themes_video(filename), data and data.get("animethemes_slug") and "[MAL]" not in filename and "[ID]" not in filename and currently_playing.get("type") == "theme"],
             ["MEDIA", "header", data.get("trailer") or data.get("cover") or (OPENAI_API_KEY and data.get("synopsis"))],
             ["SHOW COVER", lambda: create_cover_popup(f"{get_display_title(data)} Cover", data.get("cover"))(), data.get("cover")],
             ["PLAY TRAILER", play_trailer, data.get("trailer")],
@@ -1942,6 +2695,18 @@ def update_extra_metadata(data, column=None):
                                 blank=False
                             )
                             column.insert(tk.END, f"{title} by {channel_title}\n", "white")
+                    elif name == "⬇️DOWNLOAD":
+                        dl_btn = tk.Button(
+                            column,
+                            text=name,
+                            command=lambda: None,  # Set below
+                            padx=scl(2, "UI"), pady=scl(1, "UI"),
+                            bg="black", fg="white",
+                            font=("Arial", scl(12, "UI"))
+                        )
+                        dl_btn.config(command=lambda b=dl_btn: download_animethemes_file(filename, b))
+                        column.window_create(tk.END, window=dl_btn)
+                        column.insert(tk.END, " ")
                     else:
                         create_link_button(name, command)
     elif not data.get(selected_extra_metadata):
@@ -1949,7 +2714,8 @@ def update_extra_metadata(data, column=None):
     elif selected_extra_metadata == "synopsis":
         add_single_data_line(column, data, "", 'synopsis')
     elif selected_extra_metadata == "characters":
-        groups = {
+        # AniDB Characters
+        anidb_groups = {
             "main": [],
             "secondary": [],
             "appears": []
@@ -1966,26 +2732,31 @@ def update_extra_metadata(data, column=None):
             entry = (name, image, gender, desc)
 
             if role == "m":
-                groups["main"].append(entry)
+                anidb_groups["main"].append(entry)
             elif role == "s":
-                groups["secondary"].append(entry)
+                anidb_groups["secondary"].append(entry)
             else:
-                groups["appears"].append(entry)
+                anidb_groups["appears"].append(entry)
 
-        def create_image_popup(name, image_filename, gender, desc):
+        def create_anidb_image_popup(name, image_filename, gender, desc):
             def _popup():
                 popup = tk.Toplevel()
                 popup.title(name)
                 popup.configure(bg="black")
                 
                 # Name
-                tk.Label(popup, text=name, font=("Arial", scl(20), "bold", "underline"), bg="black", fg="white", anchor="center").pack(anchor="center", pady=(0, 0))
+                tk.Label(popup, text=name, font=("Arial", scl(20), "bold", "underline"), bg="black", fg="white", anchor="center").pack(anchor="center", pady=(scl(10), 0))
 
-                # Load image
-                tk_img = load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(scl(700), scl(700)))
-                label = tk.Label(popup, image=tk_img, bg="black")
-                label.image = tk_img
-                label.pack(pady=scl(10))
+                # Load image with error handling
+                try:
+                    tk_img = load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(scl(700), scl(700)))
+                    if tk_img:
+                        label = tk.Label(popup, image=tk_img, bg="black")
+                        label.image = tk_img  # Keep reference
+                        label.pack(pady=scl(10))
+                except Exception as e:
+                    tk.Label(popup, text=f"[Image failed to load: {image_filename}]", 
+                            font=("Arial", scl(12)), bg="black", fg="gray").pack(pady=scl(10))
 
                 # Info section
                 info_frame = tk.Frame(popup, bg="black")
@@ -1994,56 +2765,261 @@ def update_extra_metadata(data, column=None):
                 new_desc = f"Gender: {gender.capitalize()}. {desc.strip()}"
                 if new_desc.strip():
                     tk.Label(info_frame, text="DESCRIPTION:", font=("Arial", scl(15), "bold", "underline"), bg="black", fg="white", anchor="w").pack(anchor="w", pady=(scl(10), 0))
-                    tk.Label(info_frame, text=new_desc.strip(), font=("Arial", scl(15)), wraplength=scl(700), justify="left", bg="black", fg="white", anchor="w").pack(anchor="w")
+                    
+                    desc_frame = tk.Frame(info_frame, bg="black")
+                    desc_frame.pack(fill="both", expand=True, pady=(scl(5), 0))
+                    
+                    scrollbar = tk.Scrollbar(desc_frame)
+                    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                    
+                    desc_text = tk.Text(desc_frame, wrap=tk.WORD, font=("Arial", scl(15)), 
+                                       bg="black", fg="white", height=10, width=60,
+                                       yscrollcommand=scrollbar.set)
+                    desc_text.pack(side=tk.LEFT, fill="both", expand=True)
+                    desc_text.insert("1.0", new_desc.strip())
+                    desc_text.config(state=tk.DISABLED)
+                    scrollbar.config(command=desc_text.yview)
 
             return _popup
 
-        headers = [
-            ("Main Characters", groups["main"]),
-            ("Supporting Characters", groups["secondary"]),
-            ("Also Appears", groups["appears"]),
-        ]
+        # Display AniDB Characters
+        has_anidb_chars = any(anidb_groups.values())
+        if has_anidb_chars:
+            column.insert(tk.END, "ANIDB CHARACTERS:\n", "bold underline")
+            
+            anidb_headers = [
+                ("Main Characters", anidb_groups["main"]),
+                ("Supporting Characters", anidb_groups["secondary"]),
+                ("Also Appears", anidb_groups["appears"]),
+            ]
 
-        for header, char_list in headers:
-            if not char_list:
-                continue
-            column.insert(tk.END, header.upper() + ":\n", "bold")
-            for name, image, gender, desc in sorted(char_list, key=lambda x: x[0].lower()):
-                b = tk.Button(
-                    column,
-                    text=name,
-                    command=create_image_popup(name, image, gender, desc),
-                    padx=2, pady=1,
-                    bg="black", fg="white",
-                    font=("Arial", scl(12))
-                )
-                column.window_create(tk.END, window=b)
-                column.insert(tk.END, " ")
+            for header, char_list in anidb_headers:
+                if not char_list:
+                    continue
+                column.insert(tk.END, header.upper() + ":\n", "bold")
+                for name, image, gender, desc in sorted(char_list, key=lambda x: x[0].lower()):
+                    b = tk.Button(
+                        column,
+                        text=name,
+                        command=create_anidb_image_popup(name, image, gender, desc),
+                        padx=2, pady=1,
+                        bg="black", fg="white",
+                        font=("Arial", scl(12))
+                    )
+                    column.window_create(tk.END, window=b)
+                    column.insert(tk.END, " ")
+                column.insert(tk.END, "\n", "blank")
             column.insert(tk.END, "\n", "blank")
+        
+        # AniList Characters
+        anilist_id = data.get("anilist")
+        if anilist_id and str(anilist_id) in anilist_metadata:
+            anilist_data = anilist_metadata[str(anilist_id)]
+            anilist_chars = anilist_data.get("characters", [])
+            
+            if anilist_chars:
+                column.insert(tk.END, "ANILIST CHARACTERS:\n", "bold underline")
+                
+                # Group by role
+                anilist_groups = {
+                    "MAIN": [],
+                    "SUPPORTING": [],
+                    "BACKGROUND": []
+                }
+                
+                for char in anilist_chars:
+                    role = char.get("role", "BACKGROUND")
+                    if role in anilist_groups:
+                        anilist_groups[role].append(char)
+                
+                def create_anilist_popup(char_data):
+                    def _popup():
+                        popup = tk.Toplevel()
+                        popup.title(char_data.get("name", "Character"))
+                        popup.configure(bg="black")
+                        
+                        # Character name
+                        tk.Label(popup, text=char_data.get("name", "Unknown"), 
+                                font=("Arial", scl(20), "bold", "underline"), 
+                                bg="black", fg="white", anchor="center").pack(anchor="center", pady=(scl(10), 0))
+                        
+                        # Load character image with error handling
+                        image_url = char_data.get("image")
+                        if image_url:
+                            try:
+                                tk_img = load_image_from_url(image_url, size=(scl(700), scl(700)))
+                                if tk_img:
+                                    label = tk.Label(popup, image=tk_img, bg="black")
+                                    label.image = tk_img  # Keep reference
+                                    label.pack(pady=scl(10))
+                            except Exception as e:
+                                tk.Label(popup, text=f"[Image failed to load]", 
+                                        font=("Arial", scl(12)), bg="black", fg="gray").pack(pady=scl(10))
+                        
+                        # Info section
+                        info_frame = tk.Frame(popup, bg="black")
+                        info_frame.pack(padx=scl(20), pady=(scl(20), scl(20)), fill="both", expand=True)
+                        
+                        # Basic info
+                        info_parts = []
+                        if char_data.get("gender"):
+                            info_parts.append(f"Gender: {char_data['gender']}")
+                        if char_data.get("age"):
+                            info_parts.append(f"Age: {char_data['age']}")
+                        
+                        if info_parts:
+                            tk.Label(info_frame, text=" | ".join(info_parts), 
+                                    font=("Arial", scl(13)), bg="black", fg="gray", 
+                                    anchor="w").pack(anchor="w", pady=(0, scl(10)))
+                        
+                        # Voice Actors
+                        voice_actors = char_data.get("voice_actors", [])
+                        if voice_actors:
+                            tk.Label(info_frame, text="VOICE ACTORS (JP):", 
+                                    font=("Arial", scl(15), "bold", "underline"), 
+                                    bg="black", fg="white", anchor="w").pack(anchor="w", pady=(0, scl(5)))
+                            tk.Label(info_frame, text=", ".join(voice_actors), 
+                                    font=("Arial", scl(13)), bg="black", fg="white", 
+                                    anchor="w").pack(anchor="w", pady=(0, scl(10)))
+                        
+                        # Description
+                        desc = char_data.get("description", "")
+                        if desc:
+                            # Remove HTML tags from description
+                            desc_clean = re.sub(r'<[^>]+>', '', desc)
+                            desc_clean = desc_clean.replace('&quot;', '"').replace('&amp;', '&')
+                            
+                            tk.Label(info_frame, text="DESCRIPTION:", 
+                                    font=("Arial", scl(15), "bold", "underline"), 
+                                    bg="black", fg="white", anchor="w").pack(anchor="w", pady=(0, scl(5)))
+                            
+                            desc_frame = tk.Frame(info_frame, bg="black")
+                            desc_frame.pack(fill="both", expand=True, pady=(scl(5), 0))
+                            
+                            scrollbar = tk.Scrollbar(desc_frame)
+                            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                            
+                            desc_text = tk.Text(desc_frame, wrap=tk.WORD, font=("Arial", scl(13)), 
+                                               bg="black", fg="white", height=10, width=60,
+                                               yscrollcommand=scrollbar.set)
+                            desc_text.pack(side=tk.LEFT, fill="both", expand=True)
+                            desc_text.insert("1.0", desc_clean.strip())
+                            desc_text.config(state=tk.DISABLED)
+                            scrollbar.config(command=desc_text.yview)
+                    
+                    return _popup
+                
+                for role_name, char_list in [("Main Characters", anilist_groups["MAIN"]), 
+                                             ("Supporting Characters", anilist_groups["SUPPORTING"]), 
+                                             ("Background Characters", anilist_groups["BACKGROUND"])]:
+                    if not char_list:
+                        continue
+                    
+                    column.insert(tk.END, role_name.upper() + ":\n", "bold")
+                    for char in char_list:
+                        name = char.get("name", "Unknown")
+                        b = tk.Button(
+                            column,
+                            text=name,
+                            command=create_anilist_popup(char),
+                            padx=2, pady=1,
+                            bg="black", fg="white",
+                            font=("Arial", scl(12))
+                        )
+                        column.window_create(tk.END, window=b)
+                        column.insert(tk.END, " ")
+                    column.insert(tk.END, "\n", "blank")
+        
+        # If no characters from either source
+        if not has_anidb_chars and not (anilist_id and str(anilist_id) in anilist_metadata and anilist_metadata[str(anilist_id)].get("characters")):
+            column.insert(tk.END, "No character data available.", "white")
     elif selected_extra_metadata == "episode_info":
         episodes = sorted(data.get("episode_info", []), key=lambda x: x[0])  # Sort by episode number
         for num, title in episodes:
             column.insert(tk.END, f"EPISODE {num}: ", "bold")
             column.insert(tk.END, f"{title}\n", "white")
     elif selected_extra_metadata == "tags":
-        tags = sorted(data.get("tags", []), key=lambda x: (-x[1], x[0].lower()))  # Sort by score descending, then name
-        display_tags = []
-        for tag, score in tags:
-            if score > 0:
-                display = f"{tag} ({score})"
-            else:
-                display = tag
-            display_tags.append(display.capitalize())
-        column.insert(tk.END, f"{", ".join(display_tags)}", "white")
-        column.insert(tk.END, ".", "white")
-    column.config(state=tk.DISABLED, wrap="word")
+        # AniDB Tags
+        anidb_tags = sorted(data.get("tags", []), key=lambda x: (-x[1], x[0].lower()))  # Sort by score descending, then name
+        if anidb_tags:
+            column.insert(tk.END, "ANIDB TAGS:\n", "bold")
+            display_tags = []
+            for tag, score in anidb_tags:
+                if score > 0:
+                    display = f"{tag} ({score})"
+                else:
+                    display = tag
+                display_tags.append(display.capitalize())
+            column.insert(tk.END, f"{", ".join(display_tags)}.", "white")
+            column.insert(tk.END, "\n\n", "blank")
+        
+        # AniList Tags
+        anilist_id = data.get("anilist")
+        if anilist_id and str(anilist_id) in anilist_metadata:
+            anilist_data = anilist_metadata[str(anilist_id)]
+            anilist_tags = anilist_data.get("tags", [])
+            if anilist_tags:
+                column.insert(tk.END, "ANILIST TAGS:", "bold")
+                
+                spoiler_count = sum(1 for tag in anilist_tags if tag.get("spoiler", False))
+                
+                if spoiler_count > 0:
+                    button_text = f"Hide {spoiler_count} spoiler tag{'s' if spoiler_count != 1 else ''}" if show_spoiler_tags else f"Show {spoiler_count} spoiler tag{'s' if spoiler_count != 1 else ''}"
+                    column.insert(tk.END, " ")
+                    column.window_create(tk.END, window=tk.Button(
+                        column, 
+                        text=button_text, 
+                        command=toggle_spoiler_tags, 
+                        padx=scl(2), 
+                        bg="black", 
+                        fg="white"
+                    ))
+                
+                column.insert(tk.END, "\n", "white")
+                
+                # Display tags in rank order (already sorted from AniList)
+                display_tags = []
+                for tag in anilist_tags:
+                    is_spoiler = tag.get("spoiler", False)
+                    
+                    if is_spoiler and not show_spoiler_tags:
+                        continue
+                    
+                    tag_name = tag.get("name", "")
+                    rank = tag.get("rank", 0)
+                    category = tag.get("category", "")
+                    
+                    # Format: TagName (Rank%) [Category]
+                    display = f"{tag_name} ({rank}%)"
+                    if category:
+                        display += f" [{category}]"
+                    if is_spoiler:
+                        display += " *SPOILER"
+                    
+                    display_tags.append(display)
+                
+                if display_tags:
+                    column.insert(tk.END, f"{'\n'.join(display_tags)}", "white")
+                
+                column.insert(tk.END, ".", "white")
+        
+        # If no tags from either source
+        if not anidb_tags and not (anilist_id and str(anilist_id) in anilist_metadata and anilist_metadata[str(anilist_id)].get("tags")):
+            column.insert(tk.END, "No tags available.", "white")
     column.config(state=tk.DISABLED, wrap="word")
 
 selected_extra_metadata = "synopsis"
+show_spoiler_tags = False
+
+def toggle_spoiler_tags():
+    global show_spoiler_tags
+    show_spoiler_tags = not show_spoiler_tags
+    update_extra_metadata()
+
 def select_extra_metadata(extra_metadata):
     global selected_extra_metadata
     selected_extra_metadata = extra_metadata
-    update_extra_metadata(currently_playing.get("data"))
+    update_extra_metadata()
 
 def create_cover_popup(title, cover_url):
     def _popup():
@@ -2059,15 +3035,26 @@ def create_cover_popup(title, cover_url):
             ).pack(pady=(10, 0))
 
             # Load cover image
-            response = requests.get(cover_url)
-            img_data = response.content
-            pil_image = Image.open(BytesIO(img_data))
-            pil_image.thumbnail((700, 800))
+            tk_img = load_image_from_url(cover_url, size=(600, 800))
+            if tk_img:
+                label = tk.Label(popup, image=tk_img, bg="black")
+                label.image = tk_img  # Keep reference
+                label.pack(pady=10)
+            else:
+                tk.Label(popup, text="[Failed to load image]", 
+                        font=("Arial", 12), bg="black", fg="white").pack(pady=10)
 
-            cover_img = ImageTk.PhotoImage(pil_image)
-            label = tk.Label(popup, image=cover_img, bg="black")
-            label.image = cover_img  # Keep reference
-            label.pack(pady=10)
+            # Center the popup window on screen
+            popup.update_idletasks()  # Update window to get actual size
+            window_width = popup.winfo_width()
+            window_height = popup.winfo_height()
+            screen_width = popup.winfo_screenwidth()
+            screen_height = popup.winfo_screenheight()
+            
+            x = (screen_width // 2) - (window_width // 2)
+            y = (screen_height // 2) - (window_height // 2)
+            
+            popup.geometry(f"+{x}+{y}")
 
         except Exception as e:
             messagebox.showerror("Image Load Error", f"Could not load image: {e}")
@@ -2087,12 +3074,12 @@ def update_series_song_information(data, mal):
             index = 0
             for anime_id, anime in all_series_themes:
                 index += 1
-                middle_column.insert(tk.END, f"{get_display_title(anime)} [{anime.get("type")} / {anime.get("season")}]:\n", "bold underline")
+                middle_column.insert(tk.END, f"{get_display_title(anime)} [{get_format(anime)} / {anime.get("season")}]:\n", "bold underline")
                 if anime_id == data.get("mal"):
                     slug = data.get("slug")
                 else:
                     slug = "SKIP"
-                update_song_information(anime, mal, slug)
+                update_song_information(anime, anime_id, slug)
                 if index < len(all_series_themes):
                     middle_column.insert(tk.END, "\n", "blank")
     middle_column.config(state=tk.DISABLED)
@@ -2133,12 +3120,10 @@ def update_up_next_display(widget, clear=False):
     global reroll_button
     widget.config(state=tk.NORMAL, wrap="word")
     widget.delete(1.0, tk.END)
-    # Don't show up-next if metadata is not enabled
     if not popout_show_metadata:
         widget.config(height=0)
         widget.config(state=tk.DISABLED)
         return
-    # Show placeholder if not showing up-next or if cleared
     is_popout = widget == popout_up_next
     PLACEHOLDER_TEXT = "NEXT: CLICK TO SHOW/HIDE"
     if is_popout and not popout_show_up_next:
@@ -2154,7 +3139,7 @@ def update_up_next_display(widget, clear=False):
     widget.config(height=0)
     if not clear:
         if not is_docked() or is_popout:
-            if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2:
+            if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2 and not (fixed_lightning_round_playlist_data or fixed_lightning_queue) or youtube_queue or search_queue:
                 reroll_button = tk.Button(
                         widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
                         pady=0, command=refetch_next_track, bg="black", fg="white"
@@ -2208,7 +3193,7 @@ def update_up_next_display(widget, clear=False):
                     else:
                         next_up_data = get_metadata(next_filename)
                         version_num = next_up_data.get("version")
-                        if version_num and version_num != 1:
+                        if version_num and version_num not in ["1", "null"]:
                             version_num = f"v{version_num}"
                         else:
                             version_num = ""
@@ -2247,7 +3232,7 @@ def get_display_title(data):
     return data.get("eng_title") or data.get("title") or "No Title Found"
 
 def is_game(data):
-    return data.get("type") == "Game" or data.get("type") == "Visual Novel" or data.get("platforms")
+    return get_format(data) == "Game" or get_format(data) == "Visual Novel" or data.get("platforms")
 
 def add_field_total_button(column, group, blank = True, show_count=True, button_text=None):
     count = len(group)
@@ -2267,7 +3252,10 @@ def get_all_matching_field(field, match):
     for filename in directory_files:
         file_data = get_metadata(filename)
         if file_data:
-            file_field = file_data.get(field, "")
+            if field == "type":
+                file_field = get_format(file_data)
+            else:
+                file_field = file_data.get(field, "")
             if file_field and file_field == match:
                 filenames.append(filename)
 
@@ -2335,7 +3323,7 @@ def get_overall_theme_number(filename):
         theme_gap = 0
         anime_title = clean_title(anime.get("title"))
         anime_display_title = clean_title(get_display_title(anime))
-        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes")) and data.get("type") == anime.get("type")):
+        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes")) and get_format(data) == get_format(anime)):
             if not base_title or not display_base_title:
                 if anime_title in data.get("title"):
                     base_title = anime_title
@@ -2390,7 +3378,7 @@ def has_same_start(s1, s2, length=3):
 
 def get_filenames_from_artist(match):
     filenames = []
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         file_data = get_metadata(filename)
         if file_data:
             for theme in file_data.get("songs", []) or []:
@@ -2403,7 +3391,7 @@ def get_filenames_from_artist(match):
 
 def get_filenames_from_studio(match):
     filenames = []
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         file_data = get_metadata(filename)
         if file_data:
             for studio in file_data.get("studios", []) or []:
@@ -2414,7 +3402,7 @@ def get_filenames_from_studio(match):
 
 def get_filenames_from_tag(match):
     filenames = []
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         file_data = get_metadata(filename)
         if file_data:
             for tag in file_data.get('genres', []) + file_data.get('themes', []) + file_data.get('demographics', []):
@@ -2426,7 +3414,7 @@ def get_filenames_from_tag(match):
 
 def get_filenames_from_year(match):
     filenames = []
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         file_data = get_metadata(filename)
         if match in file_data.get("season", ""):
             filenames.append(filename)        
@@ -2477,29 +3465,26 @@ def add_op_ed(theme, column, slug, title, mal_id):
     if theme_slug == slug:
         format = "highlight"
 
-    # Show play button at top for themes without versions OR with only one version
     if not versions or len(versions) == 1:
         # For single version, use the version-specific filename, otherwise use theme filename
         if len(versions) == 1:
-            filename = get_theme_filename(title, theme_slug, versions[0].get('version'))
+            filename = get_theme_filename(mal_id, theme_slug, versions[0].get('version'))
         else:
-            filename = get_theme_filename(title, theme_slug)
-            
+            filename = get_theme_filename(mal_id, theme_slug)
         # ▶ button or fallback
         if filename:
-            column.window_create(tk.END, window=tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white"))
+            column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(filename), borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white"))
             column.insert(tk.END, get_file_marks(filename), format)
         else:
             column.insert(tk.END, no_file_icon, format)
     else:
         # Multiple versions - no play button at top
         column.insert(tk.END, no_file_icon, format)
-    # Song label - use white for theme title (highlighting is per-version for multiple versions)
     overall_display = ""
-    filename = get_theme_filename(title, theme_slug)  # Initialize filename variable
+    filename = get_theme_filename(mal_id, theme_slug)  # Initialize filename variable
     
-    overall_display = overall_theme_num_display(filename)
-    # For themes without versions, check if theme matches slug for highlighting
+    if filename:
+        overall_display = overall_theme_num_display(filename)
     if theme_slug == slug:
         format = "highlight"
     column.insert(tk.END, f"{theme_slug}{overall_display}: {song_title}\n", format)
@@ -2517,7 +3502,6 @@ def add_op_ed(theme, column, slug, title, mal_id):
             
             artist_input = artist_input.split("[AND]")
 
-            # Update original metadata (for display)
             theme["artist"] = artist_input
 
             # Update override metadata
@@ -2551,8 +3535,8 @@ def add_op_ed(theme, column, slug, title, mal_id):
             filename = currently_playing.get("filename")
             if filename:
                 update_series_song_information(get_metadata(filename), mal_id)
-
-        column.window_create(tk.END, window=tk.Button(column, text="[ADD ARTIST]", command=prompt_and_add_artist, padx=2, bg="black", fg="white"))
+        if playlist.get("name") in ["Tagged Themes", "New Themes"]:
+            column.window_create(tk.END, window=tk.Button(column, text="[ADD ARTIST]", command=prompt_and_add_artist, padx=2, bg="black", fg="white"))
     else:
         for index, artist in enumerate(artist_list):
             column.insert(tk.END, f"{artist}", format)
@@ -2569,12 +3553,11 @@ def add_op_ed(theme, column, slug, title, mal_id):
             version = versions[0]
             version_num = version.get('version')
             version_text = ""
-            if version_num:
+            if version_num and version_num != 1:
                 version_text += f"v{version_num}: "
             if version.get('episodes'):
                 version_text += f"(Eps: {version.get('episodes')})"
             
-            # Add flags for this version
             flags = []
             if version.get("overlap") == "Over":
                 flags.append("(OVERLAP)")
@@ -2588,7 +3571,6 @@ def add_op_ed(theme, column, slug, title, mal_id):
             if flags:
                 version_text += f" {' '.join(flags)}"
 
-            # Use the same format as the title for single version
             if version_text:
                 column.insert(tk.END, f"\n{version_text}", format)
         else:
@@ -2598,15 +3580,13 @@ def add_op_ed(theme, column, slug, title, mal_id):
                     column.insert(tk.END, f"\n", version_format)
                 else:
                     column.insert(tk.END, f"\n", format)
-                # Determine if this specific version should be highlighted
                 version_num = version.get('version')
-                version_filename = get_theme_filename(title, theme_slug, version_num, need_version=True)
+                version_filename = get_theme_filename(mal_id, theme_slug, version_num, need_version=True)
                 if version_num == 1 and not version_filename:
-                    version_filename = get_theme_filename(title, theme_slug, None, need_version=True)
+                    version_filename = get_theme_filename(mal_id, theme_slug, None, need_version=True)
                 if version_num == None:
                     version_num = 1
 
-                # Check if this version matches the currently playing file
                 version_format = "white"
                 if theme_slug == slug and version_filename:
                     try:
@@ -2617,17 +3597,15 @@ def add_op_ed(theme, column, slug, title, mal_id):
                         pass
                 
                 if version_filename:
-                    column.window_create(tk.END, window=tk.Button(column, text="▶", borderwidth=0, pady=0, command=lambda f=version_filename: play_video_from_filename(f), bg="black", fg="white"))
+                    column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(version_filename), borderwidth=0, pady=0, command=lambda f=version_filename: play_video_from_filename(f), bg="black", fg="white"))
                     column.insert(tk.END, get_file_marks(version_filename), version_format)
                 else:
                     column.insert(tk.END, no_versions_icon, version_format)
 
-                # Version details for multiple versions
                 version_text = ""
                 if version_num:
                     version_text += f"v{version_num}"
                 
-                # Add flags for this version
                 flags = []
                 if version.get("overlap") == "Over":
                     flags.append("(OVERLAP)")
@@ -2648,8 +3626,6 @@ def add_op_ed(theme, column, slug, title, mal_id):
                 column.insert(tk.END, f"{version_text}", version_format)
         column.insert(tk.END, f"", "white")
     else:
-        # Backwards compatible: display episodes if no versions available
-        # Use same format as determined for the theme title
         version_text = ""
         if episodes:
             version_text += f"(Eps: {episodes})"
@@ -2670,6 +3646,12 @@ def add_op_ed(theme, column, slug, title, mal_id):
     column.insert(tk.END, f"\n", version_format)
     return len(versions)
 
+def get_filename_icon(filename):
+    if filename in directory_files:
+        return "▶"
+    else:
+        return stream_icon
+
 def get_file_marks(filename):
     marks = ""
     if check_new(filename):
@@ -2686,13 +3668,85 @@ def get_file_marks(filename):
         marks = marks + "🔇"
     return marks
 
-def get_theme_filename(title, slug, version=None, need_version=False):
-    for filename in directory_files:
-        data = get_metadata(filename)
-        if data.get("title") == title and data.get("slug") == slug:
-            if (version is None and (data.get("version") is None or not need_version)) or (data.get("version") == version):
-                return filename
-    return None
+def prioritize_theme_files(filenames):
+    """Prioritize a list of theme files by local availability and resolution.
+    
+    Returns the best filename from the list.
+    """
+    if not filenames:
+        return None
+    
+    if len(filenames) == 1:
+        return filenames[0]
+    
+    # Prioritize local files over streamable ones
+    local_files = [f for f in filenames if f in directory_files]
+    if local_files:
+        filenames = local_files
+    
+    # Prioritize files by resolution
+    resolution_priority = ["1080", "720", "480"]
+    for res in resolution_priority:
+        res_files = [f for f in filenames if res in f]
+        if res_files:
+            return res_files[0]
+    
+    return filenames[0]
+
+def get_theme_filename(mal_id, slug, version=None, need_version=False):
+    """Find filename for a given MAL ID and slug combination.
+    
+    Args:
+        mal_id: The MyAnimeList ID (string or int)
+        slug: The theme slug (e.g., "OP1", "ED2")
+        version: Specific version number (optional, int or None)
+        need_version: If True, requires explicit version match
+    
+    Returns:
+        Filename if found, None otherwise
+    """
+    # Convert mal_id to string for consistent lookup
+    mal_id_str = str(mal_id)
+    
+    # Get the anime entry from file_metadata
+    anime_entry = file_metadata.get(mal_id_str)
+    if not anime_entry:
+        return None
+    
+    # Get themes for this anime
+    themes = anime_entry.get("themes", {})
+    if not themes or slug not in themes:
+        return None
+    
+    # Get versions for this slug (e.g., {"1": {filename: metadata}, "2": {...}})
+    slug_versions = themes[slug]
+    
+    found_filenames = []
+    
+    # Iterate through all versions for this slug
+    for version_str, files_dict in slug_versions.items():
+        # version_str is like "1", "2", etc.
+        file_version = int(version_str) if version_str.isdigit() else None
+        
+        # Version matching logic
+        if version is None:
+            # No specific version requested
+            if need_version and file_version is not None:
+                # If need_version is True, skip files that have a version number
+                continue
+            # Otherwise match any file
+        elif file_version != version:
+            # Specific version requested but doesn't match
+            # Special case: version 1 files might not have explicit version (stored as "1")
+            if not (version == 1 and version_str == "1"):
+                continue
+        
+        # Get filenames from this version (keys of the files_dict)
+        for filename in files_dict.keys():
+            if filename in directory_files or is_animethemes_stream_file(filename):
+                found_filenames.append(filename)
+    
+    return prioritize_theme_files(found_filenames)
 
 def play_video_from_filename(filename):
     global search_queue
@@ -2739,7 +3793,6 @@ def unload_youtube_video():
     global youtube_queue
     if youtube_queue:
         toggle_coming_up_popup(False, get_youtube_display_title(youtube_queue))
-    # Unhighlight the YouTube queue button if it exists
     try:
         if 'YOUTUBE QUEUE' in popout_buttons_by_name:
             button = popout_buttons_by_name['YOUTUBE QUEUE']
@@ -2774,23 +3827,31 @@ def check_youtube_video_playing():
 _youtube_playlist = {}
 def show_youtube_playlist(update = False):
     global _youtube_playlist
-    downloaded_videos = {}
+    all_videos = {}
     
-    # Check both local youtube folder and external files
+    # Show ALL non-archived videos and mark which ones are downloaded
     for video_id, video in youtube_metadata.get("videos", {}).items():
+        # Skip archived videos
+        if video.get("archived", False):
+            continue
+            
         filename = video["filename"]
+        video_copy = video.copy()
+        video_copy['video_id'] = video_id  # Store video_id for URL construction
         
-        # Check if file exists in youtube folder
         if os.path.exists(os.path.join("youtube", filename)):
-            downloaded_videos[video_id] = video
+            video_copy['downloaded'] = True
         else:
-            # Check if it exists as an external file in current playlist
+            downloaded = False
             for playlist_entry in playlist.get("playlist", []):
                 if (os.path.isabs(playlist_entry) and 
                     os.path.basename(playlist_entry) == filename and 
                     os.path.exists(playlist_entry)):
-                    downloaded_videos[video_id] = video
+                    downloaded = True
                     break
+            video_copy['downloaded'] = downloaded
+        
+        all_videos[video_id] = video_copy
 
     # Sort by date_added (newest first), then by upload_date as fallback
     def get_sort_key(item):
@@ -2815,20 +3876,27 @@ def show_youtube_playlist(update = False):
         return datetime(1900, 1, 1)
     
     # Sort and convert back to dict
-    sorted_videos = sorted(downloaded_videos.items(), key=get_sort_key, reverse=True)
-    downloaded_videos = dict(sorted_videos)
+    sorted_videos = sorted(all_videos.items(), key=get_sort_key, reverse=True)
+    all_videos = dict(sorted_videos)
 
-    for index, (key, value) in enumerate(downloaded_videos.items()):
+    for index, (key, value) in enumerate(all_videos.items()):
         value['index'] = index
     if youtube_queue:
         selected = youtube_queue.get('index', -1) or -1
     else:
         selected = -1
-    _youtube_playlist = downloaded_videos
-    show_list("youtube", right_column, downloaded_videos, get_youtube_title, load_youtube_video, selected, update)
+    _youtube_playlist = all_videos
+    show_list("youtube", right_column, all_videos, get_youtube_title, load_youtube_video, selected, update)
 
 def get_youtube_title(key, value):
-    return f"[{str(format_seconds(get_youtube_duration(value)))}]{get_youtube_display_title(value)}"
+    icon = stream_icon if not value.get('downloaded', False) else ""
+    display_title = get_youtube_display_title(value)
+    
+    # Remove common phrases (case-insensitive, anywhere in title)
+    pattern = re.compile(r'(can you guess the|guess the|how well do you know|can you|guess|their|from|by|with|its|just)\s*', re.IGNORECASE)
+    display_title = pattern.sub('', display_title)
+    
+    return f"{icon}[{str(format_seconds(get_youtube_duration(value)))}]{display_title}"
 
 def load_youtube_video(index):
     global youtube_queue
@@ -2884,7 +3952,6 @@ def save_youtube_metadata():
     """Ensures the metadata folder exists before saving metadata file."""
     metadata_folder = os.path.dirname(YOUTUBE_METADATA_FILE)  # Get the folder path
 
-    # Create the folder if it does not exist
     if not os.path.exists(metadata_folder):
         os.makedirs(metadata_folder)
 
@@ -2902,7 +3969,6 @@ def load_youtube_metadata():
         migration_needed = False
         for video_id, video in youtube_metadata.get("videos", {}).items():
             if "date_added" not in video:
-                # Use upload_date as fallback, or current date if neither exists
                 upload_date = video.get("upload_date", "")
                 if upload_date:
                     try:
@@ -2917,7 +3983,6 @@ def load_youtube_metadata():
                     video["date_added"] = datetime.now().isoformat()
                 migration_needed = True
         
-        # Save the metadata if migration was needed
         if migration_needed:
             save_youtube_metadata()
         
@@ -3000,12 +4065,10 @@ def open_youtube_editor():
         if youtube_page_offset >= total_videos and total_videos > 0:
             youtube_page_offset = max(0, total_videos - VIDEOS_PER_PAGE)
         
-        # Get videos for current page
         start_idx = youtube_page_offset
         end_idx = min(start_idx + VIDEOS_PER_PAGE, total_videos)
         page_videos = sorted_videos[start_idx:end_idx]
         
-        # Pagination controls (only if more than one page)
         header_row = 0
         if total_pages > 1:
             def page_prev():
@@ -3140,18 +4203,19 @@ def open_youtube_editor():
 
             end_frame.grid(row=video_row, column=4, padx=4)
 
-            # Determine if file is downloaded
             filepath = os.path.join("youtube", video["filename"])
 
             action_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
+            
+            # Define play/stream function
+            def play_youtube_video(vid):
+                save_all()
+                global youtube_queue
+                youtube_queue = get_youtube_metadata_from_index(key_id=vid)
+                play_video()
+            
             if os.path.exists(filepath):
-                def play_youtube_video(vid):
-                    save_all()
-                    global youtube_queue
-                    youtube_queue = get_youtube_metadata_from_index(key_id=vid)
-                    play_video()
-
-                # Show Archive/Delete buttons
+                # Downloaded: Show Play button + Archive button
                 def archive_this(vid=video_id):
                     video = youtube_metadata["videos"][vid]
                     video["archived"] = True
@@ -3173,11 +4237,16 @@ def open_youtube_editor():
                             print(f"Error archiving file: {e}")
                     save_youtube_metadata()
                     refresh_ui()
-                # Play button
+                
+                # Play button (local file)
                 tk.Button(action_frame, text="▶", font=font_big, bg="green", fg="white", command=lambda vid=video_id: play_youtube_video(vid)).pack(side="left", padx=2)
                 tk.Button(action_frame, text="ARCHIVE", font=font_big, bg="#333", fg="white", command=archive_this).pack(side="left", padx=2)
             else:
-                # Show Download button
+                # Not Downloaded: Show Stream button + Download button
+                # Stream button (plays from YouTube)
+                tk.Button(action_frame, text=stream_icon, font=font_big, bg="blue", fg="white", command=lambda vid=video_id: play_youtube_video(vid)).pack(side="left", padx=2)
+                
+                # Download button
                 dl_btn = tk.Button(
                     action_frame,
                     text="DOWNLOAD",
@@ -3449,7 +4518,6 @@ def download_youtube_video(video_id, button, refresh_ui_callback):
             downloaded = d.get('downloaded_bytes', 0)
             reported_total = d.get('total_bytes') or d.get('total_bytes_estimate') or 1
 
-            # Update max_total only if it's significantly larger (5% threshold)
             if reported_total > max_total["bytes"] * 1.05 or reported_total < max_total["bytes"] * .95:
                 max_total["bytes"] = reported_total
             elif max_total["bytes"] == 0:
@@ -3469,14 +4537,12 @@ def download_youtube_video(video_id, button, refresh_ui_callback):
     def do_download():
         update_button("Starting...")
         try:
-            # ydl_opts = {
             #     'format': 'bv*[vcodec^=avc1]+ba*[acodec^=mp4a]/b[ext=mp4]/bv*+ba*/b',
             #     'merge_output_format': 'webm',  # Ensure final file is mp4
             #     'outtmpl': filename,
             #     'quiet': True,
             #     'progress_hooks': [on_progress],
             # }
-            # ydl_opts = {
             #     'format': 'bestvideo[ext=webm]+bestaudio[ext=webm]/bestvideo+bestaudio/best',
             #     'merge_output_format': 'webm',
             #     'outtmpl': filename,
@@ -3499,7 +4565,6 @@ def download_youtube_video(video_id, button, refresh_ui_callback):
                 ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
 
             # # Now convert merged mp4 to webm
-            # convert_cmd = [
             #     'ffmpeg',
             #     '-i', filename.replace(".webm", ".mp4"),
             #     '-c:v', 'libvpx-vp9',  # VP9 video codec
@@ -3528,12 +4593,12 @@ def download_youtube_video(video_id, button, refresh_ui_callback):
 # =========================================
 
 playlist_changed = False
-def generate_playlist():
+def generate_playlist(include_non_local=False):
     """Function to generate a playlist"""
     global playlist_changed
     playlist_changed = True
     playlis = []
-    for file in directory_files:
+    for file in get_directory_files(include_non_local=include_non_local):
         playlis.append(file)
     return playlis
 
@@ -3548,40 +4613,219 @@ def empty_playlist():
 # Generate playlist button
 def generate_playlist_button():
     global playlist
-    confirm = messagebox.askyesno("Create Playlist", f"Are you sure you want to create a new playlist with all {len(directory_files)} files in the directory?")
+    include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
+    extra_locations = ""
+    if include_non_local:
+        extra_locations = " and metadata"
+    confirm = messagebox.askyesno("Create Playlist", f"Are you sure you want to create a new playlist with all {len(get_directory_files(include_non_local=include_non_local))} files in directory{extra_locations}?")
     if not confirm:
         return  # User canceled
-    new_playlist(generate_playlist())
+    new_playlist(generate_playlist(include_non_local=include_non_local))
     if not playlist["playlist"]:
         messagebox.showwarning("Playlist Error", "No video files found in the directory.")
 
-def generate_anilist_playlist():
-    global playlist
-    user_id = simpledialog.askstring("AniList User ID", "Enter the AniList user ID:")
-    if not user_id:
-        return  # User canceled
-    
-    only_watched = messagebox.askyesno("AniList Only Watched", f"Do you want to limit results to only watched entries?")
-
-    # Fetch AniList data
+def get_anilist_matching_files(user_id, only_watched, include_non_local):
+    """Fetch and return matching files for an AniList user."""
     user_anime_ids = fetch_anilist_user_ids(user_id, only_watched)
     if not user_anime_ids:
-        messagebox.showerror("Error", "Could not fetch AniList data or no entries found.")
-        return
-
+        return None
+    
     matching_files = []
-    for file in directory_files:
+    for file in get_directory_files(include_non_local=include_non_local):
         data = get_metadata(file)
         if data and str(data.get("anilist")) in user_anime_ids:
             matching_files.append(file)
+    
+    return matching_files
 
+def get_animethemes_matching_files(hashid, include_non_local):
+    """Fetch and return matching files, playlist name, and total count for an AnimeThemes playlist."""
+    response = requests.get(f'https://api.animethemes.moe/playlist/{hashid}?include=tracks.video&fields[playlist]=name&fields[video]=path')
+    if response.status_code != 200:
+        return None, None, None
+    
+    data = response.json()
+    playlist_name = data.get('playlist', {}).get('name', hashid)
+    tracks = data.get('playlist', {}).get('tracks', [])
+    
+    if not tracks:
+        return [], playlist_name, 0
+    
+    # Extract video paths from the playlist
+    video_paths = set()
+    for track in tracks:
+        video = track.get('video', {})
+        if video and video.get('path'):
+            filename = os.path.basename(video['path'])
+            video_paths.add(filename)
+    
+    if not video_paths:
+        return [], playlist_name, 0
+    
+    # Match against local files
+    matching_files = []
+    for file in get_directory_files(include_non_local=include_non_local):
+        if file in video_paths:
+            matching_files.append(file)
+    
+    return matching_files, playlist_name, len(video_paths)
+
+def create_living_playlist_with_confirmation(matching_files, playlist_name, source_data, total_available=None):
+    """Create a playlist with confirmation dialog and store source metadata."""
+    global playlist
+    
+    if not matching_files:
+        return False
+    
+    # Format confirmation message
+    if total_available is not None:
+        message = f"{len(matching_files)} of {total_available} themes found. Create playlist?"
+    else:
+        message = f"{len(matching_files)} matches found. Create playlist?"
+    
+    confirm = messagebox.askyesno("Create Playlist", message)
+    if not confirm:
+        return False
+    
+    # Ask if playlist should auto-update on startup
+    auto_update = messagebox.askyesno("Auto-Update Playlist", 
+                                       "Should this playlist automatically update with new matching themes on startup?")
+    
+    new_playlist(matching_files, playlist_name)
+    source_data["auto_update"] = auto_update
+    playlist["source"] = source_data
+    return True
+
+def generate_anilist_playlist():
+    user_id = simpledialog.askstring("AniList User ID", "Enter the AniList user ID:")
+    if not user_id:
+        return
+    
+    only_watched = messagebox.askyesno("AniList Only Watched", f"Do you want to limit results to only watched entries?")
+    include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
+    
+    matching_files = get_anilist_matching_files(user_id, only_watched, include_non_local)
+    
+    if matching_files is None:
+        messagebox.showerror("Error", "Could not fetch AniList data or no entries found.")
+        return
+    
     if not matching_files:
         messagebox.showwarning("Playlist Error", "No matching video files found for this AniList user.")
-    else:
-        confirm = messagebox.askyesno("Create Playlist", f"{len(matching_files)} matches found. Create playlist?")
-        if not confirm:
+        return
+    
+    source_data = {
+        "type": "anilist",
+        "user_id": user_id,
+        "only_watched": only_watched,
+        "include_non_local": include_non_local
+    }
+    create_living_playlist_with_confirmation(matching_files, f"{user_id}'s AniList", source_data)
+
+def generate_animethemes_playlist():
+    hashid = simpledialog.askstring("AnimeThemes Playlist", "Enter the AnimeThemes playlist hashid:")
+    if not hashid:
+        return
+    
+    include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
+    
+    try:
+        matching_files, playlist_name, total_count = get_animethemes_matching_files(hashid, include_non_local)
+        
+        if matching_files is None:
+            messagebox.showerror("Error", f"Could not fetch playlist.")
             return
-        new_playlist(matching_files, f"{user_id}'s AniList")
+        
+        if not matching_files:
+            messagebox.showwarning("Playlist Error", "No matching video files found for this AnimeThemes playlist.")
+            return
+        
+        source_data = {
+            "type": "animethemes",
+            "hashid": hashid,
+            "include_non_local": include_non_local
+        }
+        create_living_playlist_with_confirmation(matching_files, playlist_name, source_data, total_count)
+    
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to fetch AnimeThemes playlist: {str(e)}")
+
+def update_living_playlists():
+    """Update all saved playlists with source metadata (living playlists) in background."""
+    def update_in_background():
+        try:
+            if not os.path.exists(PLAYLISTS_FOLDER):
+                return
+            
+            updated_playlists = []
+            
+            # Scan all saved playlists
+            for filename in os.listdir(PLAYLISTS_FOLDER):
+                if not filename.endswith('.json'):
+                    continue
+                
+                filepath = os.path.join(PLAYLISTS_FOLDER, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        saved_playlist = json.load(f)
+                    
+                    # Convert infinity markers back to float('inf')
+                    saved_playlist = convert_infinity_markers(saved_playlist)
+                    
+                    # Check if it has source metadata
+                    source = saved_playlist.get('source')
+                    if not source:
+                        continue
+                    
+                    # Check if auto-update is enabled
+                    if not source.get('auto_update', True):  # Default to True for backwards compatibility
+                        continue
+                    
+                    source_type = source.get('type')
+                    existing_files = set(saved_playlist.get('playlist', []))
+                    new_files = []
+                    
+                    if source_type == 'anilist':
+                        # Update AniList playlist using helper function
+                        user_id = source.get('user_id')
+                        only_watched = source.get('only_watched', False)
+                        include_non_local = source.get('include_non_local', False)
+                        
+                        all_matching = get_anilist_matching_files(user_id, only_watched, include_non_local)
+                        if all_matching:
+                            new_files = [f for f in all_matching if f not in existing_files]
+                    
+                    elif source_type == 'animethemes':
+                        # Update AnimeThemes playlist using helper function
+                        hashid = source.get('hashid')
+                        include_non_local = source.get('include_non_local', False)
+                        
+                        all_matching, _, _ = get_animethemes_matching_files(hashid, include_non_local)
+                        if all_matching:
+                            new_files = [f for f in all_matching if f not in existing_files]
+                    
+                    # If new files found, update the playlist
+                    if new_files:
+                        saved_playlist['playlist'].extend(new_files)
+                        # Convert infinities before saving
+                        playlist_to_save = copy.deepcopy(saved_playlist)
+                        if playlist_to_save.get("infinite_settings"):
+                            playlist_to_save["infinite_settings"] = convert_infinities_to_markers(playlist_to_save["infinite_settings"])
+                        with open(filepath, 'w', encoding='utf-8') as f:
+                            json.dump(playlist_to_save, f, indent=4)
+                        
+                        playlist_name = saved_playlist.get('name', filename[:-5])
+                        updated_playlists.append((playlist_name, len(new_files)))
+                        print(f"Updated playlist '{playlist_name}': +{len(new_files)} themes")
+                
+                except Exception as e:
+                    print(f"Error updating playlist {filename}: {e}")
+        except Exception as e:
+            print(f"Error in update_living_playlists: {e}")
+    
+    # Run in background thread
+    thread = threading.Thread(target=update_in_background, daemon=True)
+    thread.start()
 
 def confirm_save_playlist(text=""):
     # If playlist has no name, always ask to save
@@ -3594,7 +4838,6 @@ def confirm_save_playlist(text=""):
     elif playlist.get("name") in SYSTEM_PLAYLISTS:
         return  # Do not ask to save for these special playlists
     
-    # Check if a playlist with this name already exists
     playlist_name = playlist["name"]
     saved_playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
     
@@ -3609,6 +4852,9 @@ def confirm_save_playlist(text=""):
     try:
         with open(saved_playlist_path, "r", encoding="utf-8") as f:
             saved_playlist = json.load(f)
+        
+        # Convert infinity markers back to float('inf')
+        saved_playlist = convert_infinity_markers(saved_playlist)
         
         # Compare key playlist properties
         current_playlist_data = {
@@ -3627,7 +4873,6 @@ def confirm_save_playlist(text=""):
             "filter": saved_playlist.get("filter", {})
         }
         
-        # Only ask to save if there are differences
         if current_playlist_data != saved_playlist_data:
             confirm = messagebox.askyesno("Save Playlist", f"Playlist '{playlist_name}' has unsaved changes. Do you want to save before {text}?")
             if confirm:
@@ -3658,6 +4903,13 @@ def create_infinite_playlist():
         return  # User canceled
     new_playlist([])
     playlist["infinite"] = True
+    # Copy global settings as template, but set include_non_local_files based on local files
+    playlist["infinite_settings"] = copy.deepcopy(infinite_settings)
+    playlist["infinite_settings"]["include_non_local_files"] = len(directory_files) == 0
+    # Set default filter to exclude overlap and NSFW themes without censors
+    playlist["filter"] = {
+        "themes_exclude": ["OVERLAP", "NSFW (Without Censors)"]
+    }
     get_pop_time_groups(refetch=True)
     get_next_infinite_track()
     create_first_row_buttons()
@@ -3789,7 +5041,6 @@ def weighted_shuffle(playlis):
         series1 = get_metadata(entry1).get("series") or [get_metadata(entry1).get("title")]
         series2 = get_metadata(entry2).get("series") or [get_metadata(entry1).get("title")]
 
-        # Check if both would be safely placed after swap
         return (
             is_valid_placement(i2, series1) and
             is_valid_placement(i1, series2)
@@ -3890,11 +5141,18 @@ INFINITE_SETTINGS_DEFAULT = {
         "min_score": 7.5,
         "multiplier": 1.0
     },
-    "group_series": False,
-    "tag_cooldown": 1
+    "group_series": True,
+    "tag_cooldown": 1,
+    "include_non_local_files": False,
+    "deduplicate_files": True,
+    "deduplicate_versions": False
 }
 
 infinite_settings = INFINITE_SETTINGS_DEFAULT.copy()
+
+def get_infinite_settings():
+    """Get infinite settings from current playlist or fall back to global settings."""
+    return playlist.get("infinite_settings", infinite_settings)
 
 
 difficulty_ranges = [
@@ -3912,20 +5170,17 @@ def test_infinite_playlist(event=None):
     playlist["playlist"] = []
     playlist["current_index"] = 0
 
-    # We'll collect output for analysis later
     track_logs = []
-    test_size = infinite_settings.get("max_history_check", 5000)
+    test_size = get_infinite_settings().get("max_history_check", 5000)
     for i in range(test_size):
         selected_file = get_next_infinite_track()
         p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
 
-        # Prepare track info for logging
         track_info = f"{len(playlist["playlist"])}({p},{t}): {selected_file}"
 
         print(f"\rTESTING INFINITE PLAYLIST: {len(playlist["playlist"])}/{test_size}", end='', flush=True)
         sys.stdout.flush()
 
-        # Collect the track log (for later use, not for real-time print)
         track_logs.append(track_info)
 
     # Restore previous playlist
@@ -3976,7 +5231,7 @@ def get_last_three_seasons():
 def get_boost_multiplier(season_string):
     for i, s in enumerate(get_last_three_seasons()):
         if s == season_string:
-            return infinite_settings["recent_boost_multiplier"][i]
+            return get_infinite_settings()["recent_boost_multiplier"][i]
     return 1
 
 def get_series_boost_multiplier(series, cache=None):
@@ -4038,16 +5293,137 @@ cached_pop_time_cooldown = 0
 cached_skipped_themes = []
 total_infinite_files = 0
 
+# Cache for stats functions
+cached_deduplicated_files = None
+cached_deduplicated_files_timestamp = 0
+
+def get_cached_deduplicated_files(include_non_local=True):
+    """Get cached deduplicated file list for stats functions.
+    
+    Caches the expensive deduplication operation to avoid recalculating
+    it for every stats function call.
+    """
+    global cached_deduplicated_files, cached_deduplicated_files_timestamp
+    
+    # Check if cache is still valid (directory_files hasn't changed)
+    current_timestamp = len(directory_files)
+    if (cached_deduplicated_files is None or 
+        cached_deduplicated_files_timestamp != current_timestamp):
+        # Recalculate
+        cached_deduplicated_files = get_directory_files(
+            include_non_local=include_non_local, 
+            deduplicate_versions=True
+        )
+        cached_deduplicated_files_timestamp = current_timestamp
+    
+    return cached_deduplicated_files
+
+def invalidate_deduplicated_cache():
+    """Invalidate the deduplicated files cache when directory_files changes."""
+    global cached_deduplicated_files, cached_deduplicated_files_timestamp
+    cached_deduplicated_files = None
+    cached_deduplicated_files_timestamp = 0
+
+def deduplicate_theme_versions(filenames, keep_versions=False):
+    """Deduplicate files by theme, keeping the best version or best file per version.
+    
+    Groups files and returns the best using prioritize_theme_files.
+    Preserves the original order of files.
+    
+    Args:
+        filenames: List of filenames to deduplicate
+        keep_versions: If True, group by (mal_id, slug, version) to keep all versions
+                      but pick best file per version. If False, group by (mal_id, slug)
+                      to keep only the best version overall.
+        
+    Returns:
+        List of deduplicated filenames in original order
+    """
+    if not filenames:
+        return []
+    
+    # Group by (mal_id, slug) or (mal_id, slug, version)
+    theme_groups = {}
+    for filename in filenames:
+        file_data = get_file_metadata_by_name(filename)
+        if file_data:
+            mal_id = file_data.get("mal")
+            slug = file_data.get("slug")
+            if mal_id and slug:
+                if keep_versions:
+                    version = file_data.get("version", 1)
+                    key = (mal_id, slug, version)
+                else:
+                    key = (mal_id, slug)
+                if key not in theme_groups:
+                    theme_groups[key] = []
+                theme_groups[key].append(filename)
+            else:
+                # No mal_id or slug, keep as-is
+                theme_groups[filename] = [filename]
+        else:
+            # No metadata, keep as-is
+            theme_groups[filename] = [filename]
+    
+    # Pick the best file from each group
+    deduplicated_set = set()
+    for group_files in theme_groups.values():
+        best_file = prioritize_theme_files(group_files)
+        if best_file:
+            deduplicated_set.add(best_file)
+    
+    # Preserve original order
+    result = []
+    for filename in filenames:
+        if filename in deduplicated_set and filename not in result:
+            result.append(filename)
+    
+    return result
+
+def get_directory_files(include_non_local=False, deduplicate_files=False, deduplicate_versions=False):
+    """Get directory files with optional non-local and deduplication.
+    
+    Args:
+        include_non_local: Include non-local streamable files from metadata
+        deduplicate_files: Pick best file per version (keeps all versions)
+        deduplicate_versions: Keep only the best version overall (removes all versions)
+        
+    Returns:
+        List of filenames
+    """
+    if include_non_local:
+        # Combine local directory files with non-local files from metadata
+        non_local_files = []
+        for f in filename_to_mal:
+            # Skip base names (entries without file extensions)
+            if '.' not in f:
+                continue
+            if f in directory_files or not is_animethemes_stream_file(f):
+                continue
+            non_local_files.append(f)
+        all_files = list(directory_files.keys()) + non_local_files
+    else:
+        all_files = list(directory_files.keys())
+    
+    # deduplicate_versions takes precedence over deduplicate_files
+    if deduplicate_versions:
+        return deduplicate_theme_versions(all_files, keep_versions=False)
+    elif deduplicate_files:
+        return deduplicate_theme_versions(all_files, keep_versions=True)
+    
+    return all_files
+
 def get_pop_time_groups(refetch=False):
     global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map, cached_pop_time_cooldown, cached_skipped_themes, total_infinite_files
     
-    playlist_history = playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]
+    inf_settings = get_infinite_settings()
+    playlist_history = playlist["playlist"][-inf_settings.get("max_history_check", 5000):]
     if refetch or not cached_pop_time_group:
         group_limits = difficulty_ranges[playlist["difficulty"]]
         sorted_groups = [[] for _ in range(3)]
         cached_skipped_themes = []
 
-        directory_options = filter_playlist(playlist["filter"]) if playlist.get("filter") else copy.deepcopy(directory_files)
+        directory_options = filter_playlist(playlist["filter"]) if playlist.get("filter") else get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=inf_settings.get("deduplicate_files", False), deduplicate_versions=inf_settings.get("deduplicate_versions", False))
         total_infinite_files = len(directory_options)
 
         # Preload all metadata once
@@ -4061,7 +5437,6 @@ def get_pop_time_groups(refetch=False):
             clean_f = get_clean_filename(f)
             metadata = get_metadata(clean_f)
             if metadata and metadata.get("mal"):
-                # Include if it's not a lightning round, or if it's from current session
                 if not f.startswith("[L]") or clean_f in current_session_lightning:
                     playlist_mal_history.append(metadata.get("mal"))
 
@@ -4071,7 +5446,7 @@ def get_pop_time_groups(refetch=False):
                 cached_skipped_themes.append(f)
                 continue
             
-            if infinite_settings["group_series"]:
+            if inf_settings["group_series"]:
                 p = get_series_popularity(d)
             else:
                 p = d.get("popularity") or INT_INF
@@ -4079,11 +5454,11 @@ def get_pop_time_groups(refetch=False):
             placed = False
 
             for k, l in enumerate(group_limits):
-                difficulty_group = infinite_settings["difficulty_groups"].get(l)
+                difficulty_group = inf_settings["difficulty_groups"].get(l)
                 if p >= difficulty_group["range"][0] and p <= difficulty_group["range"][1]:
                     boost = 0
                     if mal not in shows_files_map:
-                        boost += (max(0, (d.get("score", 0) or 0) - infinite_settings["score_boost"]["min_score"]) % 0.5) * infinite_settings["score_boost"]["multiplier"]
+                        boost += (max(0, (d.get("score", 0) or 0) - inf_settings["score_boost"]["min_score"]) % 0.5) * inf_settings["score_boost"]["multiplier"]
                         boost += get_boost_multiplier(d.get("season", "Fall 2000"))
                         distance_from_end = 0
                         # More efficient: find exact position and calculate boost directly
@@ -4100,9 +5475,8 @@ def get_pop_time_groups(refetch=False):
                     elif len(shows_files_map[mal]) <= difficulty_group["file_boost_limit"]:
                         boost += 1
 
-                    if infinite_settings["favorites_boost_multiplier"] and check_favorited(f):
-                        boost += infinite_settings["favorites_boost_multiplier"]
-                        # sorted_groups[k].append(f"{f}[EXTRA]")
+                    if inf_settings["favorites_boost_multiplier"] and check_favorited(f):
+                        boost += inf_settings["favorites_boost_multiplier"]
                     
                     sorted_groups[k].extend([f] * int(boost))
                     shows_files_map.setdefault(mal, []).append(f)
@@ -4113,7 +5487,6 @@ def get_pop_time_groups(refetch=False):
             if not placed:
                 cached_skipped_themes.append(f)
         
-        # For random mode, sort all into one group, while keeping the three group structure
         if playlist["difficulty"] == 5:
             sorted_groups = [[sum(sorted_groups, []), [], []], [[],[],[]], [[],[],[]]]
         else:
@@ -4159,8 +5532,8 @@ def get_pop_time_groups(refetch=False):
                     # File not found in history, give maximum boost based on history length
                     distance_from_end = len(playlist_history)
                 file_boost += (distance_from_end // 2000) * (distance_from_end // 2000)
-                if infinite_settings["favorites_boost_multiplier"] and check_favorited(file):
-                    file_boost = file_boost * infinite_settings["favorites_boost_multiplier"]
+                if inf_settings["favorites_boost_multiplier"] and check_favorited(file):
+                    file_boost = file_boost * inf_settings["favorites_boost_multiplier"]
                 boosted_show_files_map.setdefault(mal_id, []).extend([file] * int(file_boost))
         cached_pop_time_cooldown = 0
         cached_boosted_show_files_map = boosted_show_files_map
@@ -4186,9 +5559,9 @@ def get_next_infinite_track(increment=True):
     if not playlist.get("infinite", False):
         return
     
+    inf_settings = get_infinite_settings()
     next_playlist_order(increment)
     groups, shows_files_map = get_pop_time_groups()
-    # Note: compute_cooldowns() was for old discrete system, now using smooth cooldowns
     effective_difficulty_range = difficulty_ranges[playlist["difficulty"]]
     min_s_limit, min_f_limit = base_series_cooldown, base_file_cooldown = get_cooldown_for_popularity(1, effective_difficulty_range, groups)
     s_limit_mod, f_limit_mod = 1, 1
@@ -4203,7 +5576,7 @@ def get_next_infinite_track(increment=True):
     tag_failed_files = []
     max_tag_tries = len(groups[p][t]) // 3
     op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
-    playlist_history = playlist["playlist"][-infinite_settings.get("max_history_check", 5000):]
+    playlist_history = playlist["playlist"][-inf_settings.get("max_history_check", 5000):]
     series_boost_cache = {}
 
     while not selected_file:
@@ -4211,7 +5584,7 @@ def get_next_infinite_track(increment=True):
         if group_ed_count == 0 or (ed_count + op_count) == 0:
             need_op = False
         else:
-            need_op = ((ed_count / (ed_count+op_count)) > infinite_settings["ending_limit_ratio"]) and (group_op_count / (2 * group_ed_count)) > 0.05
+            need_op = ((ed_count / (ed_count+op_count)) > inf_settings["ending_limit_ratio"]) and (group_op_count / (2 * group_ed_count)) > 0.05
 
         if p >= len(groups) or t >= len(groups[p]) or not groups[p][t]:
             if try_count > 18:
@@ -4266,12 +5639,11 @@ def get_next_infinite_track(increment=True):
                 file_boost = get_boost_multiplier(d.get("season", "Fall 2000"))
                 series_boost = get_series_boost_multiplier(series, cache=series_boost_cache)
                 
-                if infinite_settings["tag_cooldown"]:
+                if inf_settings["tag_cooldown"]:
                     # Tag cooldown check - prevent same tags within 3 entries
-                    # Skip check if we've failed too many times (no valid options available)
                     selected_tags = set(get_tags(d))
                     if selected_tags and len(playlist["playlist"]) >= 1 and tag_cooldown_failures < max_tag_tries:
-                        tag_cooldown_limit = infinite_settings["tag_cooldown"]
+                        tag_cooldown_limit = inf_settings["tag_cooldown"]
                         recent_tracks = playlist["playlist"][-tag_cooldown_limit:]
                         
                         for recent_file in reversed(recent_tracks):
@@ -4279,7 +5651,6 @@ def get_next_infinite_track(increment=True):
                             recent_d = get_metadata(clean_recent)
                             recent_tags = set(get_tags(recent_d))
                             
-                            # Check if any tags overlap
                             if selected_tags & recent_tags:  # Set intersection
                                 selected_file = None
                                 tag_cooldown_failures += 1
@@ -4292,7 +5663,6 @@ def get_next_infinite_track(increment=True):
                     if not selected_file:
                         continue
                 if s_limit > 1 or f_limit > 1:
-                    # Get current session lightning tracks for cooldown exclusion
                     current_session_lightning = get_current_session_lightning_tracks()
                     cooldown_count = 0
                     
@@ -4311,7 +5681,6 @@ def get_next_infinite_track(increment=True):
                         if cooldown_count >= max(min_f_limit*f_limit_mod, ((f_limit)/file_boost)):
                             break
                 if selected_file:
-                    # Debug print for selected tracks
                     if False:
                         print(f"🎵 INFINITE TRACK: {selected_file}")
                         print(f"   📊 Popularity Rank: {s_pop} | Simple Calculation")  
@@ -4323,13 +5692,9 @@ def get_next_infinite_track(increment=True):
                         update_current_index(0)
                     else:
                         update_current_index()
-                    # if len(playlist["playlist"]) > infinite_settings.get("max_history_check", 5000):
-                    #     while len(playlist["playlist"]) > infinite_settings.get("max_history_check", 5000):
                     #         playlist["playlist"].pop(0)
                     #         update_current_index(playlist["current_index"]-1)
-                    # else:
                     
-                    # Update list display if playlist is currently shown
                     if list_loaded == "playlist":
                         global current_list_content, current_list_selected
                         current_list_content = convert_playlist_to_dict(playlist["playlist"])
@@ -4355,7 +5720,6 @@ def get_cooldown_for_popularity(popularity_rank, difficulty_range, groups):
     
     # Normalize all cases to 3-group structure [easy, medium, hard]
     if len(series_cooldowns_cache) == 1:
-        # Single group - return the single value for all popularity ranks
         return int(series_cooldowns_cache[0]), int(file_cooldowns_cache[0])
     elif len(series_cooldowns_cache) == 2:
         # Two groups - extend to 3 groups based on difficulty_range
@@ -4399,14 +5763,15 @@ def get_cooldown_for_popularity(popularity_rank, difficulty_range, groups):
     else:
         # Ranks >1000: Smooth transition from hard cooldowns to infinite cooldowns
         # Cap the transition at rank 10000 to avoid infinite scaling
-        max_rank_for_scaling = infinite_settings.get("max_history_check", 10000)
+        inf_settings = get_infinite_settings()
+        max_rank_for_scaling = inf_settings.get("max_history_check", 10000)
         capped_rank = min(popularity_rank, max_rank_for_scaling)
         
         # Calculate progress from rank 1000 to max_rank_for_scaling
         progress = (capped_rank - 1000) / max(max_rank_for_scaling - 1000, 1)  # 0.0 to 1.0
         
         # File cooldown transitions from hard_file to infinite cooldowns
-        file_cooldown = hard_file + (progress * (infinite_settings.get("max_history_check", 10000) - hard_file))
+        file_cooldown = hard_file + (progress * (inf_settings.get("max_history_check", 10000) - hard_file))
         
         # Series cooldown scales proportionately to maintain the same ratio
         # Calculate the ratio of series to file cooldown at the hard tier
@@ -4427,7 +5792,6 @@ def create_virtual_groups_for_random(sorted_groups):
         for subgroup in group:
             all_files_flat.extend(subgroup)
     
-    # print(f"🔄 RANDOM MODE: Creating virtual groups from {len(all_files_flat)} total files")
     
     # Create virtual groups by popularity ranges  
     virtual_groups = [[], [], []]  # easy, medium, hard
@@ -4475,14 +5839,14 @@ def compute_cooldowns(groups, refetch=False):
         series_cooldowns = []
         file_cooldowns = []
 
+        inf_settings = get_infinite_settings()
         difficulty_range = difficulty_ranges[playlist["difficulty"]]
         
-        # Unified handling for all difficulty modes (including random with virtual groups)
         for i, group in enumerate(groups):
             if i >= len(difficulty_range):
                 # Prevent index error
                 continue
-            difficulty_group = infinite_settings["difficulty_groups"][difficulty_range[i]]
+            difficulty_group = inf_settings["difficulty_groups"][difficulty_range[i]]
             all_files = [f for subgroup in group for f in subgroup]
             unique_files = set(f.replace("[EXTRA]", "") for f in all_files)
             file_count = len(unique_files)
@@ -4500,8 +5864,6 @@ def compute_cooldowns(groups, refetch=False):
             series_cooldowns.append(s_cd)
             file_cooldowns.append(f_cd)
                 
-        # print(series_cooldowns)
-        # print(file_cooldowns)
         series_cooldowns_cache, file_cooldowns_cache = series_cooldowns, file_cooldowns
     return series_cooldowns_cache, file_cooldowns_cache
 
@@ -4530,7 +5892,6 @@ def convert_infinity_markers(obj):
             return float('inf')
         elif obj == "__NEG_INFINITY__":
             return float('-inf')
-        # Also handle legacy "inf" string if it exists
         elif obj == "inf":
             return float('inf')
         elif obj == "-inf":
@@ -4546,10 +5907,8 @@ def save_config():
     """Function to save configuration"""
     files_folder = os.path.dirname(CONFIG_FILE)  # Get the folder path
 
-    # Create the folder if it does not exist
     if not os.path.exists(files_folder):
         os.makedirs(files_folder)
-    # Store only diffs for lightning settings to keep config compact
     lightning_diff = compute_settings_diff(lightning_mode_settings_default, lightning_mode_settings) or {}
     compact_saved = {}
     for name, settings in saved_lightning_mode_settings.items():
@@ -4558,7 +5917,6 @@ def save_config():
         diff = compute_settings_diff(lightning_mode_settings_default, full)
         compact_saved[name] = diff if diff is not None else {}
     
-    # Store only diffs for infinite settings to keep config compact
     infinite_diff = compute_settings_diff(INFINITE_SETTINGS_DEFAULT, infinite_settings) or {}
     # Convert infinities in the diff before saving
     infinite_diff = convert_infinities_to_markers(infinite_diff)
@@ -4592,6 +5950,7 @@ def save_config():
         "selected_rules_file": selected_rules_file,
         "youtube_api_key": YOUTUBE_API_KEY,
         "openai_api_key": OPENAI_API_KEY,
+        "serpapi_key": SERPAPI_KEY,
         "title_top_info_txt": title_top_info_txt,
         "end_session_txt": end_session_txt,
         "directory": directory,
@@ -4602,8 +5961,16 @@ def save_config():
         "selected_infinite_settings": selected_infinite_settings,
         "saved_infinite_settings": compact_saved_infinite,
         "playlist": playlist,
-        "directory_files": directory_files
+        "directory_files": directory_files,
+        "metadata_last_updated": metadata_last_updated,
+        "censors_last_updated": censors_last_updated
     }
+    
+    # Convert infinities in playlist's infinite_settings before saving
+    if playlist.get("infinite_settings"):
+        config["playlist"] = copy.deepcopy(playlist)
+        config["playlist"]["infinite_settings"] = convert_infinities_to_markers(config["playlist"]["infinite_settings"])
+    
     update_current_index(save = False)
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4, allow_nan=False)
@@ -4611,6 +5978,7 @@ def save_config():
 def load_config():
     """Function to load configuration"""
     global directory_files, directory, playlist, title_top_info_txt, end_session_txt, host, YOUTUBE_API_KEY, OPENAI_API_KEY
+    global SERPAPI_KEY, metadata_last_updated, censors_last_updated
     global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings, bonus_points
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
@@ -4626,13 +5994,13 @@ def load_config():
             title_top_info_txt = config.get("title_top_info_txt", "")
             end_session_txt = config.get("end_session_txt", "")
             playlist = config.get("playlist", copy.deepcopy(BLANK_PLAYLIST))
-            # Ensure backward compatibility for background_track_history
             if "background_track_history" not in playlist:
                 playlist["background_track_history"] = []
             directory_files = config.get("directory_files", {})
-            directory = config.get("directory", "")
+            directory = config.get("directory", "themes")
             YOUTUBE_API_KEY = config.get("youtube_api_key", "")
             OPENAI_API_KEY = config.get("openai_api_key", "")
+            SERPAPI_KEY = config.get("serpapi_key", "")
             selected_rules_file = config.get("selected_rules_file", "rules.json")
             scoreboard_rules = load_rules(selected_rules_file)
             set_rules()
@@ -4687,7 +6055,6 @@ def load_config():
             elif selected_light_mode_settings in saved_lightning_mode_settings:
                 lightning_mode_settings = update_lightning_mode_settings(saved_lightning_mode_settings[selected_light_mode_settings])
             
-            # Load selected infinite preset if exists
             if selected_infinite_settings and selected_infinite_settings in saved_infinite_settings:
                 infinite_settings.clear()
                 infinite_settings.update(sync_with_default(copy.deepcopy(saved_infinite_settings[selected_infinite_settings]), INFINITE_SETTINGS_DEFAULT))
@@ -4710,7 +6077,8 @@ def load_config():
             INVERSE_OVERLAY_TEXT_COLOR = config.get("back_color", "black")
             MIDDLE_OVERLAY_BACKGROUND_COLOR = interpolate_color(OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, 0.6)
             send_scoreboard_colors()
-            # send_scoreboard_align()
+            metadata_last_updated = config.get("metadata_last_updated", 0)
+            censors_last_updated = config.get("censors_last_updated", 0)
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -4745,7 +6113,6 @@ def interpolate_color(color1, color2, factor=0.3):
 def color_to_rgb(color):
     """Convert any color (hex, name, etc.) to RGB tuple using tkinter"""
     try:
-        # Create a temporary root window if needed
         temp_root = None
         if 'root' not in globals() or root is None:
             temp_root = tk.Tk()
@@ -4760,7 +6127,6 @@ def color_to_rgb(color):
         rgb_16bit = temp_widget.winfo_rgb(color)
         temp_widget.destroy()
         
-        # Clean up temporary root if we created one
         if temp_root:
             temp_root.destroy()
             
@@ -4776,7 +6142,6 @@ def color_to_rgb(color):
                 return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
             except (ValueError, IndexError):
                 pass
-        # Default to gray if all else fails
         return (128, 128, 128)
 
 def rgb_to_hex(rgb):
@@ -4788,7 +6153,7 @@ def show_settings_popup():
     """Opens a settings popup for editing configuration values."""
     global settings_window
     global volume_level, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
-    global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, selected_rules_file, scoreboard_rules
+    global YOUTUBE_API_KEY, OPENAI_API_KEY, SERPAPI_KEY, title_top_info_txt, end_session_txt, selected_rules_file, scoreboard_rules
     global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
 
     if settings_window and settings_window.winfo_exists():
@@ -4803,7 +6168,6 @@ def show_settings_popup():
         if not color:
             return False
         
-        # Check if it's a valid hex color (3 or 6 digits)
         if color.startswith('#'):
             hex_part = color[1:]
             if len(hex_part) == 3 or len(hex_part) == 6:
@@ -4814,7 +6178,6 @@ def show_settings_popup():
                     return False
             return False
         
-        # Test if it's a valid color name by trying to create a temporary widget
         try:
             test_frame = tk.Frame(settings_window, bg=color)
             test_frame.destroy()  # Clean up immediately
@@ -4868,7 +6231,6 @@ def show_settings_popup():
         if not confirm:
             return
         
-        # Remove from global color options
         if current_color in OVERLAY_COLOR_OPTIONS:
             OVERLAY_COLOR_OPTIONS.remove(current_color)
             
@@ -4876,20 +6238,19 @@ def show_settings_popup():
             back_color_dropdown['values'] = OVERLAY_COLOR_OPTIONS
             text_color_dropdown['values'] = OVERLAY_COLOR_OPTIONS
             
-            # Reset to default color if the deleted color was selected
             color_var.set("black")
     
     def save_settings():
         """Save all settings with visual feedback"""
         global volume_level, stream_volume_boost, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
-        global YOUTUBE_API_KEY, OPENAI_API_KEY, title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
+        global YOUTUBE_API_KEY, OPENAI_API_KEY, SERPAPI_KEY, serpapi_limited, serpapi_limited_count
+        global title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
         global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
         
         try:
             # Capture original scale_main_ui value to detect changes
             original_scale_main_ui = scale_main_ui
             
-            # Update global variables
             volume_level = int(volume_var.get())
             stream_volume_boost = int(stream_volume_var.get())
             skip_play_seconds = max(0, float(skip_play_seconds_var.get()))
@@ -4909,23 +6270,25 @@ def show_settings_popup():
             scoreboard_rules = load_rules(selected_rules_file)
             YOUTUBE_API_KEY = youtube_key_var.get()
             OPENAI_API_KEY = openai_key_var.get()
+            new_serpapi_key = serpapi_key_var.get()
+            if new_serpapi_key != SERPAPI_KEY:
+                serpapi_limited = False
+                serpapi_limited_count = 0
+            SERPAPI_KEY = new_serpapi_key
             title_top_info_txt = title_info_var.get()
             end_session_txt = end_session_var.get()
             
-            # Check if scale_main_ui changed
             scale_ui_changed = (original_scale_main_ui != scale_main_ui)
             
             # Save to config file
             save_config()
             
-            # Reload config to update all dependent global variables and UI elements
             load_config()
             
             # Show visual feedback on button
             save_btn.config(text="SAVED!", bg="darkgreen")
             settings_window.after(300, lambda: save_btn.config(text="SAVE SETTINGS", bg="black"))
             
-            # Show restart dialog if scale_main_ui changed
             if scale_ui_changed:
                 messagebox.showinfo("Restart Required", 
                                    "The 'Scale Main UI' setting has been changed.\n\n"
@@ -4954,7 +6317,6 @@ def show_settings_popup():
     except tk.TclError:
         pass
     
-    # Tooltip class for hover explanations
     class ToolTip:
         def __init__(self, widget, text):
             self.widget = widget
@@ -5002,6 +6364,8 @@ def show_settings_popup():
         "Rules File": "Select which rules file to use for the scoreboard. Files must end with 'rules.json'.",
         "YouTube API Key": "API key for YouTube integration features. Required for Clip and Ost lightning rounds.",
         "OpenAI API Key": "API key for OpenAI/ChatGPT integration features. Required for Trivia and Emoji lightning rounds.",
+        "Google CSE API Key": "API key for Google Custom Search JSON API. Required for Image lightning rounds.",
+        "Google CSE ID": "Custom Search Engine ID (cx). Required for Image lightning rounds.",
         "Title Only Info Text": "Custom text displayed above title when showing title-only information.",
         "End Session Text": "Custom text displayed at the top of the end session display."
     }
@@ -5219,6 +6583,16 @@ def show_settings_popup():
     openai_key_var = tk.StringVar(value=OPENAI_API_KEY)
     openai_key_entry = tk.Entry(openai_key_frame, textvariable=openai_key_var, bg="black", fg="white", width=30, show="*")
     openai_key_entry.pack(side="left", padx=(5, 0))
+
+    # SerpAPI Key
+    serpapi_key_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    serpapi_key_frame.pack(fill="x", pady=5)
+    serpapi_key_label = tk.Label(serpapi_key_frame, text="SerpAPI Key:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    serpapi_key_label.pack(side="left")
+    ToolTip(serpapi_key_label, setting_descriptions.get("SerpAPI Key", "SerpAPI key for Image lightning round (serpapi.com)"))
+    serpapi_key_var = tk.StringVar(value=SERPAPI_KEY)
+    serpapi_key_entry = tk.Entry(serpapi_key_frame, textvariable=serpapi_key_var, bg="black", fg="white", width=30, show="*")
+    serpapi_key_entry.pack(side="left", padx=(5, 0))
     
     # Title Top Info Text
     title_info_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -5260,58 +6634,129 @@ def update_playlist_name(name=None):
         extra_text = " ∞"
     root.title(f"[{get_themes_played_count()}] {WINDOW_TITLE} - {playlist["name"]}{extra_text}")
 
-def save_metadata():
-    """Ensures the metadata folder exists before saving metadata files."""
-    metadata_folder = os.path.dirname(FILE_METADATA_FILE)  # Get the folder path
+def save_metadata_atomic(filepath, data, encoding=None, ensure_ascii=True):
+    """Atomically save JSON data to prevent corruption on crash."""
+    
+    metadata_folder = os.path.dirname(filepath)
+    if not os.path.exists(metadata_folder):
+        os.makedirs(metadata_folder)
+    
+    # Write to temp file first
+    fd, temp_path = tempfile.mkstemp(dir=metadata_folder, suffix='.json', text=True)
+    try:
+        with os.fdopen(fd, 'w', encoding=encoding) as f:
+            json.dump(data, f, indent=4, ensure_ascii=ensure_ascii)
+        # Atomic rename (overwrites existing file safely)
+        os.replace(temp_path, filepath)
+    except Exception as e:
+        # Clean up temp file on error
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+        raise e
 
-    # Create the folder if it does not exist
+def save_metadata_compressed(filepath, data, encoding='utf-8', ensure_ascii=True):
+    """Save metadata with compressed version, and readable version only if it already exists."""
+    
+    if os.path.exists(filepath):
+        save_metadata_atomic(filepath, data, encoding=encoding, ensure_ascii=ensure_ascii)
+    
+    try:
+        metadata_folder = os.path.dirname(filepath)
+        if not os.path.exists(metadata_folder):
+            os.makedirs(metadata_folder)
+            
+        # Create temp file with .gz extension
+        fd, temp_path = tempfile.mkstemp(dir=metadata_folder, suffix='.json.gz')
+        
+        try:
+            # Use GzipFile to set the correct filename in gzip header
+            with gzip.GzipFile(filename=os.path.basename(filepath), fileobj=os.fdopen(fd, 'wb'), mode='wb') as gz_file:
+                json_str = json.dumps(data, ensure_ascii=ensure_ascii, indent=4)
+                gz_file.write(json_str.encode(encoding))
+            # Atomic rename
+            os.replace(temp_path, filepath + '.gz')
+        except Exception as e:
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            raise e
+    except Exception as e:
+        pass  # Compression is optional optimization
+
+def save_metadata():
+    """Ensures the metadata folder exists before saving metadata files with atomic writes and compression."""
+    metadata_folder = os.path.dirname(FILE_METADATA_FILE)
     if not os.path.exists(metadata_folder):
         os.makedirs(metadata_folder)
 
-    # Save metadata files
-    with open(FILE_METADATA_FILE, "w") as f:
-        json.dump(file_metadata, f, indent=4)  # Pretty-print for readability
-
-    deep_merge(anime_metadata, anime_metadata_overrides)
-    with open(ANIME_METADATA_FILE, "w") as f:
-        json.dump(anime_metadata, f, indent=4)
-
-    with open(ANIDB_METADATA_FILE, "w") as f:
-        json.dump(anidb_metadata, f, indent=4)
+    save_metadata_compressed(FILE_METADATA_FILE, file_metadata)
     
-    with open(AI_METADATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(ai_metadata, f, indent=4, ensure_ascii=False)
+    deep_merge(anime_metadata, anime_metadata_overrides)
+    save_metadata_compressed(ANIME_METADATA_FILE, anime_metadata)
+    save_metadata_compressed(ANIDB_METADATA_FILE, anidb_metadata)
+    save_metadata_compressed(AI_METADATA_FILE, ai_metadata, encoding="utf-8", ensure_ascii=False)
+    save_metadata_compressed(ANILIST_METADATA_FILE, anilist_metadata, encoding="utf-8", ensure_ascii=False)
 
 def save_metadata_overrides():
-    with open(ANIME_METADATA_OVERRIDES_FILE, "w") as f:
-        json.dump(anime_metadata_overrides, f, indent=4)
+    save_metadata_compressed(ANIME_METADATA_OVERRIDES_FILE, anime_metadata_overrides)
+
+def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
+    """Load metadata from compressed version first, fallback to regular file."""
+    
+    if os.path.exists(filepath + '.gz'):
+        try:
+            with gzip.open(filepath + '.gz', 'rt', encoding=encoding) as f:
+                return json.load(f), True
+        except Exception as e:
+            print(f"Warning: Failed to load compressed {name}: {e}")
+    
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding=encoding) as f:
+            return json.load(f), False
+    
+    return None, False
 
 def load_metadata():
-    global file_metadata, anime_metadata, anidb_metadata, anime_metadata_overrides, ai_metadata
-    if os.path.exists(FILE_METADATA_FILE):
-        with open(FILE_METADATA_FILE, "r") as f:
-            file_metadata = json.load(f)
-            invalidate_file_metadata_cache()  # Invalidate cache when file_metadata is loaded
-            print("Loaded file metadata for " + str(len(file_metadata)) + " files...")
-    if os.path.exists(ANIME_METADATA_FILE):
-        with open(ANIME_METADATA_FILE, "r") as a:
-            anime_metadata = json.load(a)
-            print("Loaded anime metadata for " + str(len(anime_metadata)) + " entries...")
-    if os.path.exists(ANIDB_METADATA_FILE):
-        with open(ANIDB_METADATA_FILE, "r") as a:
-            anidb_metadata = json.load(a)
-            print("Loaded anidb metadata for " + str(len(anidb_metadata)) + " entries...")
-    else:
-        split_anime_anidb_metadata()
+    global file_metadata, anime_metadata, anidb_metadata, anime_metadata_overrides, ai_metadata, anilist_metadata
     
-    if os.path.exists(AI_METADATA_FILE):
-        with open(AI_METADATA_FILE, "r", encoding="utf-8") as f:
-            ai_metadata = json.load(f)
-            # Clean up compound emojis when loading
-            for mal_id, data in ai_metadata.items():
-                if "emojis" in data:
-                    data["emojis"] = clean_compound_emojis(data["emojis"])
-            print(f"Loaded AI metadata for {len(ai_metadata)} entries.")
+    # Load file_metadata (with custom dict class)
+    data, is_compressed = load_metadata_compressed(FILE_METADATA_FILE, name="file metadata")
+    if data is not None:
+        file_metadata = FileMetadataDict(data)
+        suffix = " (compressed)" if is_compressed else ""
+        file_count = build_filename_to_mal_map()
+        print("Loaded file metadata for " + str(len(file_metadata)) + " entries and " + str(file_count) + " files..." + suffix)
+    
+    # Load anime_metadata
+    data, is_compressed = load_metadata_compressed(ANIME_METADATA_FILE, name="anime metadata")
+    if data is not None:
+        anime_metadata = data
+        suffix = " (compressed)" if is_compressed else ""
+        print("Loaded anime metadata for " + str(len(anime_metadata)) + " entries..." + suffix)
+    
+    # Load anidb_metadata
+    data, is_compressed = load_metadata_compressed(ANIDB_METADATA_FILE, name="anidb metadata")
+    if data is not None:
+        anidb_metadata = data
+        suffix = " (compressed)" if is_compressed else ""
+        print("Loaded anidb metadata for " + str(len(anidb_metadata)) + " entries..." + suffix)
+    
+    # Load ai_metadata
+    data, is_compressed = load_metadata_compressed(AI_METADATA_FILE, encoding="utf-8", name="AI metadata")
+    if data is not None:
+        ai_metadata = data
+        suffix = " (compressed)" if is_compressed else ""
+        print(f"Loaded AI metadata for {len(ai_metadata)} entries.{suffix}")
+    
+    # Load anilist_metadata
+    data, is_compressed = load_metadata_compressed(ANILIST_METADATA_FILE, encoding="utf-8", name="AniList metadata")
+    if data is not None:
+        anilist_metadata = data
+        suffix = " (compressed)" if is_compressed else ""
+        print(f"Loaded AniList metadata for {len(anilist_metadata)} entries.{suffix}")
 
     if os.path.exists(manual_metadata_file):
         with open(manual_metadata_file, "r", encoding="utf-8") as m:
@@ -5325,29 +6770,463 @@ def load_metadata():
                     anime_metadata[entry]["season"] = aired_to_season_year(anime_metadata[entry].get("release"))
                 anime_metadata[entry]["popularity"] = estimate_manual_popularity(anime_metadata[entry].get("members"))
                 anime_metadata[entry]["rank"] = estimate_manual_rank(anime_metadata[entry].get("score"))
-    if os.path.exists(ANIME_METADATA_OVERRIDES_FILE):
-        with open(ANIME_METADATA_OVERRIDES_FILE, "r") as a:
-            anime_metadata_overrides = json.load(a)
-            print("Loaded metadata overrides for " + str(len(anime_metadata_overrides)) + " entries...")
-            deep_merge(anime_metadata, anime_metadata_overrides)
+    # Load anime_metadata_overrides
+    data, is_compressed = load_metadata_compressed(ANIME_METADATA_OVERRIDES_FILE, name="metadata overrides")
+    if data is not None:
+        anime_metadata_overrides = data
+        suffix = " (compressed)" if is_compressed else ""
+        print("Loaded metadata overrides for " + str(len(anime_metadata_overrides)) + " entries..." + suffix)
+        deep_merge(anime_metadata, anime_metadata_overrides)
 
-def split_anime_anidb_metadata():
-    global anime_metadata, anidb_metadata
+# Import data package URL - modify this to point to your exported metadata package
+IMPORT_PACKAGE_URL = "https://github.com/ualkotob/guess-the-anime-playlist-tool/releases/download/data-latest/metadata_package.zip"
+IMPORT_CENSORS_URL = "https://github.com/ualkotob/guess-the-anime-playlist-tool/releases/download/data-latest/ramun_censors.json"
+LOCAL_METADATA_PACKAGE = "metadata/metadata_package.zip"
 
-    for file, data in file_metadata.items():
-        if data.get("anidb"):
-            anime_data = anime_metadata.get(data.get("mal"))
-            if anime_data:
-                anidb_data = {}
-                for field in ["characters", "episode_info","tags"]:
-                    if anime_data.get(field):
-                        anidb_data[field] = anime_data.get(field)
-                    if field in anime_metadata[data.get("mal")]:
-                        del anime_metadata[data.get("mal")][field]
-                if anidb_data:
-                    anidb_metadata[data.get("anidb")] = anidb_data
-    save_metadata()
+# Track when metadata was last updated (Unix timestamp)
+metadata_last_updated = 0
+censors_last_updated = 0
 
+def check_for_metadata_updates():
+    """Check if newer metadata is available on GitHub and prompt user to download."""
+    global metadata_last_updated
+    try:
+        # Do a HEAD request to get Last-Modified header without downloading
+        response = requests.head(IMPORT_PACKAGE_URL, timeout=5, allow_redirects=True)
+        if response.status_code == 200:
+            last_modified = response.headers.get('Last-Modified')
+            if last_modified:
+                # Parse Last-Modified to Unix timestamp
+                from email.utils import parsedate_to_datetime
+                remote_timestamp = int(parsedate_to_datetime(last_modified).timestamp())
+                
+                # Only prompt if remote is newer than local
+                if remote_timestamp > metadata_last_updated:
+                    # Format date for display
+                    from datetime import datetime
+                    date_str = datetime.fromtimestamp(remote_timestamp).strftime('%Y-%m-%d')
+                    result = messagebox.askyesno(
+                        "Metadata Update Available",
+                        f"New metadata is available (updated {date_str}).\n\n"
+                        f"Would you like to download and import it now?\n\n"
+                        f"This will merge the latest data with your existing metadata."
+                    )
+                    if result:
+                        import_data_from_source(prompt=False)
+                    else:
+                        # User declined - update timestamp so they don't get asked again until next update
+                        metadata_last_updated = remote_timestamp
+                        save_config()
+    except Exception as e:
+        # Silently fail - don't bother user if check fails
+        print(f"Could not check for metadata updates: {e}")
+
+def check_for_censor_updates():
+    """Check if newer censors are available on GitHub and prompt user to download."""
+    global censors_last_updated
+    
+    # Check if ramun_censors.json doesn't exist AND last_updated is not 0
+    # If both conditions are true, skip the check (no file and never checked before)
+    ramun_censors_file = "files/ramun_censors.json"
+    if not os.path.exists(ramun_censors_file) and censors_last_updated != 0:
+        return
+    
+    try:
+        # Do a HEAD request to get Last-Modified header without downloading
+        response = requests.head(IMPORT_CENSORS_URL, timeout=5, allow_redirects=True)
+        if response.status_code == 200:
+            last_modified = response.headers.get('Last-Modified')
+            if last_modified:
+                # Parse Last-Modified to Unix timestamp
+                from email.utils import parsedate_to_datetime
+                remote_timestamp = int(parsedate_to_datetime(last_modified).timestamp())
+                
+                # Only prompt if remote is newer than local
+                if remote_timestamp > censors_last_updated:
+                    # Format date for display
+                    from datetime import datetime
+                    date_str = datetime.fromtimestamp(remote_timestamp).strftime('%Y-%m-%d')
+                    result = messagebox.askyesno(
+                        "Censor Update Available",
+                        f"New censors are available (updated {date_str}).\n\n"
+                        f"Would you like to download and import them now?\n\n"
+                        f"This will save as 'ramun_censors.json' in your files folder."
+                    )
+                    if result:
+                        import_censors(prompt=False)
+                    else:
+                        # User declined - update timestamp so they don't get asked again until next update
+                        censors_last_updated = remote_timestamp
+                        save_config()
+    except Exception as e:
+        # Silently fail - don't bother user if check fails
+        print(f"Could not check for censor updates: {e}")
+
+def check_for_local_metadata_package():
+    """Check if metadata package exists locally and prompt user to import it."""
+    if os.path.exists(LOCAL_METADATA_PACKAGE):
+        response = messagebox.askyesno(
+            "Metadata Package Found",
+            f"Found metadata package in:\n{LOCAL_METADATA_PACKAGE}\n\n"
+            "Would you like to import and merge this metadata now?\n\n"
+            "Note: The package will be deleted after successful import."
+        )
+        
+        if response:
+            import_data_from_package(LOCAL_METADATA_PACKAGE, is_local=True, prompt=False)
+
+def export_metadata_package():
+    """Export all metadata files into a consolidated zip package."""
+    try:
+        # Ask where to save the package
+        export_path = filedialog.asksaveasfilename(
+            title="Export Metadata Package",
+            defaultextension=".zip",
+            filetypes=[("ZIP files", "*.zip"), ("All files", "*.*")],
+            initialfile="metadata_package.zip"
+        )
+        
+        if not export_path:
+            return  # User cancelled
+        
+        # List of files to include in package
+        files_to_export = [
+            (FILE_METADATA_FILE, "metadata/file_metadata.json"),
+            (ANIME_METADATA_FILE, "metadata/anime_metadata.json"),
+            (ANIDB_METADATA_FILE, "metadata/anidb_metadata.json"),
+            (AI_METADATA_FILE, "metadata/ai_metadata.json"),
+            (ANILIST_METADATA_FILE, "metadata/anilist_metadata.json"),
+            (ANIME_METADATA_OVERRIDES_FILE, "metadata/anime_metadata_overrides.json"),
+        ]
+        
+        # Check for .gz versions first
+        files_found = []
+        files_missing = []
+        
+        for source_file, zip_path in files_to_export:
+            if os.path.exists(source_file + '.gz'):
+                files_found.append((source_file + '.gz', zip_path + '.gz'))
+            elif os.path.exists(source_file):
+                files_found.append((source_file, zip_path))
+            else:
+                files_missing.append(source_file)
+        
+        if not files_found:
+            messagebox.showerror("Export Error", "No metadata files found to export!")
+            return
+        
+        # Create the zip package
+        with zipfile.ZipFile(export_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for source_file, zip_path in files_found:
+                zipf.write(source_file, zip_path)
+        
+        # Show success message
+        message = f"Successfully exported {len(files_found)} file(s) to:\n{export_path}"
+        if files_missing:
+            message += f"\n\nNote: {len(files_missing)} file(s) were not found and skipped."
+        
+        messagebox.showinfo("Export Complete", message)
+        
+        # Open the folder containing the export
+        folder = os.path.dirname(export_path)
+        if platform.system() == "Windows":
+            os.startfile(folder)
+        
+    except Exception as e:
+        messagebox.showerror("Export Error", f"Failed to export metadata package:\n\n{e}")
+
+def import_censors(prompt=True):
+    """Import censors from remote source and replace existing file."""
+    # Ask for confirmation
+    if prompt:
+        confirm = messagebox.askyesno(
+            "Import Ramun's Censors",
+            f"This will download the latest censors from:\n{IMPORT_CENSORS_URL}\n\n"
+            f"This will be saved as 'ramun_censors.json' in your files folder.\n\n"
+            "Continue?"
+        )
+        
+        if not confirm:
+            return
+    
+    import_window = tk.Toplevel()
+    import_window.title("Importing Censors...")
+    import_window.configure(bg="black")
+    import_window.geometry("400x150")
+    
+    # Position at root window location
+    root.update_idletasks()
+    x = root.winfo_x() + 200
+    y = root.winfo_y() + 200
+    import_window.geometry(f"+{x}+{y}")
+    
+    # Status label
+    status_label = tk.Label(import_window, text="Downloading censors...", 
+                           font=("Arial", 12), bg="black", fg="yellow")
+    status_label.pack(pady=40)
+    
+    def do_import():
+        """Perform the actual import operation."""
+        global censor_list, censors_last_updated
+        
+        try:
+            status_label.config(text="Downloading censors...", fg="yellow")
+            import_window.update()
+            
+            response = requests.get(IMPORT_CENSORS_URL, timeout=60)
+            response.raise_for_status()
+            
+            status_label.config(text="Saving censors...", fg="yellow")
+            import_window.update()
+            
+            # Parse the downloaded JSON
+            new_censors = response.json()
+            
+            # Ensure the files folder exists
+            ramun_censors_file = "files/ramun_censors.json"
+            folder = os.path.dirname(ramun_censors_file)
+            if not os.path.exists(folder):
+                os.makedirs(folder)
+            
+            # Replace the existing file
+            with open(ramun_censors_file, "w") as f:
+                json.dump(new_censors, f, indent=4)
+            
+            # Update the global censor_list
+            censor_list = new_censors
+            
+            status_label.config(text="Complete!", fg="green")
+            import_window.update()
+            
+            # Update timestamp
+            try:
+                last_modified = response.headers.get('Last-Modified')
+                if last_modified:
+                    from email.utils import parsedate_to_datetime
+                    censors_last_updated = int(parsedate_to_datetime(last_modified).timestamp())
+                else:
+                    censors_last_updated = int(time.time())
+            except:
+                censors_last_updated = int(time.time())
+            save_config()
+            
+            messagebox.showinfo(
+                "Import Complete", 
+                f"Successfully imported {len(new_censors)} censored file(s).\n\n"
+                f"Censors have been saved to:\nfiles/ramun_censors.json"
+            )
+            import_window.destroy()
+            update_censor_button_count()
+            
+        except requests.exceptions.RequestException as e:
+            status_label.config(text="Download failed!", fg="red")
+            messagebox.showerror("Download Error", f"Failed to download censors:\n\n{e}")
+        except json.JSONDecodeError as e:
+            status_label.config(text="Invalid JSON!", fg="red")
+            messagebox.showerror("Parse Error", f"Downloaded file is not valid JSON:\n\n{e}")
+        except Exception as e:
+            status_label.config(text="Import failed!", fg="red")
+            messagebox.showerror("Import Error", f"Failed to import censors:\n\n{e}")
+    
+    # Start import in a thread
+    import threading
+    thread = threading.Thread(target=do_import, daemon=True)
+    thread.start()
+
+def import_data_from_source(prompt=True):
+    """Import metadata from remote package."""
+    import_data_from_package(IMPORT_PACKAGE_URL, is_local=False, prompt=prompt)
+
+def import_data_from_package(source, is_local=False, prompt=True):
+    """Import metadata from a package (URL or local file)."""
+    # Ask for confirmation
+    source_text = f"local file:\n{source}" if is_local else f"remote source:\n{source}"
+    delete_text = "\n\nNote: The local file will be deleted after successful import." if is_local else ""
+    
+    if prompt:
+        confirm = messagebox.askyesno(
+            "Import Metadata Package",
+            f"This will download and merge metadata from {source_text}\n\n"
+            f"All metadata files (anime, anidb, ai, anilist) will be merged with your existing data.{delete_text}\n\n"
+            "Continue?"
+        )
+        
+        if not confirm:
+            return
+    
+    import_window = tk.Toplevel()
+    import_window.title("Importing...")
+    import_window.configure(bg="black")
+    import_window.geometry("400x150")
+    
+    # Position at root window location
+    root.update_idletasks()
+    x = root.winfo_x() + 200
+    y = root.winfo_y() + 200
+    import_window.geometry(f"+{x}+{y}")
+    
+    # Status label
+    status_label = tk.Label(import_window, text="Starting import...", 
+                           font=("Arial", 12), bg="black", fg="yellow")
+    status_label.pack(pady=40)
+    
+    def do_import():
+        """Perform the actual import operation."""
+        global anime_metadata, anidb_metadata, ai_metadata, anilist_metadata
+        
+        imported_items = []
+        errors = []
+        temp_dir = None
+        package_deleted = False
+        
+        try:
+            # Get the zip package (download or use local file)
+            if is_local:
+                status_label.config(text="Loading local package...", fg="yellow")
+                import_window.update()
+                zip_path = os.path.abspath(source)
+                if not os.path.exists(zip_path):
+                    raise FileNotFoundError(f"Local package not found: {zip_path}")
+                temp_dir = tempfile.mkdtemp()
+            else:
+                status_label.config(text="Downloading package...", fg="yellow")
+                import_window.update()
+                response = requests.get(source, timeout=60)
+                response.raise_for_status()
+                temp_dir = tempfile.mkdtemp()
+                zip_path = os.path.join(temp_dir, "metadata_package.zip")
+                with open(zip_path, 'wb') as f:
+                    f.write(response.content)
+            
+            status_label.config(text="Extracting package...")
+            import_window.update()
+            
+            # Extract the zip
+            with zipfile.ZipFile(zip_path, 'r') as zipf:
+                zipf.extractall(temp_dir)
+            
+            # Import metadata files
+            metadata_files = [
+                ('metadata/file_metadata.json', 'file_metadata', lambda d: file_metadata),
+                ('metadata/anime_metadata.json', 'anime_metadata', lambda d: anime_metadata),
+                ('metadata/anidb_metadata.json', 'anidb_metadata', lambda d: anidb_metadata),
+                ('metadata/ai_metadata.json', 'ai_metadata', lambda d: ai_metadata),
+                ('metadata/anilist_metadata.json', 'anilist_metadata', lambda d: anilist_metadata),
+            ]
+            
+            for file_path, name, get_dict in metadata_files:
+                try:
+                    status_label.config(text=f"Importing {name}...")
+                    import_window.update()
+                    
+                    # Check for .gz version first
+                    full_path = os.path.join(temp_dir, file_path)
+                    gz_path = full_path + '.gz'
+                    
+                    if os.path.exists(gz_path):
+                        with gzip.open(gz_path, 'rt', encoding='utf-8') as f:
+                            imported_data = json.load(f)
+                    elif os.path.exists(full_path):
+                        with open(full_path, 'r', encoding='utf-8') as f:
+                            imported_data = json.load(f)
+                    else:
+                        continue  # File not in package, skip
+                    
+                    # Merge with existing data
+                    current_dict = get_dict(None)
+                    count = 0
+                    for key, value in imported_data.items():
+                        if key not in current_dict:
+                            count += 1
+                        current_dict[key] = value
+                    
+                    # Update the global variable based on which file it is
+                    if name == 'file_metadata':
+                        file_metadata.update(imported_data)
+                    elif name == 'anime_metadata':
+                        anime_metadata.update(imported_data)
+                    elif name == 'anidb_metadata':
+                        anidb_metadata.update(imported_data)
+                    elif name == 'ai_metadata':
+                        ai_metadata.update(imported_data)
+                    elif name == 'anilist_metadata':
+                        anilist_metadata.update(imported_data)
+                    
+                    imported_items.append(f"{name}: {len(imported_data)} entries ({count} new)")
+                    
+                except Exception as e:
+                    errors.append(f"Failed to import {name}: {e}")
+            
+            # Save all metadata
+            if imported_items:
+                save_metadata()
+                # Reload metadata and refresh directory to show imported data
+                load_metadata()
+                scan_directory()
+                if list_loaded == "playlist":
+                    reload_playlist(True)
+            
+        except requests.exceptions.RequestException as e:
+            errors.append(f"Failed to download package: {e}")
+        except zipfile.BadZipFile:
+            errors.append("Invalid zip file")
+        except Exception as e:
+            errors.append(f"Error during import: {e}")
+        finally:
+            # Clean up temp directory
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+        
+        # Show results
+        if imported_items and not errors:
+            # Delete local package if import was successful
+            if is_local and not package_deleted:
+                try:
+                    os.remove(source)
+                    package_deleted = True
+                    print(f"Deleted local metadata package: {source}")
+                except Exception as e:
+                    print(f"Could not delete local package: {e}")
+            
+            status_label.config(text="Import completed successfully!", fg="green")
+            result_msg = "Successfully imported:\n\n" + "\n".join(imported_items)
+            if is_local and package_deleted:
+                result_msg += "\n\nLocal package has been deleted."
+            messagebox.showinfo("Import Complete", result_msg)
+            import_window.destroy()
+            
+            # Update metadata timestamp after successful import
+            global metadata_last_updated
+            if is_local:
+                # For local imports, use current time
+                metadata_last_updated = int(time.time())
+            else:
+                # For remote imports, use Last-Modified from the response we already have
+                try:
+                    last_modified = response.headers.get('Last-Modified')
+                    if last_modified:
+                        from email.utils import parsedate_to_datetime
+                        metadata_last_updated = int(parsedate_to_datetime(last_modified).timestamp())
+                    else:
+                        metadata_last_updated = int(time.time())
+                except:
+                    metadata_last_updated = int(time.time())
+            save_config()
+        elif errors:
+            status_label.config(text="Import completed with errors", fg="red")
+            error_msg = "Import completed with the following errors:\n\n" + "\n\n".join(errors)
+            if imported_items:
+                error_msg += "\n\nSuccessfully imported:\n" + "\n".join(imported_items)
+            messagebox.showerror("Import Errors", error_msg)
+        else:
+            status_label.config(text="Ready", fg="white")
+    
+    # Start import in thread to keep UI responsive
+    import_thread = threading.Thread(target=do_import, daemon=True)
+    import_thread.start()
 
 REVIEW_MODIFIER = 500
 def estimate_manual_popularity(members):
@@ -5436,7 +7315,6 @@ def save_playlist(playlist, index, parent, autosave):
     if autosave:
         name = playlist["name"]
     else:
-        # Ask for a playlist name
         name = simpledialog.askstring("Save Playlist", "Enter playlist name:", initialvalue=playlist["name"], parent=parent)
         if not name:
             return  # User canceled
@@ -5446,8 +7324,13 @@ def save_playlist(playlist, index, parent, autosave):
     filename = os.path.join(PLAYLISTS_FOLDER, f"{name}.json")
 
     # Save playlist data
+    playlist_to_save = copy.deepcopy(playlist)
+    # Convert infinities in infinite_settings before saving
+    if playlist_to_save.get("infinite_settings"):
+        playlist_to_save["infinite_settings"] = convert_infinities_to_markers(playlist_to_save["infinite_settings"])
+    
     with open(filename, "w", encoding="utf-8") as f:
-        json.dump(playlist, f, indent=4)
+        json.dump(playlist_to_save, f, indent=4)
     
     update_playlist_name(name)
     save_config()
@@ -5479,6 +7362,9 @@ def load_playlist(index):
 
     with open(filename, "r", encoding="utf-8") as f:
         data = json.load(f)
+    
+    # Convert infinity markers back to float('inf')
+    data = convert_infinity_markers(data)
     
     global playlist, playlist_changed
     
@@ -5628,10 +7514,15 @@ def delete_file_by_filename(filename):
         try:
             stop()
             os.remove(filepath)
-            messagebox.showinfo("File Deleted", f"Successfully deleted:\n{filename}")
             print(f"Deleted file: {filename}")
             # Optionally, remove from your directory_files dict too:
             del directory_files[filename]
+            invalidate_deduplicated_cache()
+
+            # Refresh file actions display
+            if currently_playing and currently_playing.get("filename") == filename:
+                root.after(100, lambda: update_extra_metadata())
+            
         except Exception as e:
             messagebox.showerror("Error", f"Could not delete file:\n{e}")
     else:
@@ -5670,7 +7561,6 @@ def rename_file_by_filename(filename):
     # Get the current base name and extension
     current_base, extension = os.path.splitext(filename)
     
-    # Ask for new filename using simple dialog
     new_base = simpledialog.askstring("Rename File", "Enter new filename (without extension):", initialvalue=current_base)
     
     if not new_base:
@@ -5678,7 +7568,6 @@ def rename_file_by_filename(filename):
     
     new_base = new_base.strip()
     
-    # Check for invalid characters
     invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
     if any(char in new_base for char in invalid_chars):
         messagebox.showerror("Invalid Name", f"Filename cannot contain: {' '.join(invalid_chars)}")
@@ -5690,17 +7579,14 @@ def rename_file_by_filename(filename):
     directory = os.path.dirname(filepath)
     new_filepath = os.path.join(directory, new_filename)
     
-    # Check if the new filename already exists in directory_files
     if new_filename in directory_files and new_filename != filename:
         messagebox.showerror("Rename Error", f"A file with the name '{new_filename}' already exists in the directory list.")
         return
     
-    # Check if file exists at the new path on disk
     if os.path.exists(new_filepath) and new_filepath != filepath:
         messagebox.showerror("Rename Error", f"A file already exists at:\n{new_filepath}")
         return
     
-    # Stop the player if this file is currently playing (do this after getting user input)
     if currently_playing.get("filename") == filename:
         stop()
 
@@ -5712,13 +7598,24 @@ def rename_file_by_filename(filename):
         if filename in directory_files:
             del directory_files[filename]
         directory_files[new_filename] = new_filepath
+        invalidate_deduplicated_cache()
         
-        # Update file_metadata if it exists for this file
-        if filename in file_metadata:
-            file_metadata[new_filename] = file_metadata[filename]
-            del file_metadata[filename]
+        file_data = get_file_metadata_by_name(filename)
+        if file_data:
+            mal_id = file_data.get("mal")
+            slug = file_data.get("slug")
+            version = str(file_data.get("version")) if file_data.get("version") is not None else "null"
+            
+            if mal_id and slug and mal_id in file_metadata:
+                themes = file_metadata[mal_id].get("themes", {})
+                if slug in themes and version in themes[slug]:
+                    # Move the file entry to new filename
+                    if filename in themes[slug][version]:
+                        themes[slug][version][new_filename] = themes[slug][version][filename]
+                        del themes[slug][version][filename]
+                        # Rebuild lookup map
+                        build_filename_to_mal_map()
         
-        # Update playlist if the file is in current playlist
         if playlist and playlist.get("playlist"):
             for i, playlist_file in enumerate(playlist["playlist"]):
                 # Handle both clean filenames and [L] prefixed entries
@@ -5727,10 +7624,8 @@ def rename_file_by_filename(filename):
                     prefix = "[L]" if playlist_file.startswith("[L]") else ""
                     playlist["playlist"][i] = prefix + new_filename
         
-        # Update currently_playing if it's the current file
         if currently_playing.get("filename") == filename:
             currently_playing["filename"] = new_filename
-            # Update playlist_entry in currently_playing if present
             if "playlist_entry" in currently_playing:
                 old_entry = currently_playing["playlist_entry"]
                 prefix = "[L]" if old_entry.startswith("[L]") else ""
@@ -5740,7 +7635,6 @@ def rename_file_by_filename(filename):
         save_metadata()
         save_config()
         
-        # Update the display if this is the currently playing file
         if currently_playing.get("filename") == new_filename:
             update_metadata()
         print(f"Renamed '{filename}' to '{new_filename}'")
@@ -5757,7 +7651,6 @@ def edit_file_volume_by_filename(filename):
         messagebox.showerror("Edit Volume", f"The file does not exist or is not found:\n{filename}")
         return
 
-    # Prompt for volume level
     volume_str = simpledialog.askstring("Edit Volume", 
                                        "Enter volume multiplier (e.g., 0.5 for half volume, 2.0 for double volume):\n\n"
                                        "Examples:\n"
@@ -5830,13 +7723,11 @@ def edit_file_volume_by_filename(filename):
                 error_msg = "FFmpeg error (unable to decode error message)"
             messagebox.showerror("FFmpeg Error", 
                                f"Failed to edit volume:\n\n{error_msg}")
-            # Clean up temp file if it exists
             if os.path.exists(temp_filepath):
                 os.remove(temp_filepath)
                 
     except subprocess.TimeoutExpired:
         messagebox.showerror("Timeout", "Operation timed out. The file may be too large or ffmpeg is not responding.")
-        # Clean up temp file if it exists
         if os.path.exists(temp_filepath):
             os.remove(temp_filepath)
     except FileNotFoundError:
@@ -5845,7 +7736,6 @@ def edit_file_volume_by_filename(filename):
                            "Please install FFmpeg and ensure it's available in your system PATH.")
     except Exception as e:
         messagebox.showerror("Error", f"An error occurred while editing volume:\n{e}")
-        # Clean up temp file if it exists
         if os.path.exists(temp_filepath):
             os.remove(temp_filepath)
 
@@ -5857,7 +7747,6 @@ def convert_file_format_by_filename(filename):
         messagebox.showerror("File Not Found", f"The file does not exist or is not found:\n{filename}")
         return
 
-    # Prompt for output format
     format_str = simpledialog.askstring("Convert Format", 
                                        "Enter output format (file extension):\n\n"
                                        "Examples:\n"
@@ -5896,21 +7785,17 @@ def convert_file_format_by_filename(filename):
     stop()
     
     try:
-        # Determine appropriate codecs and settings for the output format
         if output_format in ['mp4', 'mov']:
-            # H.264 + AAC for MP4/MOV - higher quality settings
             video_codec = "libx264"
             audio_codec = "aac"
             audio_settings = ["-b:a", "256k"]  # Higher audio bitrate for better quality
             video_settings = ["-crf", "18"]  # Lower CRF for better quality (18-23 is good, 18 is high quality)
         elif output_format == 'webm':
-            # VP9 + Opus for WebM - balanced quality and file size
             video_codec = "libvpx-vp9"
             audio_codec = "libopus"  # Opus is better than Vorbis
             audio_settings = ["-b:a", "128k"]  # Good quality for Opus at smaller size
             video_settings = ["-crf", "25", "-b:v", "0"]  # CRF 31 is recommended default for VP9 (good quality, reasonable size)
         elif output_format in ['mkv', 'avi']:
-            # H.264 + AAC for MKV/AVI
             video_codec = "libx264"
             audio_codec = "aac"
             audio_settings = ["-b:a", "256k"]
@@ -5934,7 +7819,6 @@ def convert_file_format_by_filename(filename):
             audio_settings = ["-q:a", "8"]  # Higher quality (0-10 scale, 8 is very good)
             video_settings = []
         else:
-            # Let FFmpeg auto-detect best codecs for format
             video_codec = None
             audio_codec = None
             audio_settings = ["-b:a", "256k"]  # Higher default audio bitrate
@@ -5943,7 +7827,6 @@ def convert_file_format_by_filename(filename):
         # Build FFmpeg command
         ffmpeg_cmd = ["ffmpeg", "-i", filepath]
         
-        # Add codec settings if specified
         if video_codec:
             ffmpeg_cmd.extend(["-c:v", video_codec])
             if output_format == 'webm':
@@ -5969,7 +7852,6 @@ def convert_file_format_by_filename(filename):
         print(f"Converting {filename} to {output_format.upper()} format...")
         print(f"FFmpeg command: {' '.join(ffmpeg_cmd)}")
         
-        # Run FFmpeg conversion (no timeout for high-quality encoding)
         result = subprocess.run(ffmpeg_cmd, text=True, encoding='utf-8', errors='ignore')
         
         if result.returncode == 0 and os.path.exists(output_filepath):
@@ -5989,7 +7871,6 @@ def convert_file_format_by_filename(filename):
             except Exception as e:
                 print(f"Could not open folder: {e}")
             
-            # Ask if user wants to replace original file
             replace = messagebox.askyesno("Replace Original", 
                                         f"Do you want to replace the original file with the converted version?\n\n"
                                         f"Original: {filename}\n"
@@ -6013,15 +7894,25 @@ def convert_file_format_by_filename(filename):
                     if filename in directory_files:
                         del directory_files[filename]
                         directory_files[new_filename] = new_original_path
+                    invalidate_deduplicated_cache()
                     
-                    # Update file_metadata if it exists for this file
                     global file_metadata
-                    if filename in file_metadata:
-                        # Move metadata to new filename key
-                        file_metadata[new_filename] = file_metadata[filename]
-                        del file_metadata[filename]
+                    file_data = get_file_metadata_by_name(filename)
+                    if file_data:
+                        mal_id = file_data.get("mal")
+                        slug = file_data.get("slug")
+                        version = str(file_data.get("version")) if file_data.get("version") is not None else "null"
+                        
+                        if mal_id and slug and mal_id in file_metadata:
+                            themes = file_metadata[mal_id].get("themes", {})
+                            if slug in themes and version in themes[slug]:
+                                # Move the file entry to new filename
+                                if filename in themes[slug][version]:
+                                    themes[slug][version][new_filename] = themes[slug][version][filename]
+                                    del themes[slug][version][filename]
+                                    # Rebuild lookup map
+                                    build_filename_to_mal_map()
                     
-                    # Update playlist if the file is in current playlist
                     global playlist
                     if playlist and playlist.get("playlist"):
                         for i, playlist_file in enumerate(playlist["playlist"]):
@@ -6043,7 +7934,6 @@ def convert_file_format_by_filename(filename):
                                f"Failed to convert file to {output_format.upper()} format.\n\n"
                                f"Check the console for detailed error information.")
             
-            # Clean up output file if it exists
             if os.path.exists(output_filepath):
                 os.remove(output_filepath)
                 print(f"Cleaned up incomplete file: {output_filepath}")
@@ -6077,7 +7967,6 @@ def _cut_video_at_time(filename, cut_mode):
         filename: The filename to cut
         cut_mode: 'before' to keep everything after current time, 'after' to keep everything before current time
     """
-    # Check if video is loaded and get current time
     if not player.get_media():
         error_title = "Cut Before" if cut_mode == "before" else "Cut After"
         messagebox.showerror(error_title, "No video is currently loaded. Please load a video first.")
@@ -6125,7 +8014,6 @@ def _cut_video_at_time(filename, cut_mode):
     if not confirm:
         return
     
-    # Ask for cutting method
     cutting_method = messagebox.askyesnocancel(
         "Choose Cutting Method",
         f"Choose cutting precision:\n\n"
@@ -6169,11 +8057,9 @@ def _cut_video_at_time(filename, cut_mode):
             video_codec_options = ["libx264", "h264"]
             audio_codec_options = ["aac", "mp3"]
         else:
-            # Default to H.264 and AAC for other formats
             video_codec_options = ["libx264", "h264"]
             audio_codec_options = ["aac", "mp3"]
         
-        # Function to check if codec is available
         def check_codec_available(codec_name, codec_type="encoder"):
             try:
                 result = subprocess.run(
@@ -6209,7 +8095,6 @@ def _cut_video_at_time(filename, cut_mode):
             if not audio_codec:
                 audio_codec = "aac"
         
-        # Error if no suitable codecs found for precise cutting
         if not use_stream_copy:  # Only for precise cuts
             if not video_codec:
                 error_msg = f"No suitable video encoder found for {output_ext} format"
@@ -6231,7 +8116,6 @@ def _cut_video_at_time(filename, cut_mode):
         
         # Build ffmpeg command based on cut mode and precision
         if cut_mode == "before":
-            # Cut everything before current time = keep everything after
             if use_stream_copy:
                 # Fast method - stream copy (may not be frame accurate)
                 ffmpeg_cmd = [
@@ -6244,7 +8128,6 @@ def _cut_video_at_time(filename, cut_mode):
                     cut_filepath
                 ]
             else:
-                # Precise method - re-encode for frame accuracy
                 ffmpeg_cmd = [
                     "ffmpeg",
                     "-i", filepath,
@@ -6268,7 +8151,6 @@ def _cut_video_at_time(filename, cut_mode):
                 
                 ffmpeg_cmd.append(cut_filepath)
         else:  # cut_mode == "after"
-            # Cut everything after current time = keep everything before
             if use_stream_copy:
                 # Fast method - stream copy (may not be frame accurate)
                 ffmpeg_cmd = [
@@ -6281,7 +8163,6 @@ def _cut_video_at_time(filename, cut_mode):
                     cut_filepath
                 ]
             else:
-                # Precise method - re-encode for frame accuracy
                 ffmpeg_cmd = [
                     "ffmpeg",
                     "-i", filepath,
@@ -6305,7 +8186,6 @@ def _cut_video_at_time(filename, cut_mode):
                 
                 ffmpeg_cmd.append(cut_filepath)
         
-        # Show progress message for re-encoding
         if not use_stream_copy:
             print(f"Starting precise cut (re-encoding) for {filename}...")
             print(f"FFmpeg command: {' '.join(ffmpeg_cmd)}")
@@ -6346,7 +8226,6 @@ def _cut_video_at_time(filename, cut_mode):
             except Exception as e:
                 print(f"Could not open folder: {e}")
             
-            # Ask if user wants to replace original file
             replace = messagebox.askyesno("Replace Original", 
                                         f"Do you want to replace the original file with the cut version?\n\n"
                                         f"Original: {filename}\n"
@@ -6383,7 +8262,6 @@ def _cut_video_at_time(filename, cut_mode):
                                f"Failed to cut video:\n\n{error_summary}\n\n"
                                f"Check the console for full error details.")
             
-            # Clean up cut file if it exists
             if os.path.exists(cut_filepath):
                 os.remove(cut_filepath)
                 print(f"Cleaned up incomplete file: {cut_filepath}")
@@ -6486,14 +8364,12 @@ def check_for_updates_button():
         
         check_window.update()
         
-        # Check for updates
         update_info = check_for_updates()
         check_window.destroy()
         
         if update_info.get("error"):
             messagebox.showerror("Update Check Failed", update_info["error"])
         elif update_info.get("update_available"):
-            # Update is available, ask if user wants to open releases page
             release_data = update_info.get("release_data", {})
             release_body = release_data.get("body", "No release notes available.")
             
@@ -6527,7 +8403,6 @@ def check_for_updates_on_startup():
     """Check for updates on startup in a background thread to avoid blocking UI."""
     def background_check():
         try:
-            # Check for updates in background
             update_info = check_for_updates()
             
             if update_info.get("error"):
@@ -6569,7 +8444,7 @@ def year_stats(column):
     year_counter = Counter()
     year_to_filenames = {}
 
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         data = get_metadata(filename)
         season = data.get("season", "")
         year_str = season[-4:] if season and season[-4:].isdigit() else "Unknown"
@@ -6623,7 +8498,7 @@ def year_stats(column):
 
 def season_stats(column):
     season_year_counter = Counter()
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         data = get_metadata(filename)
         season_year = data.get("season", "Unknown")
         if not season_year or season_year == "N/A":
@@ -6654,7 +8529,7 @@ def season_stats(column):
 
 def tag_stats(column):
     tag_counter = Counter()
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         data = get_metadata(filename)
         # Tags
         tags = data.get("themes", []) + data.get("genres", []) + data.get("demographics", [])
@@ -6689,7 +8564,7 @@ series_totals = None
 def get_series_totals(refetch=True, check_all=True):
     global series_totals
     if check_all:
-        check_list = directory_files
+        check_list = get_cached_deduplicated_files()
     else:
         check_list = playlist["playlist"]
     if refetch or not series_totals:
@@ -6708,14 +8583,17 @@ def get_series_totals(refetch=True, check_all=True):
         
 def artist_stats(column):
     artist_counter = Counter()
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
+        file_data = get_file_metadata_by_name(filename)
+        if not file_data:
+            continue
+        slug = file_data.get("slug")
         data = get_metadata(filename)
-        slug = (get_file_metadata_by_name(filename) or {}).get("slug")
-        # Artists (only if the slug matches)
         for song in data.get("songs", []):
             if song.get("slug") == slug:
                 for artist in song.get("artist", []):
                     artist_counter[artist] += 1
+                break  # Found matching song, no need to continue
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY ARTIST\n", ("bold", "underline"))
@@ -6731,7 +8609,7 @@ def artist_stats(column):
 
 def studio_stats(column):
     studio_counter = Counter()
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         data = get_metadata(filename)
         # Studios
         for studio in data.get("studios", []):
@@ -6741,29 +8619,29 @@ def studio_stats(column):
     column.insert(tk.END, "THEMES BY STUDIO\n", ("bold", "underline"))
     for studio, count in sorted(studio_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{studio}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/len(cached_deduplicated_files)*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_filenames_from_studio(studio), False, False)
         column.insert(tk.END, f"\n")
     column.config(state=tk.DISABLED)
 
 def type_stats(column):
     type_counter = Counter()
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         data = get_metadata(filename)
-        type_counter[data.get("type", "Unknown")] += 1
+        type_counter[get_format(data) or "Unknown"] += 1
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY TYPE\n", ("bold", "underline"))
     for type, count in sorted(type_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{type}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/len(cached_deduplicated_files)*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_all_matching_field("type", type), False, False)
         column.insert(tk.END, f"\n")
     column.config(state=tk.DISABLED)
 
 def slug_stats(column):
     slug_counter = Counter()
-    for filename in directory_files:
+    for filename in get_cached_deduplicated_files():
         data = get_metadata(filename)
         slug_counter[data.get("slug", "Unknown")] += 1
     column.config(state=tk.NORMAL)
@@ -6771,7 +8649,7 @@ def slug_stats(column):
     column.insert(tk.END, "THEMES BY SLUG\n", ("bold", "underline"))
     for slug, count in sorted(slug_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{slug}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/len(cached_deduplicated_files)*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_all_matching_field("slug", slug), False, False)
         column.insert(tk.END, f"\n")
     column.config(state=tk.DISABLED)
@@ -6793,7 +8671,6 @@ def display_theme_stats_in_columns():
     left_column.delete("1.0", tk.END)
     left_column.insert(tk.END, "THEME DIRECTORY/STATS\n", ("bold", "underline"))
     for s in STAT_TYPES:
-        # left_column.insert(tk.END, f"{s.get("name")}", "bold")
         btn = tk.Button(left_column, text=f"{s.get("name")}▶", font=("Arial", scl(12)), borderwidth=0, pady=0, command=lambda func=s.get("func"): func(middle_column), bg="black", fg="white")
         left_column.window_create(tk.END, window=btn)
         left_column.insert(tk.END, f"\n")
@@ -7158,7 +9035,7 @@ def show_filter_popup():
     button_frame = tk.Frame(popup, bg="black")
     button_frame.pack(fill="x", pady=10)
     tk.Button(button_frame, text="APPLY FILTER TO PLAYLIST", bg="black", fg="white", command=apply_filter).pack(side="left", padx=10)
-    tk.Button(button_frame, text="RESET TO DEFAULTS", bg="black", fg="white", command=reset_filter).pack(side="left", padx=10)
+    tk.Button(button_frame, text="CLEAR ALL FILTERS", bg="black", fg="white", command=reset_filter).pack(side="left", padx=10)
     tk.Button(button_frame, text="SAVE FILTER", bg="black", fg="white", command=save_filter).pack(side="right", padx=10)
 
 def get_all_seasons(playlis):
@@ -7270,7 +9147,8 @@ def filter_playlist(filters):
     """Filters the playlist based on given criteria."""
     global playlist
     if playlist.get("infinite", False):
-        playlis = copy.deepcopy(directory_files)
+        inf_settings = get_infinite_settings()
+        playlis = get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=inf_settings.get("deduplicate_files", False), deduplicate_versions=inf_settings.get("deduplicate_versions", False))
     else:
         playlis = playlist["playlist"]
 
@@ -7343,7 +9221,6 @@ def filter_playlist(filters):
         if "themes_exclude" in filters or "themes_include" in filters:
             theme_flags = set()
             if theme:
-                # Get the specific version for this file
                 file_version = extract_version(filename)
                 current_version_data = None
                 
@@ -7354,7 +9231,6 @@ def filter_playlist(filters):
                             current_version_data = version_data
                             break
                 
-                # Check flags for the specific version of this file
                 if current_version_data:
                     # Use version-specific flags
                     if current_version_data.get("overlap") == "Over":
@@ -7370,7 +9246,6 @@ def filter_playlist(filters):
                         else:
                             theme_flags.add("NSFW (Without Censors)")
                 else:
-                    # Fall back to theme-level flags if version not found (backward compatibility)
                     if theme.get("overlap") == "Over":
                         theme_flags.add("OVERLAP")
                     if theme.get("overlap") == "Transition":
@@ -7628,17 +9503,18 @@ def set_search_queue(index):
 
 def search_playlist(search_term):
     """Returns a list of filenames where the search term matches the title or english_title.
+    Filters duplicate versions using the same logic as get_theme_filename.
 
     Args:
         search_term (str): The term to search for.
 
     Returns:
-        list: Filenames that match the search term.
+        list: Filenames that match the search term (deduplicated by theme).
     """
     search_term = search_term.lower()  # Make search case-insensitive
     results = []
     artist_results = []
-    for filename in directory_files:
+    for filename in get_directory_files(include_non_local=True):
         metadata = get_metadata(filename)
         filename_trim = filename.lower().replace(".webm", "").replace(".mp4", "")
         title = metadata.get("title", "").lower()
@@ -7651,7 +9527,10 @@ def search_playlist(search_term):
             song_string = get_song_string(metadata, artist_limit=None).lower()
             if song_string and search_term in song_string:
                 artist_results.append(filename)
-    return results + artist_results
+    
+    # Deduplicate versions using shared helper function
+    all_results = results + artist_results
+    return deduplicate_theme_versions(all_results)
 
 def get_playlist_name(key, value):
     data = get_playlist(value)
@@ -7723,6 +9602,12 @@ light_modes = {
         "icon":"📚",
         "desc":(
             "You will be shown the cover of the anime, revealed over time."
+        )
+    },
+    "image":{
+        "icon":"🌐",
+        "desc":(
+            "You will be shown a random image, revealed over time."
         )
     },
     "character":{
@@ -7839,6 +9724,7 @@ lightning_mode_settings_default = {
     },
     "_misc_settings": {
         "answer_length": 8,
+        "image_width_percent": 70,
         "background_music": {
             "rounds_per_track": 3,
             "random_start": False,
@@ -8034,6 +9920,32 @@ lightning_mode_settings_default = {
             }
         }
     },
+    "image": {
+        "length": 20,
+        "muted": True,
+        "variants": {
+            "blur": True,
+            "pixel": True,
+            "slice": True,
+            "slide": True,
+            "swap": True,
+            "tile": True,
+            "zoom": True
+        },
+        "variety": {
+            "enabled": True,
+            "popularity": {
+                "range": [0, 0],
+                "weight": 10
+            },
+            "cooldown": {
+                "min_gap": 5,
+                "max_gap": 25,
+                "popularity_force_threshold": 0,
+                "no_repeat_limit": 80
+            }
+        }
+    },
     "emoji": {
         "length": 12,
         "muted": True,
@@ -8204,6 +10116,7 @@ lightning_mode_settings_default = {
     "tags": {
         "length": 20,
         "muted": True,
+        "use_anilist_tags": True,
         "variety": {
             "enabled": True,
             "popularity": {
@@ -8304,7 +10217,6 @@ def open_generic_settings_editor(
                     return float('-inf')
             return parsed
         except Exception:
-            # If ast.literal_eval fails, check if it's an infinity marker
             if isinstance(value, str):
                 if value == "__INFINITY__":
                     return float('inf')
@@ -8324,7 +10236,6 @@ def open_generic_settings_editor(
 
         if isinstance(d, dict):
             for key, val in d.items():
-                # Special display for 'range' lists of length 2
                 if key == "range" and isinstance(val, (list, tuple)) and len(val) == 2:
                     node_id = tree.insert(parent, 'end', text=str(key), open=False)
                     # Compare with default
@@ -8368,7 +10279,6 @@ def open_generic_settings_editor(
                         break
         else:
             node_id = tree.insert(parent, 'end', text=str(d), open=False)
-            # Compare with default if provided
             if default_sub is not None and not isinstance(default_sub, dict) and d != default_sub:
                 tree.item(node_id, tags=('modified',))
 
@@ -8376,13 +10286,11 @@ def open_generic_settings_editor(
         children = tree.get_children(parent)
         if not children:
             text = tree.item(parent, 'text')
-            # If leaf is 'key: value', split and return {key: value (parsed)}
             if ": " in text:
                 key, val = text.rsplit(": ", 1)
                 return {key: parse_literal(val)}
             return parse_literal(text)
 
-        # Special handling for 'range' nodes: two children 'min: x', 'max: y'
         if len(children) == 2:
             texts = [tree.item(child, 'text') for child in children]
             if (texts[0].startswith('min: ') and texts[1].startswith('max: ')) or (texts[1].startswith('min: ') and texts[0].startswith('max: ')):
@@ -8431,13 +10339,11 @@ def open_generic_settings_editor(
     def on_double_click(event):
         item_id = tree.selection()[0]
 
-        # Don't allow editing if the item has children
         if tree.get_children(item_id):
             return
 
         old_value = tree.item(item_id, 'text')
 
-        # Check for 'key: True' or 'key: False' pattern (toggle boolean)
         if ": True" in old_value or ": False" in old_value:
             key, val = old_value.rsplit(": ", 1)
             if val == "True":
@@ -8447,7 +10353,6 @@ def open_generic_settings_editor(
             tree.item(item_id, text=f"{key}: {new_val}")
             return
 
-        # Check for 'key: value' pattern for any leaf node
         if ": " in old_value and not tree.get_children(item_id):
             key, val = old_value.rsplit(": ", 1)
             entry = tk.Entry(tree, bg="#2a2a2a", fg="white", insertbackground="white")
@@ -8543,7 +10448,6 @@ def open_generic_settings_editor(
             menu.add_command(label=name, command=lambda val=name: saved_var.set(val))
         saved_var.set(selected_settings)
 
-    # Destroy previous window if it exists
     global generic_settings_editor_window
     if generic_settings_editor_window and generic_settings_editor_window.winfo_exists():
         generic_settings_editor_window.destroy()
@@ -8570,7 +10474,6 @@ def open_generic_settings_editor(
     style.map("Treeview", background=[("selected", "#333")])
 
     tree = ttk.Treeview(window)
-    # Tag style for modified fields
     try:
         tree.tag_configure('modified', foreground='orange')
     except Exception:
@@ -8627,7 +10530,6 @@ def open_infinite_settings_editor():
     """Open infinite playlist settings editor"""
     global selected_infinite_settings, saved_infinite_settings
     
-    # Initialize saved settings if not exists
     if 'saved_infinite_settings' not in globals():
         globals()['saved_infinite_settings'] = {}
     if 'selected_infinite_settings' not in globals():
@@ -8636,6 +10538,11 @@ def open_infinite_settings_editor():
     def on_apply(new_settings, selected_name):
         global selected_infinite_settings, cached_pop_time_group, series_cooldowns_cache
         selected_infinite_settings = selected_name
+        # Update current playlist settings if it's an infinite playlist
+        if playlist.get("infinite", False):
+            playlist["infinite_settings"] = copy.deepcopy(infinite_settings)
+            # Refetch pop groups with new settings
+            get_pop_time_groups(refetch=True)
         # Clear caches when settings change
         cached_pop_time_group = None
         series_cooldowns_cache = None
@@ -8678,7 +10585,6 @@ def compute_settings_diff(default, saved):
     Works recursively for nested dicts. If a nested dict has no differing keys, it's omitted.
     """
     if not isinstance(saved, dict) or not isinstance(default, dict):
-        # For non-dict types, return saved only if different
         return copy.deepcopy(saved) if saved != default else None
 
     diff = {}
@@ -8839,6 +10745,11 @@ def update_light_round(time):
                         top_info_data = "MISMATCHED VISUALS:\n" + mismatch_visuals
                     elif last_streamed[0] == currently_playing.get("filename") and last_streamed[1] != "Trailer":
                         top_info_data = f"YOUTUBE VIDEO:\n{last_streamed[1]}\nby {last_streamed[3]}"
+                    elif last_image_source[0] == currently_playing.get("filename") and last_image_source[1]:
+                        # Extract domain from URL
+                        url = last_image_source[1]
+                        domain = url.split('/')[2] if url.startswith('http') else url
+                        top_info_data = f"IMAGE SOURCE:\n{domain}"
                     else:
                         top_info_data = None
                     toggle_title_popup(True)
@@ -9213,6 +11124,25 @@ def update_light_round(time):
                 elif cover_reveal_mode == 'tile':
                     toggle_tile_overlay(num_revealed=1, grid_size=5)
                 elif cover_reveal_mode == 'swap':
+                    toggle_tile_overlay(grid_size=10, swap=True)
+            elif light_mode == 'image':
+                top_info("RANDOM IMAGE")
+                get_light_image_from_google()
+                image_reveal_mode = get_next_image_reveal_mode()
+                if image_reveal_mode == 'pixel':
+                    generate_pixelation_steps(pil_image=ImageTk.getimage(light_cover_image).convert("RGBA"))
+                    toggle_character_pixel_overlay()
+                elif image_reveal_mode == 'slide':
+                    toggle_character_reveal_overlay(direction=random.choice(['top','bottom','left','right']))
+                elif image_reveal_mode == 'blur':
+                    toggle_character_blur_reveal_overlay(percent=1.0)
+                elif image_reveal_mode == 'zoom':
+                    toggle_character_zoom_reveal_overlay(percent=1.0)
+                elif image_reveal_mode == 'slice':
+                    toggle_slice_overlay(num_revealed=1, vertical=random.choice([True, False]))
+                elif image_reveal_mode == 'tile':
+                    toggle_tile_overlay(num_revealed=1, grid_size=5)
+                elif image_reveal_mode == 'swap':
                     toggle_tile_overlay(grid_size=10, swap=True)
             elif 'c.' in light_mode:
                 top_info("GUESS THE CHARACTER", inverse=True)
@@ -9590,7 +11520,6 @@ def queue_next_lightning_mode():
                     lightning_queue_data[next_filename]["ost_url"] = [url, name, channel, length]
                 else:
                     lightning_queue_data[next_filename]["clip_url"] = [url, name, channel, length]
-                    # print(name, url, channel)
             elif "c. " in next_mode:
                 min_desc = 0
                 if next_mode == 'c. profile':
@@ -9608,6 +11537,13 @@ def queue_next_lightning_mode():
             elif next_mode == "emoji":
                 if not data.get("emojis"):
                     get_emoji_clues_for_title(data)
+            elif next_mode == "image":
+                image_url = get_google_image_url(data)
+                if image_url:
+                    lightning_queue_data[next_filename]["image_url"] = image_url
+                elif variety_light_mode_enabled:
+                    excluded_modes.append("image")
+                    next_mode = None
         up_next_text()
     
     if light_mode or fixed_lightning_queue or fixed_lightning_round_playlist_data:
@@ -9730,6 +11666,20 @@ def has_lightning_mode_info(data, round_type):
         return len(data.get("characters", [])) >= 4
     elif round_type == "cover":
         return bool(data.get("cover"))
+    elif round_type == "image":
+        if not SERPAPI_KEY:
+            try:
+                print("Image lightning round disabled: missing SerpAPI Key.")
+            except Exception:
+                pass
+            return False
+        if serpapi_limited:
+            try:
+                print("Image lightning round disabled: SerpAPI quota limit reached.")
+            except Exception:
+                pass
+            return False
+        return True
     elif round_type == "tags":
         return len(data.get("tags", [])) >= 10
     elif round_type == "episodes":
@@ -9748,7 +11698,12 @@ def has_lightning_mode_info(data, round_type):
         if not data.get("characters"):
             return False
         if round_type == "c. profile":
-            return has_char_descriptions(data.get("characters"), 120, types=get_char_types_by_popularity(data, mode="c. profile"))
+            return has_char_descriptions(
+                data.get("characters"), 
+                120, 
+                types=get_char_types_by_popularity(data, mode="c. profile"),
+                anilist_id=data.get("anilist")
+            )
         return True
     else:
         return True
@@ -9867,7 +11822,6 @@ def get_frame_light_round_frames():
                     offset = random_time_in_quadrant - accumulated_time
                     frame = range_start + offset
                     
-                    # Check for regular censors (not skip censors)
                     is_censored = False
                     for censor in file_censors:
                         if not censor.get('skip') and not censor.get('mute'):
@@ -9880,7 +11834,6 @@ def get_frame_light_round_frames():
                         try_count += 1
                         break
                     
-                    # Check if too close to previous frame
                     if total_length > 60000 and len(frames) > 0 and (frame - frames[-1]) <= 5:
                         frame = None
                         try_count += 1
@@ -10007,7 +11960,7 @@ def toggle_clues_overlay(destroy=False):
     score = f"{data.get('score')}\n#{data.get('rank')}"
     popularity = f"{data.get('members') or 0:,}\n#{data.get('popularity') or 'N/A'}"
     episodes = str(data.get("episodes") or "Airing")
-    type_ = data.get("type", "")
+    type_ = get_format(data)
     source = data.get("source", "")
     theme = data.get("slug")
     song = get_song_string(data)
@@ -10022,7 +11975,7 @@ def toggle_clues_overlay(destroy=False):
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
     overlay_width = round(screen_width * 0.7)
-    overlay_height = round(screen_height * 0.9)
+    overlay_height = round(screen_height * 0.8)
     x = (screen_width - overlay_width) // 2
     y = (screen_height - overlay_height) // 2
 
@@ -10072,7 +12025,6 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
     """Toggles the Song Lightning Round overlay with three separate boxes."""
     global song_overlay_boxes, music_icon_label
     
-    # Destroy everything if requested
     if destroy:
         for box in song_overlay_boxes.values():
             if box:
@@ -10177,13 +12129,11 @@ def generate_anime_trivia(data, display=False):
         return "No trivia available.", "None"
     
     mal_id = data.get("mal")
-    # Get all stored trivia for this anime
     stored_trivia = ai_metadata.get(mal_id, {}).get("trivia") if mal_id else []
     if not isinstance(stored_trivia, list):
         stored_trivia = [stored_trivia] if stored_trivia else []
 
     if not client:
-        # Return a random stored trivia if available
         if stored_trivia:
             question, answer = random.choice(stored_trivia)
             return question, answer
@@ -10234,7 +12184,6 @@ def generate_anime_trivia(data, display=False):
             print(content)
         if content and "Question:" in content and "Answer:" in content:
             question, answer = parse_trivia_response(content)
-            # Only store if answer is new
             if mal_id and answer and all(answer != a for _, a in stored_trivia):
                 ai_metadata.setdefault(mal_id, {}).setdefault("trivia", []).append([question, answer])
                 save_metadata()
@@ -10272,34 +12221,20 @@ def set_light_trivia(data=None, queue=False, trivia_data=None):
 #          *EMOJI LIGHTNING ROUND
 # =========================================
 
-def clean_compound_emojis(emojis):
-    """Replace problematic compound emojis with their base versions"""
-    if not isinstance(emojis, list):
-        return emojis
-    
-    cleaned_emojis = []
-    for emoji in emojis:
-        # Replace male wizard emoji with base wizard emoji
-        if "🧙‍♂" in emoji or emoji == "🧙‍♂️":
-            cleaned_emojis.append("🧙")  # Base wizard emoji
-        else:
-            cleaned_emojis.append(emoji)
-    
-    return cleaned_emojis
-
 def get_emoji_clues_for_title(data):
     """Uses OpenAI to generate emoji clues for the anime's title/concept."""
     mal_id = data.get("mal")
     if mal_id and mal_id in ai_metadata and "emojis" in ai_metadata[mal_id]:
-        return clean_compound_emojis(ai_metadata[mal_id]["emojis"])
+        return ai_metadata[mal_id]["emojis"]
     if not client or not OPENAI_API_KEY:
         return ["❓"]
     title = get_display_title(data)
     year = int(data.get("season", "9999")[-4:])
     prompt = (
-        f"Give me exactly 6 emojis that represent the anime '{title}' ({year})."
-        "Order them in a way to make the easier emojis later."
-        "Do NOT use any words or character names. Only output emojis, separated by spaces."
+        f"Give me exactly 6 emojis that represent the anime '{title}' ({year}). "
+        "Order them in a way to make the easier emojis later. "
+        "Do NOT use any words or character names. "
+        "Only output emojis, separated by spaces."
     )
     try:
         response = client.responses.create(
@@ -10308,8 +12243,12 @@ def get_emoji_clues_for_title(data):
         )
         # Extract emojis from response
         content = extract_response_text(response)
-        # Remove the length filter!
+        # Split by whitespace - compound emojis stay intact since ZWJ isn't whitespace
         emojis = content.split()
+        
+        # Limit to 6 emojis
+        emojis = emojis[:6]
+        
         if mal_id:
             ai_metadata.setdefault(mal_id, {})["emojis"] = emojis
             save_metadata()
@@ -10323,15 +12262,32 @@ def get_emoji_image(emoji_char, size=120):
     try:
         # Ensure we're working with a properly encoded Unicode string
         if isinstance(emoji_char, str):
-            # Normalize Unicode to handle compound emojis correctly
-            import unicodedata
+            # Normalize Unicode to NFC (Canonical Composition)
+            # This ensures compound emojis are in their composed form
             emoji_char = unicodedata.normalize('NFC', emoji_char)
         
-        font_path = r"C:\Windows\Fonts\seguiemj.ttf"
-        font = ImageFont.truetype(font_path, size=size)
+        # Try multiple font options - newer fonts have better compound emoji support
+        font_paths = [
+            r"C:\Windows\Fonts\seguiemj.ttf",      # Segoe UI Emoji (Windows 10/11)
+            r"C:\Windows\Fonts\NotoColorEmoji.ttf", # Noto Color Emoji (if installed)
+            r"C:\Windows\Fonts\Twemoji.ttf",        # Twitter Emoji (if installed)
+            r"C:\Windows\Fonts\seguisym.ttf",       # Segoe UI Symbol (fallback)
+        ]
+        
+        font = None
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                try:
+                    font = ImageFont.truetype(font_path, size=int(size * 1.2))  # Slightly larger for better rendering
+                    break
+                except Exception:
+                    continue
+        
+        if not font:
+            # Fallback to default
+            font = ImageFont.truetype(font_paths[0], size=int(size * 1.2))
 
-        # Use a large enough canvas to prevent cutoffs
-        canvas_size = size * 4  # Increased to allow extra space
+        canvas_size = size * 8
         im = Image.new("RGBA", (canvas_size, canvas_size), (255, 255, 255, 0))
         draw = ImageDraw.Draw(im)
 
@@ -10346,14 +12302,21 @@ def get_emoji_image(emoji_char, size=120):
         if not bbox:
             raise ValueError("Empty bounding box from rendered emoji.")
 
-        # Calculate cropping box to center into final size
         cropped = im.crop(bbox)
+
+        # Scale down the cropped emoji to fit within target size
+        cropped_w, cropped_h = cropped.size
+        if cropped_w > size or cropped_h > size:
+            scale = min(size / cropped_w, size / cropped_h)
+            new_w = int(cropped_w * scale)
+            new_h = int(cropped_h * scale)
+            cropped = cropped.resize((new_w, new_h), Image.LANCZOS)
+            cropped_w, cropped_h = new_w, new_h
 
         # Create a new image of the final desired size
         final_image = Image.new("RGBA", (size, size), (255, 255, 255, 0))
 
-        # Paste the cropped emoji into the center of the final image
-        cropped_w, cropped_h = cropped.size
+        # Paste the cropped (and possibly scaled) emoji into the center
         offset_x = (size - cropped_w) // 2
         offset_y = (size - cropped_h) // 2
         final_image.paste(cropped, (offset_x, offset_y), cropped)
@@ -10460,8 +12423,6 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
                 label.config(image=img, text="")
                 label.image = img  # Keep reference
             else:
-                # Normalize Unicode for compound emojis in text fallback too
-                import unicodedata
                 normalized_emoji = unicodedata.normalize('NFC', emoji_char)
                 label.config(image="", text=normalized_emoji, font=("Segoe UI Emoji", scl(120)), fg=OVERLAY_TEXT_COLOR)
         else:
@@ -10656,7 +12617,6 @@ def get_next_title_mode(title_text):
     available_variants = available_variants or all_variants
 
     if not available_title_modes:
-        # Shuffle all available variants, but avoid starting with last_title_mode if possible
         shuffled = random.sample(available_variants, k=len(available_variants))
         if len(shuffled) > 1 and shuffled[0] == last_title_mode:
             # Move last_title_mode to the end
@@ -10684,7 +12644,6 @@ def get_next_title_mode(title_text):
     if get_long_word_count(6):
         allowed_modes.append("swap")
 
-    # If any allowed modes exist, always pick from those (ignore round-robin fairness for disallowed variants)
     allowed_in_queue = [m for m in available_title_modes if m in allowed_modes]
     if allowed_in_queue:
         # Strictly only pick from allowed variants
@@ -10741,7 +12700,7 @@ def get_base_title(data=None, title=None):
         if not data and 'currently_playing' in globals():
             data = currently_playing.get("data", {})
         if data:
-            title = data.get('eng_title') or data.get("title")
+            title = data.get('eng_title') or data.get("title") or ""
         else:
             title = ""
     # Remove common season/series/part suffixes
@@ -11006,7 +12965,6 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
                     start_y = random.randint(*bottom_range)
                 start_x = random.randint(margin_x, screen_w - margin_x)
 
-                # Check if far enough from all others
                 too_close = False
                 for (px, py) in letter_positions:
                     if abs(start_x - px) < min_distance and abs(start_y - py) < min_distance:
@@ -11466,13 +13424,10 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
             globals()[overlay_var] = None
 
     # If overlays exist but direction or geometry changed drastically, destroy and recreate
-    # (Optional: could add more logic here if overlays get out of sync)
 
 
-    # Only create overlays if both are None (ensures no duplicates)
     if peek_overlay1 is None and peek_overlay2 is None:
 
-        # image_color = get_image_color()
         image_color = "black"
         # First overlay
         if peek_overlay1 is None:
@@ -11550,7 +13505,6 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
         print("Invalid direction.")
         return
 
-    # Convert to integers for geometry calculation
     first_width = int(first_width)
     first_height = int(first_height)
     first_x = int(first_x)
@@ -11561,9 +13515,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
     second_x = int(second_x)
     second_y = int(second_y)
 
-    # Only update geometry if overlays were just created and geometry variables are set
     if peek_overlay1 and peek_overlay2:
-        # Only update geometry if 'first_width' and related variables are defined in this scope
         if direction == "right":
             peek_overlay2.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
             peek_overlay1.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
@@ -11591,7 +13543,12 @@ def get_video_display_rect():
         vw, vh = (0, 0)
     if not vw or not vh:
         return 0, 0, screen_w, screen_h, False
-    video_ar = vw / vh
+    
+    if vw == 720 and vh == 480:
+        video_ar = 16 / 9
+    else:
+        video_ar = vw / vh
+    
     screen_ar = screen_w / screen_h
     if video_ar >= screen_ar:
         video_w = screen_w
@@ -11676,7 +13633,6 @@ def send_scoreboard_command(cmd):
                 send_scoreboard_colors()
             if not scoreboard_align_sent:
                 scoreboard_align_sent = True
-                # send_scoreboard_align()
         except ConnectionRefusedError:
             pass
     threading.Thread(target=send_scoreboard_command_worker, daemon=True).start()
@@ -11719,11 +13675,9 @@ def add_score_changes_to_session():
     existing_timestamps = {entry.get("timestamp") for entry in existing_score_entries}
     
     for change in changes:
-        # Skip if this score change is already in session_data
         if change['timestamp'] in existing_timestamps:
             continue
             
-        # Create a session entry for the score change with consistent timestamp format
         score_entry = {
             "timestamp": change['timestamp'],  # Now using consistent datetime format
             "type": "scoreboard_score",
@@ -11794,7 +13748,6 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
     # Determine center position
     if isinstance(position, tuple):
         cx, cy = position
-        # Save position for movement
         grow_position = (cx, cy)
     else:  # center by default
         cx, cy = screen_w // 2, screen_h // 2
@@ -11906,7 +13859,6 @@ def get_mismatched_theme():
         # Tag similarity
         tag_score = len(match_tags & file_tags)
 
-        # Year proximity score (closer = better)
         year_score = 0
         if match_year and file_year:
             year_diff = abs(match_year - file_year)
@@ -11919,7 +13871,6 @@ def get_mismatched_theme():
 
         candidates.append((total_score, filename, file_data))
 
-    # Fallback to any mismatched theme if no candidates
     if not candidates:
         tries = 0
         while tries <= 10:
@@ -12071,7 +14022,6 @@ def toggle_character_overlay(num_characters=4, destroy=False):
     """Toggles the Character Lightning Round overlay in a 2x2 grid."""
     global character_overlay_boxes, character_round_characters
 
-    # Destroy if requested
     if destroy:
         for box in character_overlay_boxes.values():
             if box and box.winfo_exists():
@@ -12112,7 +14062,6 @@ def toggle_character_overlay(num_characters=4, destroy=False):
             tk_img = character_round_characters[i]
         else:
             tk_img = character_round_image_cache_default[i]
-        # tk_img = load_image_from_url(character_round_characters[i], size=(img_size, img_size))
 
         # Set image and label
         label = tk.Label(box, image=tk_img, bg="black")
@@ -12165,12 +14114,294 @@ def get_light_cover_image():
     light_cover_image = None
     cover_url = currently_playing.get("data", {}).get("cover")
     if cover_url:
-        light_cover_image = load_image_from_url(cover_url, size=None)
+        try:
+            # Load image without transparent box padding
+            response = requests.get(cover_url)
+            response.raise_for_status()
+            image = Image.open(BytesIO(response.content)).convert("RGBA")
+            max_dimension = 2000
+            if image.width > max_dimension or image.height > max_dimension:
+                scale = min(max_dimension / image.width, max_dimension / image.height)
+                new_size = (int(image.width * scale), int(image.height * scale))
+                image = image.resize(new_size, Image.LANCZOS)
+            light_cover_image = ImageTk.PhotoImage(image)
+        except Exception:
+            pass
+    light_cover_image = light_cover_image or character_round_image_cache_default[0]
+
+# =========================================
+#       *IMAGE LIGHTNING ROUND
+# =========================================
+
+SERPAPI_SEARCH_URL = "https://serpapi.com/search"
+serpapi_limited = False
+serpapi_limited_count = 0
+_cached_serpapi_image_results = {}
+
+def _build_image_search_queries(data):
+    """Build search queries for anime images."""
+    title = get_display_title(data)
+    base_title = get_base_title(title=title)
+    year = (data.get("season", "") or "")[-4:]
+    year_token = year if year.isdigit() else ""
+
+    queries = []
+    for t in [title, base_title]:
+        if not t:
+            continue
+        if year_token:
+            queries.append(f"{t} anime key visual {year_token}")
+        queries.append(f"{t} anime key visual")
+        queries.append(f"{t} anime official art")
+
+    seen = set()
+    deduped = []
+    for q in queries:
+        if q not in seen:
+            deduped.append(q)
+            seen.add(q)
+    return deduped
+
+def search_serpapi_image_urls(query, max_results=8):
+    """Return a list of image URLs from SerpAPI image search."""
+    global serpapi_limited, serpapi_limited_count
+
+    if not SERPAPI_KEY or serpapi_limited:
+        return []
+
+    if query in _cached_serpapi_image_results:
+        return _cached_serpapi_image_results.get(query, [])
+
+    params = {
+        "api_key": SERPAPI_KEY,
+        "engine": "google",
+        "q": query,
+        "tbm": "isch",
+        "num": max(1, min(10, max_results))
+    }
+
+    try:
+        response = requests.get(SERPAPI_SEARCH_URL, params=params, timeout=8)
+        if response.status_code in (403, 429):
+            serpapi_limited_count += 1
+            if serpapi_limited_count >= 3:
+                serpapi_limited = True
+            try:
+                print(f"SerpAPI error {response.status_code}: {response.text}")
+            except Exception:
+                pass
+            return []
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("error"):
+            serpapi_limited_count += 1
+            if serpapi_limited_count >= 3:
+                serpapi_limited = True
+            try:
+                print(f"SerpAPI error: {data.get('error')}")
+            except Exception:
+                pass
+            return []
+        
+        # SerpAPI returns images in 'images_results' array
+        items = data.get("images_results", [])
+        if not items:
+            try:
+                print(f"SerpAPI returned 0 images for query: {query}")
+            except Exception:
+                pass
+            return []
+        
+        # Get original image URLs
+        urls = [item.get("original") for item in items if item.get("original")]
+        if urls:
+            _cached_serpapi_image_results[query] = urls
+        serpapi_limited_count = 0
+        return urls
+    except Exception as e:
+        serpapi_limited_count += 1
+        if serpapi_limited_count >= 3:
+            serpapi_limited = True
+        try:
+            print(f"SerpAPI request failed: {e}")
+        except Exception:
+            pass
+        return []
+
+def get_google_image_url(data=None):
+    """Pick a random image URL for the given anime data using SerpAPI."""
+    if not data:
+        data = currently_playing.get("data")
+    if not data:
+        return None
+    queries = _build_image_search_queries(data)
+    for query in queries:
+        urls = search_serpapi_image_urls(query)
+        if urls:
+            return random.choice(urls)
+    return None
+
+available_image_reveal_modes = []
+last_image_reveal_mode = ""
+def get_next_image_reveal_mode():
+    global available_image_reveal_modes, last_image_reveal_mode
+
+    if not available_image_reveal_modes:
+        all_variants = []
+        available_variants = []
+        for variant, enabled in lightning_mode_settings.get("image", {}).get("variants", {}).items():
+            all_variants.append(variant)
+            if enabled:
+                available_variants.append(variant)
+        available_variants = available_variants or all_variants
+        while not available_image_reveal_modes:
+            available_image_reveal_modes = random.sample(available_variants, k=len(available_variants))
+            if len(available_image_reveal_modes) > 1 and available_image_reveal_modes[0] == last_image_reveal_mode:
+                available_image_reveal_modes = []
+
+    last_image_reveal_mode = available_image_reveal_modes.pop(0)
+    return last_image_reveal_mode
+
+def get_light_image_from_google():
+    """Load a Google image into light_cover_image (fallback to cover/default)."""
+    global light_cover_image, last_image_source
+    light_cover_image = None
+    last_image_source = ["", ""]
+
+    filename = currently_playing.get("filename")
+    queued_url = None
+    if filename:
+        queued_url = lightning_queue_data.get(filename, {}).get("image_url")
+
+    tried_urls = []
+    for url in [queued_url, get_google_image_url(currently_playing.get("data"))]:
+        if not url or url in tried_urls:
+            continue
+        tried_urls.append(url)
+        try:
+            # Load image without transparent box padding
+            response = requests.get(url)
+            response.raise_for_status()
+            image = Image.open(BytesIO(response.content)).convert("RGBA")
+            max_dimension = 2000
+            if image.width > max_dimension or image.height > max_dimension:
+                scale = min(max_dimension / image.width, max_dimension / image.height)
+                new_size = (int(image.width * scale), int(image.height * scale))
+                image = image.resize(new_size, Image.LANCZOS)
+            light_cover_image = ImageTk.PhotoImage(image)
+            if light_cover_image:
+                last_image_source = [filename, url]
+                break
+        except Exception:
+            continue
+
+    if not light_cover_image:
+        try:
+            print("Image lightning round: no Google image found, falling back to cover art.")
+        except Exception:
+            pass
+        cover_url = currently_playing.get("data", {}).get("cover")
+        if cover_url:
+            try:
+                # Load image without transparent box padding
+                response = requests.get(cover_url)
+                response.raise_for_status()
+                image = Image.open(BytesIO(response.content)).convert("RGBA")
+                max_dimension = 2000
+                if image.width > max_dimension or image.height > max_dimension:
+                    scale = min(max_dimension / image.width, max_dimension / image.height)
+                    new_size = (int(image.width * scale), int(image.height * scale))
+                    image = image.resize(new_size, Image.LANCZOS)
+                light_cover_image = ImageTk.PhotoImage(image)
+            except Exception:
+                light_cover_image = None
+
     light_cover_image = light_cover_image or character_round_image_cache_default[0]
 
 # =========================================
 #       *PARTS LIGHTNING ROUND
 # =========================================
+
+def match_character_names(name1, name2):
+    """
+    Check if two character names match, accounting for firstname/lastname variations.
+    
+    Examples:
+        "John Smith" matches "Smith John"
+        "Eren Yeager" matches "Yeager Eren"
+    """
+    if not name1 or not name2:
+        return False
+    
+    # Normalize names (lowercase, remove extra spaces)
+    name1_clean = " ".join(name1.lower().split())
+    name2_clean = " ".join(name2.lower().split())
+    
+    # Direct match
+    if name1_clean == name2_clean:
+        return True
+    
+    # Split into parts
+    parts1 = name1_clean.split()
+    parts2 = name2_clean.split()
+    
+    # If different number of parts, no match (we're being strict here)
+    if len(parts1) != len(parts2):
+        return False
+    
+    if len(parts1) == 2 and len(parts2) == 2:
+        if parts1[0] == parts2[1] and parts1[1] == parts2[0]:
+            return True
+    
+    if set(parts1) == set(parts2):
+        return True
+    
+    return False
+
+def get_anilist_character_description(character_name, anilist_id):
+    """
+    Get character description from AniList metadata.
+    
+    Args:
+        character_name: Name of the character to find
+        anilist_id: AniList anime ID
+    
+    Returns:
+        Character description string or empty string if not found
+    """
+    if not anilist_id or str(anilist_id) not in anilist_metadata:
+        return ""
+    
+    anilist_data = anilist_metadata[str(anilist_id)]
+    anilist_characters = anilist_data.get("characters", [])
+    
+    for char in anilist_characters:
+        char_name = char.get("name", "")
+        if match_character_names(character_name, char_name):
+            desc = char.get("description", "")
+            if desc:
+                # Clean HTML tags
+                desc = re.sub(r'<[^>]+>', '', desc)
+                # Clean spoiler tags
+                desc = re.sub(r'~!.*?!~', '[SPOILER]', desc)
+                # Clean markdown bold (__text__ or **text**)
+                desc = re.sub(r'__([^_]+)__', r'\1', desc)
+                desc = re.sub(r'\*\*([^*]+)\*\*', r'\1', desc)
+                # Remove character links entirely (relatives)
+                desc = re.sub(r'\[([^\]]+)\]\([^\)]+\)', '', desc)
+                desc = desc.replace('\\n', '\n')
+                # Remove entire lines that contain "Relatives:"
+                desc = re.sub(r'^.*Relatives:.*$\n?', '', desc, flags=re.MULTILINE)
+                desc = re.sub(r'(Height: [^\n]+?)(\s*\n)', r'\1.\2', desc)
+                desc = re.sub(r'(Position: [^\n]+?)(\s*\n)', r'\1.\2', desc)
+                # Clean up multiple consecutive newlines
+                desc = re.sub(r'\n{3,}', '\n\n', desc)
+                # Clean up extra spaces
+                desc = re.sub(r' {2,}', ' ', desc)
+                return desc.strip()
+    
+    return ""
 
 character_round_answer = None
 def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=False, mode=None):
@@ -12218,7 +14449,6 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
     if mode.startswith("c."):
         char_history = playlist.get("lightning_history", {}).get(mode, [])
 
-    # Try types in priority order, fallback to 's' if not present already
     candidates = []
     for i, t in enumerate(types):
         for candidate in get_candidates([t]):
@@ -12232,8 +14462,21 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
     if not candidates:
         return return_image("Unknown", character_round_image_cache_default[0], queue=queue)
 
-    # First, try to find a candidate with sufficient description
-    long_desc_candidates = [c for c in candidates if len(c[3]) >= min_desc_length]
+    # First, try to find a candidate with sufficient description (check both AniDB and AniList)
+    long_desc_candidates = []
+    for c in candidates:
+        name, url, gender, anidb_desc = c
+        if len(anidb_desc) >= min_desc_length:
+            long_desc_candidates.append(c)
+        # If AniDB description is too short, check AniList
+        elif min_desc_length > 0 and data.get("anilist"):
+            anilist_desc = get_anilist_character_description(name, data.get("anilist"))
+            if anilist_desc:
+                # Clean the character name from the AniList description
+                cleaned_anilist_desc = clean_character_description(name, anilist_desc)
+                if len(cleaned_anilist_desc) >= min_desc_length:
+                    # Create new candidate tuple with cleaned AniList description
+                    long_desc_candidates.append((name, url, gender, cleaned_anilist_desc))
 
     # Try filtering out characters in the history
     def filter_history(pool):
@@ -12244,6 +14487,13 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
 
     random.shuffle(filtered_pool)
     name, chosen_url, gender, desc = filtered_pool[0]
+
+    # If description is missing or very short, try to get it from AniList
+    MIN_DESC_THRESHOLD = 120  # Consider descriptions under this length as "short"
+    if (not desc or len(desc) < MIN_DESC_THRESHOLD) and data.get("anilist"):
+        anilist_desc = get_anilist_character_description(name, data.get("anilist"))
+        if anilist_desc and len(anilist_desc) > len(desc):
+            desc = clean_character_description(name, anilist_desc)
 
     # Try loading the image
     tk_img = load_image_from_url(chosen_url, size=None)
@@ -12268,14 +14518,21 @@ def toggle_character_image_overlay(character=None, destroy=False):
     # Screen and scaling setup
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
-    target_height = int(screen_h * 0.7)
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    max_width = int(screen_w * width_percent)
+    max_height = int(screen_h * 0.7)
 
     # Get original image
     pil_image = ImageTk.getimage(character)
     img_w, img_h = pil_image.size
-    scale = target_height / img_h
+    
+    # Constrain both width and height
+    width_scale = max_width / img_w
+    height_scale = max_height / img_h
+    scale = min(width_scale, height_scale)
+    
     new_w = int(img_w * scale)
-    new_h = target_height
+    new_h = int(img_h * scale)
     resized_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
 
     # White border
@@ -12292,7 +14549,7 @@ def toggle_character_image_overlay(character=None, destroy=False):
     character_image_overlay.configure(bg="black")
 
     x = (screen_w - (new_w)) // 2
-    y = (screen_h - (new_h)) // 2 - int(screen_h * 0.015)
+    y = (screen_h - (new_h)) // 2 - int(screen_h * 0.025)  # Move up a bit more for better positioning
     character_image_overlay.geometry(f"{new_w + scl(8)}x{new_h + scl(8)}+{x}+{y}")
 
     label = tk.Label(character_image_overlay, image=tk_img, bg="black", borderwidth=0)
@@ -12346,7 +14603,6 @@ def generate_weighted_zoomed_parts(tk_img, num_parts=4, target_size=(400, 400)):
 
             vertical_center = (offset_y + crop_h / 2) / img_h
 
-            # Check if too close to existing vertical centers
             too_close = any(abs(vertical_center - prev) < 0.15 for prev in used_centers)
             if too_close:
                 continue
@@ -12395,20 +14651,22 @@ def get_char_parts_round_character():
     # Generate zoomed-in pieces and store them
     character_round_characters = generate_weighted_zoomed_parts(character_round_answer[1])
 
-def has_char_descriptions(characters, length, types=None):
+def has_char_descriptions(characters, length, types=None, anilist_id=None):
     """
     Returns True if any character in the list has a description
-    of at least the given length.
+    of at least the given length (from AniDB or AniList).
 
     Args:
         characters: List of character entries, each a list/tuple with:
             [role, name, image, gender, (optional) description]
         length: Minimum description length required.
         types: Optional set or list of character roles to include (e.g., ['m', 's']).
+        anilist_id: Optional AniList ID to check for character descriptions
 
     Returns:
         True if a matching character exists, False otherwise.
     """
+    # First check AniDB descriptions
     for char in characters:
         if types and char[0] not in types:
             continue
@@ -12416,6 +14674,46 @@ def has_char_descriptions(characters, length, types=None):
             desc = char[4].strip()
             if len(desc) >= length:
                 return True
+    
+    # If no AniDB descriptions found, check AniList descriptions
+    if anilist_id and str(anilist_id) in anilist_metadata:
+        anilist_data = anilist_metadata[str(anilist_id)]
+        anilist_characters = anilist_data.get("characters", [])
+        
+        for char in characters:
+            if types and char[0] not in types:
+                continue
+            
+            char_name = char[1] if len(char) > 1 else ""
+            if not char_name:
+                continue
+            
+            # Try to find matching AniList character
+            for anilist_char in anilist_characters:
+                anilist_name = anilist_char.get("name", "")
+                if match_character_names(char_name, anilist_name):
+                    anilist_desc = anilist_char.get("description", "")
+                    if anilist_desc:
+                        # Clean HTML tags
+                        clean_desc = re.sub(r'<[^>]+>', '', anilist_desc)
+                        # Clean spoiler tags
+                        clean_desc = re.sub(r'~!.*?!~', '[SPOILER]', clean_desc)
+                        # Clean markdown bold (__text__ or **text**)
+                        clean_desc = re.sub(r'__([^_]+)__', r'\1', clean_desc)
+                        clean_desc = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_desc)
+                        # Remove character links entirely
+                        clean_desc = re.sub(r'\[([^\]]+)\]\([^\)]+\)', '', clean_desc)
+                        # Handle newlines
+                        clean_desc = clean_desc.replace('\\n', '\n')
+                        # Remove entire lines that contain "Relatives:"
+                        clean_desc = re.sub(r'^.*Relatives:.*$\n?', '', clean_desc, flags=re.MULTILINE)
+                        # Clean extra spaces
+                        clean_desc = re.sub(r' {2,}', ' ', clean_desc)
+                        
+                        if len(clean_desc.strip()) >= length:
+                            return True
+                    break
+    
     return False
 
 # =========================================
@@ -12489,7 +14787,6 @@ def toggle_character_pixel_overlay(step=0, destroy=False):
     resized_img = img.resize((new_w, new_h), Image.LANCZOS)
     display_img = ImageTk.PhotoImage(resized_img)
 
-    # Create overlay if needed
     if not character_pixel_overlay or not character_pixel_overlay.winfo_exists():
         character_pixel_overlay = tk.Toplevel(root)
         character_pixel_overlay.overrideredirect(True)
@@ -12562,10 +14859,15 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top")
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_width = int(screen_width * width_percent)
     target_height = int(screen_height * 0.7)
 
-    scale = target_height / pil_img.height
-    new_size = (int(pil_img.width * scale), target_height)
+    # Use smaller scale so image fits within both width and height
+    scale_w = target_width / pil_img.width
+    scale_h = target_height / pil_img.height
+    scale = min(scale_w, scale_h)
+    new_size = (int(pil_img.width * scale), int(pil_img.height * scale))
     pil_img = pil_img.resize(new_size, Image.LANCZOS)
     tk_img = ImageTk.PhotoImage(pil_img)
 
@@ -12628,9 +14930,15 @@ def toggle_character_blur_reveal_overlay(percent=1.0, destroy=False):
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_width = int(screen_width * width_percent)
     target_height = int(screen_height * 0.7)
-    scale = target_height / pil_img.height
-    new_size = (int(pil_img.width * scale), target_height)
+    
+    # Use smaller scale so image fits within both width and height
+    scale_w = target_width / pil_img.width
+    scale_h = target_height / pil_img.height
+    scale = min(scale_w, scale_h)
+    new_size = (int(pil_img.width * scale), int(pil_img.height * scale))
     pil_img = pil_img.resize(new_size, Image.LANCZOS)
 
     # Apply blur based on percent
@@ -12726,9 +15034,15 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_width = int(screen_width * width_percent)
     target_height = int(screen_height * 0.7)
-    scale = target_height / pil_img.height
-    new_size = (int(pil_img.width * scale), target_height)
+    
+    # Use smaller scale so image fits within both width and height
+    scale_w = target_width / pil_img.width
+    scale_h = target_height / pil_img.height
+    scale = min(scale_w, scale_h)
+    new_size = (int(pil_img.width * scale), int(pil_img.height * scale))
     pil_img = pil_img.resize(new_size, Image.LANCZOS)
 
     # Pick an interesting crop position once, using initial zoom
@@ -12810,7 +15124,6 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
     """
     global slice_overlay_window, slice_overlay_label, slice_overlay_parts, slice_overlay_order
 
-    # Destroy overlay if requested
     if destroy:
         if slice_overlay_window and slice_overlay_window.winfo_exists():
             slice_overlay_window.destroy()
@@ -12844,7 +15157,6 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
         random.shuffle(swap_order)
         for i, idx in enumerate(swap_order):
             part, box = slice_overlay_parts[idx]
-            # Compute new box position for this slice
             if vertical:
                 left = int(i * w / num_slices)
                 right = int((i + 1) * w / num_slices)
@@ -12864,13 +15176,16 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
             part, box = slice_overlay_parts[idx]
             composite.paste(part, box)
 
-    # Resize for display
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_w = int(screen_w * width_percent)
     target_h = int(screen_h * 0.7)
-    scale = target_h / h
+    scale_w = target_w / w
+    scale_h = target_h / h
+    scale = min(scale_w, scale_h)
     img_w = int(w * scale)
-    img_h = target_h
+    img_h = int(h * scale)
     composite = composite.resize((img_w, img_h), Image.LANCZOS)
     tk_composite = ImageTk.PhotoImage(composite)
 
@@ -13017,7 +15332,6 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
             bottom = top + (h // grid_cols) if grid_row < grid_cols - 1 else h
             new_box = (left, top, right, bottom)
             part_resized = part.resize((right - left, bottom - top), Image.LANCZOS)
-            # Dim if not in correct position
             if idx != i:
                 overlay = Image.new("RGBA", part_resized.size, (0, 0, 0, 100))
                 part_resized = Image.alpha_composite(part_resized, overlay)
@@ -13030,13 +15344,16 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
             part, box, _ = tile_overlay_parts[idx]
             composite.paste(part, box)
 
-    # Resize for display
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_w = int(screen_w * width_percent)
     target_h = int(screen_h * 0.7)
-    scale = target_h / h
+    scale_w = target_w / w
+    scale_h = target_h / h
+    scale = min(scale_w, scale_h)
     img_w = int(w * scale)
-    img_h = target_h
+    img_h = int(h * scale)
     composite = composite.resize((img_w, img_h), Image.LANCZOS)
     tk_composite = ImageTk.PhotoImage(composite)
 
@@ -13085,17 +15402,21 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     word_count
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
-    target_width = int(screen_width * 0.7)
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_width = int(screen_width * width_percent)
     target_height = int(screen_height * 0.7)
 
     back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
     front_color = INVERSE_OVERLAY_TEXT_COLOR
 
-    # Scale image to fit vertically
+    # Scale image to fit within both width and height
     pil_img = ImageTk.getimage(img).copy()
-    scale = target_height / pil_img.height
+    scale_w = (target_width * 0.4) / pil_img.width  # Reserve space for text
+    scale_h = target_height / pil_img.height
+    scale = min(scale_w, scale_h)
     scaled_width = int(pil_img.width * scale)
-    scaled_img = pil_img.resize((scaled_width, target_height), Image.LANCZOS)
+    scaled_height = int(pil_img.height * scale)
+    scaled_img = pil_img.resize((scaled_width, scaled_height), Image.LANCZOS)
     tk_scaled_img = ImageTk.PhotoImage(scaled_img)# Create a very blurry version of the image
     blurred_img = scaled_img.filter(ImageFilter.GaussianBlur(radius=100))
     tk_blurred_img = ImageTk.PhotoImage(blurred_img)
@@ -13239,10 +15560,32 @@ def set_cloud_tags():
     data = currently_playing.get("data")
     if data:
         tags = []
-        if data.get("tags"):
+        use_anilist = lightning_mode_settings.get("tags", {}).get("use_anilist_tags", True)
+        
+        anilist_tags_found = False
+        if use_anilist:
+            anilist_id = data.get("anilist")
+            if anilist_id and str(anilist_id) in anilist_metadata:
+                anilist_data = anilist_metadata[str(anilist_id)]
+                anilist_tags_list = anilist_data.get("tags", [])
+                if anilist_tags_list:
+                    # Use AniList tags with their rank as weight (rank is 0-100)
+                    for tag in anilist_tags_list:
+                        if not tag.get("spoiler", False):  # Skip spoiler tags
+                            rank = tag.get("rank", 50)
+                            # Use cubic scaling to create dramatic visual difference
+                            weight = int(((rank / 100) ** 3) * 1000)
+                            tags.append({
+                                "name": tag.get("name", ""),
+                                "weight": weight
+                            })
+                    anilist_tags_found = True
+        
+        if not anilist_tags_found and data.get("tags"):
             for tag in data.get("tags"):
                 tags.append({"name": tag[0].replace(" - to be split and deleted", "").replace(" -- to be split and deleted", ""), "weight": tag[1]})
-        else:
+        
+        if not tags:
             for tag in get_tags(data):
                 tags.append({"name": tag, "weight": 600})
             tags.append({"name": "only MAL tags", "weight": 600})
@@ -13256,15 +15599,15 @@ def set_cloud_tags():
 
     # Adjust font size range based on number of tags
     min_font_size = scl(max(22, 60 - len(tag_cloud_tags)))
-    max_font_size = scl(max(min_font_size+6, 60 - len(tag_cloud_tags) // 4))  # Smaller range for many tags
+    max_font_size = scl(max(min_font_size+40, 100 - len(tag_cloud_tags) // 4))  # Much larger range
 
     font_range = max_font_size - min_font_size
 
     def font_size(w):
-        # Normalize weight and apply squash (square root) to reduce disparity
+        # Normalize weight and amplify disparity with power function
         normalized = (w - min_w) / (max_w - min_w + 1e-5)
-        squashed = normalized ** 0.5  # reduces the extreme difference
-        return int(min_font_size + font_range * squashed)
+        amplified = normalized ** 2  # Square to increase the difference
+        return int(min_font_size + font_range * amplified)
 
     random.shuffle(tag_cloud_tags)
     if currently_playing.get("data", {}).get("season"):
@@ -13317,7 +15660,6 @@ def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
                 y = clamped_y
                 # Push x outward to avoid collapsing horizontally
                 # Increase radius horizontally only, keep y fixed within margin
-                # Calculate direction: +1 if cosine positive, -1 if negative
                 horizontal_direction = 1 if math.cos(angle) >= 0 else -1
                 # Push x farther out beyond current radius:
                 x = int(cx + (radius + 20) * horizontal_direction) - w // 2
@@ -13432,7 +15774,6 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
 
-    # Use 70% of screen area for the grid
     grid_w = round(screen_w * 0.7)
     grid_h = round(screen_h * 0.7)
 
@@ -13580,6 +15921,7 @@ ost_stream_instance = vlc.Instance(
 stream_player = stream_instance.media_player_new()
 currently_streaming = None
 last_streamed = ["","","",""]
+last_image_source = ["", ""]  # [filename, image_url]
 _cached_streams = {}
 
 def get_youtube_stream_url(youtube_url, include_other_info=False):
@@ -13620,6 +15962,7 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
 
 def stream_url(url, name=None, channel=None, new_player=True):
     global currently_streaming, last_streamed, preset_media, video_stopped, stream_player
+    # For AnimThemes, skip yt-dlp processing since URL is already direct
     if not name or not channel:
         direct_stream, length, name, channel = get_youtube_stream_url(url, include_other_info=True)
     else:
@@ -13656,6 +15999,103 @@ def stop_stream():
     currently_streaming = None
     stream_player.stop()
     stream_player.set_media(None)  # Reset the media
+
+def is_animethemes_stream_file(filename):
+    if "[ID]" in filename or "[MAL]" in filename or ".webm" not in filename.lower():
+        return False
+    return True
+
+
+animethemes_stream = None
+stream_icon = '📶'
+def get_animethemes_stream_url(filename):
+    """Get streaming URL for a theme from AnimThemes using the filename as basename."""
+    return f"https://v.animethemes.moe/{filename}"
+
+def download_animethemes_file(filename, button=None):
+    """Download an AnimThemes file and save it to directory/year/season/filename structure."""
+    def update_button(text):
+        if button and isinstance(button, tk.Button):
+            try:
+                button.config(text=text)
+            except:
+                pass
+    
+    def do_download():
+        try:
+            update_button("Starting...")
+            
+            # Get metadata to determine season/year
+            data = get_metadata(filename)
+            season_str = data.get("season", "")
+            
+            # Parse season string (format: "Season Year", e.g., "Winter 2024")
+            if season_str and season_str != "N/A":
+                parts = season_str.split()
+                if len(parts) >= 2:
+                    season = parts[0]  # e.g., "Winter"
+                    year = parts[1]    # e.g., "2024"
+                else:
+                    season = "Unknown"
+                    year = "Unknown"
+            else:
+                season = "Unknown"
+                year = "Unknown"
+            
+            # Create directory structure: directory/year/season/
+            if directory:
+                dest_dir = os.path.join(directory, year, season)
+            else:
+                dest_dir = os.path.join(year, season)
+            
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, filename)
+            
+            # Download the file
+            url = get_animethemes_stream_url(filename)
+            update_button("Downloading...")
+            
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            # Write to file with progress tracking
+            with open(dest_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total_size > 0:
+                            percent = int((downloaded / total_size) * 100)
+                            mb_downloaded = downloaded / 1024 / 1024
+                            mb_total = total_size / 1024 / 1024
+                            update_button(f"{mb_downloaded:.1f}/{mb_total:.1f} MB")
+            
+            # Update directory_files to include the new file
+            directory_files[filename] = dest_path
+            
+            # Success message
+            filesize_mb = os.path.getsize(dest_path) / 1024 / 1024
+            update_button(f"✓ {filesize_mb:.1f} MB")
+            print(f"Downloaded {filename} to {dest_path}")
+            
+            # Refresh displays
+            if list_loaded == "playlist":
+                root.after(100, lambda: show_playlist(True))
+            
+            # Refresh file actions display to show local file actions instead of download
+            if currently_playing and currently_playing.get("filename") == filename:
+                root.after(100, lambda: update_extra_metadata())
+            
+        except Exception as e:
+            update_button("Error")
+            print(f"Download error for {filename}: {e}")
+            messagebox.showerror("Download Error", f"Failed to download {filename}:\n\n{str(e)}")
+    
+    # Start download in background thread
+    threading.Thread(target=do_download, daemon=True).start()
 
 def play_trailer(url=None):
     url = url or currently_playing.get("data", {}).get("trailer")
@@ -13711,7 +16151,7 @@ def load_random_clips(data=None, limit_channels=False, ost=False):
         if not url and not limit_channels:
             url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=False)
     if selected_extra_metadata == "links":
-        update_extra_metadata(data)
+        update_extra_metadata()
     return url, name, channel
 
 def stream_clip(video_id, name, channel):
@@ -13727,6 +16167,7 @@ youtube_api_limited = False
 youtube_api_limited_count = 0
 _cached_clips = {}
 _cached_ost_clips = {}
+
 def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=True, ost=False):
     global youtube_api_limited, youtube_api_limited_count
     _cached_id = f"{anime_title}-{year}"
@@ -13822,7 +16263,9 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "? watch these!", "must watch", "anime you should", "anime you must", "anime you need",
                     "anime you have to", "anime you gotta", "veggietales", "reacting to", "the anime effect #",
                     "#animeexplain", "top 3", "top 5", "top 10", "top 11", "top 12", "top 13",
-                    "anime mix", "english dub greeting video", "best of 20", "reacts to"
+                    "anime mix", "english dub greeting video", "best of 20", "reacts to", "anime boston",
+                    "best anime fights compilation", "best anime fight compilation", "best anime battles compilation",
+                    "best anime battle compilation"
                 ]
                 ost_bad_keywords = [
                     "insert song", "anime songs", "cd single", "theme song", "full album", "extended"
@@ -13839,7 +16282,6 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
 
                 # Filter out any bad keywords that appear in the anime title
                 filtered_keywords = [kw for kw in bad_keywords if kw not in f"{anime_title.lower()} {data.get("title").lower()}"]
-                # Now check if any of the remaining bad keywords are in the video title
                 if any(kw in title.lower() for kw in filtered_keywords):
                     test_print(f"[{video_id}]{title}:  bad keyword")
                     continue
@@ -13856,8 +16298,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     test_print(f"[{video_id}]{title}:  has a whole-word keyword")
                     continue
                 
-                # check if movie
-                if "movie" not in anime_title.lower() and "movie" in title.lower() and not data.get("type") == "Movie":
+                if "movie" not in anime_title.lower() and "movie" in title.lower() and not get_format(data) == "Movie":
                     test_print(f"[{video_id}]{title}:  movie in title when not movie")
                     continue
                 
@@ -13883,7 +16324,6 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     check_description = False
                 for t in [anime_title, data.get("title"), get_base_title(title=anime_title), get_base_title(title=data.get("title"))]:
                     t_edits = [t]
-                    # Only use the split-at-colon result if it's not too short or trivial
                     colon_split = t.split(": ")[0]
                     if colon_split != t and len(colon_split.strip()) >= 3:
                         t_edits.append(colon_split)
@@ -13899,7 +16339,6 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     continue  # skip this result
                 
                 if ost:
-                    # check if ost match
                     is_ost = False
                     for t in ["OST", "Soundtrack", "Insert Song"]:
                         if title_match_score(t, title) or title_match_score(t, description):
@@ -13995,16 +16434,12 @@ def title_match_score(anime_title, video_title):
     video_words = clean_words(video_title, True)
 
     # Filter case: Video title contains "from the director of <Anime Title>" which refers to a DIFFERENT work.
-    # We should not treat that as a match if the ONLY occurrence of the anime title is inside that phrase.
-    # Strategy: detect the phrase, then check if anime title tokens appear elsewhere outside the phrase.
     lowered_full = video_title.lower()
     phrase_key = "from the director of"
     if phrase_key in lowered_full:
         # Build regex to capture the portion after the phrase up to common separators
         # (dash, pipe, colon, parentheses start, end of string)
         # Example: "From the director of Attack on Titan | New Sci-Fi Original" -> captures "Attack on Titan"
-        # Escape anime title for presence test, but we'll instead tokenize to be robust.
-        # Identify spans of the phrase + following chunk (max 8 words) for scanning tokens.
         pattern = re.compile(r"from the director of\s+([^-|:()]+)", re.IGNORECASE)
         spans = []
         for m in pattern.finditer(video_title):
@@ -14014,11 +16449,8 @@ def title_match_score(anime_title, video_title):
             # Count total appearances of anime words in entire title
             video_all_tokens_no_generic = clean_words(video_title, True)
             anime_set = set(anime_words)
-            # Check if every anime word occurrence lies wholly within one of the captured spans
             # Build a map of indices of tokens in spans
-            # Simpler: reconstruct tokens sequence with indices to see if anime words appear outside any span.
             tokens_full = [w.strip("|『[]×.,!?:;\"'").lower() for w in video_title.lower().split()]
-            # Build char index for each token to test if within a span; approximate via running position.
             # For simplicity: check raw substring presence outside phrase first.
             outside_text = lowered_full
             for sspan, _w in spans:
@@ -14114,7 +16546,6 @@ def extract_track_name_from_youtube_title(youtube_title, data):
     if data.get("synonyms"):
         titles_to_remove.extend(data.get("synonyms", []))
     
-    # Add series titles if available
     if data.get("series"):
         series = data.get("series")
         if isinstance(series, list):
@@ -14136,7 +16567,6 @@ def extract_track_name_from_youtube_title(youtube_title, data):
             words = re.findall(r'\w+', title.lower())
             all_title_words.update(words)
     
-    # Convert youtube_title to lowercase for processing
     result = youtube_title.lower()
     
     # First pass: Remove exact title matches (case-insensitive)
@@ -14165,7 +16595,6 @@ def extract_track_name_from_youtube_title(youtube_title, data):
         if len(word) > 3:  # Only do substring removal for words longer than 3 chars
             result = result.replace(word.lower(), "")
     
-    # Fifth pass: Aggressively clean start of string for common patterns
     # Remove any remaining title fragments or single characters at the start
     while True:
         old_result = result
@@ -14193,7 +16622,6 @@ def extract_track_name_from_youtube_title(youtube_title, data):
     for sep in ["-", "—", "–", "|", "~", "×", "✕", "･", "・"]:
         result = result.replace(sep, " ")
     
-    # Remove parentheses and brackets and their contents if they're empty or contain removed words
     result = re.sub(r'\([^)]*\)', '', result)
     result = re.sub(r'\[[^\]]*\]', '', result)
     result = re.sub(r'\{[^}]*\}', '', result)
@@ -14209,7 +16637,6 @@ def extract_track_name_from_youtube_title(youtube_title, data):
             if result.lower().endswith(fragment):
                 result = result[:-len(fragment)].rstrip(":/-–—|~ ")
     
-    # Final validation: If result still contains too many title words, return empty
     remaining_words = set(re.findall(r'\w+', result.lower()))
     overlap = remaining_words & all_title_words
     
@@ -14217,7 +16644,6 @@ def extract_track_name_from_youtube_title(youtube_title, data):
     if remaining_words and len(overlap) / len(remaining_words) > 0.3:
         return ""
     
-    # If the result is too short or empty, return empty string
     if len(result) < 2:
         return ""
     
@@ -14271,7 +16697,6 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
     """
     global floating_windows
     size = scl(size)
-    # Remove window if value is '0' or negative
     if value is None or isinstance(value, str) and value == '0' or isinstance(value, int) and value < 0:
         if name in floating_windows:
             floating_windows[name]["window"].destroy()
@@ -14285,7 +16710,6 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         back_color = OVERLAY_BACKGROUND_COLOR
         front_color = OVERLAY_TEXT_COLOR
 
-    # Create the window if it doesn't exist
     if name not in floating_windows:
         window = tk.Toplevel()
         window.title(name)
@@ -14306,7 +16730,6 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         window = floating_windows[name]["window"]
         label = floating_windows[name]["label"]
 
-    # Resize font if it's too wide for the screen
     screen_width = window.winfo_screenwidth()
     max_width = int(screen_width * width_max)
 
@@ -14482,7 +16905,6 @@ def move_music_icon(current_time, total_length):
         music_icon_label.place(x=new_x, rely=0.35, anchor="center")
 
 def generate_random_color(min = 0, max = 255):
-    # Generate random values for red, green, and blue
     red = random.randint(min, max)
     green = random.randint(min, max)
     blue = random.randint(min, max)
@@ -14543,12 +16965,9 @@ FIXED_LIGHTNING_ROUNDS = {
         "volume_adjustment"
     ],
     "clues": [
-        # Currently no fixed fields for clue rounds
-        # TODO add delay for clue reveal?
     ]
 }
 
-# field_name: {type, required, options (for dropdown), default (for dropdown)}
 FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "theme": {"type": "file", "required": True},
     "start_time": {"type": "time", "required": False},
@@ -14575,12 +16994,10 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "volume_adjustment": {"type": "integer", "required": False, "default": 0}
 }
 
-# Create fixed lightning rounds folder if it doesn't exist
 FIXED_LIGHTNING_FOLDER = "fixed_playlists"
 if not os.path.exists(FIXED_LIGHTNING_FOLDER):
     os.makedirs(FIXED_LIGHTNING_FOLDER)
 
-# Global variables for fixed lightning round state
 fixed_lightning_queue = None  # {"name": str, "rounds": list, "current_index": int}
 fixed_lightning_round_playlist_data = {}  # Loaded JSON data for current fixed round
 fixed_current_round = None # Current round data
@@ -14606,11 +17023,8 @@ def load_fixed_lightning_rounds(filter_missing_themes=False):
                         
                         for round_data in data.get("rounds", []):
                             theme = round_data.get("theme", "")
-                            # Check if theme exists in directory_files
                             if not filter_missing_themes or get_clean_filename(theme) in directory_files:
-                                # Get duration (default to settings if not specified)
                                 duration = round_data.get("duration", lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
-                                # Get answer duration (default to 8 if not specified)
                                 answer_duration = round_data.get("answer_duration", 8)
                                 
                                 total_duration += duration + answer_duration
@@ -14639,7 +17053,6 @@ def show_fixed_lightning_list(update=False):
     """Show fixed lightning round playlists list in right column"""
     load_fixed_lightning_rounds(filter_missing_themes=True)
     
-    # Create dict for show_list
     rounds_dict = {i: round_info for i, round_info in enumerate(fixed_lightning_rounds_list)}
 
     def get_round_name(key, value):
@@ -14709,7 +17122,6 @@ def open_fixed_lightning_manager():
     button_seleted(manage_fixed_lightning_button, True)
     manage_fixed_lightning_button.configure(text="❌")
     
-    # Toggle - if window exists, close it
     if 'fixed_lightning_manager_window' in globals() and fixed_lightning_manager_window:
         manager_close()
         return
@@ -14763,17 +17175,14 @@ def open_fixed_lightning_manager():
         rounds_listbox.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=rounds_listbox.yview)
         
-        # Populate listbox with color coding for missing files
         for round_info in fixed_lightning_rounds_list:
             rounds_listbox.insert(tk.END, round_info['name'])
-            # Check if any rounds have missing theme files
             has_missing = False
             for rnd in round_info['data'].get('rounds', []):
                 theme = rnd.get('theme', '')
                 if theme and theme not in directory_files:
                     has_missing = True
                     break
-            # Color the item red if missing files
             if has_missing:
                 idx = rounds_listbox.size() - 1
                 rounds_listbox.itemconfig(idx, fg='red')
@@ -14879,7 +17288,6 @@ def open_fixed_lightning_manager():
             # Focus name field
             name_entry.focus_set()
             
-            # Wait for dialog to close
             dialog.wait_window()
             
             return result
@@ -14897,7 +17305,6 @@ def open_fixed_lightning_manager():
                 messagebox.showwarning("Invalid Name", "Round name cannot be empty.")
                 return
             
-            # Check for duplicate names
             if any(r['name'].lower() == name.lower() for r in fixed_lightning_rounds_list):
                 messagebox.showwarning("Duplicate Name", "A round with this name already exists.")
                 return
@@ -14914,13 +17321,11 @@ def open_fixed_lightning_manager():
             
             filepath = os.path.join(FIXED_LIGHTNING_FOLDER, filename)
             
-            # Check if file already exists
             if os.path.exists(filepath):
                 messagebox.showwarning("File Exists", "A round file with this name already exists.")
                 return
             
             # Create JSON structure with metadata
-            from datetime import datetime
             now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             round_data = {
@@ -14961,20 +17366,17 @@ def open_fixed_lightning_manager():
                 messagebox.showwarning("Invalid Name", "Round name cannot be empty.")
                 return
             
-            # Check for duplicate names (excluding current)
             if any(r['name'].lower() == name.lower() and r['filepath'] != round_info['filepath'] 
                    for r in fixed_lightning_rounds_list):
                 messagebox.showwarning("Duplicate Name", "A round with this name already exists.")
                 return
             
             # Update metadata
-            from datetime import datetime
             round_info['data']['name'] = name
             round_info['data']['description'] = metadata.get('description', '')
             round_info['data']['creator'] = metadata.get('creator', '')
             round_info['data']['date_modified'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Check if filename needs to be renamed
             old_filepath = round_info['filepath']
             expected_filename = f"{name}.json"
             new_filepath = os.path.join(FIXED_LIGHTNING_FOLDER, expected_filename)
@@ -15069,11 +17471,9 @@ def open_round_editor(round_info, manager_window=None, position=None):
     editor_window.configure(bg=BACKGROUND_COLOR)
     editor_window.geometry("700x500")
     
-    # Position at specified location if provided
     if position:
         editor_window.geometry(f"+{position[0]}+{position[1]}")
     
-    # Handle window close to return to manager
     def on_close():
         editor_window.destroy()
         if manager_window:
@@ -15091,7 +17491,6 @@ def open_round_editor(round_info, manager_window=None, position=None):
         """Save changes to the JSON file"""
         try:
             # Update date_modified
-            from datetime import datetime
             round_info['data']['date_modified'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             with open(round_info['filepath'], 'w', encoding='utf-8') as f:
@@ -15128,18 +17527,14 @@ def open_round_editor(round_info, manager_window=None, position=None):
         rounds_listbox.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=rounds_listbox.yview)
         
-        # Populate listbox with color coding for missing files
         rounds = round_info['data'].get('rounds', [])
         for i, rnd in enumerate(rounds):
             rnd_type = rnd.get('type', 'unknown').upper()
             rnd_theme = rnd.get('theme', 'No theme')
-            # Use get_title for display name
             display_name = get_title(rnd_theme, rnd_theme)
-            # Truncate if too long
             if len(display_name) > 50:
                 display_name = display_name[:47] + "..."
             rounds_listbox.insert(tk.END, f"{i+1}. [{rnd_type}] {display_name}")
-            # Color red if theme file is missing
             if rnd_theme and rnd_theme not in directory_files:
                 rounds_listbox.itemconfig(i, fg='red')
         
@@ -15183,10 +17578,8 @@ def open_round_editor(round_info, manager_window=None, position=None):
         
         rounds_listbox.bind('<<ListboxSelect>>', on_select)
         
-        # Restore selection if there was one
         if selected_round_index[0] is not None and selected_round_index[0] < len(rounds):
             rounds_listbox.selection_set(selected_round_index[0])
-            # Scroll to show context: show 2 items before the selected item if possible
             scroll_to_index = max(0, selected_round_index[0] - 5)
             rounds_listbox.see(scroll_to_index)
             # Trigger the selection event to update details
@@ -15265,7 +17658,6 @@ def open_round_editor(round_info, manager_window=None, position=None):
                                         "Are you sure you want to randomize the order of all rounds?",
                                         parent=editor_window)
             if result:
-                import random
                 random.shuffle(rounds)
                 selected_round_index[0] = None
                 save_rounds()
@@ -15278,7 +17670,6 @@ def open_round_editor(round_info, manager_window=None, position=None):
                 return
             
             # Clone the selected round
-            import copy
             cloned_round = copy.deepcopy(rounds[selected_round_index[0]])
             rounds.append(cloned_round)
             save_rounds()
@@ -15288,7 +17679,6 @@ def open_round_editor(round_info, manager_window=None, position=None):
             x = editor_window.winfo_x()
             y = editor_window.winfo_y()
             
-            # Select the new cloned round and open it for editing
             new_index = len(rounds) - 1
             editor_window.withdraw()
             open_round_field_editor(round_info, new_index, refresh_editor, editor_window, (x, y))
@@ -15365,11 +17755,9 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
     field_window.title("Add Round" if is_new else "Edit Round")
     field_window.configure(bg=BACKGROUND_COLOR)
     
-    # Position at specified location if provided
     if position:
         field_window.geometry(f"+{position[0]}+{position[1]}")
     
-    # Handle window close to return to parent
     def on_close():
         field_window.destroy()
         if parent_window:
@@ -15394,7 +17782,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
     
     tk.Label(type_frame, text="Round Type:", font=font_label, bg=BACKGROUND_COLOR, fg=fg_color).pack(side="left", padx=(0, 10))
     
-    # For new rounds, use last selected type if available, otherwise first in list
     # For existing rounds, use the round's type
     default_type = round_data.get('type', last_selected_round_type if last_selected_round_type else round_types[0])
     type_var = tk.StringVar(value=default_type)
@@ -15402,7 +17789,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                                  state='readonly', font=font_entry, width=20)
     type_dropdown.pack(side="left")
     
-    # Fields area (no scrollbar needed for dynamic sizing)
     scrollable_frame = tk.Frame(container, bg=BACKGROUND_COLOR)
     scrollable_frame.pack(fill="both", expand=True, pady=(5, 0))
     
@@ -15416,10 +17802,8 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         
         selected_type = type_var.get()
         
-        # Get all fields for this type (global + type-specific)
         all_fields = FIXED_LIGHTNING_ROUNDS['global'] + FIXED_LIGHTNING_ROUNDS.get(selected_type, [])
         
-        # Exclude start_time for frame rounds (frame times are specified individually)
         if selected_type == 'frame' and 'start_time' in all_fields:
             all_fields = [f for f in all_fields if f != 'start_time']
         
@@ -15533,7 +17917,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 tk.Label(duration_frame, text="(sec)", font=("Arial", 8), bg=BACKGROUND_COLOR, 
                         fg="gray").pack(side="left", padx=(5, 0))
                 
-                # Store default for comparison when saving
                 field_widgets[field_name] = ("duration", entry, default_duration)
             
             elif field_type == "integer":
@@ -15581,7 +17964,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 minus_btn.config(command=decrement_integer)
                 default_btn.config(command=set_to_default)
                 
-                # Store default for comparison when saving
                 field_widgets[field_name] = ("integer", entry, default_value)
             
             elif field_type == "time":
@@ -15669,12 +18051,10 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 field_widgets[field_name] = ("text", entry)
             
             elif field_type == "textarea":
-                # Textarea field for multi-line text input
                 text_widget = tk.Text(field_frame, font=font_entry, bg="black", fg="white", 
                                      width=40, height=4, wrap="word")
                 text_widget.pack(side="left")
                 
-                # Insert existing value if any
                 current_value = round_data.get(field_name, "")
                 if current_value:
                     text_widget.insert("1.0", current_value)
@@ -15707,7 +18087,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 def open_url_in_browser(e=entry):
                     url = e.get().strip()
                     if url:
-                        import webbrowser
                         webbrowser.open(url)
                 
                 def stream_in_player(e=entry):
@@ -15741,14 +18120,11 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         # Collect data
         new_round_data = {"type": type_var.get()}
         
-        # Track the selected round type for next time
         last_selected_round_type = type_var.get()
         
-        # Get all fields for validation
         selected_type = type_var.get()
         all_fields = FIXED_LIGHTNING_ROUNDS['global'] + FIXED_LIGHTNING_ROUNDS.get(selected_type, [])
         
-        # Exclude start_time for frame rounds (frame times are specified individually)
         if selected_type == 'frame' and 'start_time' in all_fields:
             all_fields = [f for f in all_fields if f != 'start_time']
         
@@ -15778,7 +18154,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 if value:
                     try:
                         value = int(float(value))
-                        # Skip if equals default
                         if value == default_val:
                             continue
                     except ValueError:
@@ -15792,7 +18167,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 if value:
                     try:
                         value = int(float(value))
-                        # Skip if equals default
                         if value == default_val:
                             continue
                     except ValueError:
@@ -15847,7 +18221,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
             round_info['data']['rounds'][round_index] = new_round_data
         
         # Update date_modified
-        from datetime import datetime
         round_info['data']['date_modified'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         # Save to file
@@ -15887,7 +18260,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         selected_type = test_round_data.get('type', 'regular')
         
         # Create a temporary fixed lightning round structure
-        from datetime import datetime
         temp_round_info = {
             'name': f'[TEST] {selected_type.upper()}',
             'description': 'Test round - single round from saved data',
@@ -15910,7 +18282,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         fixed_lightning_queue = temp_round_info
         fixed_lightning_round_playlist_data = None  # Reset any existing data
         play_video(playlist["current_index"])
-        # toggle_coming_up_popup(True, f"[TEST] {selected_type.upper()}", 
         #                      "Test round - this will play only the current saved round.\nMake sure to save any changes first.", 
         #                      queue=True)
         
@@ -15938,6 +18309,10 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
 #            *MUSIC
 # =========================================
 
+# Ensure music folder exists
+if not os.path.exists("music"):
+    os.makedirs("music")
+
 pygame.mixer.init()
 music_files = []  # List to store music files
 current_music_index = 0
@@ -15958,7 +18333,6 @@ def load_music_files():
 def next_background_track():
     global current_music_index, music_changed
     if music_files:
-        # Get background track history for current playlist
         track_history = playlist.get("background_track_history", [])
         total_tracks = len(music_files)
         
@@ -16016,7 +18390,6 @@ def play_background_music(toggle):
             track_path = music_files[current_music_index]
             pygame.mixer.music.load(track_path)
             
-            # Set random start position if enabled
             if lightning_mode_settings.get("_misc_settings", {}).get("background_music", {}).get("random_start", False):
                 try:
                     # Get track duration using tinytag
@@ -16032,7 +18405,6 @@ def play_background_music(toggle):
                     else:
                         pygame.mixer.music.play(-1)  # -1 loops indefinitely
                 except Exception:
-                    # Fallback if duration can't be determined
                     pygame.mixer.music.play(-1)  # -1 loops indefinitely
             else:
                 pygame.mixer.music.play(-1)  # -1 loops indefinitely
@@ -16091,7 +18463,6 @@ def now_playing_background_music(track = None):
         except:
             pass
         
-        # Fallback to filename if metadata not available
         if not display_text:
             basename = os.path.basename(track)
             for ext in valid_music_ext:
@@ -16109,13 +18480,16 @@ def toggle_info_popup():
     toggle_title_popup(not is_title_window_up() or title_info_only)
 
 def toggle_title_info_popup():
-    # If info popup is already up, toggle to artist info instead
-    if is_title_window_up() and not title_info_only and not artist_info_display and not studio_info_display:
+    # Cycle through different info display modes
+    if is_title_window_up() and not title_info_only and not artist_info_display and not studio_info_display and not season_info_display and not year_info_display:
         toggle_artist_info_popup()
     elif is_title_window_up() and artist_info_display:
         toggle_studio_info_popup()
     elif is_title_window_up() and studio_info_display:
-        # If showing artist info, go back to title only
+        toggle_season_info_popup()
+    elif is_title_window_up() and season_info_display:
+        toggle_year_info_popup()
+    elif is_title_window_up() and year_info_display:
         toggle_title_popup(True)
     else:
         # If popup is down or showing title only, toggle it
@@ -16137,16 +18511,21 @@ def update_popout_title_button_text(show=None):
     popout_button = popout_buttons_by_name[title_info_button]
     
     # Determine what text to show
-    if show and not title_info_only and not artist_info_display and not studio_info_display:
+    if show and not title_info_only and not artist_info_display and not studio_info_display and not season_info_display and not year_info_display:
         # Info popup is up showing title - offer artist info
         new_text = "ARTIST INFO"
-    elif show and (artist_info_display or studio_info_display):
+    elif show and artist_info_display:
         new_text = "STUDIO INFO"
-        if studio_info_display:
-            try:
-                popout_button.configure(bg=HIGHLIGHT_COLOR, fg="white")
-            except (tk.TclError, AttributeError):
-                pass
+    elif show and studio_info_display:
+        new_text = "SEASON RANK"
+    elif show and season_info_display:
+        new_text = "YEAR RANK"
+    elif show and year_info_display:
+        try:
+            popout_button.configure(bg=HIGHLIGHT_COLOR, fg="white")
+        except (tk.TclError, AttributeError):
+            pass
+        new_text = "FULL INFO"
     else:
         # Default state - show title only
         new_text = "TITLE ONLY"
@@ -16161,6 +18540,18 @@ def toggle_studio_info_popup():
         toggle_title_popup(True)
     else:
         toggle_title_popup(True, info_type="studio")
+
+def toggle_season_info_popup():
+    if season_info_display:
+        toggle_title_popup(True)
+    else:
+        toggle_title_popup(True, info_type="season")
+
+def toggle_year_info_popup():
+    if year_info_display:
+        toggle_title_popup(True)
+    else:
+        toggle_title_popup(True, info_type="year")
 
 def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, fade="in", destroy=False, callback=None):
     """Smoothly moves a Tkinter window to a new position with optional bounce, fade effects, and a completion callback."""
@@ -16228,17 +18619,23 @@ def is_title_window_up():
 title_info_only = False
 artist_info_display = False
 studio_info_display = False
+season_info_display = False
+year_info_display = False
 def toggle_title_popup(show, info_type=None):
     """Creates or destroys the title popup at the bottom middle of the screen."""
     global title_window, title_row_label, top_row_label, bottom_row_label, info_button
-    global light_mode, title_info_only, pre_censor, artist_info_display, studio_info_display
+    global light_mode, title_info_only, pre_censor, artist_info_display, studio_info_display, season_info_display, year_info_display
     title_info_only = info_type == "title_only"
     artist_info_display = info_type == "artist"
     studio_info_display = info_type == "studio"
+    season_info_display = info_type == "season"
+    year_info_display = info_type == "year"
     if not is_title_window_up() and not show:
         title_info_only = False
         artist_info_display = False
         studio_info_display = False
+        season_info_display = False
+        year_info_display = False
         return
     if title_window:
         screen_width = title_window.winfo_screenwidth()
@@ -16249,6 +18646,8 @@ def toggle_title_popup(show, info_type=None):
             title_info_only = False
             artist_info_display = False
             studio_info_display = False
+            season_info_display = False
+            year_info_display = False
             animate_window(title_window, (screen_width - window_width) // 2, screen_height, fade="out")
     
     if info_type == "artist":
@@ -16260,6 +18659,16 @@ def toggle_title_popup(show, info_type=None):
         button_seleted(studio_info_button, True)
     else:
         button_seleted(studio_info_button, False)
+
+    if info_type == "season":
+        button_seleted(season_info_button, True)
+    else:
+        button_seleted(season_info_button, False)
+
+    if info_type == "year":
+        button_seleted(year_info_button, True)
+    else:
+        button_seleted(year_info_button, False)
         
     if info_type == "title_only":
         button_seleted(info_button, False)
@@ -16345,7 +18754,7 @@ def toggle_title_popup(show, info_type=None):
                 aired = data.get("season")
             studio = ", ".join(data.get("studios"))
             tags = get_tags_string(data)
-            type = data.get("type")
+            type = get_format(data)
             source = data.get("source")
             if data.get("platforms"):
                 episodes = ", ".join(data.get("platforms"))
@@ -16363,25 +18772,61 @@ def toggle_title_popup(show, info_type=None):
                     episodes = "Airing"
                 else:
                     episodes = str(episodes) + " Episodes"
-                members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
-                score = f"Score: {data.get("score")} (#{data.get("rank")})"
+                members = f"MAL Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
+                score = f"MAL Score: {data.get("score")} (#{data.get("rank")})"
             if info_type != "title_only":
                 title_row = title
                 top_row = f"{marks}{theme}{version_num}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
 
                 if info_type == "artist":
                     artists = get_song_string(data, type="artist")
+                    artists_num = len(artists) or 1
+                    artist_max = (33 // artists_num) - 2
                     for artist in artists:
-                        artist_themes_string = ""
                         same_artists = get_filenames_from_artist(artist)
+                        
+                        # Group themes by anime and collect popularity
+                        anime_themes = {}  # {anime_title: {"themes": [theme_list], "popularity": popularity_val}}
                         for f in same_artists:
                             if f != currently_playing.get("filename"):
-                                artist_themes_string += f"{get_title(None, f)}\n"
-                        if artist_themes_string:
-                            top_row = f"Other themes by {artist}:\n{artist_themes_string}\n{top_row}"
+                                f_data = get_metadata(f)
+                                if f_data:
+                                    anime_title = get_display_title(f_data)
+                                    theme_slug = f_data.get("slug", "")
+                                    popularity = f_data.get("popularity", 999999)
+                                    
+                                    if anime_title not in anime_themes:
+                                        anime_themes[anime_title] = {
+                                            "themes": [],
+                                            "popularity": popularity
+                                        }
+                                    anime_themes[anime_title]["themes"].append(theme_slug)
+                        
+                        # Sort by popularity (lower number = more popular)
+                        all_sorted_anime = sorted(anime_themes.items(), 
+                                                 key=lambda x: x[1]["popularity"])
+                        total_count = len(all_sorted_anime)
+                        sorted_anime = all_sorted_anime[:artist_max]
+                        
+                        # Sort alphabetically by anime title
+                        sorted_anime = sorted(sorted_anime, key=lambda x: x[0])
+                        
+                        if sorted_anime:
+                            artist_themes_lines = []
+                            for anime_title, info in sorted_anime:
+                                themes_str = "/".join(info["themes"])
+                                artist_themes_lines.append(f"{anime_title}: {themes_str}")
+                            
+                            # Add "...and X more" if there are more entries
+                            if total_count > artist_max:
+                                artist_themes_lines.append(f"...and {total_count - artist_max} more")
+                            
+                            artist_themes_string = "\n".join(artist_themes_lines)
+                            top_row = f"Other themes by {artist}:\n{artist_themes_string}\n\n{top_row}"
+                            
                 elif info_type == "studio":
                     studios_num = len(data.get("studios", [])) or 1
-                    studio_max = (37 // studios_num) - 2
+                    studio_max = (33 // studios_num) - 2
                     for studio in data.get("studios", []):
                         same_studio = get_filenames_from_studio(studio)
                         unique_titles = []
@@ -16426,6 +18871,81 @@ def toggle_title_popup(show, info_type=None):
 
                         if unique_titles:
                             top_row = f"Other {header_type} by {studio}:\n{'\n'.join(unique_titles)}\n\n{top_row}"
+                
+                elif info_type == "season":
+                    season = data.get("season")
+                    current_format = get_format(data)
+                    if season:
+                        # Get all anime from same season and format from anilist_metadata, sorted by AniList score ranking
+                        ranked_anime = []
+                        for anilist_id, anilist_data in anilist_metadata.items():
+                            mal_id = anilist_data.get("mal_id")
+                            if not mal_id:
+                                continue
+                            
+                            anime_data = anime_metadata.get(str(mal_id), {})
+                            file_season = anime_data.get("season")
+                            
+                            # Get format from anilist_metadata
+                            anilist_format = anilist_data.get("format", "")
+                            file_format = anilist_format.replace("_", " ") if anilist_format else ""
+                            
+                            if file_season != season or file_format.upper() != current_format.upper():
+                                continue
+                            
+                            # Get title from anilist_metadata
+                            t = anilist_data.get("title") or anime_data.get("eng_title") or anime_data.get("title", "Unknown")
+                            popularity_rank = anilist_data.get("popularity_rank_season", INT_INF)
+                            score = anilist_data.get("score")
+                            ranked_anime.append((t, popularity_rank, score))
+                        
+                        # Sort by rank (lower is better) and filter out unranked
+                        ranked_anime = [(t, rank, score) for t, rank, score in ranked_anime if rank != INT_INF]
+                        ranked_anime.sort(key=lambda x: x[1])
+                        
+                        # Limit to top 36
+                        season_titles = [f"{rank}. {t} ({score}%)" if score else f"{rank}. {t}" for t, rank, score in ranked_anime[:30]]
+                        
+                        if season_titles:
+                            top_row = f"Most Popular {current_format} from {season} (on AniList):\n{chr(10).join(season_titles)}\n\n{top_row}"
+                
+                elif info_type == "year":
+                    season = data.get("season", "")
+                    current_format = get_format(data)
+                    year = season[-4:] if len(season) >= 4 else ""
+                    if year and year.isdigit():
+                        # Get all anime from same year and format from anilist_metadata, sorted by AniList score ranking
+                        all_anime = []
+                        for anilist_id, anilist_data in anilist_metadata.items():
+                            mal_id = anilist_data.get("mal_id")
+                            if not mal_id:
+                                continue
+                            
+                            anime_data = anime_metadata.get(str(mal_id), {})
+                            file_season = anime_data.get("season", "")
+                            
+                            # Get format from anilist_metadata
+                            anilist_format = anilist_data.get("format", "")
+                            file_format = anilist_format.replace("_", " ") if anilist_format else ""
+                            
+                            if not file_season.endswith(year) or file_format.upper() != current_format.upper():
+                                continue
+                            
+                            # Get title from anilist_metadata
+                            t = anilist_data.get("title") or anime_data.get("eng_title") or anime_data.get("title", "Unknown")
+                            popularity_rank = anilist_data.get("popularity_rank_year", INT_INF)
+                            score = anilist_data.get("score")
+                            all_anime.append((t, popularity_rank, score))
+                        
+                        # Sort by rank (lower is better) and filter out unranked
+                        all_anime = [(t, rank, score) for t, rank, score in all_anime if rank != INT_INF]
+                        all_anime.sort(key=lambda x: x[1])
+                        
+                        # Limit to top 36
+                        year_titles = [f"{rank}. {t} ({score}%)" if score else f"{rank}. {t}" for t, rank, score in all_anime[:30]]
+                        
+                        if year_titles:
+                            top_row = f"Most Popular {current_format} from {year} (on AniList):\n{chr(10).join(year_titles)}\n\n{top_row}"
 
                 middle_row_string = f"{score} | {japanese_title} | {members}\n"
                 if not score and not members:
@@ -16433,7 +18953,47 @@ def toggle_title_popup(show, info_type=None):
                         middle_row_string = f"{japanese_title}\n"
                     else:
                         middle_row_string = ""
-                bottom_row = f"{middle_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
+                
+                anilist_row_string = ""
+                anilist_id = data.get("anilist")
+                if anilist_id and str(anilist_id) in anilist_metadata:
+                    anilist_data = anilist_metadata[str(anilist_id)]
+                    anilist_score = anilist_data.get("score")
+                    anilist_popularity = anilist_data.get("popularity")
+                    
+                    if anilist_score or anilist_popularity:
+                        anilist_parts = []
+                        
+                        if anilist_score:
+                            score_str = f"AniList Score: {anilist_score}%"
+                            rank_parts = []
+                            if anilist_data.get("score_rank_season"):
+                                rank_parts.append(f"#{anilist_data['score_rank_season']} Season")
+                            if anilist_data.get("score_rank_year"):
+                                rank_parts.append(f"#{anilist_data['score_rank_year']} Year")
+                            if anilist_data.get("score_rank_all"):
+                                rank_parts.append(f"#{anilist_data['score_rank_all']} All-Time")
+                            if rank_parts:
+                                score_str += f" ({' / '.join(rank_parts)})"
+                            anilist_parts.append(score_str)
+                        
+                        if anilist_popularity:
+                            pop_str = f"AniList Members: {anilist_popularity:,}"
+                            rank_parts = []
+                            if anilist_data.get("popularity_rank_season"):
+                                rank_parts.append(f"#{anilist_data['popularity_rank_season']} Season")
+                            if anilist_data.get("popularity_rank_year"):
+                                rank_parts.append(f"#{anilist_data['popularity_rank_year']} Year")
+                            if anilist_data.get("popularity_rank_all"):
+                                rank_parts.append(f"#{anilist_data['popularity_rank_all']} All-Time")
+                            if rank_parts:
+                                pop_str += f" ({' / '.join(rank_parts)})"
+                            anilist_parts.append(pop_str)
+                        
+                        if anilist_parts:
+                            anilist_row_string = " | ".join(anilist_parts) + "\n"
+                
+                bottom_row = f"{middle_row_string}{anilist_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
             else:
                 title_row = get_base_title()
                 japanese_title = get_base_title(title=japanese_title)
@@ -16481,6 +19041,17 @@ def toggle_title_popup(show, info_type=None):
     window_height = title_window.winfo_reqheight()
     title_window.geometry(f"+{(screen_width - window_width) // 2}+{screen_height}")  # Adjust for bottom spacing
     root.after(1, lambda: animate_window(title_window, (screen_width - window_width) // 2, screen_height - window_height - scl(20)))
+
+def get_format(data):
+    """Get the format from AniList metadata, replacing underscores with spaces. Falls back to anime metadata format."""
+    anilist_id = data.get("anilist")
+    if anilist_id and str(anilist_id) in anilist_metadata:
+        anilist_data = anilist_metadata[str(anilist_id)]
+        anilist_format = anilist_data.get("format")
+        if anilist_format == "TV_SHORT":
+            return "TV Short"
+    # Fallback to regular anime metadata format
+    return data.get("type", "")
 
 def get_tags_string(data):
     return ", ".join(get_tags(data))
@@ -16689,7 +19260,6 @@ def guess_extra(extra = None):
                     used.add(pick)
                 attempts += 1
 
-            # Fallback if not enough distractors
             while len(distractors) < 3:
                 distractors.append("Unknown")
 
@@ -16736,10 +19306,8 @@ def guess_extra(extra = None):
                     if title and title != correct_title and title not in same_artist_titles:
                         weighted_titles.extend([title] * (1 + tag_overlap))
 
-            # 3. Pick distractors: at least one from same artist (if available), rest from weighted
             distractors = []
             used = set([correct_title])
-            # Pick one from same artist if possible
             if same_artist_titles:
                 pick = random.choice(same_artist_titles)
                 distractors.append(pick)
@@ -16754,7 +19322,6 @@ def guess_extra(extra = None):
                     distractors.append(pick)
                     used.add(pick)
                 attempts += 1
-            # Fallback if not enough distractors
             while len(distractors) < 3:
                 distractors.append("Unknown")
 
@@ -16812,10 +19379,8 @@ def get_random_titles(amount=4):
         score += len(set(anime.get("studios", [])) & set(data.get("studios", [])))
         score += len(set(get_tags(anime)) & set(get_tags(data)))
         score -= max(0, (get_series_total(anime) - 2))
-        # Add bonus for non-generic word overlap
         anime_words = get_words(get_base_title(anime))
         overlap = len(correct_words & anime_words)
-        # score += overlap * 2
         return score
 
     # Step 1: Filter and score
@@ -16827,7 +19392,6 @@ def get_random_titles(amount=4):
     # Step 2: Sort by similarity (descending)
     similar_anime = sorted(similar_anime, key=get_similarity_score, reverse=True)
 
-    # Step 3: Filter for unique series
     unique_series_anime = []
     seen_series = set(used_series)
     for anime in similar_anime:
@@ -16841,12 +19405,7 @@ def get_random_titles(amount=4):
             break
 
     # # Step 4: Try to include at least one with non-generic word overlap
-    # overlap_candidates = [a for a in unique_series_anime if get_words(get_base_title(a)) & correct_words]
     distractors = []
-    # if overlap_candidates:
-    #     pick = random.choice(overlap_candidates)
-    #     distractors.append(get_display_title(pick))
-    #     unique_series_anime = [a for a in unique_series_anime if a != pick]
 
     # Step 5: Fill remaining with less popular ones
     needed = amount - 1 - len(distractors)
@@ -16913,12 +19472,10 @@ def pick_bonus_characters():
         if len(selected) == 2:
             break
 
-    # Fallback if somehow still not 2
     if len(selected) < 2:
         backup = [c for c in characters if c[2]]
         selected.extend(random.sample(backup, min(2 - len(selected), len(backup))))
 
-    # Metadata for comparison
     correct_series = data.get("series") or [data.get("title")]
     correct_year = int(data.get("season", "9999")[-4:])
     used_series = set(correct_series)
@@ -16978,7 +19535,6 @@ def pick_bonus_characters():
         if len(final_distractors) == 4:
             break
 
-    # Fallback if we couldn’t get 2 unique
     while len(final_distractors) < 4:
         random_char = random.choice([c for c in characters if c not in selected and c[2]])
         final_distractors.append(random_char)
@@ -16989,21 +19545,17 @@ def pick_bonus_characters():
     return all_chars, correct_indices
 
 def get_anidb_metadata_from_anime(mal):
-    # Find file metadata entries that link MAL or AniDB to AniDB ID
-    for file_entry in file_metadata.values():
-        anidb_id = file_entry.get("anidb")
-        mal_id = file_entry.get("mal")
-
-        # Match either by direct MAL ID
-        if mal_id == mal:
-            return anidb_metadata.get(anidb_id)
+    for anidb_id, anidb_data in anidb_metadata.items():
+        mal_id = anidb_data.get("mal_id")
+        
+        if mal_id and str(mal_id) == str(mal):
+            return anidb_data
 
     return {}  # No match found
 
 def show_bonus_characters(characters, reveal_correct=False):
     global bonus_overlay_window, bonus_character_labels
 
-    # Destroy existing window if needed
     if bonus_overlay_window and bonus_overlay_window.winfo_exists():
         bonus_overlay_window.destroy()
 
@@ -17040,7 +19592,6 @@ def show_bonus_characters(characters, reveal_correct=False):
     for i, char in enumerate(characters):
         img_url = "https://cdn-eu.anidb.net/images/main/" + char[2]
         img = load_image_from_url(img_url, size=(scl(210), scl(315)))
-        # Frame for each character (black background, white border)
         frame = tk.Frame(center_frame,
                          bg="black",
                          highlightbackground=OVERLAY_TEXT_COLOR,
@@ -17159,9 +19710,7 @@ def play_video(index=playlist["current_index"]):
     set_countdown()
     toggle_coming_up_popup(False)
 
-    if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]):
-        # if len(playlist["playlist"]) >= infinite_settings.get("max_history_check", 5000):
-        #     index -= len(playlist["playlist"]) - infinite_settings.get("max_history_check", 5000) + 1
+    if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]) and not youtube_queue and not search_queue and not fixed_lightning_queue:
         get_next_infinite_track()
     
     if fixed_lightning_queue or fixed_lightning_round_playlist_data:
@@ -17202,10 +19751,28 @@ def play_video(index=playlist["current_index"]):
             set_rules("character")
         else:
             set_rules("anime")
-        stream_youtube(os.path.join("youtube", youtube_queue.get("filename")))
+        
+        video_path = os.path.join("youtube", youtube_queue.get("filename"))
+        if os.path.exists(video_path):
+            stream_youtube(video_path)
+        else:
+            # Stream from YouTube URL using yt-dlp
+            video_id = youtube_queue.get('video_id') or youtube_queue.get('url')
+            if video_id:
+                print(f"Streaming from YouTube: {video_id}")
+                youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+                stream_url, duration = get_youtube_stream_url(youtube_url)
+                if stream_url:
+                    stream_youtube(stream_url)
+                else:
+                    print(f"Failed to get stream URL for {video_id}")
+            else:
+                print(f"Warning: Video not downloaded and no video_id found")
+                stream_youtube(video_path)  # Try anyway
+        
         unload_youtube_video()
+        up_next_text()
     elif search_queue:
-        # Check if search_queue is a YouTube file
         if is_youtube_file(search_queue):
             youtube_data = get_youtube_metadata_by_filename(search_queue)
             if youtube_data:
@@ -17221,12 +19788,24 @@ def play_video(index=playlist["current_index"]):
                     set_rules("character")
                 else:
                     set_rules("anime")
-                # Get file path for external YouTube files
                 youtube_file_path = get_file_path(search_queue)
-                if youtube_file_path:
+                if youtube_file_path and os.path.exists(youtube_file_path):
                     stream_youtube(youtube_file_path)
-                else:
+                elif os.path.exists(os.path.join("youtube", search_queue)):
                     stream_youtube(os.path.join("youtube", search_queue))
+                else:
+                    # Stream from YouTube URL using yt-dlp
+                    video_id = youtube_data.get('url')
+                    if video_id:
+                        print(f"Streaming from YouTube: {video_id}")
+                        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+                        stream_url, duration = get_youtube_stream_url(youtube_url)
+                        if stream_url:
+                            stream_youtube(stream_url)
+                        else:
+                            print(f"Failed to get stream URL for {video_id}")
+                    else:
+                        stream_youtube(os.path.join("youtube", search_queue))  # Try anyway
             else:
                 play_filename(search_queue)
         else:
@@ -17242,7 +19821,6 @@ def play_video(index=playlist["current_index"]):
         playlist_entry = playlist["playlist"][playlist["current_index"]]
         filename = get_clean_filename(playlist_entry)
         
-        # Check if this is a YouTube file
         if is_youtube_file(filename):
             youtube_data = get_youtube_metadata_by_filename(filename)
             if youtube_data:
@@ -17258,12 +19836,24 @@ def play_video(index=playlist["current_index"]):
                     set_rules("character")
                 else:
                     set_rules("anime")
-                # Get file path for external YouTube files
                 youtube_file_path = get_file_path(playlist_entry)
-                if youtube_file_path:
+                if youtube_file_path and os.path.exists(youtube_file_path):
                     stream_youtube(youtube_file_path)
-                else:
+                elif os.path.exists(os.path.join("youtube", filename)):
                     stream_youtube(os.path.join("youtube", filename))
+                else:
+                    # Stream from YouTube URL using yt-dlp
+                    video_id = youtube_data.get('url')
+                    if video_id:
+                        print(f"Streaming from YouTube: {video_id}")
+                        youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+                        stream_url, duration = get_youtube_stream_url(youtube_url)
+                        if stream_url:
+                            stream_youtube(stream_url)
+                        else:
+                            print(f"Failed to get stream URL for {video_id}")
+                    else:
+                        stream_youtube(os.path.join("youtube", filename))  # Try anyway
             else:
                 if play_filename(playlist_entry, fullscreen=not same_index or autoplay_toggle != 1):
                     root.after(3000, thread_prefetch_metadata)
@@ -17307,13 +19897,16 @@ def skip_filename():
 
 def play_filename(playlist_entry, fullscreen=True):
     global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle, currently_playing
-    global video_stopped, previous_media, skip_limit
-    filepath = get_file_path(playlist_entry)  # Get file path from playlist
-    # Extract clean filename for metadata lookup (removes [L] prefix)
+    global video_stopped, previous_media, skip_limit, animethemes_stream
     filename = get_clean_filename(playlist_entry)
     data = get_metadata(filename, fetch=auto_fetch_missing)
+    filepath = get_file_path(playlist_entry)  # Get file path from playlist
+    animethemes_stream = False
+    if not filepath and is_animethemes_stream_file(filename):
+        filepath = get_animethemes_stream_url(filename)
+        animethemes_stream = True
     if skip_limit <= 10:
-        if not filepath or not os.path.exists(filepath):  # Check if file exists
+        if not filepath or not (os.path.exists(filepath) or animethemes_stream):  # Check if file exists
             print(f"File not found: {filepath}. Skipping...")
             skip_filename()
             return False
@@ -17336,8 +19929,8 @@ def play_filename(playlist_entry, fullscreen=True):
         toggle_title_popup(True)
     # Update metadata display asynchronously
     update_metadata_queue(playlist["current_index"])
-    is_mp4 = filepath.lower().endswith(".mp4") or filepath.lower().endswith(".m4v")
-    is_webm = filepath.lower().endswith(".webm")
+    is_mp4 = filename.lower().endswith(".mp4") or filename.lower().endswith(".m4v")
+    is_webm = filename.lower().endswith(".webm")
     if not is_webm:
         if current_vout != 'opengl':
             set_vout(vout_module='opengl')
@@ -17358,7 +19951,6 @@ def play_filename(playlist_entry, fullscreen=True):
         else:
             set_rules("anime")
         
-        # Only check for track change if this round will play background music
         # Exclude modes that don't play background music: clip, ost (streaming), regular, blind (play theme audio)
         if light_mode not in ['clip', 'ost', 'regular', 'blind']:
             if background_music_rounds > 0 and background_music_rounds % lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"] == 0:
@@ -17374,9 +19966,9 @@ def play_filename(playlist_entry, fullscreen=True):
             light_round_length = fixed_current_round.get("duration", light_round_length)
         if not black_overlay:
             set_black_screen(True)
-            root.after(500, lambda: player.play())
+            root.after(500, player_play)
         else:
-            player.play()
+            player_play()
             set_volume(volume_level)
     else:
         set_rules()
@@ -17389,7 +19981,7 @@ def play_filename(playlist_entry, fullscreen=True):
             button_seleted(blind_round_button, blind_round_toggle)
             manual_blind = True
             set_black_screen(True)
-            root.after(500, lambda: player.play())
+            root.after(500, player_play)
         elif peek_round_toggle or mute_peek_round_toggle:
             manual_blind = False
             set_black_screen(False)
@@ -17400,11 +19992,11 @@ def play_filename(playlist_entry, fullscreen=True):
                 next_background_track()
                 toggle_mute(True)
                 button_seleted(mute_peek_round_button, mute_peek_round_toggle)
-            root.after(500, lambda: player.play())
+            root.after(500, player_play)
         else:
             manual_blind = False
             set_black_screen(False)
-            player.play()
+            player_play()
     blind_round_toggle = False
     button_seleted(blind_round_button, False)
     peek_round_toggle = False
@@ -17412,25 +20004,24 @@ def play_filename(playlist_entry, fullscreen=True):
     mute_peek_round_toggle = False
     button_seleted(mute_peek_round_button, False)
     if light_mode not in ['frame', 'clip', 'ost', 'blind']:
-        root.after(500, play_video_retry, 5, fullscreen)  # Retry playback
+        retry_delay = 500
+        if animethemes_stream:
+            retry_delay = 2000  # Longer delay for streaming to allow time for buffering
+        root.after(retry_delay, play_video_retry, 5, fullscreen)  # Retry playback
     
-    # Mark lightning status for infinite playlists only
     if playlist.get("infinite", False):
         lightning_changed = False
         current_entry = playlist["playlist"][playlist["current_index"]]
         if not fixed_current_round and currently_playing.get("filename") == get_clean_filename(current_entry):
             if light_mode:  # Lightning round
-                # Add [L] if not already there
                 if not current_entry.startswith("[L]"):
                     playlist["playlist"][playlist["current_index"]] = "[L]" + current_entry
                     lightning_changed = True
             else:  # Normal round
-                # Remove [L] if it's there
                 if current_entry.startswith("[L]"):
                     playlist["playlist"][playlist["current_index"]] = current_entry[3:]
                     lightning_changed = True
         
-        # Refresh playlist display if lightning status changed
         if lightning_changed:
             root.after(10, refresh_current_list)
     
@@ -17439,6 +20030,9 @@ def play_filename(playlist_entry, fullscreen=True):
     skip_limit = 0
     save_config()
     return True
+
+def player_play():
+    player.play()
 
 # =========================================
 #         *SESSION LOGS
@@ -17454,7 +20048,6 @@ def parse_timestamp_flexible(timestamp_str):
             time_part = datetime.strptime(timestamp_str, '%H:%M:%S').time()
             return datetime.combine(datetime.now().date(), time_part)
     except ValueError:
-        # If both fail, return current time as fallback
         return datetime.now()
 
 session_data = []  # JSON session data
@@ -17561,7 +20154,6 @@ def generate_session_stats():
     stats_lines.append(f"{start_time.strftime('%I:%M%p').lower()} - {end_time.strftime('%I:%M%p').lower()} ({duration_hours:.1f} HOURS) {local_timezone}")
     stats_lines.append("="*60)
     
-    # Get unique themes for counting
     unique_themes = get_unique_themes_played()
     
     # Count OP/ED from unique themes only
@@ -17569,19 +20161,16 @@ def generate_session_stats():
     
     stats_lines.append(f"Themes Played: {len(unique_themes)}")
     
-    # Only show OP/ED if there are any
     if op_count + ed_count > 0:
         op_percent = (op_count / (op_count + ed_count)) * 100
         ed_percent = (ed_count / (op_count + ed_count)) * 100
         stats_lines.append(f"Openings: {op_count} ({op_percent:.1f}%)")
         stats_lines.append(f"Endings: {ed_count} ({ed_percent:.1f}%)")
 
-    # Only show lightning rounds if there were any
     lightning_tracks = sum(1 for entry in session_data if entry.get("lightning_mode"))
     if lightning_tracks > 0:
         stats_lines.append(f"Lightning Rounds: {lightning_tracks}")
     
-    # Only show YouTube videos if there were any
     youtube_count = sum(1 for entry in session_data if entry.get("type") == "youtube")
     if youtube_count > 0:
         stats_lines.append(f"YouTube Videos: {youtube_count}")
@@ -17596,10 +20185,8 @@ def generate_session_stats():
     if top_artist:
         stats_lines.append(f"Most Played Artist: {top_artist} ({top_artist_count})")
     
-    # Add scoreboard section if there are any score changes
     scoreboard_entries = [entry for entry in session_data if entry.get("type") == "scoreboard_score"]
     if scoreboard_entries:
-        # Collect final scores for each player
         player_scores = {}
         for entry in scoreboard_entries:
             player = entry.get("player", "")
@@ -17614,7 +20201,6 @@ def generate_session_stats():
         stats_lines.append("PTs   PLAYER")
         stats_lines.append("‾‾‾‾‾‾‾‾‾‾‾‾")
         for i, (player, score) in enumerate(sorted_players, 1):
-            # Format score to remove .0 if it's a whole number
             score_str = f"{score:g}"
             score_str += " " * (4 - len(score_str))  # Padding for alignment
             stats_lines.append(f"{score_str}  {player}")
@@ -17636,7 +20222,6 @@ def generate_text_from_session_data():
         filename = entry.get("filename", "")
         lightning_mode = entry.get("lightning_mode")
         
-        # Calculate lightning round number if this is a lightning entry
         
         session_string = f"{timestamp}:"
         
@@ -17719,9 +20304,10 @@ def create_new_session():
         session_start_time = datetime.now().strftime('%Y-%m-%d_%H-%M')
         # Clear any existing score changes from previous sessions
         try:
-            open("score_changes.json", "w").close()
+            if os.path.exists("score_changes.json"):
+                open("score_changes.json", "w").close()
         except Exception:
-            pass  # File might not exist yet
+            pass  # Ignore any errors while clearing the file
 
 def load_recent_session():
     """Check for existing current_session.json file and load it to continue the session"""
@@ -17786,7 +20372,6 @@ def add_session_history():
         "lightning_mode": light_mode if light_mode else None
     }
     
-    # Add data fields if available
     if data:
         session_entry.update({
             "id": data.get("mal"),
@@ -17797,6 +20382,7 @@ def add_session_history():
         if currently_playing.get("type") == "youtube":
             session_entry["url"] = data.get("url")
             session_entry["title"] = get_youtube_display_title(data)
+            session_entry["name"] = data.get("name")
     
     session_data.append(session_entry)
     
@@ -17820,7 +20406,6 @@ def save_session_history(create_text_file=True, silent=True):
         
         # Handle different timestamp types
         try:
-            # If it's already a number (Unix timestamp), return it directly
             if isinstance(timestamp_val, (int, float)):
                 return float(timestamp_val)
             
@@ -17834,7 +20419,6 @@ def save_session_history(create_text_file=True, silent=True):
                     dt = datetime.combine(datetime.now().date(), time_part)
                     return dt.timestamp()
             
-            # If it's neither string nor number, return 0
             return 0
             
         except (ValueError, OverflowError, TypeError):
@@ -17850,7 +20434,6 @@ def save_session_history(create_text_file=True, silent=True):
     with open(json_filename, "w", encoding="utf-8") as f:
         json.dump(session_data, f, indent=2, ensure_ascii=False)
     
-    # Save text file if requested
     if create_text_file:
         txt_filename = f"sessions/guess_the_anime_{session_start_time}.txt"
         text_lines = generate_text_from_session_data()
@@ -17871,13 +20454,15 @@ def thread_prefetch_metadata():
 
 def play_video_retry(retries, fullscreen=True):
     global video_stopped
-    # Check if the video is playing
+    retry_delay = 2000
+    if animethemes_stream:
+        retry_delay = 5000
     if (not player.is_playing() or player.get_length() == 0):
         if retries > 0:
             if retries < 5:
                 print(f"Retrying playback for: {currently_playing.get('filename')}")
-                player.play()
-            root.after(2000, play_video_retry, retries - 1)  # Retry playback
+                player_play()
+            root.after(retry_delay, play_video_retry, retries - 1)  # Retry playback
             return
         else:
             play_video(playlist["current_index"] + skip_direction)
@@ -17921,23 +20506,19 @@ def update_current_index(value = None, save = True):
                 out_of = len(playlist["playlist"])
             playlist_size_label.configure(text = "/" + str(out_of))
         
-        # Update playlist view to show current item if playlist is loaded
         if list_loaded == "playlist" and value is not None:
             global current_list_offset, current_list_selected
             # Update the selected index to match the current playing item
             current_list_selected = value
-            # Auto-scroll if current item or next 3 items are not visible
             entries_count = get_list_entries_count()
             current_start = current_list_offset
             current_end = current_list_offset + entries_count
             
-            # Check if current track or next 3 tracks ahead are not visible
             look_ahead = min(3, len(playlist["playlist"]) - value - 1)  # Don't look beyond playlist end
             needs_scroll = (value < current_start or value >= current_end or 
                           (value + look_ahead) >= current_end)
             
             if needs_scroll:
-                # Position so current item is visible with room for next 3 tracks
                 ideal_offset = max(0, value - 1)  # Show current with 1 item before if possible
                 max_offset = max(0, len(playlist["playlist"]) - entries_count)
                 current_list_offset = min(ideal_offset, max_offset)
@@ -18208,8 +20789,6 @@ def update_seek_bar():
                         elif end != 0 and time >= end:
                             player.pause()
                             play_next()
-                        # else:
-                        #     set_light_round_number(str(format_seconds(round(get_youtube_duration(currently_playing.get("data")) - (time-start)))))
                     else:
                         if not light_mode and (length - time) <= 8:
                             if (not is_title_window_up() or title_info_only) and auto_info_end:
@@ -18323,7 +20902,6 @@ def format_slug(slug):
 #            *PROGRESS BAR
 # =========================================
 
-# Global variable for the progress bar
 progress_bar = None
 progress_bar_enabled = True
 def create_progress_bar(color="grey"):
@@ -18358,7 +20936,6 @@ def update_progress_bar(current_time, total_time, filename=None):
         effective_current_time = current_time
         effective_total_time = total_time
         
-        # Only adjust for skip censors if filename is provided
         if filename:
             try:
                 if os.path.exists(CENSOR_JSON_FILE):
@@ -18367,7 +20944,6 @@ def update_progress_bar(current_time, total_time, filename=None):
                     
                     file_censors = censor_data.get(filename, [])
                     
-                    # Convert VLC times (milliseconds) to seconds for comparison with censor times
                     current_time_seconds = current_time / 1000.0
                     total_time_seconds = total_time / 1000.0
                     
@@ -18396,7 +20972,6 @@ def update_progress_bar(current_time, total_time, filename=None):
                     effective_current_time_seconds = current_time_seconds - skip_duration_before_current_seconds
                     effective_total_time_seconds = total_time_seconds - total_skip_duration_seconds
                     
-                    # Convert back to milliseconds for progress bar calculation
                     effective_current_time = effective_current_time_seconds * 1000
                     effective_total_time = effective_total_time_seconds * 1000
                     
@@ -18666,10 +21241,38 @@ def get_file_censors(filename):
 def show_censor(censor, check_title=True):
     return (not check_title or not is_title_window_up() or censor.get("nsfw") or censor.get("skip"))
 
+def set_censor_position(window, pos_x_percent, pos_y_percent, video_x, video_y, video_w, video_h):
+    """Position a censor box relative to the video display area."""
+    if not window or not window.winfo_exists():
+        return
+    try:
+        root.update_idletasks()
+        window_width = window.winfo_width()
+        window_height = window.winfo_height()
+    except tk.TclError:
+        return
+    
+    # Calculate position within the video area
+    # pos_x/y_percent are percentages of where in the video the censor should be
+    x_position = video_x + int((video_w - window_width) * (pos_x_percent / 100))
+    y_position = video_y + int((video_h - window_height) * (pos_y_percent / 100))
+    
+    x_position = int(max(0, x_position))
+    y_position = int(max(0, y_position))
+    
+    window.geometry(f"+{x_position}+{y_position}")
+
 def check_file_censors(filename, time, video_end, check_title=True):
     global censor_used, mute_censor_used
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
+    
+    video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
+    
+    # If so, legacy and new positioning are equivalent, so use new system
+    video_aspect_ratio = video_w / video_h if video_h > 0 else 0
+    is_16_9_video = abs(video_aspect_ratio - (16/9)) < 0.01  # Within 1% tolerance
+    
     file_censors = get_file_censors(filename)
     censor_found = False
     mute_found = False
@@ -18689,9 +21292,23 @@ def check_file_censors(filename, time, video_end, check_title=True):
                     censor_box = censor_entry.get("box") if censor_entry else None
                     if censor_box and censor_box.winfo_exists():
                         try:
-                            censor_box.geometry(str(int(screen_width*(censor['size_w']/100))) + "x" + str(int(screen_height*(censor['size_h']/100))))
-                            censor_box.configure(bg=(censor.get("color") or get_image_color()))
-                            set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
+                            # For 16:9 videos, always use new system (they're equivalent)
+                            is_legacy = censor.get("legacy", True) and not is_16_9_video
+                            
+                            if is_legacy:
+                                # Legacy: Use screen-based positioning (old behavior)
+                                censor_width = int(screen_width * (censor['size_w'] / 100))
+                                censor_height = int(screen_height * (censor['size_h'] / 100))
+                                censor_box.geometry(f"{censor_width}x{censor_height}")
+                                censor_box.configure(bg=(censor.get("color") or get_image_color()))
+                                set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
+                            else:
+                                # New: Use video-based positioning (aspect ratio aware)
+                                censor_width = int(video_w * (censor['size_w'] / 100))
+                                censor_height = int(video_h * (censor['size_h'] / 100))
+                                censor_box.geometry(f"{censor_width}x{censor_height}")
+                                censor_box.configure(bg=(censor.get("color") or get_image_color()))
+                                set_censor_position(censor_box, censor['pos_x'], censor['pos_y'], video_x, video_y, video_w, video_h)
                         except tk.TclError:
                             pass
                 else:
@@ -18796,10 +21413,8 @@ for _ in range(MAX_CAMERA_INIT_ATTEMPTS):
 def get_image_color():
     global camera, camera_init_attempts, camera_disabled, camera_error_count
     
-    # Fallback color if camera fails
     fallback_color = "#000000"
     
-    # Don't try to use camera if permanently disabled
     if camera_disabled:
         return fallback_color
     
@@ -18831,7 +21446,6 @@ def get_image_color():
         if any(keyword in error_msg for keyword in ["keyed mutex", "com error", "access violation", "comtypes"]):
             camera_error_count += 1
             
-            # Disable camera permanently if too many COM errors
             if camera_error_count >= CAMERA_DISABLE_THRESHOLD:
                 camera_disabled = True
                 print(f"DXCam disabled after {camera_error_count} COM errors. Background color will use fallback.")
@@ -18882,6 +21496,16 @@ class RectangleDrawerOverlay:
 
         self.screen_width = self.root.winfo_screenwidth()
         self.screen_height = self.root.winfo_screenheight()
+        
+        self.video_x, self.video_y, self.video_w, self.video_h, self.has_video = get_video_display_rect()
+        
+        # Draw guide rectangle showing video boundaries
+        if self.has_video:
+            self.canvas.create_rectangle(
+                self.video_x, self.video_y, 
+                self.video_x + self.video_w, self.video_y + self.video_h,
+                outline="green", width=3, dash=(10, 5)
+            )
 
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
@@ -18904,10 +21528,16 @@ class RectangleDrawerOverlay:
         left_edge = min(self.start_x, end_x)
         top_edge = min(self.start_y, end_y)
 
-        x_percent = (left_edge / (self.screen_width - width)) * 100
-        y_percent = (top_edge / (self.screen_height - height)) * 100
-        width_percent = width / self.screen_width * 100
-        height_percent = height / self.screen_height * 100
+        # Calculate positions relative to video area, not screen
+        # Convert screen coordinates to video-relative coordinates
+        video_left = left_edge - self.video_x
+        video_top = top_edge - self.video_y
+        
+        # Calculate percentages relative to video dimensions
+        x_percent = (video_left / (self.video_w - width)) * 100 if (self.video_w - width) > 0 else 0
+        y_percent = (video_top / (self.video_h - height)) * 100 if (self.video_h - height) > 0 else 0
+        width_percent = width / self.video_w * 100 if self.video_w > 0 else 0
+        height_percent = height / self.video_h * 100 if self.video_h > 0 else 0
 
         x_percent = self.edge_round(x_percent)
         y_percent = self.edge_round(y_percent)
@@ -18964,7 +21594,6 @@ def extract_title_and_slug_from_filename(filename):
                 version = file_data.get('version')
             else:
                 slug = parts[1].split(".")[0].split("v")[0]  # Fallback to filename parsing
-                # Try to extract version from filename if available
                 version_part = parts[1].split(".")[0]
                 if "v" in version_part:
                     version = version_part.split("v")[1] if len(version_part.split("v")) > 1 else None
@@ -19050,6 +21679,11 @@ def open_censor_editor(refresh=False):
         y = root.winfo_y()
         censor_editor.update_idletasks()
         censor_editor.geometry(f"+{x}+{y}")
+        # Set always on top if root is docked
+        if is_docked():
+            censor_editor.attributes("-topmost", True)
+        censor_editor.lift()
+        censor_editor.focus_force()
         
     # Create header and pagination controls
     def create_header_with_pagination():
@@ -19059,7 +21693,6 @@ def open_censor_editor(refresh=False):
             if row in [0, 1]:  # Pagination and header rows
                 widget.destroy()
         
-        # Add pagination controls at top (only if more than one page)
         total_censors = len(current_censors) if current_censors else 0
         total_pages = (total_censors + CENSORS_PER_PAGE - 1) // CENSORS_PER_PAGE if total_censors > 0 else 1
         
@@ -19150,12 +21783,10 @@ def open_censor_editor(refresh=False):
         if censor_page_offset >= total_censors and total_censors > 0:
             censor_page_offset = max(0, total_censors - CENSORS_PER_PAGE)
         
-        # Get censors for current page
         start_idx = censor_page_offset
         end_idx = min(start_idx + CENSORS_PER_PAGE, total_censors)
         page_censors = current_censors[start_idx:end_idx]
 
-        # Calculate starting row for censors (depends on whether pagination is shown)
         total_censors = len(current_censors)
         total_pages = (total_censors + CENSORS_PER_PAGE - 1) // CENSORS_PER_PAGE if total_censors > 0 else 1
         censor_start_row = 2 if total_pages > 1 else 1
@@ -19165,7 +21796,6 @@ def open_censor_editor(refresh=False):
             
             row_widgets = []
 
-            # Frame for Size
             size_frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
             if not censor.get("mute") and not censor.get("skip"):
                 size_var = tk.StringVar(value=f"{censor['size_w']}x{censor['size_h']}")
@@ -19175,14 +21805,12 @@ def open_censor_editor(refresh=False):
                 tk.Button(size_frame, text="🎯", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda sv=size_var, pv=pos_var: pick_target_func(sv, pv)).pack(side="left")
             size_frame.grid(row=display_idx+censor_start_row, column=0, padx=(6, 0), pady=4)
 
-            # Frame for Position
             pos_frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
             if not censor.get("mute") and not censor.get("skip"):
                 pos_entry = tk.Entry(pos_frame, textvariable=pos_var, width=12, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color)
                 pos_entry.pack(side="left")
             pos_frame.grid(row=display_idx+censor_start_row, column=1, padx=(0, 6), pady=4)
 
-            # Frame for Start and End Times
             def build_time_frame(var, row, col, back_color, is_start=True):
                 frame = tk.Frame(censor_editor, bg=back_color)
                 tk.Button(frame, text="-", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() - 0.1, 1))).pack(side="left")
@@ -19207,7 +21835,6 @@ def open_censor_editor(refresh=False):
                 row_color = "white"
             end_frame = build_time_frame(end_var, display_idx+censor_start_row, 3, row_color, is_start=False)
 
-            # Frame for Color and Buttons
             def remove_color(label):
                 label.config(bg="#333", text="AUTO")
                 save_to_current()
@@ -19264,7 +21891,6 @@ def open_censor_editor(refresh=False):
         if len(current_censors) > CENSORS_PER_PAGE:
             create_header_with_pagination()
         
-        # Refresh the bottom buttons (especially import button state)
         create_bottom_buttons()
 
     def test_censor_playback(censor, from_end=False):
@@ -19296,7 +21922,6 @@ def open_censor_editor(refresh=False):
             save_to_current()
             del current_censors[index]
             
-            # Adjust page offset if necessary after deletion
             total_censors = len(current_censors)
             if total_censors > 0:
                 max_offset = ((total_censors - 1) // CENSORS_PER_PAGE) * CENSORS_PER_PAGE
@@ -19314,7 +21939,7 @@ def open_censor_editor(refresh=False):
             "size_w": 100.00, "size_h": 100.00,
             "pos_x": 0.0, "pos_y": 0.0,
             "start": round(current_time_func(), 1), "end": 0.0,
-            "color": None, "nsfw": False
+            "color": None, "nsfw": False, "legacy": False
         }
         current_censors.append(new_censor)
         
@@ -19344,7 +21969,7 @@ def open_censor_editor(refresh=False):
         new_censor = {
             "mute":True,
             "start": round(current_time_func(), 1), "end": 0.0,
-            "nsfw": False
+            "nsfw": False, "legacy": False
         }
         current_censors.append(new_censor)
         
@@ -19373,7 +21998,7 @@ def open_censor_editor(refresh=False):
         new_censor = {
             "skip": True,
             "start": round(current_time_func(), 1), "end": 0.0,
-            "nsfw": False
+            "nsfw": False, "legacy": False
         }
         current_censors.append(new_censor)
         
@@ -19403,20 +22028,25 @@ def open_censor_editor(refresh=False):
                 actual_i = censor_page_offset + display_i
                 if actual_i >= len(current_censors):
                     continue
+                
+                # Get existing legacy flag to preserve it
+                existing_legacy = current_censors[actual_i].get("legacy", True)
                     
                 if current_censors[actual_i].get("mute", False):
                     current_censors[actual_i] = {
                         "mute": True,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
-                        "nsfw": widgets[5].var
+                        "nsfw": widgets[5].var,
+                        "legacy": existing_legacy
                     }
                 elif current_censors[actual_i].get("skip", False):
                     current_censors[actual_i] = {
                         "skip": True,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
-                        "nsfw": widgets[5].var
+                        "nsfw": widgets[5].var,
+                        "legacy": existing_legacy
                     }
                 else:
                     size_parts = widgets[0].winfo_children()[0].get().split("x")
@@ -19429,7 +22059,8 @@ def open_censor_editor(refresh=False):
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
                         "color": widgets[4].winfo_children()[0].cget("bg") if widgets[4].winfo_children()[0].cget("text") != "AUTO" else None,
-                        "nsfw": widgets[5].var
+                        "nsfw": widgets[5].var,
+                        "legacy": existing_legacy
                     }
             except Exception as e:
                 messagebox.showerror("Save Error", f"Error saving row {display_i+1}: {e}")
@@ -19482,6 +22113,110 @@ def open_censor_editor(refresh=False):
         
         # Refresh the UI to show imported censors
         refresh_ui()
+    
+    def convert_legacy_censors():
+        """Convert legacy screen-based censors to new video-based format."""
+        save_to_current()
+        
+        # Get video display info
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
+        
+        if not has_video or video_w == 0 or video_h == 0:
+            messagebox.showerror("Conversion Error", "Cannot convert censors: No video playing or video dimensions unavailable.")
+            return
+        
+        aspect_ratio = video_w / video_h if video_h > 0 else 0
+        is_16_9_video = abs(aspect_ratio - (16/9)) < 0.01
+        
+        if is_16_9_video:
+            # For 16:9 videos, legacy censors work fine as-is (no conversion needed)
+            # Just mark them as non-legacy so the UI doesn't show the convert button
+            legacy_count = sum(1 for c in current_censors if c.get("legacy", True))
+            if legacy_count > 0:
+                for censor in current_censors:
+                    if censor.get("legacy", True):
+                        censor["legacy"] = False
+                refresh_ui()
+                messagebox.showinfo("16:9 Video Detected", 
+                    f"This video is 16:9, so legacy censors work correctly without conversion.\n\n"
+                    f"Marked {legacy_count} censors as non-legacy.")
+                return
+            else:
+                messagebox.showinfo("No Legacy Censors", "All censors are already using the new format.")
+                return
+        
+        legacy_count = 0
+        converted_count = 0
+        
+        print(f"Converting censors - Video: {video_w}x{video_h} (AR: {aspect_ratio:.2f}), Screen: {screen_width}x{screen_height}, Offset: ({video_x}, {video_y})")
+        
+        for censor in current_censors:
+            if censor.get("legacy", True) and not censor.get("mute") and not censor.get("skip"):
+                # This is a legacy visual censor - convert it
+                try:
+                    # Old screen-based percentages
+                    old_size_w = censor.get("size_w", 100)
+                    old_size_h = censor.get("size_h", 100)
+                    old_pos_x = censor.get("pos_x", 0)
+                    old_pos_y = censor.get("pos_y", 0)
+                    
+                    # Calculate pixel positions in old system
+                    screen_pixel_w = screen_width * (old_size_w / 100)
+                    screen_pixel_h = screen_height * (old_size_h / 100)
+                    screen_pixel_x = (screen_width - screen_pixel_w) * (old_pos_x / 100)
+                    screen_pixel_y = (screen_height - screen_pixel_h) * (old_pos_y / 100)
+                    
+                    # Convert to video-relative coordinates
+                    video_pixel_x = screen_pixel_x - video_x
+                    video_pixel_y = screen_pixel_y - video_y
+                    
+                    # Calculate new size percentages relative to video
+                    new_size_w = (screen_pixel_w / video_w) * 100
+                    new_size_h = (screen_pixel_h / video_h) * 100
+                    
+                    # Clamp size values to reasonable ranges
+                    new_size_w = max(1, min(200, new_size_w))
+                    new_size_h = max(1, min(200, new_size_h))
+                    
+                    # Calculate new pixel sizes AFTER clamping
+                    new_pixel_w = video_w * (new_size_w / 100)
+                    new_pixel_h = video_h * (new_size_h / 100)
+                    
+                    # Calculate position percentages using the new pixel sizes
+                    new_pos_x = (video_pixel_x / (video_w - new_pixel_w)) * 100 if (video_w - new_pixel_w) > 0 else 0
+                    new_pos_y = (video_pixel_y / (video_h - new_pixel_h)) * 100 if (video_h - new_pixel_h) > 0 else 0
+                    
+                    # Clamp position values
+                    new_pos_x = max(0, min(100, new_pos_x))
+                    new_pos_y = max(0, min(100, new_pos_y))
+                    
+                    # Update censor
+                    censor["size_w"] = round(new_size_w, 2)
+                    censor["size_h"] = round(new_size_h, 2)
+                    censor["pos_x"] = round(new_pos_x, 2)
+                    censor["pos_y"] = round(new_pos_y, 2)
+                    censor["legacy"] = False
+                    
+                    print(f"  Converted: size {old_size_w}x{old_size_h}% → {new_size_w:.2f}x{new_size_h:.2f}%, pos {old_pos_x}x{old_pos_y}% → {new_pos_x:.2f}x{new_pos_y:.2f}%")
+                    
+                    converted_count += 1
+                except Exception as e:
+                    print(f"Error converting censor: {e}")
+                    
+                legacy_count += 1
+            elif censor.get("legacy", True) and (censor.get("mute") or censor.get("skip")):
+                # Mute/skip censors don't need position conversion, just mark as non-legacy
+                censor["legacy"] = False
+                converted_count += 1
+                legacy_count += 1
+        
+        if legacy_count > 0:
+            refresh_ui()
+            messagebox.showinfo("Conversion Complete", f"Converted {converted_count} legacy censors to new format.\n\nNote: Please verify positions are correct and save.")
+        else:
+            messagebox.showinfo("No Legacy Censors", "All censors are already using the new format.")
 
     # Keep track of bottom buttons so we can clear them
     bottom_button_widgets = []
@@ -19512,16 +22247,22 @@ def open_censor_editor(refresh=False):
         save_censors_button.grid(row=999, column=4, columnspan=4, pady=12)
         bottom_button_widgets.append(save_censors_button)
         
-        # Check if import button should be shown
         current_has_censors = len(current_censors) > 0
         similar_censors = find_similar_theme_censors(filename) if filename else {}
         show_import_button = not current_has_censors and len(similar_censors) > 0
         
-        # Add import button if conditions are met
+        has_legacy = any(c.get("legacy", True) for c in current_censors)
+        
         if show_import_button:
             import_button = tk.Button(censor_editor, text="IMPORT PREVIOUS CENSORS", width=30, font=font_big, bg="dark green", fg=fg_color, command=import_previous_censors)
             import_button.grid(row=1000, column=0, columnspan=6, pady=12)
             bottom_button_widgets.append(import_button)
+        
+        if has_legacy:
+            convert_button = tk.Button(censor_editor, text="⚠ CONVERT LEGACY CENSORS", width=30, font=font_big, bg="dark orange", fg="white", command=convert_legacy_censors)
+            row_offset = 1001 if show_import_button else 1000
+            convert_button.grid(row=row_offset, column=0, columnspan=8, pady=12)
+            bottom_button_widgets.append(convert_button)
     
     create_bottom_buttons()
 
@@ -19585,7 +22326,6 @@ def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=Fal
         if not quiet:
             print(f"{filename} {type_string} playlist '{playlist_name}'.")
 
-    # Add/Remove from current playlist if it's loaded
     if playlist.get("name") == playlist_name:
         if filename in theme_list:
             if filename not in playlist["playlist"]:
@@ -19597,7 +22337,6 @@ def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=Fal
         else:
             if filename in playlist["playlist"]:
                 playlist["playlist"].remove(filename)
-                # Update current index and adjust current index if currently playing item was removed
                 if currently_playing.get("filename") == filename:
                     playlist["current_index"] -= 1
                     update_current_index()
@@ -19615,7 +22354,10 @@ def check_theme(filename=None, playlist_name=None, recache=False):
         playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
         if os.path.exists(playlist_path):
             with open(playlist_path, "r", encoding="utf-8") as f:
-                check_theme_cache[playlist_name] = json.load(f).get("playlist", [])
+                loaded_data = json.load(f)
+                # Convert infinity markers (though only using playlist array, good practice)
+                loaded_data = convert_infinity_markers(loaded_data)
+                check_theme_cache[playlist_name] = loaded_data.get("playlist", [])
     return filename in check_theme_cache.get(playlist_name, [])
 
 def tag():
@@ -19687,7 +22429,6 @@ def handle_bulk_marking(playlist_name, check_func, mutually_exclusive_playlists=
     
     current_filename = currently_playing.get("filename")
     
-    # Check if current item is marked
     current_is_marked = check_func(current_filename)
     action = "unmark" if current_is_marked else "mark"
     
@@ -19794,6 +22535,8 @@ def dock_player():
         root.attributes("-topmost", False)
         # root.overrideredirect(False)  # Restore title bar
         root.attributes("-alpha", 1.0)  # Make fully visible
+        if censor_editor:
+            censor_editor.attributes("-topmost", False)
         if not disable_shortcuts:
             move_root_to_bottom(False)
         elif undock_position[1] < root.winfo_y():
@@ -19805,6 +22548,8 @@ def dock_player():
         # root.overrideredirect(True)  # Remove title bar
         root.attributes("-alpha", 0.8)  # Set transparency to 80%
         root.attributes("-topmost", True)
+        if censor_editor:
+            censor_editor.attributes("-topmost", True)
         move_root_to_bottom()
         root.lift()
     up_next_text()
@@ -19821,7 +22566,6 @@ def move_root_to_bottom(toggle=True):
     window_width = root.winfo_width()
     window_height = root.winfo_height()
 
-    # Adjust for possible taskbar height (defaulting to 40px)
     taskbar_height = 0  
     y_position = screen_height - window_height - taskbar_height
     x_position = screen_width/2 - window_width/2 - taskbar_height
@@ -19864,14 +22608,11 @@ def show_field_themes(update = False, group=[]):
 
 def get_title(key, value):
     try:
-        # Check if this entry has lightning round marking
         is_lightning = value.startswith("[L]")
         lightning_icon = "⚡" if is_lightning else ""
         
-        # Extract filename for metadata lookup
         filename = get_clean_filename(value)
         
-        # Check if this is a YouTube file first
         if is_youtube_file(filename):
             youtube_data = get_youtube_metadata_by_filename(filename)
             if youtube_data:
@@ -19886,20 +22627,19 @@ def get_title(key, value):
                 title = get_display_title(data)
                 display_name = title + " " + data.get("slug")
                 version_num = data.get("version")
-                if version_num and version_num != 1:
+                if version_num != "null" and version_num != "1":
                     display_name += f"v{version_num}"
-                # Add indicators for lightning, external files
                 if os.path.isabs(value):
                     display_name = "📁 " + display_name
                 display_name = lightning_icon + display_name
             else:
-                # Show filename with external indicator if applicable
                 display_name = filename
                 if os.path.isabs(value):
                     display_name = "📁 " + display_name
                 display_name = lightning_icon + display_name
         
-        # Truncate if too long (will be limited after index is added in update_persistent_button)
+        if filename not in directory_files and "SEARCHING" not in filename:
+            display_name = stream_icon + display_name
         return display_name
         
     except:
@@ -19962,7 +22702,6 @@ def remove_theme(index):
     # Update current_list_content to reflect the removal
     if list_loaded == "playlist":
         current_list_content = convert_playlist_to_dict(playlist["playlist"])
-        # Adjust current_list_selected if needed
         if current_list_selected > index:
             current_list_selected -= 1
         elif current_list_selected == index and current_list_selected >= len(playlist["playlist"]):
@@ -20007,7 +22746,6 @@ def get_list_entries_count():
         if available_height <= 1:
             content = right_top.get(1.0, tk.END)
             content_stripped = content.strip()
-            # Check if content is empty or just whitespace/newlines
             if not content_stripped or content_stripped == "" or len(content_stripped) == 0:
                 return 13
             else:
@@ -20063,7 +22801,6 @@ def create_persistent_list_buttons(column, target_count=None):
         btn.bind("<Enter>", lambda e, idx=i: handle_persistent_button_enter(e, idx))
         btn.bind("<Leave>", lambda e, idx=i: handle_persistent_button_leave(e, idx))
         
-        # Add drag bindings only for playlist
         if list_loaded == "playlist":
             btn.bind("<Button-1>", lambda e, idx=i: handle_persistent_drag_start(e, idx))
             btn.bind("<B1-Motion>", lambda e: handle_drag_motion(e))
@@ -20095,7 +22832,6 @@ def refresh_current_list():
         global current_list_content
         current_list_content = convert_playlist_to_dict(playlist["playlist"])
         
-        # Check if button count needs to change first
         entries_count = get_list_entries_count()
         current_count = len(persistent_buttons) if persistent_buttons else 0
         
@@ -20131,7 +22867,6 @@ def refresh_current_list():
                 else:
                     update_persistent_button(button_index, -1, current_list_name_func, current_list_content, current_list_selected)
         else:
-            # Fallback to full refresh if persistent buttons aren't ready
             show_playlist(update=True)
     elif list_loaded and current_list_content:
         # For other lists, update the display directly
@@ -20155,7 +22890,6 @@ def update_persistent_list_display():
         if list_index < end_index:
             update_persistent_button(button_index, list_index, current_list_name_func, current_list_content, current_list_selected)
         else:
-            # Clear button content for unused positions
             try:
                 persistent_buttons[button_index].config(text="", state="disabled")
             except (tk.TclError, IndexError):
@@ -20165,8 +22899,7 @@ def get_display_width(text):
     """Calculate display width treating Unicode icons as 2 characters each."""
     width = 0
     for char in text:
-        # Count Unicode icons as 2 characters for alignment in monospace fonts
-        if char in ['⚡', '📁']:
+        if char in ['⚡', '📁', stream_icon]:
             width += 2
         else:
             width += 1
@@ -20180,7 +22913,7 @@ def truncate_by_display_width(text, max_width):
     # Find the truncation point
     current_width = 0
     for i, char in enumerate(text):
-        char_width = 2 if char in ['⚡', '📁'] else 1
+        char_width = 2 if char in ['⚡', '📁', stream_icon] else 1
         if current_width + char_width > max_width:
             return text[:i]
         current_width += char_width
@@ -20196,7 +22929,6 @@ def update_persistent_button(button_index, item_index, name_func, content_dict, 
     
     btn = persistent_buttons[button_index]
     
-    # Check if button still exists
     try:
         if not btn.winfo_exists():
             return
@@ -20205,18 +22937,15 @@ def update_persistent_button(button_index, item_index, name_func, content_dict, 
     
     button_to_index_map[btn] = item_index
     
-    # Get the content for this item index
     items_list = list(content_dict.items())
     if item_index < len(items_list) and item_index >= 0:
         key, value = items_list[item_index]
         index_prefix = str(item_index + 1) + ": "
         title_part = name_func(key, value)
 
-        # Calculate available space for title (47 total - index prefix display width)
         max_total_width = 47
         available_width = max_total_width - get_display_width(index_prefix)
         
-        # Truncate title if needed based on display width
         if get_display_width(title_part) > available_width:
             keep_width = available_width - 1  # Account for "…" (1 character width)
             if keep_width > 0:
@@ -20259,7 +22988,6 @@ def update_persistent_button(button_index, item_index, name_func, content_dict, 
         except tk.TclError:
             return
     else:
-        # Hide button if no content
         try:
             btn.config(text="", state="disabled")
         except tk.TclError:
@@ -20284,7 +23012,6 @@ def handle_persistent_right_click(event, button_index):
             btn = persistent_buttons[button_index]
             if btn in button_to_index_map and btn.winfo_exists():
                 actual_index = button_to_index_map[btn]
-                # Call the right-click function if it exists
                 if hasattr(handle_persistent_right_click, 'right_click_func') and handle_persistent_right_click.right_click_func:
                     handle_persistent_right_click.right_click_func(actual_index)
     except (tk.TclError, IndexError):
@@ -20333,7 +23060,7 @@ def list_unload(column):
         persistent_buttons = []
     
     list_set_loaded(None)
-    update_extra_metadata(currently_playing.get("data"))
+    update_extra_metadata()
 
 def list_move(amount):
     global list_index, current_list_offset
@@ -20347,7 +23074,6 @@ def list_move(amount):
         else:  # Moving up
             list_index = (list_index - 1) % list_size
         
-        # Auto-scroll if selection moves out of visible area
         entries_count = get_list_entries_count()
         if list_index < current_list_offset:
             current_list_offset = list_index
@@ -20356,7 +23082,6 @@ def list_move(amount):
             current_list_offset = list_index - entries_count + 1
             refresh_current_list()
         elif old_index != list_index:
-            # Just update highlighting if no scrolling needed
             refresh_current_list()
     else:
         left_column.yview_scroll(amount, "units")
@@ -20411,16 +23136,13 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
     current_list_content = content
     current_list_name_func = name_func
     
-    # Store the selected index for highlighting
     global current_list_selected
     current_list_selected = selected
     
-    # Update playlist offset for playlist type
     if type == "playlist":
         global playlist_page_offset
         playlist_page_offset = current_list_offset
     
-    # Store right_click_func for persistent button handlers
     handle_persistent_right_click.right_click_func = right_click_func
     
     # Only clear and recreate layout when switching list types
@@ -20428,7 +23150,6 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
         column.config(state=tk.NORMAL, wrap="none", spacing1=0, spacing3=0)
         column.delete(1.0, tk.END)
         
-        # Create or recreate persistent buttons if count changed
         entries_count = get_list_entries_count()
         current_count = len(persistent_buttons) if persistent_buttons else 0
         if not persistent_buttons or len(persistent_buttons) != entries_count:
@@ -20454,7 +23175,6 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
     start_index = current_list_offset
     end_index = min(list_size, start_index + entries_count)
     
-    # Adjust offset if we're beyond the valid range
     if start_index >= list_size:
         current_list_offset = max(0, list_size - entries_count)
         start_index = current_list_offset
@@ -20466,10 +23186,8 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
         if item_index < end_index:
             update_persistent_button(button_index, item_index, name_func, content, selected)
         else:
-            # Hide button if no content
             update_persistent_button(button_index, -1, name_func, content, selected)
     
-    # Ensure keyboard focus for navigation
     if buttons_need_recreation:
         column.focus_set()
 
@@ -20478,7 +23196,6 @@ drag_start_index = None
 drag_current_y = None
 drag_indicator_line = None
 
-# Hover tracking for drag-and-drop insertion
 hovered_button_index = None
 external_drag_active = False
 
@@ -20526,7 +23243,6 @@ def handle_drag_motion(event):
                     if index_str.isdigit():
                         target_index = int(index_str) - 1  # Convert to 0-based
                         
-                        # Only highlight if it's different from the source
                         if target_index != drag_start_index and 0 <= target_index < len(playlist["playlist"]):
                             # Store original colors and highlight
                             highlighted_buttons[target_index] = {
@@ -20555,7 +23271,6 @@ def highlight_drag_source(source_index):
         return
         
     try:
-        # Highlight the button widget for the source index to look pressed (white bg, black text)
         highlight_button_at_index(source_index, "white", "black", is_source=True)
         
     except (tk.TclError, AttributeError, ValueError):
@@ -20568,7 +23283,6 @@ def highlight_drop_target(target_index):
     if list_loaded != "playlist":
         return
     
-    # Don't highlight if dropping on the same item
     if target_index == drag_start_index:
         clear_button_highlights()
         return
@@ -20577,7 +23291,6 @@ def highlight_drop_target(target_index):
         # Clear previous button highlights
         clear_button_highlights()
         
-        # Find and highlight the button widget for the target index
         highlight_button_at_index(target_index, "lime", "black")
         
     except (tk.TclError, AttributeError, ValueError):
@@ -20594,7 +23307,6 @@ def highlight_button_at_index(target_index, bg_color, fg_color, is_source=False)
             if hasattr(widget, 'configure') and hasattr(widget, 'cget'):
                 try:
                     button_text = widget.cget('text')
-                    # Check if this button corresponds to our target index
                     if button_text.startswith(f"{target_index + 1}:"):
                         # Store original colors
                         if target_index not in highlighted_buttons:
@@ -20682,7 +23394,6 @@ def on_button_enter(event, index):
     """Handle mouse entering a button during drag operation."""
     global hovered_button_index
     
-    # Always track which button we're hovering over (for file drops)
     hovered_button_index = index
     
     # Always highlight on hover, unless it's a special button we shouldn't change
@@ -20690,12 +23401,10 @@ def on_button_enter(event, index):
         current_bg = event.widget.cget('bg')
         current_fg = event.widget.cget('fg')
         
-        # Don't change highlighting if it's the current playing song or drag source
         is_current_index = (index == playlist.get("current_index", -1))
         is_drag_source = (drag_start_index is not None and index == drag_start_index)
         
         if not (is_current_index or is_drag_source):
-            # Store original colors if not already stored
             if index not in highlighted_buttons:
                 highlighted_buttons[index] = {
                     'widget': event.widget,
@@ -20758,7 +23467,6 @@ def end_playlist_drag(event):
                     index_str = button_text.split(':')[0].strip()
                     if index_str.isdigit():
                         display_index = int(index_str) - 1  # Convert to 0-based
-                        # Account for pagination offset
                         if list_loaded == "playlist":
                             drop_index = display_index  # display_index already includes pagination offset
                         else:
@@ -20779,13 +23487,10 @@ def end_playlist_drag(event):
                     text_index = text_widget.index(f"@{x_rel},{y_rel}")
                     drop_line = int(text_index.split('.')[0]) - 1  # Convert to 0-based line index
                     
-                    # Account for pagination in playlist view
                     if list_loaded == "playlist":
                         # Each line corresponds to a playlist item, add the pagination offset
                         drop_index = max(0, min(drop_line + playlist_page_offset, len(playlist["playlist"]) - 1))
                     else:
-                        # Original logic for non-playlist lists
-                        # Account for the "items above" indicator if present
                         if "items above" in text_widget.get("1.0", "2.0"):
                             drop_line = max(0, drop_line - 1)
                         
@@ -20793,7 +23498,6 @@ def end_playlist_drag(event):
             except (ValueError, tk.TclError):
                 pass
         
-        # Perform the reorder if we have a valid drop position
         if (drop_index is not None and 
             drop_index != drag_start_index and 
             0 <= drop_index < len(playlist["playlist"])):
@@ -20802,7 +23506,6 @@ def end_playlist_drag(event):
             item = playlist["playlist"].pop(drag_start_index)
             playlist["playlist"].insert(drop_index, item)
             
-            # Adjust current_index if needed
             if playlist["current_index"] == drag_start_index:
                 playlist["current_index"] = drop_index
             elif drag_start_index < playlist["current_index"] <= drop_index:
@@ -20984,7 +23687,6 @@ def get_op_ed_counts(themes):
             version = file_data.get('version')
         else:
             slug = filename.split("-")[1].split(".")[0].split("v")[0]  # Fallback to filename parsing
-            # Try to extract version from filename if available
             version_part = filename.split("-")[1].split(".")[0]
             if "v" in version_part:
                 version = version_part.split("v")[1] if len(version_part.split("v")) > 1 else None
@@ -21058,7 +23760,6 @@ def toggle_end_message(speed=500):
             duration = None
         
         # Get timezone abbreviation
-        # Check if we're in daylight saving time
         is_dst = time.daylight and time.localtime().tm_isdst
         timezone_name = time.tzname[1 if is_dst else 0]
         
@@ -21295,7 +23996,6 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             height = popout_controls.winfo_height()
             min_dim = min(width*.5, height)
 
-            # Use combined or minimum dimension for scaling
             new_upnext_size = max(10, int(min_dim / 30))
             new_button_size = max(10, int(min_dim / 25))
             new_current_size = max(10, int(min_dim / 25))
@@ -21311,7 +24011,6 @@ def create_popout_controls(columns=5, title="Popout Controls"):
                 # Adjust text wrap to match new width
                 popout_currently_playing.configure(wraplength=int(width * 0.95))
             else:
-                # Collapse metadata if disabled
                 popout_up_next_font.configure(size=1)
                 popout_current_font.configure(size=1)
                 popout_current_extra_font.configure(size=1)
@@ -21755,8 +24454,6 @@ def create_popout_controls(columns=5, title="Popout Controls"):
             full_label = ""
             if show_original:
                 full_label += original_text
-                # if label_text:
-                #     full_label += "\n"
             full_label += label_text
 
             clone = tk.Button(
@@ -21815,7 +24512,6 @@ load_config()
 BACKGROUND_COLOR = "gray12"
 WINDOW_TITLE = f"Guess the Anime! Playlist Tool v{APP_VERSION}"
 
-# Try to use tkinterdnd2 for better drag-and-drop support
 try:
     root = tkdnd.Tk()
 except ImportError:
@@ -21850,7 +24546,6 @@ def create_button(frame, label, func, add_space=False, enabled=False, help_title
     bg = HIGHLIGHT_COLOR if enabled else "black"
     
     # Create the button
-    # button = tk.Button(frame, text=label, command=func, bg=bg, fg="white")
     button = tk.Button(frame, text=label, command=func, bg=bg, fg="white", font=ROOT_FONT)
     button.pack(side="left", padx=(0,0))
 
@@ -21892,13 +24587,14 @@ def scan_directory(queue=False):
             return
         print(f"Scanning Directory...", end="", flush=True)
         directory_files = {}
-        if globals().get("directory_entry"):
-            directory_entry.delete(0, tk.END)
-            directory_entry.insert(0, directory)
+        # if globals().get("directory_entry"):
+        #     directory_entry.delete(0, tk.END)
+        #     directory_entry.insert(0, directory)
         for root, _, files in os.walk(directory):
             for file in files:
                 if file.endswith((".mp4", ".webm", ".mkv")):
                     directory_files[file] = os.path.join(root, file)
+        invalidate_deduplicated_cache()
         save_config()
         get_cached_sfw_themes()
         if playlist.get("infinite", False):
@@ -21929,8 +24625,28 @@ def create_first_row_buttons():
                                 help_text="Opens a popout window with bigger buttons for common controls used " +
                                 "in a session. Useful if running without keyboard shortcuts, and want bigger buttons.")
     
+    
+    global import_data_button
+    import_data_button = create_button(first_row_frame, "IMPORT", import_data_from_source, False,
+                                help_title="IMPORT DATA",
+                                help_text="Imports metadata from a remote source (GitHub/Google Drive). "
+                                "Downloads a zip package and merges all metadata with your existing data.")
+
+    global import_censors_button
+    import_censors_button = create_button(first_row_frame, "C", import_censors, False,
+                                help_title="IMPORT RAMUN'S CENSORS",
+                                help_text="Downloads and imports Ramun's censors from GitHub. "
+                                "This will be saved as 'ramun_censors.json' in your files folder.")
+
+    global export_data_button
+    export_data_button = create_button(first_row_frame, "📤", export_metadata_package, True,
+                                help_title="EXPORT DATA",
+                                help_text="Exports all metadata files into a consolidated zip package. "
+                                "This package can be uploaded to GitHub/Google Drive and shared with others "
+                                "or used as a backup. The file includes compressed metadata when available.")
+
     global select_button
-    select_button = create_button(first_row_frame, "FOLDER:", select_directory,
+    select_button = create_button(first_row_frame, "FOLDER", select_directory, True,
                                 help_title="CHOOSE VIDEO DIRECTORY FOLDER",
                                 help_text="Choose the folder you have all your themes stored "+
                                 "in. This application expects files from the AnimeThemes " +
@@ -21944,19 +24660,19 @@ def create_first_row_buttons():
                                 "button after to create the playlist.")
 
     
-    if playlist.get("infinite", False):
-        directory_width = 28
-    else:
-        directory_width = 26
+    # if playlist.get("infinite", False):
+    #     directory_width = 24
+    # else:
+    #     directory_width = 22
 
-    global directory_entry
-    directory_entry = tk.Entry(first_row_frame, width=scl(directory_width, "UI"), bg="black", fg="white", insertbackground="white", textvariable=directory)
-    directory_entry.pack(side="left")
-    directory_entry.delete(0, tk.END)
-    directory_entry.insert(0, directory)
+    # global directory_entry
+    # directory_entry = tk.Entry(first_row_frame, width=scl(directory_width, "UI"), bg="black", fg="white", insertbackground="white", textvariable=directory)
+    # directory_entry.pack(side="left")
+    # directory_entry.delete(0, tk.END)
+    # directory_entry.insert(0, directory)
 
     global generate_button
-    generate_button = create_button(first_row_frame, "➕", generate_playlist_button,
+    generate_button = create_button(first_row_frame, "CREATE➕", generate_playlist_button,
                                 help_title="CREATE PLAYLIST",
                                 help_text=("This creates a playlist using all videos "
                                 "found in the directory.\n\nIf this is your first time "
@@ -21964,7 +24680,7 @@ def create_first_row_buttons():
                                 "to be able to use all the other playlist functions, "
                                 "you'll need to fetch the metadata for all the files. "
                                 "You can do this by hitting the '?' button next to the "
-                                "FETCH METADATA button. It may take a while "
+                                "FETCH DATA button. It may take a while "
                                 "depending on how many themes you have.\n\n"
                                 "You will be asked to confirm when creating."))
     
@@ -21993,6 +24709,12 @@ def create_first_row_buttons():
                                 help_title="CREATE PLAYLIST FROM ANILIST ID",
                                 help_text=("This creates a playlist using an AniList ID as a reference and "
                                            "selecting all themes in the directory that match the user's list."))
+    global generate_from_animethemes_button
+    generate_from_animethemes_button = create_button(first_row_frame, "AT", generate_animethemes_playlist,
+                                help_title="CREATE PLAYLIST FROM ANIMETHEMES HASHID",
+                                help_text=("This creates a playlist using an AnimeThemes playlist hashid. "
+                                           "Enter the hashid from an AnimeThemes playlist URL (https://animethemes.moe/playlist/hashid) "
+                                           "to download and match all themes from that playlist."))
     global empty_button
     empty_button = create_button(first_row_frame, "❌", empty_playlist, True,
                                 help_title="EMPTY PLAYLIST",
@@ -22020,7 +24742,6 @@ def create_first_row_buttons():
     
     # Setup drag-and-drop after widget is fully created
     root.after(100, setup_playlist_drag_drop)
-    # if not playlist.get("infinite", False):
     global remove_button
     remove_button = create_button(first_row_frame, "❌", remove, True,
                                 help_title="REMOVE THEME",
@@ -22140,6 +24861,7 @@ def create_first_row_buttons():
                                                "SCORE_BOOST/MULTIPLIER: Weight multiplier for anime above min_score.\n\n"
                                                "GROUP_SERIES: If True, all files from same series go in the same difficulty group(causing them to play more).\n\n"
                                                "TAG_COOLDOWN: Number of rounds before a tag can repeat in the playlist(0 = disabled).\n\n"
+                                               "INCLUDE_NON_LOCAL_FILES: If True, non-local animethemes files in the metadata are included, and will stream.\n\n"
                                                "Changes will only stay between launches if saved."))
         infinite_settings_button.pack(side="left")
 
@@ -22296,7 +25018,6 @@ light_mode_options = [
 # Mapping from display string ("ICON NAME") back to the key
 title_to_key = {display: key for key, display in light_mode_options}
 
-# Tkinter StringVar for the current selection
 selected_mode = StringVar(value=light_mode_options[0][1])  # default to first display string
 
 style = ttk.Style()
@@ -22411,7 +25132,7 @@ manage_youtube_button = create_button(second_row_frame, "➕", open_youtube_edit
                                          "\n\n[SAVE ALL] Save any changes. Many functions auto-save, but any title, start, or end changes need to be saved manually."
                                          "\n\n[SHOW ARCHIVED] Show archived videos. From here, videos can be restored or deleted."))
 
-search_button = create_button(second_row_frame, "[S]EARCH DIRECTORY", search,
+search_button = create_button(second_row_frame, "[S]EARCH THEMES", search,
                             help_title="[S]EARCH (Shortcut Key = 's')",
                             help_text=("Search the filenames, titles, and english titles for the entered keyword. "
                                         "The selected theme will queue up to play next, or play if nothing "
@@ -22441,7 +25162,7 @@ stats_button = create_button(second_row_frame, "📊", display_theme_stats_in_co
 third_row_frame = tk.Frame(root, bg=BACKGROUND_COLOR)
 third_row_frame.pack(pady=(0,0))
 
-info_button = create_button(third_row_frame, "[I]NFORMATION POP-UP", toggle_info_popup,
+info_button = create_button(third_row_frame, "[I]NFO POP-UP", toggle_info_popup,
                               help_title="SHOW/HIDE [I]NFO POPUP (Shortcut Key = 'i')",
                               help_text=("Show or hide the information popup at the bottom of the screen.\n\n"
                                          "This shows most of the information from the main player in a nicer format. "
@@ -22460,6 +25181,12 @@ artist_info_button = create_button(third_row_frame, "🎤", toggle_artist_info_p
 studio_info_button = create_button(third_row_frame, "🏢", toggle_studio_info_popup,
                               help_title="SHOW/HIDE STUDIO POPUP",
                               help_text=("Show or hide the info popup with list of anime done by studio."))
+season_info_button = create_button(third_row_frame, "📅", toggle_season_info_popup,
+                              help_title="SHOW/HIDE SEASON RANKING POPUP",
+                              help_text=("Show or hide the info popup with popularity rankings for anime from the same season."))
+year_info_button = create_button(third_row_frame, "🗓", toggle_year_info_popup,
+                              help_title="SHOW/HIDE YEAR RANKING POPUP",
+                              help_text=("Show or hide the info popup with popularity rankings for anime from the same year."))
 start_info_button = create_button(third_row_frame, "⏪", toggle_auto_info_start,
                               help_title="TOGGLE AUTO INFO POPUP AT START",
                               help_text=("When enabled, will show the theme's info popup at the start.\n\n"
@@ -22516,7 +25243,7 @@ mute_peek_mark_button = create_button(third_row_frame, "🔇", mute_peek_mark, T
 mute_peek_mark_button.bind("<Button-2>", bulk_mute_peek_mark_playlist)
 
 
-refetch_metadata_button = create_button(third_row_frame, "FETCH METADATA", refetch_metadata,
+refetch_metadata_button = create_button(third_row_frame, "FETCH DATA", refetch_metadata,
                               help_title="FETCH THEME METADATA (Shortcut Key = 'f')",
                               help_text=("Fetch the metadata for the currently playing theme.\n\n"
                                          "You may want to do this if there's mising information that "
@@ -22539,6 +25266,12 @@ refresh_all_metadata_button = create_button(third_row_frame, "⭮", refresh_all_
                                          "You may want to do this if you feel the score and members data are outdated, "
                                          "although you could also use the ♻ button to toggle auto refreshing the data "
                                          "as files are playing if you don't want to have it call for all the files at once."))
+refresh_all_anilist_metadata_button = create_button(third_row_frame, "A", refresh_all_anilist_metadata, False,
+                              help_title="REFRESH ALL ANILIST METADATA",
+                              help_text=("Refreshes the AniList metadata for files in your directory. "
+                                         "You can specify how many years back to refresh (e.g., '3' for last 3 years) "
+                                         "or leave empty to refresh all years. Only refreshes data for anime you actually have files for.\n\n"
+                                         "This will re-fetch scores, popularity, rankings, tags, and characters from AniList."))
 toggle_refresh_metadata_button = create_button(third_row_frame, "♻", toggle_auto_auto_refresh, True,
                               help_title="TOGGLE AUTO REFRESH JIKAN METADATA",
                               help_text=("Toggle auto refreshing jikan metadata. This will refresh the "
@@ -22635,7 +25368,6 @@ middle_column = tk.Text(info_panel, height=scl(20, "UI"), width=scl(40, "UI"), b
                         selectbackground=HIGHLIGHT_COLOR, wrap="word")
 middle_column.pack(side="left", fill="both", expand=True)
 
-# === RIGHT COLUMN CONTAINER ===
 right_column_container = tk.Frame(info_panel, bg="black")
 right_column_container.pack(side="left", fill="both", expand=True)
 
@@ -22652,11 +25384,9 @@ right_column = tk.Text(right_column_container, height=scl(20, "UI"), width=scl(4
                        spacing1=0, spacing2=0, spacing3=0)
 right_column.pack(fill="both", expand=True)
 
-# Add drag-and-drop bindings to the text widget for better drop detection
 right_column.bind("<B1-Motion>", lambda e: handle_drag_motion(e) if drag_start_index is not None else None)
 right_column.bind("<ButtonRelease-1>", lambda e: end_playlist_drag(e) if drag_start_index is not None else None)
 
-# Add mouse wheel bindings for any list pagination
 def handle_list_scroll(event):
     if list_loaded:
         if hasattr(event, 'delta') and event.delta > 0:  # Scroll up
@@ -22847,7 +25577,6 @@ def on_press(key):
             pass
         if disable_shortcuts:
             pass
-        # Arrow key movement for grow peek overlay (position only)
         elif grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values()):
             move_amount = 10  # pixels per key press
             if key == key.up:
@@ -22907,7 +25636,6 @@ def on_release(key):
                 search(True, add=playlist.get("infinite", False))
         else:
             try:
-                # Only handle left/right arrows for next/previous if grow_overlay_boxes is not active/visible
                 if not (grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values())):
                     if key == key.right:
                         play_next()
@@ -22997,10 +25725,8 @@ def on_release(key):
                 elif key.char == 'o':
                     if not is_title_window_up():
                         toggle_title_info_popup()
-                    elif not artist_info_display and not studio_info_display:
-                        toggle_artist_info_popup()
                     else:
-                        toggle_studio_info_popup()
+                        toggle_title_info_popup()
                 elif key.char == 'e':
                     end_session()
                 elif key.char == 's':
@@ -23076,7 +25802,6 @@ def smooth_move_grow_overlay():
     target_x = raw_target_x + offset_x
     target_y = raw_target_y + offset_y
     
-    # Calculate smooth movement (lerp with factor for smoothness)
     lerp_factor = 0.15  # Adjust this value: lower = smoother/slower, higher = faster
     new_x = current_x + (target_x - current_x) * lerp_factor
     new_y = current_y + (target_y - current_y) * lerp_factor
@@ -23085,7 +25810,6 @@ def smooth_move_grow_overlay():
     grow_position = (int(new_x), int(new_y))
     toggle_grow_overlay(block_percent=last_grow_block_percent, position=grow_position)
     
-    # Continue animation if we're still dragging and not close enough to target
     distance = ((target_x - new_x) ** 2 + (target_y - new_y) ** 2) ** 0.5
     if mouse_dragging_grow_overlay and distance > 2:  # Stop when very close
         animation_after_id = root.after(16, smooth_move_grow_overlay)  # ~60 FPS
@@ -23100,12 +25824,10 @@ def on_mouse_click(x, y, button, pressed):
     if pressed:
         if button == mouse.Button.left:
             mouse_left_pressed = True
-            # Check if grow overlay is active and start dragging
             if (grow_overlay_boxes and 
                 any(box.winfo_exists() for box in grow_overlay_boxes.values())):
                 mouse_dragging_grow_overlay = True
                 target_mouse_position = (x, y)
-                # Start smooth animation if not already running
                 if animation_after_id is None:
                     smooth_move_grow_overlay()
         
@@ -23137,7 +25859,6 @@ def on_mouse_move(x, y):
     # If left mouse is pressed and we're dragging the grow overlay
     if mouse_dragging_grow_overlay and mouse_left_pressed:
         target_mouse_position = (x, y)
-        # Start animation if not already running
         if animation_after_id is None:
             smooth_move_grow_overlay()
 
@@ -23166,6 +25887,9 @@ update_playlist_name()
 update_current_index()
 load_youtube_metadata()
 load_metadata()
+check_for_local_metadata_package()
+root.after(3000, check_for_metadata_updates)  # Check for updates after 3 seconds
+root.after(3000, check_for_censor_updates)  # Check for censor updates after 3 seconds
 scan_directory(True)
 create_first_row_buttons()
 threading.Thread(target=load_default_char_images, daemon=True).start()
@@ -23211,11 +25935,9 @@ def refresh_list_on_resize():
     resize_timer_id = None
     
     if list_loaded and current_list_content is not None:
-        # Check if the number of entries would actually change
         current_button_count = len(persistent_buttons) if persistent_buttons else 0
         new_entries_count = get_list_entries_count()
         
-        # Only refresh if the row count would change
         if current_button_count != new_entries_count:
             # Get current list type and refresh it
             current_type = list_loaded
@@ -23232,11 +25954,10 @@ root.after(1000, create_new_session)
 
 # Start updating the seek bar
 root.after(1000, update_seek_bar)
-# Schedule a check for when the video ends
 root.after(1000, check_video_end)
 # Set initial volume
 root.after(1000, set_volume, volume_level)
-# Check for updates on startup (after 3 seconds to let UI load)
 root.after(3000, check_for_updates_on_startup)
+root.after(1000, update_living_playlists)
 
 root.mainloop()
