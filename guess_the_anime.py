@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.1"  # Update this when making releases
+APP_VERSION = "15.2"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -4683,14 +4683,14 @@ def get_animethemes_matching_files(hashid, include_non_local):
             video_paths.add(filename)
     
     if not video_paths:
-        return [], playlist_name, 0
-    
+        return [], playlist_name, 0\
+        
     # Match against local files
     matching_files = []
     for file in get_directory_files(include_non_local=include_non_local):
         if file in video_paths:
             matching_files.append(file)
-    
+
     return matching_files, playlist_name, len(video_paths)
 
 def create_living_playlist_with_confirmation(matching_files, playlist_name, source_data, total_available=None):
@@ -4806,7 +4806,7 @@ def update_living_playlists():
                     
                     source_type = source.get('type')
                     existing_files = set(saved_playlist.get('playlist', []))
-                    new_files = []
+                    all_matching = None
                     
                     if source_type == 'anilist':
                         # Update AniList playlist using helper function
@@ -4815,31 +4815,41 @@ def update_living_playlists():
                         include_non_local = source.get('include_non_local', False)
                         
                         all_matching = get_anilist_matching_files(user_id, only_watched, include_non_local)
-                        if all_matching:
-                            new_files = [f for f in all_matching if f not in existing_files]
                     
                     elif source_type == 'animethemes':
                         # Update AnimeThemes playlist using helper function
                         hashid = source.get('hashid')
                         include_non_local = source.get('include_non_local', False)
                         
-                        all_matching, _, _ = get_animethemes_matching_files(hashid, include_non_local)
-                        if all_matching:
-                            new_files = [f for f in all_matching if f not in existing_files]
+                        result = get_animethemes_matching_files(hashid, include_non_local)
+                        if result:
+                            all_matching, _, _ = result
                     
-                    # If new files found, update the playlist
-                    if new_files:
-                        saved_playlist['playlist'].extend(new_files)
-                        # Convert infinities before saving
-                        playlist_to_save = copy.deepcopy(saved_playlist)
-                        if playlist_to_save.get("infinite_settings"):
-                            playlist_to_save["infinite_settings"] = convert_infinities_to_markers(playlist_to_save["infinite_settings"])
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            json.dump(playlist_to_save, f, indent=4)
+                    # Update playlist: add new files and remove files no longer in source
+                    if all_matching is not None:
+                        all_matching_set = set(all_matching)
+                        new_files = [f for f in all_matching if f not in existing_files]
+                        removed_files = [f for f in existing_files if f not in all_matching_set]
                         
-                        playlist_name = saved_playlist.get('name', filename[:-5])
-                        updated_playlists.append((playlist_name, len(new_files)))
-                        print(f"Updated playlist '{playlist_name}': +{len(new_files)} themes")
+                        if new_files or removed_files:
+                            # Update playlist to match source
+                            saved_playlist['playlist'] = all_matching
+                            
+                            # Convert infinities before saving
+                            playlist_to_save = copy.deepcopy(saved_playlist)
+                            if playlist_to_save.get("infinite_settings"):
+                                playlist_to_save["infinite_settings"] = convert_infinities_to_markers(playlist_to_save["infinite_settings"])
+                            with open(filepath, 'w', encoding='utf-8') as f:
+                                json.dump(playlist_to_save, f, indent=4)
+                            
+                            playlist_name = saved_playlist.get('name', filename[:-5])
+                            change_summary = []
+                            if new_files:
+                                change_summary.append(f"+{len(new_files)}")
+                            if removed_files:
+                                change_summary.append(f"-{len(removed_files)}")
+                            updated_playlists.append((playlist_name, len(new_files), len(removed_files)))
+                            print(f"Updated playlist '{playlist_name}': {' '.join(change_summary)} themes")
                 
                 except Exception as e:
                     print(f"Error updating playlist {filename}: {e}")
@@ -21855,10 +21865,6 @@ def check_file_censors(filename, time, video_end, check_title=True):
     
     video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
     
-    # If so, legacy and new positioning are equivalent, so use new system
-    video_aspect_ratio = video_w / video_h if video_h > 0 else 0
-    is_16_9_video = abs(video_aspect_ratio - (16/9)) < 0.01  # Within 1% tolerance
-    
     file_censors = get_file_censors(filename)
     censor_found = False
     mute_found = False
@@ -21878,23 +21884,12 @@ def check_file_censors(filename, time, video_end, check_title=True):
                     censor_box = censor_entry.get("box") if censor_entry else None
                     if censor_box and censor_box.winfo_exists():
                         try:
-                            # For 16:9 videos, always use new system (they're equivalent)
-                            is_legacy = censor.get("legacy", True) and not is_16_9_video
-                            
-                            if is_legacy:
-                                # Legacy: Use screen-based positioning (old behavior)
-                                censor_width = int(screen_width * (censor['size_w'] / 100))
-                                censor_height = int(screen_height * (censor['size_h'] / 100))
-                                censor_box.geometry(f"{censor_width}x{censor_height}")
-                                censor_box.configure(bg=(censor.get("color") or get_image_color()))
-                                set_window_position(censor_box, censor['pos_x'], censor['pos_y'])
-                            else:
-                                # New: Use video-based positioning (aspect ratio aware)
-                                censor_width = int(video_w * (censor['size_w'] / 100))
-                                censor_height = int(video_h * (censor['size_h'] / 100))
-                                censor_box.geometry(f"{censor_width}x{censor_height}")
-                                censor_box.configure(bg=(censor.get("color") or get_image_color()))
-                                set_censor_position(censor_box, censor['pos_x'], censor['pos_y'], video_x, video_y, video_w, video_h)
+                            # Use video-based positioning (aspect ratio aware)
+                            censor_width = int(video_w * (censor['size_w'] / 100))
+                            censor_height = int(video_h * (censor['size_h'] / 100))
+                            censor_box.geometry(f"{censor_width}x{censor_height}")
+                            censor_box.configure(bg=(censor.get("color") or get_image_color()))
+                            set_censor_position(censor_box, censor['pos_x'], censor['pos_y'], video_x, video_y, video_w, video_h)
                         except tk.TclError:
                             pass
                 else:
@@ -22526,7 +22521,7 @@ def open_censor_editor(refresh=False):
             "size_w": 100.00, "size_h": 100.00,
             "pos_x": 0.0, "pos_y": 0.0,
             "start": round(current_time_func(), 1), "end": 0.0,
-            "color": None, "nsfw": False, "legacy": False
+            "color": None, "nsfw": False
         }
         current_censors.append(new_censor)
         
@@ -22556,7 +22551,7 @@ def open_censor_editor(refresh=False):
         new_censor = {
             "mute":True,
             "start": round(current_time_func(), 1), "end": 0.0,
-            "nsfw": False, "legacy": False
+            "nsfw": False
         }
         current_censors.append(new_censor)
         
@@ -22585,7 +22580,7 @@ def open_censor_editor(refresh=False):
         new_censor = {
             "skip": True,
             "start": round(current_time_func(), 1), "end": 0.0,
-            "nsfw": False, "legacy": False
+            "nsfw": False
         }
         current_censors.append(new_censor)
         
@@ -22615,25 +22610,20 @@ def open_censor_editor(refresh=False):
                 actual_i = censor_page_offset + display_i
                 if actual_i >= len(current_censors):
                     continue
-                
-                # Get existing legacy flag to preserve it
-                existing_legacy = current_censors[actual_i].get("legacy", True)
                     
                 if current_censors[actual_i].get("mute", False):
                     current_censors[actual_i] = {
                         "mute": True,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
-                        "nsfw": widgets[5].var,
-                        "legacy": existing_legacy
+                        "nsfw": widgets[5].var
                     }
                 elif current_censors[actual_i].get("skip", False):
                     current_censors[actual_i] = {
                         "skip": True,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
-                        "nsfw": widgets[5].var,
-                        "legacy": existing_legacy
+                        "nsfw": widgets[5].var
                     }
                 else:
                     size_parts = widgets[0].winfo_children()[0].get().split("x")
@@ -22646,8 +22636,7 @@ def open_censor_editor(refresh=False):
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
                         "color": widgets[4].winfo_children()[0].cget("bg") if widgets[4].winfo_children()[0].cget("text") != "AUTO" else None,
-                        "nsfw": widgets[5].var,
-                        "legacy": existing_legacy
+                        "nsfw": widgets[5].var
                     }
             except Exception as e:
                 messagebox.showerror("Save Error", f"Error saving row {display_i+1}: {e}")
@@ -22701,110 +22690,6 @@ def open_censor_editor(refresh=False):
         # Refresh the UI to show imported censors
         refresh_ui()
     
-    def convert_legacy_censors():
-        """Convert legacy screen-based censors to new video-based format."""
-        save_to_current()
-        
-        # Get video display info
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
-        
-        if not has_video or video_w == 0 or video_h == 0:
-            messagebox.showerror("Conversion Error", "Cannot convert censors: No video playing or video dimensions unavailable.")
-            return
-        
-        aspect_ratio = video_w / video_h if video_h > 0 else 0
-        is_16_9_video = abs(aspect_ratio - (16/9)) < 0.01
-        
-        if is_16_9_video:
-            # For 16:9 videos, legacy censors work fine as-is (no conversion needed)
-            # Just mark them as non-legacy so the UI doesn't show the convert button
-            legacy_count = sum(1 for c in current_censors if c.get("legacy", True))
-            if legacy_count > 0:
-                for censor in current_censors:
-                    if censor.get("legacy", True):
-                        censor["legacy"] = False
-                refresh_ui()
-                messagebox.showinfo("16:9 Video Detected", 
-                    f"This video is 16:9, so legacy censors work correctly without conversion.\n\n"
-                    f"Marked {legacy_count} censors as non-legacy.")
-                return
-            else:
-                messagebox.showinfo("No Legacy Censors", "All censors are already using the new format.")
-                return
-        
-        legacy_count = 0
-        converted_count = 0
-        
-        print(f"Converting censors - Video: {video_w}x{video_h} (AR: {aspect_ratio:.2f}), Screen: {screen_width}x{screen_height}, Offset: ({video_x}, {video_y})")
-        
-        for censor in current_censors:
-            if censor.get("legacy", True) and not censor.get("mute") and not censor.get("skip"):
-                # This is a legacy visual censor - convert it
-                try:
-                    # Old screen-based percentages
-                    old_size_w = censor.get("size_w", 100)
-                    old_size_h = censor.get("size_h", 100)
-                    old_pos_x = censor.get("pos_x", 0)
-                    old_pos_y = censor.get("pos_y", 0)
-                    
-                    # Calculate pixel positions in old system
-                    screen_pixel_w = screen_width * (old_size_w / 100)
-                    screen_pixel_h = screen_height * (old_size_h / 100)
-                    screen_pixel_x = (screen_width - screen_pixel_w) * (old_pos_x / 100)
-                    screen_pixel_y = (screen_height - screen_pixel_h) * (old_pos_y / 100)
-                    
-                    # Convert to video-relative coordinates
-                    video_pixel_x = screen_pixel_x - video_x
-                    video_pixel_y = screen_pixel_y - video_y
-                    
-                    # Calculate new size percentages relative to video
-                    new_size_w = (screen_pixel_w / video_w) * 100
-                    new_size_h = (screen_pixel_h / video_h) * 100
-                    
-                    # Clamp size values to reasonable ranges
-                    new_size_w = max(1, min(200, new_size_w))
-                    new_size_h = max(1, min(200, new_size_h))
-                    
-                    # Calculate new pixel sizes AFTER clamping
-                    new_pixel_w = video_w * (new_size_w / 100)
-                    new_pixel_h = video_h * (new_size_h / 100)
-                    
-                    # Calculate position percentages using the new pixel sizes
-                    new_pos_x = (video_pixel_x / (video_w - new_pixel_w)) * 100 if (video_w - new_pixel_w) > 0 else 0
-                    new_pos_y = (video_pixel_y / (video_h - new_pixel_h)) * 100 if (video_h - new_pixel_h) > 0 else 0
-                    
-                    # Clamp position values
-                    new_pos_x = max(0, min(100, new_pos_x))
-                    new_pos_y = max(0, min(100, new_pos_y))
-                    
-                    # Update censor
-                    censor["size_w"] = round(new_size_w, 2)
-                    censor["size_h"] = round(new_size_h, 2)
-                    censor["pos_x"] = round(new_pos_x, 2)
-                    censor["pos_y"] = round(new_pos_y, 2)
-                    censor["legacy"] = False
-                    
-                    print(f"  Converted: size {old_size_w}x{old_size_h}% → {new_size_w:.2f}x{new_size_h:.2f}%, pos {old_pos_x}x{old_pos_y}% → {new_pos_x:.2f}x{new_pos_y:.2f}%")
-                    
-                    converted_count += 1
-                except Exception as e:
-                    print(f"Error converting censor: {e}")
-                    
-                legacy_count += 1
-            elif censor.get("legacy", True) and (censor.get("mute") or censor.get("skip")):
-                # Mute/skip censors don't need position conversion, just mark as non-legacy
-                censor["legacy"] = False
-                converted_count += 1
-                legacy_count += 1
-        
-        if legacy_count > 0:
-            refresh_ui()
-            messagebox.showinfo("Conversion Complete", f"Converted {converted_count} legacy censors to new format.\n\nNote: Please verify positions are correct and save.")
-        else:
-            messagebox.showinfo("No Legacy Censors", "All censors are already using the new format.")
-
     # Keep track of bottom buttons so we can clear them
     bottom_button_widgets = []
     
@@ -22838,18 +22723,10 @@ def open_censor_editor(refresh=False):
         similar_censors = find_similar_theme_censors(filename) if filename else {}
         show_import_button = not current_has_censors and len(similar_censors) > 0
         
-        has_legacy = any(c.get("legacy", True) for c in current_censors)
-        
         if show_import_button:
             import_button = tk.Button(censor_editor, text="IMPORT PREVIOUS CENSORS", width=30, font=font_big, bg="dark green", fg=fg_color, command=import_previous_censors)
             import_button.grid(row=1000, column=0, columnspan=6, pady=12)
             bottom_button_widgets.append(import_button)
-        
-        if has_legacy:
-            convert_button = tk.Button(censor_editor, text="⚠ CONVERT LEGACY CENSORS", width=30, font=font_big, bg="dark orange", fg="white", command=convert_legacy_censors)
-            row_offset = 1001 if show_import_button else 1000
-            convert_button.grid(row=row_offset, column=0, columnspan=8, pady=12)
-            bottom_button_widgets.append(convert_button)
     
     create_bottom_buttons()
 
@@ -23112,6 +22989,58 @@ def check_missing_artists():
 # =========================================
 
 undock_position = []
+player_collapsed = False
+original_window_height = None
+original_min_height = None
+
+def toggle_player_collapse():
+    """Collapses or expands the player info columns."""
+    global player_collapsed, collapse_button, original_window_height, original_min_height
+    
+    player_collapsed = not player_collapsed
+    
+    if player_collapsed:
+        # Store the original window height and min height before collapsing
+        if original_window_height is None:
+            original_window_height = root.winfo_height()
+            original_min_height = root.minsize()[1]
+        
+        # Get the info panel height before hiding it
+        info_panel_height = info_panel.winfo_height()
+        
+        # Hide the info panel entirely
+        info_panel.pack_forget()
+        
+        # Update window to force geometry recalculation
+        root.update_idletasks()
+        
+        # Adjust window height and minimum height
+        new_height = original_window_height - info_panel_height
+        new_min_height = original_min_height - info_panel_height
+        root.minsize(scl(900, "UI"), new_min_height)
+        root.geometry(f"{root.winfo_width()}x{new_height}")
+        
+        # If docked, reposition the window to the bottom
+        if is_docked():
+            move_root_to_bottom()
+        
+        collapse_button.config(text="▲")
+    else:
+        # Show the info panel again in the right position (after third_row_frame)
+        info_panel.pack(after=third_row_frame, fill="both", expand=True, padx=scl(10, "UI"), pady=scl(5, "UI"))
+        
+        # Restore original window height and min height if we have it
+        if original_window_height is not None:
+            root.geometry(f"{root.winfo_width()}x{original_window_height}")
+        if original_min_height is not None:
+            root.minsize(scl(900, "UI"), original_min_height)
+        
+        # If docked, reposition the window to the bottom
+        if is_docked():
+            move_root_to_bottom()
+        
+        collapse_button.config(text="▼")
+
 def dock_player():
     """Toggles the Tkinter window between front and back, moves it to bottom left,
     adjusts transparency, and removes the title bar when brought forward."""
@@ -25200,6 +25129,13 @@ def scan_directory(queue=False):
 def create_first_row_buttons():
     for widget in first_row_frame.winfo_children():
         widget.destroy()
+    
+    global collapse_button
+    collapse_button = create_button(first_row_frame, "▼", toggle_player_collapse, True,
+                                help_title="COLLAPSE PLAYER",
+                                help_text="Collapses or expands the player info columns. "
+                                "Click to toggle between collapsed (arrow up) and expanded (arrow down) states.")
+    
     global dock_button
     dock_button = create_button(first_row_frame, "[D]OCK", dock_player, True, 
                                 help_title="[D]OCK PLAYER (Shortcut Key = 'd')",
@@ -25326,7 +25262,7 @@ def create_first_row_buttons():
                                 "themes you have added or want to delete."))
 
     global go_button
-    go_button = create_button(first_row_frame, "GO TO:", go_to_index,
+    go_button = create_button(first_row_frame, "GO:", go_to_index,
                                 help_title="GO TO INDEX",
                                 help_text=("Go to the index in the text box of the playlist. "
                                 "It will play it immediately and set the current index."))
