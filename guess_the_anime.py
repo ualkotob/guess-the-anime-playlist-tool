@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.0"  # Update this when making releases
+APP_VERSION = "15.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -598,8 +598,16 @@ def get_file_path(playlist_entry):
         # It's already a full path (external file)
         return clean_entry if os.path.exists(clean_entry) else None
     else:
-        # It's a filename, look it up in directory_files
-        return directory_files.get(clean_entry)
+        # It's a filename, first check directory_files
+        if clean_entry in directory_files:
+            return directory_files[clean_entry]
+        
+        # Then check cache folder
+        cached_path = get_cached_file_path(clean_entry)
+        if cached_path:
+            return cached_path
+        
+        return None
 
 def is_external_file(playlist_entry):
     """Check if a playlist entry is an external file (full path) or local file (filename)."""
@@ -665,6 +673,9 @@ YOUTUBE_LINKS_FILE = "files/youtube_links.txt"
 CENSOR_FILE = "files/censors.csv"
 CENSOR_JSON_FILE = "files/censors.json"
 TAGGED_FILE = "files/tagged.txt"
+THEMES_CACHE_FOLDER = "themes_cache"
+CACHE_METADATA_FILE = "files/cache_metadata.json"
+themes_cache_size = 500  # Size in MB
 HIGHLIGHT_COLOR = "gray26"
 OVERLAY_BACKGROUND_COLOR = "black"
 OVERLAY_TEXT_COLOR = "white"
@@ -2616,8 +2627,16 @@ def update_extra_metadata(column=None):
             return
         playlist_entry = currently_playing.get("playlist_entry", filename)
         filepath = get_file_path(playlist_entry) if playlist_entry else None
-        is_local_file = filepath and os.path.exists(filepath) if filepath else False
+        
+        # Check if file is in cache
+        is_cached = get_cached_file_path(filename) is not None
+        
+        # Local file means in directory_files, NOT in cache
+        is_local_file = filename in directory_files and os.path.exists(directory_files[filename])
+        
+        # Show download button for streamable files that aren't in local directory (including cached)
         is_animethemes_stream = is_animethemes_stream_file(filename) and not is_local_file if filename else False
+        
         _cached_id = f"{get_display_title(data)}-{data.get("season", "9999")[-4:]}"
         _cached_id_base = f"{get_base_title(title=get_display_title(data))}-{data.get("season", "9999")[-4:]}"
         _cached_clips_links = _cached_clips.get(_cached_id) or _cached_clips.get(_cached_id_base) or []
@@ -2704,7 +2723,11 @@ def update_extra_metadata(column=None):
                             bg="black", fg="white",
                             font=("Arial", scl(12, "UI"))
                         )
-                        dl_btn.config(command=lambda b=dl_btn: download_animethemes_file(filename, b))
+                        # If cached, move to directory; otherwise download
+                        if is_cached:
+                            dl_btn.config(command=lambda b=dl_btn, f=filename: move_cached_file_to_directory(f, b))
+                        else:
+                            dl_btn.config(command=lambda b=dl_btn, f=filename: download_animethemes_file(f, b))
                         column.window_create(tk.END, window=dl_btn)
                         column.insert(tk.END, " ")
                     else:
@@ -4895,6 +4918,13 @@ def new_playlist(playlis, name=None):
     update_current_index(0)
     update_playlist_name()
     save_config()
+    
+    # Start caching first theme if it's a streamable file
+    if playlis and len(playlis) > 0:
+        first_entry = playlis[0]
+        first_filename = get_clean_filename(first_entry)
+        if is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
+            threading.Thread(target=lambda: download_to_cache(first_filename, silent=False), daemon=True).start()
 
 def create_infinite_playlist():
     global playlist
@@ -4915,6 +4945,13 @@ def create_infinite_playlist():
     create_first_row_buttons()
     update_playlist_name("")
     save_config()
+    
+    # Start caching first theme if it's a streamable file
+    if playlist["playlist"] and len(playlist["playlist"]) > 0:
+        first_entry = playlist["playlist"][0]
+        first_filename = get_clean_filename(first_entry)
+        if is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
+            threading.Thread(target=lambda: download_to_cache(first_filename, silent=False), daemon=True).start()
 
 # =========================================
 #            *SHUFFLE PLAYLIST
@@ -5933,6 +5970,7 @@ def save_config():
         "host": host,
         "volume_level": volume_level,
         "stream_volume_boost": stream_volume_boost,
+        "themes_cache_size": themes_cache_size,
         "skip_play_seconds": skip_play_seconds,
         "skip_jump_seconds": skip_jump_seconds,
         "skip_fade_out_ms": SKIP_FADE_WINDOW_MS,
@@ -5982,7 +6020,7 @@ def load_config():
     global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings, bonus_points
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
-    global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
+    global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, themes_cache_size, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
     global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, stream_instance, ost_stream_instance
     try:
         if os.path.exists(CONFIG_FILE):
@@ -6042,6 +6080,7 @@ def load_config():
             special_round_playlist = config.get("special_round_playlist", True)
             volume_level = config.get("volume_level", 100)
             stream_volume_boost = config.get("stream_volume_boost", 0)
+            themes_cache_size = config.get("themes_cache_size", 500)
             skip_play_seconds = config.get("skip_play_seconds", 0)
             skip_jump_seconds = config.get("skip_jump_seconds", 5)
             SKIP_FADE_WINDOW_MS = int(config.get("skip_fade_out_ms", SKIP_FADE_WINDOW_MS))
@@ -6242,7 +6281,7 @@ def show_settings_popup():
     
     def save_settings():
         """Save all settings with visual feedback"""
-        global volume_level, stream_volume_boost, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
+        global volume_level, stream_volume_boost, themes_cache_size, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
         global YOUTUBE_API_KEY, OPENAI_API_KEY, SERPAPI_KEY, serpapi_limited, serpapi_limited_count
         global title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
         global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
@@ -6253,6 +6292,7 @@ def show_settings_popup():
             
             volume_level = int(volume_var.get())
             stream_volume_boost = int(stream_volume_var.get())
+            themes_cache_size = max(0, int(cache_size_var.get()))
             skip_play_seconds = max(0, float(skip_play_seconds_var.get()))
             skip_jump_seconds = max(0, float(skip_jump_seconds_var.get()))
             SKIP_FADE_WINDOW_MS = max(0, int(skip_fade_out_ms_var.get()))
@@ -6393,6 +6433,16 @@ def show_settings_popup():
     stream_volume_var = tk.StringVar(value=str(stream_volume_boost))
     stream_volume_entry = tk.Entry(stream_volume_frame, textvariable=stream_volume_var, bg="black", fg="white", width=10)
     stream_volume_entry.pack(side="left", padx=(5, 0))
+
+    # Themes Cache Size
+    cache_size_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    cache_size_frame.pack(fill="x", pady=5)
+    cache_size_label = tk.Label(cache_size_frame, text="Themes Cache Size (MB):", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    cache_size_label.pack(side="left")
+    ToolTip(cache_size_label, setting_descriptions.get("Themes Cache Size", "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."))
+    cache_size_var = tk.StringVar(value=str(themes_cache_size))
+    cache_size_entry = tk.Entry(cache_size_frame, textvariable=cache_size_var, bg="black", fg="white", width=10)
+    cache_size_entry.pack(side="left", padx=(5, 0))
 
     # Skip Play Seconds
     skip_play_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -6780,7 +6830,7 @@ def load_metadata():
 
 # Import data package URL - modify this to point to your exported metadata package
 IMPORT_PACKAGE_URL = "https://github.com/ualkotob/guess-the-anime-playlist-tool/releases/download/data-latest/metadata_package.zip"
-IMPORT_CENSORS_URL = "https://github.com/ualkotob/guess-the-anime-playlist-tool/releases/download/data-latest/ramun_censors.json"
+IMPORT_CENSORS_URL = "https://github.com/ualkotob/guess-the-anime-playlist-tool/releases/download/data-latest/ramuns_censors.json"
 LOCAL_METADATA_PACKAGE = "metadata/metadata_package.zip"
 
 # Track when metadata was last updated (Unix timestamp)
@@ -6825,10 +6875,10 @@ def check_for_censor_updates():
     """Check if newer censors are available on GitHub and prompt user to download."""
     global censors_last_updated
     
-    # Check if ramun_censors.json doesn't exist AND last_updated is not 0
+    # Check if ramuns_censors.json doesn't exist AND last_updated is not 0
     # If both conditions are true, skip the check (no file and never checked before)
-    ramun_censors_file = "files/ramun_censors.json"
-    if not os.path.exists(ramun_censors_file) and censors_last_updated != 0:
+    ramuns_censors_file = "files/ramuns_censors.json"
+    if not os.path.exists(ramuns_censors_file) and censors_last_updated != 0:
         return
     
     try:
@@ -6850,7 +6900,7 @@ def check_for_censor_updates():
                         "Censor Update Available",
                         f"New censors are available (updated {date_str}).\n\n"
                         f"Would you like to download and import them now?\n\n"
-                        f"This will save as 'ramun_censors.json' in your files folder."
+                        f"This will save as 'ramuns_censors.json' in your files folder."
                     )
                     if result:
                         import_censors(prompt=False)
@@ -6942,7 +6992,7 @@ def import_censors(prompt=True):
         confirm = messagebox.askyesno(
             "Import Ramun's Censors",
             f"This will download the latest censors from:\n{IMPORT_CENSORS_URL}\n\n"
-            f"This will be saved as 'ramun_censors.json' in your files folder.\n\n"
+            f"This will be saved as 'ramuns_censors.json' in your files folder.\n\n"
             "Continue?"
         )
         
@@ -6967,15 +7017,19 @@ def import_censors(prompt=True):
     
     def do_import():
         """Perform the actual import operation."""
-        global censor_list, censors_last_updated
+        global censor_list, censors_last_updated, other_censor_lists
         
         try:
+            if not import_window.winfo_exists():
+                return
             status_label.config(text="Downloading censors...", fg="yellow")
             import_window.update()
             
             response = requests.get(IMPORT_CENSORS_URL, timeout=60)
             response.raise_for_status()
             
+            if not import_window.winfo_exists():
+                return
             status_label.config(text="Saving censors...", fg="yellow")
             import_window.update()
             
@@ -6983,18 +7037,20 @@ def import_censors(prompt=True):
             new_censors = response.json()
             
             # Ensure the files folder exists
-            ramun_censors_file = "files/ramun_censors.json"
-            folder = os.path.dirname(ramun_censors_file)
+            ramuns_censors_file = "files/ramuns_censors.json"
+            folder = os.path.dirname(ramuns_censors_file)
             if not os.path.exists(folder):
                 os.makedirs(folder)
             
             # Replace the existing file
-            with open(ramun_censors_file, "w") as f:
+            with open(ramuns_censors_file, "w") as f:
                 json.dump(new_censors, f, indent=4)
             
             # Update the global censor_list
-            censor_list = new_censors
+            other_censor_lists.append(new_censors)
             
+            if not import_window.winfo_exists():
+                return
             status_label.config(text="Complete!", fg="green")
             import_window.update()
             
@@ -7010,22 +7066,22 @@ def import_censors(prompt=True):
                 censors_last_updated = int(time.time())
             save_config()
             
-            messagebox.showinfo(
-                "Import Complete", 
-                f"Successfully imported {len(new_censors)} censored file(s).\n\n"
-                f"Censors have been saved to:\nfiles/ramun_censors.json"
-            )
-            import_window.destroy()
+            print(f"Imported {len(new_censors)} censors from ramuns_censors.json.")
+            if import_window.winfo_exists():
+                import_window.destroy()
             update_censor_button_count()
             
         except requests.exceptions.RequestException as e:
-            status_label.config(text="Download failed!", fg="red")
+            if import_window.winfo_exists():
+                status_label.config(text="Download failed!", fg="red")
             messagebox.showerror("Download Error", f"Failed to download censors:\n\n{e}")
         except json.JSONDecodeError as e:
-            status_label.config(text="Invalid JSON!", fg="red")
+            if import_window.winfo_exists():
+                status_label.config(text="Invalid JSON!", fg="red")
             messagebox.showerror("Parse Error", f"Downloaded file is not valid JSON:\n\n{e}")
         except Exception as e:
-            status_label.config(text="Import failed!", fg="red")
+            if import_window.winfo_exists():
+                status_label.config(text="Import failed!", fg="red")
             messagebox.showerror("Import Error", f"Failed to import censors:\n\n{e}")
     
     # Start import in a thread
@@ -7082,6 +7138,8 @@ def import_data_from_package(source, is_local=False, prompt=True):
         try:
             # Get the zip package (download or use local file)
             if is_local:
+                if not import_window.winfo_exists():
+                    return
                 status_label.config(text="Loading local package...", fg="yellow")
                 import_window.update()
                 zip_path = os.path.abspath(source)
@@ -7089,6 +7147,8 @@ def import_data_from_package(source, is_local=False, prompt=True):
                     raise FileNotFoundError(f"Local package not found: {zip_path}")
                 temp_dir = tempfile.mkdtemp()
             else:
+                if not import_window.winfo_exists():
+                    return
                 status_label.config(text="Downloading package...", fg="yellow")
                 import_window.update()
                 response = requests.get(source, timeout=60)
@@ -7098,6 +7158,8 @@ def import_data_from_package(source, is_local=False, prompt=True):
                 with open(zip_path, 'wb') as f:
                     f.write(response.content)
             
+            if not import_window.winfo_exists():
+                return
             status_label.config(text="Extracting package...")
             import_window.update()
             
@@ -7116,6 +7178,8 @@ def import_data_from_package(source, is_local=False, prompt=True):
             
             for file_path, name, get_dict in metadata_files:
                 try:
+                    if not import_window.winfo_exists():
+                        return
                     status_label.config(text=f"Importing {name}...")
                     import_window.update()
                     
@@ -7191,12 +7255,13 @@ def import_data_from_package(source, is_local=False, prompt=True):
                 except Exception as e:
                     print(f"Could not delete local package: {e}")
             
-            status_label.config(text="Import completed successfully!", fg="green")
+            if import_window.winfo_exists():
+                status_label.config(text="Import completed successfully!", fg="green")
             result_msg = "Successfully imported:\n\n" + "\n".join(imported_items)
             if is_local and package_deleted:
                 result_msg += "\n\nLocal package has been deleted."
-            messagebox.showinfo("Import Complete", result_msg)
-            import_window.destroy()
+            if import_window.winfo_exists():
+                import_window.destroy()
             
             # Update metadata timestamp after successful import
             global metadata_last_updated
@@ -7216,13 +7281,15 @@ def import_data_from_package(source, is_local=False, prompt=True):
                     metadata_last_updated = int(time.time())
             save_config()
         elif errors:
-            status_label.config(text="Import completed with errors", fg="red")
+            if import_window.winfo_exists():
+                status_label.config(text="Import completed with errors", fg="red")
             error_msg = "Import completed with the following errors:\n\n" + "\n\n".join(errors)
             if imported_items:
                 error_msg += "\n\nSuccessfully imported:\n" + "\n".join(imported_items)
             messagebox.showerror("Import Errors", error_msg)
         else:
-            status_label.config(text="Ready", fg="white")
+            if import_window.winfo_exists():
+                status_label.config(text="Ready", fg="white")
     
     # Start import in thread to keep UI responsive
     import_thread = threading.Thread(target=do_import, daemon=True)
@@ -8444,7 +8511,8 @@ def year_stats(column):
     year_counter = Counter()
     year_to_filenames = {}
 
-    for filename in get_cached_deduplicated_files():
+    files_list = get_cached_deduplicated_files()
+    for filename in files_list:
         data = get_metadata(filename)
         season = data.get("season", "")
         year_str = season[-4:] if season and season[-4:].isdigit() else "Unknown"
@@ -8486,9 +8554,10 @@ def year_stats(column):
         else:
             return 9999
 
+    total_files = len(files_list) or 1  # Avoid division by zero
     for group in sorted(year_counter, key=sort_key):
         count = year_counter[group]
-        percent = round(count / len(directory_files) * 100, 2)
+        percent = round(count / total_files * 100, 2)
         column.insert(tk.END, f"{group}: ", "bold")
         column.insert(tk.END, f"{count} ({percent}%)", "white")
         add_field_total_button(column, year_to_filenames[group], False, False)
@@ -8498,7 +8567,8 @@ def year_stats(column):
 
 def season_stats(column):
     season_year_counter = Counter()
-    for filename in get_cached_deduplicated_files():
+    files_list = get_cached_deduplicated_files()
+    for filename in files_list:
         data = get_metadata(filename)
         season_year = data.get("season", "Unknown")
         if not season_year or season_year == "N/A":
@@ -8507,6 +8577,7 @@ def season_stats(column):
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY SEASON\n", ("bold", "underline"))
+    total_files = len(files_list) or 1  # Avoid division by zero
     def season_sort_key(season_year_str):
         if season_year_str == "Unknown":
             return (9999, 4)  # Sort "Unknown" at the bottom
@@ -8520,7 +8591,7 @@ def season_stats(column):
         column.insert(tk.END, f"{season_year}: ", "bold")
         column.insert(
             tk.END,
-            f"{season_year_counter[season_year]} ({(round(season_year_counter[season_year]/len(directory_files)*100, ndigits=2))}%)",
+            f"{season_year_counter[season_year]} ({(round(season_year_counter[season_year]/total_files*100, ndigits=2))}%)",
             "white",
         )
         add_field_total_button(column, get_all_matching_field("season", season_year), False, False)
@@ -8529,7 +8600,8 @@ def season_stats(column):
 
 def tag_stats(column):
     tag_counter = Counter()
-    for filename in get_cached_deduplicated_files():
+    files_list = get_cached_deduplicated_files()
+    for filename in files_list:
         data = get_metadata(filename)
         # Tags
         tags = data.get("themes", []) + data.get("genres", []) + data.get("demographics", [])
@@ -8538,9 +8610,10 @@ def tag_stats(column):
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY TAG\n", ("bold", "underline"))
+    total_files = len(files_list) or 1  # Avoid division by zero
     for tag, count in sorted(tag_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{tag}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_filenames_from_tag(tag), False, False)
         column.insert(tk.END, f"\n")
     column.config(state=tk.DISABLED)
@@ -8550,10 +8623,11 @@ def series_stats(column):
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY SERIES\n", ("bold", "underline"))
+    total_files = len(get_cached_deduplicated_files()) or 1  # Avoid division by zero
     total_buttons = 0
     for series, count in sorted(series_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{series}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
         if total_buttons < 300:
             total_buttons += 1
             add_field_total_button(column, get_all_matching_field("series", [series]), False, False)
@@ -8583,7 +8657,8 @@ def get_series_totals(refetch=True, check_all=True):
         
 def artist_stats(column):
     artist_counter = Counter()
-    for filename in get_cached_deduplicated_files():
+    files_list = get_cached_deduplicated_files()
+    for filename in files_list:
         file_data = get_file_metadata_by_name(filename)
         if not file_data:
             continue
@@ -8597,10 +8672,11 @@ def artist_stats(column):
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY ARTIST\n", ("bold", "underline"))
+    total_files = len(files_list) or 1  # Avoid division by zero
     total_buttons = 0
     for artist, count in sorted(artist_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{artist}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(directory_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
         if total_buttons < 300:
             total_buttons += 1
             add_field_total_button(column, get_filenames_from_artist(artist), False, False)
@@ -8609,7 +8685,8 @@ def artist_stats(column):
 
 def studio_stats(column):
     studio_counter = Counter()
-    for filename in get_cached_deduplicated_files():
+    files_list = get_cached_deduplicated_files()
+    for filename in files_list:
         data = get_metadata(filename)
         # Studios
         for studio in data.get("studios", []):
@@ -8617,39 +8694,44 @@ def studio_stats(column):
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY STUDIO\n", ("bold", "underline"))
+    total_files = len(files_list) or 1  # Avoid division by zero
     for studio, count in sorted(studio_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{studio}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(cached_deduplicated_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_filenames_from_studio(studio), False, False)
         column.insert(tk.END, f"\n")
     column.config(state=tk.DISABLED)
 
 def type_stats(column):
     type_counter = Counter()
-    for filename in get_cached_deduplicated_files():
+    files_list = get_cached_deduplicated_files()
+    for filename in files_list:
         data = get_metadata(filename)
         type_counter[get_format(data) or "Unknown"] += 1
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY TYPE\n", ("bold", "underline"))
+    total_files = len(files_list) or 1  # Avoid division by zero
     for type, count in sorted(type_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{type}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(cached_deduplicated_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_all_matching_field("type", type), False, False)
         column.insert(tk.END, f"\n")
     column.config(state=tk.DISABLED)
 
 def slug_stats(column):
     slug_counter = Counter()
-    for filename in get_cached_deduplicated_files():
+    files_list = get_cached_deduplicated_files()
+    for filename in files_list:
         data = get_metadata(filename)
         slug_counter[data.get("slug", "Unknown")] += 1
     column.config(state=tk.NORMAL)
     column.delete("1.0", tk.END)
     column.insert(tk.END, "THEMES BY SLUG\n", ("bold", "underline"))
+    total_files = len(files_list) or 1  # Avoid division by zero
     for slug, count in sorted(slug_counter.items(), key=lambda x: (-x[1], x[0].lower())):
         column.insert(tk.END, f"{slug}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/len(cached_deduplicated_files)*100, ndigits=2))}%)", "white")
+        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
         add_field_total_button(column, get_all_matching_field("slug", slug), False, False)
         column.insert(tk.END, f"\n")
     column.config(state=tk.DISABLED)
@@ -8766,19 +8848,26 @@ def show_filter_popup():
         max_entry.pack(side="left")
         return {"min": min_entry, "max": max_entry}
 
-    def filter_entry_listbox(title, root_frame, data):
+    def filter_entry_listbox(title, root_frame, data, height=6):
         frame = tk.Frame(root_frame, bg=BACKGROUND_COLOR)
         frame.pack(fill="x", pady=5)
         label_and_list = tk.Frame(frame, bg=BACKGROUND_COLOR)
         label_and_list.pack(fill="x")
         tk.Label(label_and_list, text=title, bg=BACKGROUND_COLOR, fg="white").pack(side="left")
-        listbox = tk.Listbox(label_and_list, selectmode=tk.MULTIPLE, height=6, width=28, exportselection=False, bg="black", fg="white")
+        listbox = tk.Listbox(label_and_list, selectmode=tk.MULTIPLE, height=height, width=28, exportselection=False, bg="black", fg="white")
         listbox.pack(side="left", fill="x", expand=True)
         scrollbar = tk.Scrollbar(label_and_list, command=listbox.yview, bg="black")
         scrollbar.pack(side="right", fill="y")
         listbox.config(yscrollcommand=scrollbar.set)
         for item in data:
             listbox.insert(tk.END, item)
+        
+        # Add slower mouse wheel scrolling
+        def on_mousewheel(event):
+            listbox.yview_scroll(-1 if event.delta > 0 else 1, "units")
+            return "break"
+        listbox.bind("<MouseWheel>", on_mousewheel)
+        
         return listbox
 
     try:
@@ -8820,15 +8909,8 @@ def show_filter_popup():
     right_column = tk.Frame(columns_frame, bg=BACKGROUND_COLOR)
     right_column.pack(side="right", fill="both", expand=True, padx=10)
 
-    playlist_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
-    playlist_frame.pack(fill="x", pady=(5,0))
-
-    tk.Label(playlist_frame, text="PLAYLIST:", bg=BACKGROUND_COLOR, fg="white").pack(side="left", padx=(0, 5))
-
-    available_playlists = ["(None)"] + list(get_playlists_dict().values())
-    playlist_var = tk.StringVar(value="(None)")
-    playlist_combobox = ttk.Combobox(playlist_frame, textvariable=playlist_var, values=available_playlists, width=20, style="Black.TCombobox", state="readonly")
-    playlist_combobox.pack(side="left", fill="x", expand=True)
+    available_playlists = list(get_playlists_dict().values())
+    playlist_listbox = filter_entry_listbox("PLAYLISTS\nINCLUDE\n(OR)", left_column, available_playlists, height=4)
 
     tk.Label(left_column, text="KEYWORDS (separated by commas):", bg=BACKGROUND_COLOR, fg="white").pack(anchor="w", pady=(5, 0))
     keywords_entry = tk.Text(left_column, height=1, width=31, bg="black", fg="white", wrap="word")
@@ -8901,8 +8983,8 @@ def show_filter_popup():
         "SPOILER",
         "TRANSITION"
     ]
-    themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options)
-    themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options)
+    themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
+    themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     artists_listbox = filter_entry_listbox("ARTISTS\nINCLUDE\n(OR)", right_column, get_all_artists(playlis))
     studio_listbox = filter_entry_listbox("STUDIOS\nINCLUDE\n(OR)", right_column, get_all_studios(playlis))
     all_tags = get_all_tags(playlis)
@@ -8912,13 +8994,10 @@ def show_filter_popup():
 
     def set_default_values(force_defaults=False):
         filter_data = {} if force_defaults else playlist.get("filter", {})
-
-        # Playlist
-        playlist_name = filter_data.get("playlist_filter")
-        if playlist_name in available_playlists:
-            playlist_var.set(playlist_name)
-        else:
-            playlist_var.set("(None)")
+        
+        # Normalize playlist_filter to list for backward compatibility
+        if "playlist_filter" in filter_data and isinstance(filter_data["playlist_filter"], str):
+            filter_data["playlist_filter"] = [filter_data["playlist_filter"]]
 
         # Keywords
         keywords_entry.delete("1.0", tk.END)
@@ -8955,6 +9034,7 @@ def show_filter_popup():
 
         # Listbox selections
         for listbox, key in [
+            (playlist_listbox, "playlist_filter"),
             (artists_listbox, "artists"),
             (studio_listbox, "studios"),
             (tags_listbox, "tags_include"),
@@ -8984,7 +9064,7 @@ def show_filter_popup():
 
         filters = {}
 
-        if playlist_var.get() != "(None)": filters["playlist_filter"] = playlist_var.get()
+        if playlist_listbox.curselection(): filters["playlist_filter"] = [playlist_listbox.get(i) for i in playlist_listbox.curselection()]
         if keywords_entry.get("1.0", "end-1c").strip() != "": filters['keywords'] = str(keywords_entry.get("1.0", "end-1c").strip())
         if theme_var.get() != "Both": filters['theme_type'] = str(theme_var.get())
         if float(min_score_slider.get()) != round(lowest_score, 1): filters['score_min'] = float(min_score_slider.get())
@@ -9154,13 +9234,17 @@ def filter_playlist(filters):
 
     filtered = []
 
-    playlist_filter_files = []
+    playlist_filter_files = set()
     if "playlist_filter" in filters:
-        ref_playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{filters['playlist_filter']}.json")
-        if os.path.exists(ref_playlist_path):
-            with open(ref_playlist_path, "r") as f:
-                ref_data = json.load(f)
-                playlist_filter_files = set(ref_data.get("playlist", []))
+        playlist_names = filters['playlist_filter']
+        if isinstance(playlist_names, str):
+            playlist_names = [playlist_names]  # Handle old single playlist format
+        for playlist_name in playlist_names:
+            ref_playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
+            if os.path.exists(ref_playlist_path):
+                with open(ref_playlist_path, "r") as f:
+                    ref_data = json.load(f)
+                    playlist_filter_files.update(ref_data.get("playlist", []))
                 
     if ("themes_exclude" in filters and "DUPLICATES" in filters["themes_exclude"]) or ("themes_include" in filters and "DUPLICATES" in filters["themes_include"]):
         build_best_duplicate_map(playlis)
@@ -11667,19 +11751,7 @@ def has_lightning_mode_info(data, round_type):
     elif round_type == "cover":
         return bool(data.get("cover"))
     elif round_type == "image":
-        if not SERPAPI_KEY:
-            try:
-                print("Image lightning round disabled: missing SerpAPI Key.")
-            except Exception:
-                pass
-            return False
-        if serpapi_limited:
-            try:
-                print("Image lightning round disabled: SerpAPI quota limit reached.")
-            except Exception:
-                pass
-            return False
-        return True
+        return SERPAPI_KEY and not serpapi_limited
     elif round_type == "tags":
         return len(data.get("tags", [])) >= 10
     elif round_type == "episodes":
@@ -14630,7 +14702,15 @@ def clean_character_description(name, desc):
     # 1. Replace hyperlinks like: http://... [text] → text
     desc = re.sub(r'http\S+\s+\[([^\]]+)\]', r'\1', desc)
 
-    # 2. Remove character name (first + last and variants)
+    # 2. Remove spoiler markdown tags and their content
+    desc = re.sub(r'~!([^!]+)!~', '', desc)  # AniList format: ~!text!~
+    desc = re.sub(r'\|\|([^|]+)\|\|', '', desc)  # Discord format: ||text||
+    desc = re.sub(r'>!([^!]+)!<', '', desc)  # Reddit format: >!text!<
+    
+    # Remove literal [SPOILER] markers (case-insensitive)
+    desc = re.sub(r'\[spoiler\]', '', desc, flags=re.IGNORECASE)
+
+    # 3. Remove character name (first + last and variants)
     if name:
         parts = name.split()
         for variant in [name, name.replace(" ", ""), *parts]:
@@ -14638,7 +14718,12 @@ def clean_character_description(name, desc):
             replacement = "_" * len(variant)
             desc = pattern.sub(replacement, desc)
 
-    # 3. Normalize whitespace and newlines
+    # 4. Remove "(Source: " and everything after it
+    source_index = desc.find("(Source:")
+    if source_index != -1:
+        desc = desc[:source_index].strip()
+
+    # 5. Normalize whitespace and newlines
     desc = desc.replace("\n", " ").strip()
     desc = re.sub(r'\s+', ' ', desc)
 
@@ -16008,9 +16093,170 @@ def is_animethemes_stream_file(filename):
 
 animethemes_stream = None
 stream_icon = '📶'
+active_downloads = {}  # {filename: thread_object}
+cache_metadata = {}  # {filename: {size, play_count, last_played}}
+downloads_completed = 0  # Track completed downloads for progressive download logic
+
 def get_animethemes_stream_url(filename):
     """Get streaming URL for a theme from AnimThemes using the filename as basename."""
     return f"https://v.animethemes.moe/{filename}"
+
+def load_cache_metadata():
+    """Load cache metadata from JSON file."""
+    global cache_metadata
+    try:
+        if os.path.exists(CACHE_METADATA_FILE):
+            with open(CACHE_METADATA_FILE, 'r', encoding='utf-8') as f:
+                cache_metadata = json.load(f)
+        else:
+            cache_metadata = {}
+    except Exception as e:
+        print(f"Error loading cache metadata: {e}")
+        cache_metadata = {}
+
+def save_cache_metadata():
+    """Save cache metadata to JSON file."""
+    try:
+        os.makedirs(os.path.dirname(CACHE_METADATA_FILE), exist_ok=True)
+        with open(CACHE_METADATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cache_metadata, f, indent=2)
+    except Exception as e:
+        print(f"Error saving cache metadata: {e}")
+
+def get_cache_size_mb():
+    """Get current cache size in MB."""
+    total_size = 0
+    for filename, metadata in cache_metadata.items():
+        total_size += metadata.get('size', 0)
+    return total_size / (1024 * 1024)  # Convert to MB
+
+def get_cached_file_path(filename):
+    """Get the path to a cached file if it exists."""
+    # Check if we have it in metadata with the path
+    if filename in cache_metadata:
+        rel_path = cache_metadata[filename].get('path', filename)
+        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+        if os.path.exists(cache_path):
+            return cache_path
+    
+    # Fallback: check flat structure for legacy cached files
+    cache_path = os.path.join(THEMES_CACHE_FOLDER, filename)
+    if os.path.exists(cache_path):
+        return cache_path
+    
+    return None
+
+def evict_cache_for_size(needed_size_bytes):
+    """Evict least-used files from cache to make room for new download.
+    
+    Args:
+        needed_size_bytes: Size needed in bytes
+        
+    Returns:
+        True if enough space was freed, False otherwise
+    """
+    global cache_metadata
+    
+    # Calculate current cache size in bytes
+    current_size = sum(meta.get('size', 0) for meta in cache_metadata.values())
+    cache_limit_bytes = themes_cache_size * 1024 * 1024
+    
+    if current_size + needed_size_bytes <= cache_limit_bytes:
+        return True  # Already have space
+    
+    # Build list of cached files with their priority (play_count, last_played)
+    # Priority: least played, oldest last_played
+    cached_files = []
+    for filename, meta in cache_metadata.items():
+        cached_files.append({
+            'filename': filename,
+            'size': meta.get('size', 0),
+            'play_count': meta.get('play_count', 0),
+            'last_played': meta.get('last_played', ''),
+        })
+    
+    # Sort by play_count (ascending), then by last_played (ascending/oldest first)
+    cached_files.sort(key=lambda x: (x['play_count'], x['last_played']))
+    
+    # Remove files until we have enough space
+    space_needed = current_size + needed_size_bytes - cache_limit_bytes
+    space_freed = 0
+    
+    for file_info in cached_files:
+        if space_freed >= space_needed:
+            break
+        
+        filename = file_info['filename']
+        # Use stored path from metadata
+        rel_path = cache_metadata.get(filename, {}).get('path', filename)
+        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+        
+        try:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                print(f"Evicted from cache: {filename} (played {file_info['play_count']} times)")
+                
+                # Clean up empty directories
+                cache_dir = os.path.dirname(cache_path)
+                try:
+                    while cache_dir != THEMES_CACHE_FOLDER and os.path.exists(cache_dir):
+                        if not os.listdir(cache_dir):  # Directory is empty
+                            os.rmdir(cache_dir)
+                            cache_dir = os.path.dirname(cache_dir)
+                        else:
+                            break
+                except:
+                    pass  # Ignore cleanup errors
+            
+            space_freed += file_info['size']
+            del cache_metadata[filename]
+        except Exception as e:
+            print(f"Error evicting {filename}: {e}")
+    
+    save_cache_metadata()
+    return space_freed >= space_needed
+
+def update_cache_play_count(filename):
+    """Update play count and last played timestamp for a cached file."""
+    if filename in cache_metadata:
+        cache_metadata[filename]['play_count'] = cache_metadata[filename].get('play_count', 0) + 1
+        cache_metadata[filename]['last_played'] = datetime.now().isoformat()
+        save_cache_metadata()
+
+def _download_animethemes_file_to_path(filename, dest_path, progress_callback=None):
+    """Core download logic for AnimThemes files.
+    
+    Args:
+        filename: Name of the file to download
+        dest_path: Full destination path
+        progress_callback: Optional callback(downloaded_mb, total_mb) for progress updates
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        url = get_animethemes_stream_url(filename)
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        # Write to file with progress tracking
+        with open(dest_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_callback and total_size > 0:
+                        mb_downloaded = downloaded / 1024 / 1024
+                        mb_total = total_size / 1024 / 1024
+                        progress_callback(mb_downloaded, mb_total)
+        
+        return True
+    except Exception as e:
+        print(f"Download error for {filename}: {e}")
+        return False
 
 def download_animethemes_file(filename, button=None):
     """Download an AnimThemes file and save it to directory/year/season/filename structure."""
@@ -16051,27 +16297,18 @@ def download_animethemes_file(filename, button=None):
             os.makedirs(dest_dir, exist_ok=True)
             dest_path = os.path.join(dest_dir, filename)
             
-            # Download the file
-            url = get_animethemes_stream_url(filename)
+            # Download using core function
             update_button("Downloading...")
             
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
+            def progress_callback(mb_downloaded, mb_total):
+                update_button(f"{mb_downloaded:.1f}/{mb_total:.1f} MB")
             
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
+            success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
             
-            # Write to file with progress tracking
-            with open(dest_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total_size > 0:
-                            percent = int((downloaded / total_size) * 100)
-                            mb_downloaded = downloaded / 1024 / 1024
-                            mb_total = total_size / 1024 / 1024
-                            update_button(f"{mb_downloaded:.1f}/{mb_total:.1f} MB")
+            if not success:
+                update_button("Error")
+                messagebox.showerror("Download Error", f"Failed to download {filename}")
+                return
             
             # Update directory_files to include the new file
             directory_files[filename] = dest_path
@@ -16096,6 +16333,279 @@ def download_animethemes_file(filename, button=None):
     
     # Start download in background thread
     threading.Thread(target=do_download, daemon=True).start()
+
+def move_cached_file_to_directory(filename, button=None):
+    """Move a cached file to the proper directory/year/season structure.
+    
+    Args:
+        filename: Name of the file to move
+        button: Optional button widget to update with status
+    """
+    def update_button(text):
+        if button and isinstance(button, tk.Button):
+            try:
+                button.config(text=text)
+            except:
+                pass
+    
+    def do_move():
+        try:
+            update_button("Moving...")
+            
+            # Get cached file path
+            cached_path = get_cached_file_path(filename)
+            if not cached_path:
+                update_button("Not Cached")
+                messagebox.showerror("Error", f"File not found in cache: {filename}")
+                return
+            
+            # Get metadata to determine season/year
+            data = get_metadata(filename)
+            season_str = data.get("season", "")
+            
+            # Parse season string (format: "Season Year", e.g., "Winter 2024")
+            if season_str and season_str != "N/A":
+                parts = season_str.split()
+                if len(parts) >= 2:
+                    season = parts[0]  # e.g., "Winter"
+                    year = parts[1]    # e.g., "2024"
+                else:
+                    season = "Unknown"
+                    year = "Unknown"
+            else:
+                season = "Unknown"
+                year = "Unknown"
+            
+            # Create directory structure: directory/year/season/
+            if directory:
+                dest_dir = os.path.join(directory, year, season)
+            else:
+                dest_dir = os.path.join(year, season)
+            
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(dest_dir, filename)
+            
+            # Move the file from cache to directory
+            shutil.move(cached_path, dest_path)
+            
+            # Clean up empty cache directories
+            cache_dir = os.path.dirname(cached_path)
+            try:
+                while cache_dir != THEMES_CACHE_FOLDER and os.path.exists(cache_dir):
+                    if not os.listdir(cache_dir):  # Directory is empty
+                        os.rmdir(cache_dir)
+                        cache_dir = os.path.dirname(cache_dir)
+                    else:
+                        break
+            except:
+                pass  # Ignore cleanup errors
+            
+            # Update directory_files
+            directory_files[filename] = dest_path
+            
+            # Remove from cache metadata
+            if filename in cache_metadata:
+                del cache_metadata[filename]
+                save_cache_metadata()
+            
+            # Success
+            filesize_mb = os.path.getsize(dest_path) / 1024 / 1024
+            update_button(f"✓ {filesize_mb:.1f} MB")
+            print(f"Moved {filename} from cache to {dest_path}")
+            
+            # Refresh displays
+            if list_loaded == "playlist":
+                root.after(100, lambda: show_playlist(True))
+            
+            # Refresh file actions display to show local file actions
+            if currently_playing and currently_playing.get("filename") == filename:
+                root.after(100, lambda: update_extra_metadata())
+            
+        except Exception as e:
+            update_button("Error")
+            print(f"Move error for {filename}: {e}")
+            messagebox.showerror("Move Error", f"Failed to move {filename}:\n\n{str(e)}")
+    
+    # Start move in background thread
+    threading.Thread(target=do_move, daemon=True).start()
+
+def download_to_cache(filename, silent=False):
+    """Download an AnimThemes file to cache folder for temporary storage.
+    
+    Args:
+        filename: Name of the file to download
+        silent: If True, don't print status messages
+        
+    Returns:
+        True if download started successfully, False otherwise
+    """
+    global active_downloads, cache_metadata, downloads_completed
+    
+    # Check if already downloading
+    if filename in active_downloads:
+        return False
+    
+    # Check if already in cache
+    if get_cached_file_path(filename):
+        return False
+    
+    # Check if file is in local directory
+    if filename in directory_files:
+        return False
+    
+    def do_cache_download():
+        global downloads_completed, cache_metadata
+        try:
+            # Get metadata to determine season/year
+            data = get_metadata(filename)
+            season_str = data.get("season", "")
+            
+            # Parse season string (format: "Season Year", e.g., "Winter 2024")
+            if season_str and season_str != "N/A":
+                parts = season_str.split()
+                if len(parts) >= 2:
+                    season = parts[0]  # e.g., "Winter"
+                    year = parts[1]    # e.g., "2024"
+                else:
+                    season = "Unknown"
+                    year = "Unknown"
+            else:
+                season = "Unknown"
+                year = "Unknown"
+            
+            # Create cache directory structure: themes_cache/year/season/
+            cache_subdir = os.path.join(year, season)
+            full_cache_dir = os.path.join(THEMES_CACHE_FOLDER, cache_subdir)
+            os.makedirs(full_cache_dir, exist_ok=True)
+            
+            # Get expected file size to check cache space
+            url = get_animethemes_stream_url(filename)
+            response = requests.head(url, timeout=10)
+            total_size = int(response.headers.get('content-length', 0))
+            
+            # Check if we have space (with eviction)
+            if total_size > 0 and not evict_cache_for_size(total_size):
+                if not silent:
+                    print(f"Cache full, cannot download: {filename}")
+                return
+            
+            # Store in nested structure
+            rel_path = os.path.join(cache_subdir, filename)
+            dest_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+            
+            # Download using core function with progress callback
+            last_percent = [-1]  # Use list to allow modification in nested function
+            
+            def progress_callback(mb_downloaded, mb_total):
+                if not silent:
+                    percent = int((mb_downloaded / mb_total) * 100)
+                    # Only print every 5% to reduce spam
+                    if percent != last_percent[0] and percent % 5 == 0:
+                        print(f"\rCaching {filename}: {percent}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end='', flush=True)
+                        last_percent[0] = percent
+            
+            if not silent:
+                print(f"Caching {filename}: 0%", end='', flush=True)
+            
+            success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
+            
+            if not success:
+                if not silent:
+                    print(f"\rCache download failed: {filename}" + " " * 30)  # Clear line
+                return
+            
+            # Update cache metadata with path
+            cache_metadata[filename] = {
+                'path': rel_path,
+                'size': os.path.getsize(dest_path),
+                'play_count': 0,
+                'last_played': datetime.now().isoformat()
+            }
+            save_cache_metadata()
+            
+            # Update completed counter
+            downloads_completed += 1
+            
+            if not silent:
+                filesize_mb = cache_metadata[filename]['size'] / 1024 / 1024
+                print(f"\rCached: {filename} ({filesize_mb:.1f} MB)" + " " * 30)  # Clear line and show final status
+            
+        except Exception as e:
+            if not silent:
+                print(f"Cache download error for {filename}: {e}")
+        finally:
+            # Remove from active downloads
+            if filename in active_downloads:
+                del active_downloads[filename]
+    
+    # Start download in background thread
+    thread = threading.Thread(target=do_cache_download, daemon=True)
+    active_downloads[filename] = thread
+    thread.start()
+    return True
+
+def wait_for_download(filename, timeout=30):
+    """Wait for a file download to complete.
+    
+    Args:
+        filename: Name of the file
+        timeout: Maximum seconds to wait
+        
+    Returns:
+        True if download completed, False if timeout or not downloading
+    """
+    if filename not in active_downloads:
+        return True  # Not downloading, so we're done
+    
+    thread = active_downloads[filename]
+    thread.join(timeout=timeout)
+    
+    return filename not in active_downloads  # True if completed
+
+def prefetch_next_themes():
+    """Prefetch the next 1-5 themes based on how many downloads have completed.
+    
+    Progressive download logic:
+    - After 0 downloads: prefetch 1 ahead
+    - After 1+ downloads: prefetch 2 ahead
+    - After 3+ downloads: prefetch up to 5 ahead
+    """
+    if not playlist.get("playlist"):
+        return
+    
+    # Determine how many themes ahead to prefetch based on completed downloads
+    if downloads_completed == 0:
+        prefetch_count = 1
+    elif downloads_completed < 3:
+        prefetch_count = 2
+    else:
+        prefetch_count = 5
+    
+    current_idx = playlist.get("current_index", 0)
+    playlist_items = playlist["playlist"]
+    
+    # Prefetch the next prefetch_count themes
+    for i in range(1, prefetch_count + 1):
+        next_idx = (current_idx + i) % len(playlist_items)
+        next_entry = playlist_items[next_idx]
+        next_filename = get_clean_filename(next_entry)
+        
+        # Check if this file needs to be cached
+        if is_animethemes_stream_file(next_filename):
+            # Don't download if already in local directory
+            if next_filename in directory_files:
+                continue
+            
+            # Don't download if already cached
+            if get_cached_file_path(next_filename):
+                continue
+            
+            # Don't download if already downloading
+            if next_filename in active_downloads:
+                continue
+            
+            # Start the download
+            download_to_cache(next_filename, silent=True)
 
 def play_trailer(url=None):
     url = url or currently_playing.get("data", {}).get("trailer")
@@ -16145,7 +16655,9 @@ def load_random_clips(data=None, limit_channels=False, ost=False):
     if ost:
         url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=False, ost=True)
     else:
-        url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=True)
+        url = name = channel = None
+        if not is_game(data) and len(data.get("title", "")) > 1:
+            url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=True)
         if not url and title != get_base_title(title=title):
             url, name, channel = get_random_anime_clip_stream_url(get_base_title(title=title), year, data, limit_channels=True)
         if not url and not limit_channels:
@@ -16265,13 +16777,13 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "#animeexplain", "top 3", "top 5", "top 10", "top 11", "top 12", "top 13",
                     "anime mix", "english dub greeting video", "best of 20", "reacts to", "anime boston",
                     "best anime fights compilation", "best anime fight compilation", "best anime battles compilation",
-                    "best anime battle compilation"
+                    "best anime battle compilation", "#animeindo", "first impressions"
                 ]
                 ost_bad_keywords = [
                     "insert song", "anime songs", "cd single", "theme song", "full album", "extended"
                 ]
                 game_bad_keywords = [
-                    "gameplay", "let's play", "walkthrough", "opening cinematic", "game trailer"
+                    "gameplay", "let's play", "walkthrough", "opening cinematic", "game trailer", "action rpg"
                 ]
                 if not is_game(data):
                     bad_keywords += game_bad_keywords
@@ -16303,7 +16815,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     continue
                 
                 #check description
-                bad_description_phrases = [" amv ", " amv."]
+                bad_description_phrases = [" amv ", " amv.", "artista: "]
                 if any(phrase in description.lower() for phrase in bad_description_phrases):
                     test_print(f"[{video_id}]{title}:  bad phrase in description")
                     continue
@@ -16354,7 +16866,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "Explained", "Mother's Basement", "Crunchyroll: Inside Anime", "Crunchyroll TV", "It's Certified Otaku Vibes",
                     "Crunchyroll en Español", "Crunchyroll FR", "Crunchyroll India", "Crunchyroll DE", "WatchMojo", "Watch Mojo",
                     "AnimeVersa", "Crunchyroll en Español", "Netflix Jr.", "MWAMVEVO", "Tarkeus", "Gigguk", "ryuuarm", "Jent Watches"
-                    "IGN Anime Club", "Albert Senpai", "AnimeSekaiStore", "ForgottenRelics", "Anuj Lama"
+                    "IGN Anime Club", "Albert Senpai", "AnimeSekaiStore", "ForgottenRelics", "Anuj Lama", "Garnt", " Watches"
                 ]
                 ost_blacklisted_channels = [
                     " - Topic"
@@ -16420,6 +16932,23 @@ def title_match_score(anime_title, video_title):
         "the", "a", "an", "of", "and", "in", "to", "for", "with", "on",
         "season", "part", "new", "as"
     }
+    # Common phrases that appear in many anime titles and shouldn't count as unique matches
+    COMMON_PHRASES = {
+        "daily life", "life of", "story of", "tale of", "adventures of",
+        "chronicles of", "saga of", "legend of", "world of"
+    }
+    
+    # Special handling for very short anime titles (1-2 characters)
+    # These need exact word boundary matches to avoid false positives
+    anime_stripped = anime_title.strip()
+    if len(anime_stripped) <= 2:
+        # For single/double character titles like "X" or "91", require exact word match
+        # Use word boundaries to ensure it's standalone, not part of another word
+        pattern = r'\b' + re.escape(anime_stripped) + r'\b'
+        if re.search(pattern, video_title, re.IGNORECASE):
+            return True
+        return False
+    
     def clean_words(text, exclude_generic=True):
         words = [
             word.strip("|『[]×.,!?:;\"'").lower()
@@ -16467,17 +16996,29 @@ def title_match_score(anime_title, video_title):
 
     # Try to match all anime title words in order in the video title
     i = 0
+    matched_words = []
     if len(anime_words_count) < 3:
         min_match = len(anime_words_count)
     else:
         min_match = min(5, max(1, len(anime_words_count) // 2 + len(anime_words_count) % 2))
+    
     for word in video_words:
-        if word == anime_words[i]:
+        if i < len(anime_words) and word == anime_words[i]:
+            matched_words.append(word)
             i += 1
-            if i == min_match:
+            if i >= min_match:
+                # Check if we've only matched a common phrase
+                matched_text = " ".join(matched_words)
+                is_only_common_phrase = any(phrase in matched_text for phrase in COMMON_PHRASES)
+                
+                # If we've only matched a common phrase, require at least one more unique word
+                if is_only_common_phrase and i < len(anime_words):
+                    continue  # Keep looking for more matches
+                
                 return True
         else:
             i = 0
+            matched_words = []
     return False
 
 def parse_iso8601_duration(duration):
@@ -18373,7 +18914,7 @@ def play_background_music(toggle):
     
     if not music_files:  # If still empty, return
         if not checked_music_folder:
-            print("No music files found in 'music' folder.")
+            print("No music files found in 'music' folder. Add music files to this folder to play background music during lightning rounds.")
             checked_music_folder = True
         return
 
@@ -18737,7 +19278,7 @@ def toggle_title_popup(show, info_type=None):
             title = data.get("eng_title") or japanese_title or (data.get("synonyms", [None]) or [None])[0]
             theme = format_slug(data.get("slug"))
             version_num = data.get("version")
-            if version_num and version_num != 1:
+            if version_num and version_num not in ["null", "1"]:
                 version_num = f"v{version_num}"
             else:
                 version_num = ""
@@ -18894,7 +19435,7 @@ def toggle_title_popup(show, info_type=None):
                                 continue
                             
                             # Get title from anilist_metadata
-                            t = anilist_data.get("title") or anime_data.get("eng_title") or anime_data.get("title", "Unknown")
+                            t = anime_data.get("eng_title") or anilist_data.get("title") or anime_data.get("title", "Unknown")
                             popularity_rank = anilist_data.get("popularity_rank_season", INT_INF)
                             score = anilist_data.get("score")
                             ranked_anime.append((t, popularity_rank, score))
@@ -18932,7 +19473,7 @@ def toggle_title_popup(show, info_type=None):
                                 continue
                             
                             # Get title from anilist_metadata
-                            t = anilist_data.get("title") or anime_data.get("eng_title") or anime_data.get("title", "Unknown")
+                            t = anime_data.get("eng_title") or anilist_data.get("title") or anime_data.get("title", "Unknown")
                             popularity_rank = anilist_data.get("popularity_rank_year", INT_INF)
                             score = anilist_data.get("score")
                             all_anime.append((t, popularity_rank, score))
@@ -19900,11 +20441,49 @@ def play_filename(playlist_entry, fullscreen=True):
     global video_stopped, previous_media, skip_limit, animethemes_stream
     filename = get_clean_filename(playlist_entry)
     data = get_metadata(filename, fetch=auto_fetch_missing)
-    filepath = get_file_path(playlist_entry)  # Get file path from playlist
+    
+    # Check if file is currently downloading, wait for it
+    if filename in active_downloads:
+        print(f"Waiting for download to complete: {filename}")
+        wait_for_download(filename, timeout=30)
+    
+    filepath = get_file_path(playlist_entry)  # Get file path from playlist (checks local and cache)
     animethemes_stream = False
+    
+    # If not found locally or in cache, check if it's a streamable file
     if not filepath and is_animethemes_stream_file(filename):
-        filepath = get_animethemes_stream_url(filename)
-        animethemes_stream = True
+        # Try to download to cache first
+        cached_path = get_cached_file_path(filename)
+        if cached_path:
+            filepath = cached_path
+        else:
+            # Attempt to start download to cache
+            download_started = download_to_cache(filename, silent=False)
+            if download_started:
+                # Wait for download to complete
+                if wait_for_download(filename, timeout=60):
+                    filepath = get_cached_file_path(filename)
+                    if not filepath:
+                        # Download failed or cache full, fall back to streaming
+                        print(f"Cache download failed, streaming: {filename}")
+                        filepath = get_animethemes_stream_url(filename)
+                        animethemes_stream = True
+                else:
+                    # Timeout waiting for download, fall back to streaming
+                    print(f"Download timeout, streaming: {filename}")
+                    filepath = get_animethemes_stream_url(filename)
+                    animethemes_stream = True
+            else:
+                # Cache full or other issue, stream directly
+                filepath = get_animethemes_stream_url(filename)
+                animethemes_stream = True
+    
+    # Update play count for cached files
+    if filepath and not animethemes_stream:
+        cached_path = get_cached_file_path(filename)
+        if cached_path and filepath == cached_path:
+            update_cache_play_count(filename)
+    
     if skip_limit <= 10:
         if not filepath or not (os.path.exists(filepath) or animethemes_stream):  # Check if file exists
             print(f"File not found: {filepath}. Skipping...")
@@ -19914,6 +20493,10 @@ def play_filename(playlist_entry, fullscreen=True):
             print(f"Not enough info for {filename}. Skipping...")
             skip_filename()
             return False
+    
+    # Start prefetching next themes after we've started playing
+    threading.Thread(target=prefetch_next_themes, daemon=True).start()
+    
     currently_playing = {
         "type":"theme",
         "filename":filename,
@@ -20006,7 +20589,7 @@ def play_filename(playlist_entry, fullscreen=True):
     if light_mode not in ['frame', 'clip', 'ost', 'blind']:
         retry_delay = 500
         if animethemes_stream:
-            retry_delay = 2000  # Longer delay for streaming to allow time for buffering
+            retry_delay = 5000  # Longer delay for streaming to allow time for buffering
         root.after(retry_delay, play_video_retry, 5, fullscreen)  # Retry playback
     
     if playlist.get("infinite", False):
@@ -20456,7 +21039,7 @@ def play_video_retry(retries, fullscreen=True):
     global video_stopped
     retry_delay = 2000
     if animethemes_stream:
-        retry_delay = 5000
+        retry_delay = 5000 + 1000*(5-retries)  # Increase delay with each retry for streaming
     if (not player.is_playing() or player.get_length() == 0):
         if retries > 0:
             if retries < 5:
@@ -20657,11 +21240,12 @@ def play_previous():
 
 def stop():
     """Function to stop the video"""
-    global video_stopped, currently_playing
+    global video_stopped, currently_playing, light_round_started
     global fixed_lightning_queue, fixed_lightning_round_playlist_data, fixed_current_round
     video_stopped = True
     toggle_light_mode()
     clean_up_light_round()
+    light_round_started = False
     set_countdown()
     set_light_round_number()
     set_black_screen(False)
@@ -20790,7 +21374,7 @@ def update_seek_bar():
                             player.pause()
                             play_next()
                     else:
-                        if not light_mode and (length - time) <= 8:
+                        if not light_round_started and (length - time) <= 8:
                             if (not is_title_window_up() or title_info_only) and auto_info_end:
                                 toggle_title_popup(True)
                             if coming_up_queue:
@@ -21226,6 +21810,8 @@ def apply_censors(time, length):
             mute_censor_used = False
 
 def get_file_censors(filename):
+    if not filename:
+        return None
     filenames = [filename, filename.replace(".mp4", ".webm")]
     for f in filenames:
         file_censors = censor_list.get(f)
@@ -21474,10 +22060,11 @@ def rgbtohex(r,g,b):
     return f'#{r:02x}{g:02x}{b:02x}'
 
 def update_censor_button_count():
-    censors_num = len(get_file_censors(currently_playing.get("filename","")))
-    toggle_censor_bar_button.configure(text=f"[C]ENSOR({censors_num})")
-    if popout_buttons_by_name.get(toggle_censor_bar_button):
-        popout_buttons_by_name.get(toggle_censor_bar_button).configure(text=f"CENSORS({censors_num})")
+    if currently_playing.get("filename"):
+        censors_num = len(get_file_censors(currently_playing.get("filename","")))
+        toggle_censor_bar_button.configure(text=f"[C]ENSOR({censors_num})")
+        if popout_buttons_by_name.get(toggle_censor_bar_button):
+            popout_buttons_by_name.get(toggle_censor_bar_button).configure(text=f"CENSORS({censors_num})")
 
 class RectangleDrawerOverlay:
     def __init__(self, on_rectangle_picked):
@@ -22627,7 +23214,7 @@ def get_title(key, value):
                 title = get_display_title(data)
                 display_name = title + " " + data.get("slug")
                 version_num = data.get("version")
-                if version_num != "null" and version_num != "1":
+                if version_num and version_num not in ["null", "1"]:
                     display_name += f"v{version_num}"
                 if os.path.isabs(value):
                     display_name = "📁 " + display_name
@@ -24509,6 +25096,10 @@ def create_popout_controls(columns=5, title="Popout Controls"):
 # Load saved configuration on startup
 load_config()
 
+# Initialize themes cache
+os.makedirs(THEMES_CACHE_FOLDER, exist_ok=True)
+load_cache_metadata()
+
 BACKGROUND_COLOR = "gray12"
 WINDOW_TITLE = f"Guess the Anime! Playlist Tool v{APP_VERSION}"
 
@@ -24636,7 +25227,7 @@ def create_first_row_buttons():
     import_censors_button = create_button(first_row_frame, "C", import_censors, False,
                                 help_title="IMPORT RAMUN'S CENSORS",
                                 help_text="Downloads and imports Ramun's censors from GitHub. "
-                                "This will be saved as 'ramun_censors.json' in your files folder.")
+                                "This will be saved as 'ramuns_censors.json' in your files folder.")
 
     global export_data_button
     export_data_button = create_button(first_row_frame, "📤", export_metadata_package, True,
@@ -24655,34 +25246,18 @@ def create_first_row_buttons():
                                 "You can add themes not from AnimeThemes, but they must be labeled " +
                                 "properly to be able to fetch the metadata from MAL. Label them as follows:\n\n" +
                                 "AnimeName-OP1-[MAL]49618[ART]Minami[SNG]Rude Lose Dance.webm\n\n" + 
-                                "It does expect .webm files. You should be able to just change " + 
-                                "the extension if it's .mp4.\n\nYou'll want to hit the CREATE " + 
-                                "button after to create the playlist.")
-
-    
-    # if playlist.get("infinite", False):
-    #     directory_width = 24
-    # else:
-    #     directory_width = 22
-
-    # global directory_entry
-    # directory_entry = tk.Entry(first_row_frame, width=scl(directory_width, "UI"), bg="black", fg="white", insertbackground="white", textvariable=directory)
-    # directory_entry.pack(side="left")
-    # directory_entry.delete(0, tk.END)
-    # directory_entry.insert(0, directory)
+                                "You'll want to hit the CREATE button after to create the playlist." + 
+                                "I reccomend using the ∞ button to create an infinite playlist(read more on it's help menu).")
 
     global generate_button
     generate_button = create_button(first_row_frame, "CREATE➕", generate_playlist_button,
                                 help_title="CREATE PLAYLIST",
                                 help_text=("This creates a playlist using all videos "
-                                "found in the directory.\n\nIf this is your first time "
-                                "creating a playlist with these files, and you want "
-                                "to be able to use all the other playlist functions, "
-                                "you'll need to fetch the metadata for all the files. "
-                                "You can do this by hitting the '?' button next to the "
-                                "FETCH DATA button. It may take a while "
-                                "depending on how many themes you have.\n\n"
-                                "You will be asked to confirm when creating."))
+                                "found in the directory or metadata if selected.\n\n" 
+                                "If this is your first time, maybe sure you imported metadata if you haven't already.\n\n"
+                                "if you are unsure of the different types of playlists, you can "
+                                "check the help menu for each for an explanation. By default, I "
+                                "recommend using the ∞ button to create an infinite playlist."))
     
     global create_infinite_button
     create_infinite_button = create_button(first_row_frame, "∞", create_infinite_playlist, 
@@ -24700,7 +25275,8 @@ def create_first_row_buttons():
                                 "EASY: [Easy, Medium]\n"
                                 "NORMAL: [Easy, Medium, Hard]\n"
                                 "HARD: [Medium, Hard]\n"
-                                "VERY HARD: [Hard]\n\n"
+                                "VERY HARD: [Hard]\n"
+                                "RANDOM: [Easy, Medium, Hard] (does not balance popularity or season groups)\n\n"
                                 "So Normal will include everything, while other difficulties exclude certain groups.")
     create_infinite_button.bind("<Button-2>", test_infinite_playlist)
 
