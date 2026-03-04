@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.2"  # Update this when making releases
+APP_VERSION = "15.3"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -567,6 +567,8 @@ class FileMetadataDict(dict):
 
 file_metadata = FileMetadataDict()
 FILE_METADATA_FILE = "metadata/file_metadata.json"
+file_metadata_overrides = {}
+FILE_METADATA_OVERRIDES_FILE = "metadata/file_metadata_overrides.json"
 anime_metadata = {}
 ANIME_METADATA_FILE = "metadata/anime_metadata.json"
 anidb_metadata = {}
@@ -1198,7 +1200,7 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
 def get_file_metadata_by_name(filename):
     """
     Get file metadata for a filename using the filename_to_mal lookup map.
-    Returns the full MAL entry with all themes, plus a 'current' key for this file's specific data.
+    Returns the full MAL entry with all themes, plus file-specific properties.
     """
     if not filename:
         return None
@@ -1220,7 +1222,6 @@ def get_file_metadata_by_name(filename):
     mal_id = lookup_data["mal_id"]
     slug = lookup_data["slug"]
     version = lookup_data["version"]
-    
     # Get the full MAL entry
     mal_entry = file_metadata.get(mal_id)
     if not mal_entry:
@@ -1233,6 +1234,17 @@ def get_file_metadata_by_name(filename):
     result["version"] = version
     result["anidb"] = mal_entry.get("anidb")
     result["anilist"] = mal_entry.get("anilist")
+    
+    # Add file-specific properties (lyrics, nc, resolution, source)
+    themes = mal_entry.get("themes", {})
+    if slug in themes:
+        versions = themes[slug]
+        version_str = str(version) if version else "1"
+        if version_str in versions:
+            files = versions[version_str]
+            file_props = files.get(filename, {})
+            result["file_properties"] = file_props
+    
     return result
 
 def get_version_from_filename(filename):
@@ -3162,28 +3174,33 @@ def update_up_next_display(widget, clear=False):
     widget.config(height=0)
     if not clear:
         if not is_docked() or is_popout:
-            if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2 and not (fixed_lightning_round_playlist_data or fixed_lightning_queue) or youtube_queue or search_queue:
-                reroll_button = tk.Button(
-                        widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
-                        pady=0, command=refetch_next_track, bg="black", fg="white"
-                    )
-                if is_popout:
-                    popout_buttons_by_name["reroll"].configure(
-                        text="RE-ROLL\nNEXT 🔄",
-                        command=refetch_next_track
-                    )
+            if not (fixed_lightning_round_playlist_data or fixed_lightning_queue) or youtube_queue or search_queue:
+                next_filename = None
+                if playlist["current_index"] + 1 < len(playlist["playlist"]):
+                    playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
+                    next_filename = get_clean_filename(playlist_entry)
+                if next_filename and check_file_availability(next_filename) and playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2:
+                    reroll_button = tk.Button(
+                            widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
+                            pady=0, command=refetch_next_track, bg="black", fg="white"
+                        )
+                    if is_popout:
+                        popout_buttons_by_name["reroll"].configure(
+                            text="RE-ROLL\nNEXT 🔄",
+                            command=refetch_next_track
+                        )
+                    else:
+                        widget.window_create(
+                            tk.END,
+                            window=reroll_button
+                        )
                 else:
-                    widget.window_create(
-                        tk.END,
-                        window=reroll_button
-                    )
-            else:
-                if is_popout:
-                    popout_buttons_by_name["reroll"].configure(
-                        text="",
-                        command=lambda: None
-                    )
-                reroll_button = None
+                    if is_popout:
+                        popout_buttons_by_name["reroll"].configure(
+                            text="",
+                            command=lambda: None
+                        )
+                    reroll_button = None
             if not is_popout:
                 widget.insert(tk.END, "NEXT: ", "bold")
 
@@ -3357,16 +3374,19 @@ def get_overall_theme_number(filename):
             if (base_title and base_title in anime_title) or (display_base_title and display_base_title in anime_display_title):
                 for song in anime.get("songs", []):
                     if song["type"] == theme_type:
+                        # Skip if slug_extra doesn't match (only count themes with same variant)
+                        if not (slug_extra == get_slug_extra(song.get("slug"))):
+                            continue
+                        
                         # Extract number from slug like "OP1", "ED23", etc.
-                        last_slug_num = current_slug_num
                         song_slug = song.get("slug", "")
                         slug_num = int(''.join(filter(str.isdigit, song_slug.split('-')[0].split('_')[0][2:])))
+                        
+                        # Track gap only for themes with matching slug_extra
+                        theme_gap += slug_num - current_slug_num
                         current_slug_num = slug_num
-                        theme_gap += current_slug_num - last_slug_num
-                        if not (slug_extra == get_slug_extra(song.get("slug"))):
-                            theme_gap -= 1
-                            continue
-                        elif (song.get("overlap") == "Over") or song.get("special") or (song.get("overlap") == "Transition" and song.get("spoiler")):
+                        
+                        if (song.get("overlap") == "Over") or song.get("special") or (song.get("overlap") == "Transition" and song.get("spoiler")):
                             theme_gap -= 1
                             decimal += 0.1
                         elif song.get("skip"):
@@ -3692,7 +3712,7 @@ def get_file_marks(filename):
     return marks
 
 def prioritize_theme_files(filenames):
-    """Prioritize a list of theme files by local availability and resolution.
+    """Prioritize a list of theme files by local availability, resolution, lyrics, and NC status.
     
     Returns the best filename from the list.
     """
@@ -3707,14 +3727,30 @@ def prioritize_theme_files(filenames):
     if local_files:
         filenames = local_files
     
-    # Prioritize files by resolution
-    resolution_priority = ["1080", "720", "480"]
-    for res in resolution_priority:
-        res_files = [f for f in filenames if res in f]
-        if res_files:
-            return res_files[0]
+    # Collect files with their properties
+    files_with_props = []
+    for f in filenames:
+        file_data = get_file_metadata_by_name(f)
+        if not file_data:
+            files_with_props.append((f, {}))
+            continue
+        
+        props = file_data.get("file_properties", {})
+        files_with_props.append((f, props))
     
-    return filenames[0]
+    # Sort by: resolution (desc), lyrics (desc), not NC (desc)
+    def sort_key(item):
+        filename, props = item
+        res = props.get("resolution", 0)
+        if not isinstance(res, (int, float)):
+            res = 0
+        lyrics = 1 if props.get("lyrics") else 0
+        not_nc = 1 if not props.get("nc") else 0
+        return (-res, -lyrics, -not_nc)  # Negative for descending order
+    
+    files_with_props.sort(key=sort_key)
+    
+    return files_with_props[0][0] if files_with_props else filenames[0]
 
 def get_theme_filename(mal_id, slug, version=None, need_version=False):
     """Find filename for a given MAL ID and slug combination.
@@ -4040,6 +4076,7 @@ def open_youtube_editor():
         youtube_editor_window = tk.Toplevel()
         youtube_editor_window.title("YouTube Video Manager")
         youtube_editor_window.configure(bg=BACKGROUND_COLOR)
+        get_window_position_and_setup(youtube_editor_window)
         youtube_editor_window.protocol("WM_DELETE_WINDOW", youtube_editor_close)
     
     font_big = ("Arial", 14)
@@ -4417,9 +4454,8 @@ def open_youtube_editor():
             archive_window = tk.Toplevel()
             archive_window.title("Archived YouTube Videos")
             archive_window.configure(bg=BACKGROUND_COLOR)
-
-            # Set size and make resizable with a scrollable region
             archive_window.geometry("950x600")
+            get_window_position_and_setup(archive_window)
 
             # Scrollable frame setup
             canvas = tk.Canvas(archive_window, bg=BACKGROUND_COLOR, highlightthickness=0)
@@ -4674,24 +4710,24 @@ def get_animethemes_matching_files(hashid, include_non_local):
     if not tracks:
         return [], playlist_name, 0
     
-    # Extract video paths from the playlist
-    video_paths = set()
+    # Get available files as a set for fast lookup
+    available_files = set(get_directory_files(include_non_local=include_non_local))
+    
+    # Match files in playlist order
+    matching_files = []
+    total_count = 0
     for track in tracks:
         video = track.get('video', {})
         if video and video.get('path'):
+            total_count += 1
             filename = os.path.basename(video['path'])
-            video_paths.add(filename)
+            if filename in available_files:
+                matching_files.append(filename)
     
-    if not video_paths:
-        return [], playlist_name, 0\
-        
-    # Match against local files
-    matching_files = []
-    for file in get_directory_files(include_non_local=include_non_local):
-        if file in video_paths:
-            matching_files.append(file)
+    if total_count == 0:
+        return [], playlist_name, 0
 
-    return matching_files, playlist_name, len(video_paths)
+    return matching_files, playlist_name, total_count
 
 def create_living_playlist_with_confirmation(matching_files, playlist_name, source_data, total_available=None):
     """Create a playlist with confirmation dialog and store source metadata."""
@@ -4850,6 +4886,12 @@ def update_living_playlists():
                                 change_summary.append(f"-{len(removed_files)}")
                             updated_playlists.append((playlist_name, len(new_files), len(removed_files)))
                             print(f"Updated playlist '{playlist_name}': {' '.join(change_summary)} themes")
+                            if removed_files:
+                                for theme in removed_files:
+                                    print(f"  - {theme}")
+                            if new_files:
+                                for theme in new_files:
+                                    print(f"  + {theme}")
                 
                 except Exception as e:
                     print(f"Error updating playlist {filename}: {e}")
@@ -5398,7 +5440,7 @@ def deduplicate_theme_versions(filenames, keep_versions=False):
             slug = file_data.get("slug")
             if mal_id and slug:
                 if keep_versions:
-                    version = file_data.get("version", 1)
+                    version = file_data.get("version")
                     key = (mal_id, slug, version)
                 else:
                     key = (mal_id, slug)
@@ -5470,7 +5512,12 @@ def get_pop_time_groups(refetch=False):
         sorted_groups = [[] for _ in range(3)]
         cached_skipped_themes = []
 
-        directory_options = filter_playlist(playlist["filter"]) if playlist.get("filter") else get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=inf_settings.get("deduplicate_files", False), deduplicate_versions=inf_settings.get("deduplicate_versions", False))
+        directory_options = filter_playlist(playlist["filter"]) if playlist.get("filter") else get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=False, deduplicate_versions=False)
+        
+        # Apply deduplication after filtering
+        if inf_settings.get("deduplicate_files", False):
+            directory_options = deduplicate_theme_versions(directory_options, keep_versions=not inf_settings.get("deduplicate_versions", False))
+        
         total_infinite_files = len(directory_options)
 
         # Preload all metadata once
@@ -5747,7 +5794,7 @@ def get_next_infinite_track(increment=True):
                         current_list_content = convert_playlist_to_dict(playlist["playlist"])
                         current_list_selected = playlist["current_index"]
                         refresh_current_list()
-                    
+                    prefetch_next_themes()
                     return selected_file
         if not groups[p][t]:
             groups, shows_files_map = get_pop_time_groups()
@@ -6362,8 +6409,7 @@ def show_settings_popup():
 
     try:
         settings_window.transient(root)
-        root.update_idletasks()
-        settings_window.geometry(f"+{root.winfo_x()}+{root.winfo_y()}")
+        get_window_position_and_setup(settings_window)
     except tk.TclError:
         pass
     
@@ -6761,6 +6807,7 @@ def save_metadata():
     save_metadata_compressed(ANILIST_METADATA_FILE, anilist_metadata, encoding="utf-8", ensure_ascii=False)
 
 def save_metadata_overrides():
+    save_metadata_atomic(FILE_METADATA_OVERRIDES_FILE, file_metadata_overrides)
     save_metadata_compressed(ANIME_METADATA_OVERRIDES_FILE, anime_metadata_overrides)
 
 def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
@@ -6780,7 +6827,7 @@ def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
     return None, False
 
 def load_metadata():
-    global file_metadata, anime_metadata, anidb_metadata, anime_metadata_overrides, ai_metadata, anilist_metadata
+    global file_metadata, file_metadata_overrides, anime_metadata, anidb_metadata, anime_metadata_overrides, ai_metadata, anilist_metadata
     
     # Load file_metadata (with custom dict class)
     data, is_compressed = load_metadata_compressed(FILE_METADATA_FILE, name="file metadata")
@@ -6789,6 +6836,16 @@ def load_metadata():
         suffix = " (compressed)" if is_compressed else ""
         file_count = build_filename_to_mal_map()
         print("Loaded file metadata for " + str(len(file_metadata)) + " entries and " + str(file_count) + " files..." + suffix)
+    
+    # Load file_metadata_overrides
+    data, is_compressed = load_metadata_compressed(FILE_METADATA_OVERRIDES_FILE, name="file metadata overrides")
+    if data is not None:
+        file_metadata_overrides = data
+        suffix = " (compressed)" if is_compressed else ""
+        print("Loaded file metadata overrides for " + str(len(file_metadata_overrides)) + " entries..." + suffix)
+        deep_merge(file_metadata, file_metadata_overrides)
+        # Rebuild the lookup map after applying overrides
+        file_count = build_filename_to_mal_map()
     
     # Load anime_metadata
     data, is_compressed = load_metadata_compressed(ANIME_METADATA_FILE, name="anime metadata")
@@ -6952,6 +7009,7 @@ def export_metadata_package():
         # List of files to include in package
         files_to_export = [
             (FILE_METADATA_FILE, "metadata/file_metadata.json"),
+            (FILE_METADATA_OVERRIDES_FILE, "metadata/file_metadata_overrides.json"),
             (ANIME_METADATA_FILE, "metadata/anime_metadata.json"),
             (ANIDB_METADATA_FILE, "metadata/anidb_metadata.json"),
             (AI_METADATA_FILE, "metadata/ai_metadata.json"),
@@ -7013,12 +7071,7 @@ def import_censors(prompt=True):
     import_window.title("Importing Censors...")
     import_window.configure(bg="black")
     import_window.geometry("400x150")
-    
-    # Position at root window location
-    root.update_idletasks()
-    x = root.winfo_x() + 200
-    y = root.winfo_y() + 200
-    import_window.geometry(f"+{x}+{y}")
+    get_window_position_and_setup(import_window, offset_x=200, offset_y=200)
     
     # Status label
     status_label = tk.Label(import_window, text="Downloading censors...", 
@@ -7124,12 +7177,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
     import_window.title("Importing...")
     import_window.configure(bg="black")
     import_window.geometry("400x150")
-    
-    # Position at root window location
-    root.update_idletasks()
-    x = root.winfo_x() + 200
-    y = root.winfo_y() + 200
-    import_window.geometry(f"+{x}+{y}")
+    get_window_position_and_setup(import_window, offset_x=200, offset_y=200)
     
     # Status label
     status_label = tk.Label(import_window, text="Starting import...", 
@@ -7138,7 +7186,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
     
     def do_import():
         """Perform the actual import operation."""
-        global anime_metadata, anidb_metadata, ai_metadata, anilist_metadata
+        global file_metadata_overrides, anime_metadata, anidb_metadata, ai_metadata, anilist_metadata
         
         imported_items = []
         errors = []
@@ -7180,6 +7228,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
             # Import metadata files
             metadata_files = [
                 ('metadata/file_metadata.json', 'file_metadata', lambda d: file_metadata),
+                ('metadata/file_metadata_overrides.json', 'file_metadata_overrides', lambda d: file_metadata_overrides),
                 ('metadata/anime_metadata.json', 'anime_metadata', lambda d: anime_metadata),
                 ('metadata/anidb_metadata.json', 'anidb_metadata', lambda d: anidb_metadata),
                 ('metadata/ai_metadata.json', 'ai_metadata', lambda d: ai_metadata),
@@ -7217,6 +7266,8 @@ def import_data_from_package(source, is_local=False, prompt=True):
                     # Update the global variable based on which file it is
                     if name == 'file_metadata':
                         file_metadata.update(imported_data)
+                    elif name == 'file_metadata_overrides':
+                        file_metadata_overrides.update(imported_data)
                     elif name == 'anime_metadata':
                         anime_metadata.update(imported_data)
                     elif name == 'anidb_metadata':
@@ -8430,6 +8481,7 @@ def check_for_updates_button():
         check_window.geometry("300x80")
         check_window.configure(bg="black")
         check_window.resizable(False, False)
+        get_window_position_and_setup(check_window, offset_x=100, offset_y=100)
         
         # Center the window
         check_window.transient(root)
@@ -9238,7 +9290,7 @@ def filter_playlist(filters):
     global playlist
     if playlist.get("infinite", False):
         inf_settings = get_infinite_settings()
-        playlis = get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=inf_settings.get("deduplicate_files", False), deduplicate_versions=inf_settings.get("deduplicate_versions", False))
+        playlis = get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=False, deduplicate_versions=False)
     else:
         playlis = playlist["playlist"]
 
@@ -10551,12 +10603,7 @@ def open_generic_settings_editor(
     window.title(title)
     window.geometry("400x450")
     window.configure(bg="#1e1e1e")
-    
-    # Position at root window location
-    root.update_idletasks()
-    x = root.winfo_x()
-    y = root.winfo_y()
-    window.geometry(f"+{x}+{y}")
+    get_window_position_and_setup(window)
     
     # Track this window globally
     generic_settings_editor_window = window
@@ -10763,7 +10810,7 @@ def unselect_light_modes():
 # =========================================
 
 def get_light_round_time():
-    if fixed_lightning_round_playlist_data and fixed_current_round:
+    if fixed_lightning_round_playlist_data and fixed_current_round and fixed_current_round.get("start_time") != None:
         start_time = fixed_current_round.get("start_time")
         if fixed_current_round.get("type") not in ["regular", "peek", "blind", "song"]:
             start_time = max(start_time - light_round_length, 1.1)
@@ -10840,9 +10887,12 @@ def update_light_round(time):
                     elif last_streamed[0] == currently_playing.get("filename") and last_streamed[1] != "Trailer":
                         top_info_data = f"YOUTUBE VIDEO:\n{last_streamed[1]}\nby {last_streamed[3]}"
                     elif last_image_source[0] == currently_playing.get("filename") and last_image_source[1]:
-                        # Extract domain from URL
-                        url = last_image_source[1]
-                        domain = url.split('/')[2] if url.startswith('http') else url
+                        if fixed_current_round and fixed_current_round.get("image_source"):
+                            domain = fixed_current_round.get("image_source")
+                        else:
+                            # Extract domain from URL
+                            url = last_image_source[1]
+                            domain = url.split('/')[2] if url.startswith('http') else url
                         top_info_data = f"IMAGE SOURCE:\n{domain}"
                     else:
                         top_info_data = None
@@ -11220,24 +11270,53 @@ def update_light_round(time):
                 elif cover_reveal_mode == 'swap':
                     toggle_tile_overlay(grid_size=10, swap=True)
             elif light_mode == 'image':
-                top_info("RANDOM IMAGE")
-                get_light_image_from_google()
-                image_reveal_mode = get_next_image_reveal_mode()
-                if image_reveal_mode == 'pixel':
-                    generate_pixelation_steps(pil_image=ImageTk.getimage(light_cover_image).convert("RGBA"))
-                    toggle_character_pixel_overlay()
-                elif image_reveal_mode == 'slide':
-                    toggle_character_reveal_overlay(direction=random.choice(['top','bottom','left','right']))
-                elif image_reveal_mode == 'blur':
-                    toggle_character_blur_reveal_overlay(percent=1.0)
-                elif image_reveal_mode == 'zoom':
-                    toggle_character_zoom_reveal_overlay(percent=1.0)
-                elif image_reveal_mode == 'slice':
-                    toggle_slice_overlay(num_revealed=1, vertical=random.choice([True, False]))
-                elif image_reveal_mode == 'tile':
-                    toggle_tile_overlay(num_revealed=1, grid_size=5)
-                elif image_reveal_mode == 'swap':
-                    toggle_tile_overlay(grid_size=10, swap=True)
+                # Handle fixed vs random image rounds
+                if fixed_current_round:
+                    # Fixed image round - use specified parameters
+                    image_header = fixed_current_round.get("image_header", "IMAGE")
+                    top_info(image_header.upper())
+                    
+                    # Load image from specified URL
+                    get_light_image_from_google()
+                    
+                    # Get variant and variant-specific parameters
+                    image_variant = fixed_current_round.get("image_variant", "slide")
+                    
+                    if image_variant == 'slide':
+                        direction = fixed_current_round.get("slide_direction", "top")
+                        toggle_character_reveal_overlay(direction=direction)
+                    elif image_variant == 'blur':
+                        # blur_radius = fixed_current_round.get("blur_radius", 50)
+                        toggle_character_blur_reveal_overlay(percent=1.0)
+                    elif image_variant == 'zoom':
+                        toggle_character_zoom_reveal_overlay(percent=1.0)
+                    elif image_variant == 'slice':
+                        slice_count = fixed_current_round.get("slice_count", 10)
+                        slice_vertical = fixed_current_round.get("slice_vertical", True)
+                        toggle_slice_overlay(num_revealed=1, num_slices=slice_count, vertical=slice_vertical)
+                    elif image_variant == 'tile':
+                        tile_grid_size = fixed_current_round.get("tile_grid_size", 4)
+                        toggle_tile_overlay(num_revealed=1, grid_size=tile_grid_size)
+                else:
+                    # Random image round - existing behavior
+                    top_info("RANDOM IMAGE")
+                    get_light_image_from_google()
+                    image_reveal_mode = get_next_image_reveal_mode()
+                    if image_reveal_mode == 'pixel':
+                        generate_pixelation_steps(pil_image=ImageTk.getimage(light_cover_image).convert("RGBA"))
+                        toggle_character_pixel_overlay()
+                    elif image_reveal_mode == 'slide':
+                        toggle_character_reveal_overlay(direction=random.choice(['top','bottom','left','right']))
+                    elif image_reveal_mode == 'blur':
+                        toggle_character_blur_reveal_overlay(percent=1.0)
+                    elif image_reveal_mode == 'zoom':
+                        toggle_character_zoom_reveal_overlay(percent=1.0)
+                    elif image_reveal_mode == 'slice':
+                        toggle_slice_overlay(num_revealed=1, vertical=random.choice([True, False]))
+                    elif image_reveal_mode == 'tile':
+                        toggle_tile_overlay(num_revealed=1, grid_size=5)
+                    elif image_reveal_mode == 'swap':
+                        toggle_tile_overlay(grid_size=10, swap=True)
             elif 'c.' in light_mode:
                 top_info("GUESS THE CHARACTER", inverse=True)
                 character_round_answer = lightning_queue_data.get(currently_playing.get("filename", {}), {}).get("character_answer")
@@ -11459,6 +11538,9 @@ def clean_up_light_round(new_round=False):
 
 def light_round_transition():
     global video_stopped
+    if autoplay_toggle == 2:
+        stop()
+        return
     video_stopped = True
     player.pause()
     set_countdown()
@@ -11632,7 +11714,10 @@ def queue_next_lightning_mode():
                 if not data.get("emojis"):
                     get_emoji_clues_for_title(data)
             elif next_mode == "image":
-                image_url = get_google_image_url(data)
+                if next_fixed_round and next_fixed_round.get("image_url"):
+                    image_url = next_fixed_round.get("image_url")
+                else:
+                    image_url = get_google_image_url(data)
                 if image_url:
                     lightning_queue_data[next_filename]["image_url"] = image_url
                 elif variety_light_mode_enabled:
@@ -11761,7 +11846,7 @@ def has_lightning_mode_info(data, round_type):
     elif round_type == "cover":
         return bool(data.get("cover"))
     elif round_type == "image":
-        return SERPAPI_KEY and not serpapi_limited
+        return fixed_lightning_queue or fixed_lightning_round_playlist_data or (SERPAPI_KEY and not serpapi_limited)
     elif round_type == "tags":
         return len(data.get("tags", [])) >= 10
     elif round_type == "episodes":
@@ -14315,6 +14400,8 @@ def get_google_image_url(data=None):
     """Pick a random image URL for the given anime data using SerpAPI."""
     if not data:
         data = currently_playing.get("data")
+    if fixed_current_round:
+        return fixed_current_round.get("image_url")
     if not data:
         return None
     queries = _build_image_search_queries(data)
@@ -15071,32 +15158,51 @@ zoom_reveal_crop = None
 
 def pick_interesting_zoom_crop(pil_img, crop_size=(0.35, 0.35), attempts=50, initial_zoom=16):
     """
-    Picks a visually interesting crop for zoom reveal, scoring the *zoomed-in* region.
+    Picks a visually interesting crop for zoom reveal.
     Returns (crop_x, crop_y, crop_w, crop_h) in pixel coordinates.
+    For fixed rounds with selected area: the area itself is returned
+    For automatic selection: finds an area that looks interesting when zoomed in
     """
+    # Check if we're in a fixed round with a pre-selected area
+    if fixed_current_round and fixed_current_round.get("image_selected_area"):
+        selected_area = fixed_current_round["image_selected_area"]
+        # selected_area format: {"x_pct": x, "y_pct": y, "w_pct": w, "h_pct": h} as percentages
+        # Convert percentages to pixel coordinates for the current image size
+        img_w, img_h = pil_img.size
+        x = int(selected_area["x_pct"] * img_w)
+        y = int(selected_area["y_pct"] * img_h)
+        w = int(selected_area["w_pct"] * img_w)
+        h = int(selected_area["h_pct"] * img_h)
+        return (x, y, w, h)
+    
     img_w, img_h = pil_img.size
     crop_w = int(img_w * crop_size[0])
     crop_h = int(img_h * crop_size[1])
     best_crop = None
     best_score = -1
 
-    # Calculate the view size at initial zoom
+    # Calculate the view size at initial zoom (for non-fixed rounds)
     view_w = int(img_w / initial_zoom)
     view_h = int(img_h / initial_zoom)
 
+    # Try different crop positions and score them by visual interest at zoom level
     for _ in range(attempts):
-        # Pick a random crop
+        # Pick a random crop position (this defines the center point)
         x = random.randint(0, img_w - crop_w)
         y = random.randint(0, img_h - crop_h)
+        
         # Center of crop
         center_x = x + crop_w // 2
         center_y = y + crop_h // 2
-        # Simulate initial zoomed view
+        
+        # Simulate initial zoomed view (what will be shown at max zoom)
         left = max(0, center_x - view_w // 2)
         top = max(0, center_y - view_h // 2)
         right = min(img_w, left + view_w)
         bottom = min(img_h, top + view_h)
         zoomed_crop = pil_img.crop((left, top, right, bottom))
+        
+        # Score the zoomed area by visual variance
         arr = np.array(zoomed_crop.convert("L"))
         score = arr.var()
         if score > best_score:
@@ -15140,26 +15246,99 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
     new_size = (int(pil_img.width * scale), int(pil_img.height * scale))
     pil_img = pil_img.resize(new_size, Image.LANCZOS)
 
-    # Pick an interesting crop position once, using initial zoom
-    initial_zoom = 16  # Match your starting zoom
+    # Pick an interesting crop position once
+    initial_zoom = 16  # Zoom factor for non-fixed rounds
     if 'zoom_reveal_crop' not in globals() or zoom_reveal_crop is None:
         zoom_reveal_crop = pick_interesting_zoom_crop(pil_img, initial_zoom=initial_zoom)
 
     crop_x, crop_y, crop_w, crop_h = zoom_reveal_crop
 
-    # Calculate zoom level
-    zoom = 1.0 + percent * (initial_zoom - 1)  # 1.0 = full image, up to initial_zoom x
-    center_x = crop_x + crop_w // 2
-    center_y = crop_y + crop_h // 2
-    view_w = int(new_size[0] / zoom)
-    view_h = int(new_size[1] / zoom)
+    # Check if this is a fixed round with a selected area
+    has_fixed_area = fixed_current_round and fixed_current_round.get("image_selected_area")
+    has_ending_area = fixed_current_round and fixed_current_round.get("image_ending_area")
+    
+    if has_fixed_area:
+        # For fixed rounds with selected area
+        if has_ending_area:
+            # Interpolate from starting area to ending area
+            # At percent=1.0: show exactly the starting selected area
+            # At percent=0.0: show exactly the ending area
+            ending_area = fixed_current_round["image_ending_area"]
+            end_x = int(ending_area["x_pct"] * new_size[0])
+            end_y = int(ending_area["y_pct"] * new_size[1])
+            end_w = int(ending_area["w_pct"] * new_size[0])
+            end_h = int(ending_area["h_pct"] * new_size[1])
+            
+            # Interpolate dimensions
+            view_w = int(crop_w + (end_w - crop_w) * (1 - percent))
+            view_h = int(crop_h + (end_h - crop_h) * (1 - percent))
+            
+            # Interpolate center position
+            start_center_x = crop_x + crop_w // 2
+            start_center_y = crop_y + crop_h // 2
+            end_center_x = end_x + end_w // 2
+            end_center_y = end_y + end_h // 2
+            
+            center_x = int(start_center_x + (end_center_x - start_center_x) * (1 - percent))
+            center_y = int(start_center_y + (end_center_y - start_center_y) * (1 - percent))
+        else:
+            # Interpolate from starting area to full image
+            # At percent=1.0: show exactly the selected area (crop_w x crop_h)
+            # At percent=0.0: show the full image (new_size[0] x new_size[1])
+            view_w = int(crop_w + (new_size[0] - crop_w) * (1 - percent))
+            view_h = int(crop_h + (new_size[1] - crop_h) * (1 - percent))
+            center_x = crop_x + crop_w // 2
+            center_y = crop_y + crop_h // 2
+    else:
+        # For non-fixed rounds: use zoom factor for more dramatic zoom
+        initial_zoom = 16
+        zoom = 1.0 + percent * (initial_zoom - 1)  # 1.0 = full image, up to initial_zoom x
+        view_w = int(new_size[0] / zoom)
+        view_h = int(new_size[1] / zoom)
+        center_x = crop_x + crop_w // 2
+        center_y = crop_y + crop_h // 2
+    
     left = max(0, center_x - view_w // 2)
     top = max(0, center_y - view_h // 2)
     right = min(new_size[0], left + view_w)
     bottom = min(new_size[1], top + view_h)
+    
+    # Adjust if we hit edges - expand in the opposite direction to maintain view size
+    if right - left < view_w:
+        # Hit right edge, expand left
+        left = max(0, right - view_w)
+    if bottom - top < view_h:
+        # Hit bottom edge, expand top
+        top = max(0, bottom - view_h)
+    if left == 0 and right - left < view_w:
+        # Hit left edge, expand right
+        right = min(new_size[0], left + view_w)
+    if top == 0 and bottom - top < view_h:
+        # Hit top edge, expand bottom
+        bottom = min(new_size[1], top + view_h)
+    
     cropped = pil_img.crop((left, top, right, bottom))
-    cropped = cropped.resize(new_size, Image.LANCZOS)
-    tk_cropped_img = ImageTk.PhotoImage(cropped)
+    
+    # Check if we're showing nearly the full image (within 5%)
+    crop_w_actual = right - left
+    crop_h_actual = bottom - top
+    
+    # Scale cropped region to fit display while maintaining aspect ratio
+    scale_w = new_size[0] / crop_w_actual
+    scale_h = new_size[1] / crop_h_actual
+    scale_fit = min(scale_w, scale_h)
+    
+    scaled_w = int(crop_w_actual * scale_fit)
+    scaled_h = int(crop_h_actual * scale_fit)
+    cropped = cropped.resize((scaled_w, scaled_h), Image.LANCZOS)
+    
+    # Center the scaled crop on a black background
+    composite = Image.new("RGB", new_size, "black")
+    offset_x = (new_size[0] - scaled_w) // 2
+    offset_y = (new_size[1] - scaled_h) // 2
+    composite.paste(cropped, (offset_x, offset_y))
+    
+    tk_cropped_img = ImageTk.PhotoImage(composite)
 
     # Create overlay window
     if 'zoom_reveal_image_window' not in globals() or not zoom_reveal_image_window or not zoom_reveal_image_window.winfo_exists():
@@ -16174,8 +16353,8 @@ def evict_cache_for_size(needed_size_bytes):
     if current_size + needed_size_bytes <= cache_limit_bytes:
         return True  # Already have space
     
-    # Build list of cached files with their priority (play_count, last_played)
-    # Priority: least played, oldest last_played
+    # Build list of cached files with their timestamps
+    # Priority: oldest last_played first
     cached_files = []
     for filename, meta in cache_metadata.items():
         cached_files.append({
@@ -16185,8 +16364,8 @@ def evict_cache_for_size(needed_size_bytes):
             'last_played': meta.get('last_played', ''),
         })
     
-    # Sort by play_count (ascending), then by last_played (ascending/oldest first)
-    cached_files.sort(key=lambda x: (x['play_count'], x['last_played']))
+    # Sort by last_played (ascending/oldest first)
+    cached_files.sort(key=lambda x: x['last_played'])
     
     # Remove files until we have enough space
     space_needed = current_size + needed_size_bytes - cache_limit_bytes
@@ -16204,7 +16383,6 @@ def evict_cache_for_size(needed_size_bytes):
         try:
             if os.path.exists(cache_path):
                 os.remove(cache_path)
-                print(f"Evicted from cache: {filename} (played {file_info['play_count']} times)")
                 
                 # Clean up empty directories
                 cache_dir = os.path.dirname(cache_path)
@@ -16217,9 +16395,13 @@ def evict_cache_for_size(needed_size_bytes):
                             break
                 except:
                     pass  # Ignore cleanup errors
-            
-            space_freed += file_info['size']
-            del cache_metadata[filename]
+                
+                # Only count freed space if file actually existed and was deleted
+                space_freed += file_info['size']
+                del cache_metadata[filename]
+            else:
+                # File doesn't exist but is in metadata - clean up metadata only
+                del cache_metadata[filename]
         except Exception as e:
             print(f"Error evicting {filename}: {e}")
     
@@ -16488,17 +16670,6 @@ def download_to_cache(filename, silent=False):
             full_cache_dir = os.path.join(THEMES_CACHE_FOLDER, cache_subdir)
             os.makedirs(full_cache_dir, exist_ok=True)
             
-            # Get expected file size to check cache space
-            url = get_animethemes_stream_url(filename)
-            response = requests.head(url, timeout=10)
-            total_size = int(response.headers.get('content-length', 0))
-            
-            # Check if we have space (with eviction)
-            if total_size > 0 and not evict_cache_for_size(total_size):
-                if not silent:
-                    print(f"Cache full, cannot download: {filename}")
-                return
-            
             # Store in nested structure
             rel_path = os.path.join(cache_subdir, filename)
             dest_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
@@ -16518,16 +16689,22 @@ def download_to_cache(filename, silent=False):
                 print(f"Caching {filename}: 0%", end='', flush=True)
             
             success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
-            
             if not success:
                 if not silent:
                     print(f"\rCache download failed: {filename}" + " " * 30)  # Clear line
                 return
             
+            # Get actual file size
+            actual_size = os.path.getsize(dest_path)
+            
+            # Evict old files if needed to make room for this new file
+            # Important: Do this BEFORE adding to metadata so the new file can't evict itself
+            evict_cache_for_size(actual_size)
+            
             # Update cache metadata with path
             cache_metadata[filename] = {
                 'path': rel_path,
-                'size': os.path.getsize(dest_path),
+                'size': actual_size,
                 'play_count': 0,
                 'last_played': datetime.now().isoformat()
             }
@@ -16540,6 +16717,7 @@ def download_to_cache(filename, silent=False):
                 filesize_mb = cache_metadata[filename]['size'] / 1024 / 1024
                 print(f"\rCached: {filename} ({filesize_mb:.1f} MB)" + " " * 30)  # Clear line and show final status
             
+            up_next_text()
         except Exception as e:
             if not silent:
                 print(f"Cache download error for {filename}: {e}")
@@ -16602,20 +16780,31 @@ def prefetch_next_themes():
         
         # Check if this file needs to be cached
         if is_animethemes_stream_file(next_filename):
-            # Don't download if already in local directory
-            if next_filename in directory_files:
-                continue
-            
-            # Don't download if already cached
-            if get_cached_file_path(next_filename):
-                continue
-            
-            # Don't download if already downloading
-            if next_filename in active_downloads:
-                continue
-            
-            # Start the download
-            download_to_cache(next_filename, silent=True)
+            # Don't download if already in local directory or cache or currently downloading
+            if not check_file_availability(next_filename):
+                download_to_cache(next_filename, silent=True)
+    
+    # Also prefetch themes from fixed lightning rounds if active
+    if fixed_lightning_queue or fixed_lightning_round_playlist_data:
+        # Use playlist_data if available, otherwise use queue data
+        source_data = fixed_lightning_round_playlist_data if fixed_lightning_round_playlist_data else fixed_lightning_queue
+        if source_data:
+            next_idx = source_data.get("current_index", 0) + 1 if fixed_lightning_round_playlist_data else 0
+            rounds = source_data.get("data", {}).get("rounds", []) if "data" in source_data else source_data.get("rounds", [])
+            if next_idx < len(rounds):
+                next_round = rounds[next_idx]
+                next_filename = next_round.get("theme")
+                if next_filename and is_animethemes_stream_file(next_filename) and not check_file_availability(next_filename):
+                    download_to_cache(next_filename, silent=True)
+
+def check_file_availability(filename):
+    if filename in directory_files:
+        return True
+    if get_cached_file_path(filename):
+        return True
+    if filename in active_downloads:
+        return False
+    return False
 
 def play_trailer(url=None):
     url = url or currently_playing.get("data", {}).get("trailer")
@@ -17516,6 +17705,20 @@ FIXED_LIGHTNING_ROUNDS = {
         "volume_adjustment"
     ],
     "clues": [
+    ],
+    "image": [
+        "image_variant",
+        "image_url",
+        "image_source",
+        "image_header",
+        "slide_direction",
+        # "blur_steps",
+        # "blur_radius",
+        "image_selected_area",
+        "image_ending_area",
+        "slice_count",
+        "slice_vertical",
+        "tile_grid_size"
     ]
 }
 
@@ -17542,7 +17745,77 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "censor_bottom": {"type": "toggle", "required": False, "default": False},
     "clip_for_answer": {"type": "toggle", "required": False, "default": False},
     "reveal_title_halfway": {"type": "toggle", "required": False, "default": True},
-    "volume_adjustment": {"type": "integer", "required": False, "default": 0}
+    "volume_adjustment": {"type": "integer", "required": False, "default": 0},
+    # Image round fields
+    "image_variant": {
+        "type": "dropdown",
+        "required": True,
+        "options": {
+            "slide": "Slide",
+            "blur": "Blur Reveal",
+            "zoom": "Zoom Reveal",
+            "slice": "Slice Reveal",
+            "tile": "Tile Grid"
+        },
+        "default": "slide"
+    },
+    "image_url": {"type": "text", "required": True},
+    "image_source": {"type": "text", "required": False},
+    "image_header": {"type": "text", "required": False, "default": "Image"},
+    # Reveal-specific fields
+    "reveal_direction": {
+        "type": "dropdown",
+        "required": False,
+        "options": {"top": "Top", "bottom": "Bottom", "left": "Left", "right": "Right"},
+        "default": "top",
+        "show_if": {"image_variant": ["slide"]}
+    },
+    # Blur-specific fields
+    # "blur_steps": {
+    #     "type": "integer",
+    #     "required": False,
+    #     "default": 10,
+    #     "show_if": {"image_variant": ["blur"]}
+    # },
+    # "blur_radius": {
+    #     "type": "integer",
+    #     "required": False,
+    #     "default": 50,
+    #     "show_if": {"image_variant": ["blur"]}
+    # },
+    # Zoom-specific fields
+    "image_selected_area": {
+        "type": "area_selector",
+        "required": False,
+        "default": None,
+        "show_if": {"image_variant": ["zoom"]}
+    },
+    "image_ending_area": {
+        "type": "area_selector",
+        "required": False,
+        "default": None,
+        "show_if": {"image_variant": ["zoom"]}
+    },
+    # Slice-specific fields
+    "slice_count": {
+        "type": "integer",
+        "required": False,
+        "default": 10,
+        "show_if": {"image_variant": ["slice"]}
+    },
+    "slice_vertical": {
+        "type": "toggle",
+        "required": False,
+        "default": True,
+        "show_if": {"image_variant": ["slice"]}
+    },
+    # Tile-specific fields
+    "tile_grid_size": {
+        "type": "integer",
+        "required": False,
+        "default": 4,
+        "show_if": {"image_variant": ["tile"]}
+    }
 }
 
 FIXED_LIGHTNING_FOLDER = "fixed_playlists"
@@ -17574,7 +17847,7 @@ def load_fixed_lightning_rounds(filter_missing_themes=False):
                         
                         for round_data in data.get("rounds", []):
                             theme = round_data.get("theme", "")
-                            if not filter_missing_themes or get_clean_filename(theme) in directory_files:
+                            if not filter_missing_themes or get_clean_filename(theme) in directory_files or is_animethemes_stream_file(theme):
                                 duration = round_data.get("duration", lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
                                 answer_duration = round_data.get("answer_duration", 8)
                                 
@@ -17655,6 +17928,9 @@ def queue_fixed_lightning_round(index):
             
             toggle_coming_up_popup(True, f"{name}", details_text, queue=True)
             queue_next_lightning_mode()
+            
+            # Prefetch themes from the queued playlist
+            prefetch_next_themes()
 
     show_fixed_lightning_list(update=True)
     up_next_text()
@@ -17682,12 +17958,7 @@ def open_fixed_lightning_manager():
     fixed_lightning_manager_window.title("Fixed Lightning Round Playlists Manager")
     fixed_lightning_manager_window.configure(bg=BACKGROUND_COLOR)
     fixed_lightning_manager_window.geometry("600x400")
-    
-    # Position at root window location
-    root.update_idletasks()
-    x = root.winfo_x()
-    y = root.winfo_y()
-    fixed_lightning_manager_window.geometry(f"+{x}+{y}")
+    get_window_position_and_setup(fixed_lightning_manager_window)
     
     fixed_lightning_manager_window.protocol("WM_DELETE_WINDOW", manager_close)
     
@@ -17731,7 +18002,8 @@ def open_fixed_lightning_manager():
             has_missing = False
             for rnd in round_info['data'].get('rounds', []):
                 theme = rnd.get('theme', '')
-                if theme and theme not in directory_files:
+                clean_theme = get_clean_filename(theme)
+                if theme and clean_theme not in directory_files and not is_animethemes_stream_file(theme):
                     has_missing = True
                     break
             if has_missing:
@@ -17773,6 +18045,15 @@ def open_fixed_lightning_manager():
                 details_label.config(text=details_text)
         
         rounds_listbox.bind('<<ListboxSelect>>', on_select)
+        
+        def on_double_click(event):
+            """Handle double-click to open edit rounds menu"""
+            selection = rounds_listbox.curselection()
+            if selection:
+                selected_round[0] = selection[0]
+                edit_round()
+        
+        rounds_listbox.bind('<Double-Button-1>', on_double_click)
         
         # Right side - Action buttons
         right_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -17996,7 +18277,7 @@ def open_fixed_lightning_manager():
                 messagebox.showerror("Error", f"Failed to delete round: {e}")
         
         # Action buttons
-        add_button = tk.Button(right_frame, text="ADD NEW ROUND", font=font_button, bg="black", fg="white",
+        add_button = tk.Button(right_frame, text="NEW PLAYLIST", font=font_button, bg="black", fg="white",
                               command=add_new_round, width=18, pady=10)
         add_button.pack(pady=(0, 10))
         
@@ -18014,6 +18295,22 @@ def open_fixed_lightning_manager():
     
     # Initial UI load
     refresh_ui()
+
+def should_show_field(field_name, round_data):
+    """Check if a field should be shown based on show_if conditions"""
+    field_config = FIXED_LIGHTNING_ROUND_FIELD_INDEX.get(field_name, {})
+    show_if = field_config.get("show_if")
+    
+    if not show_if:
+        return True  # No condition, always show
+    
+    # show_if format: {"field_name": ["value1", "value2", ...]}
+    for condition_field, valid_values in show_if.items():
+        current_value = round_data.get(condition_field)
+        if current_value not in valid_values:
+            return False
+    
+    return True
 
 def open_round_editor(round_info, manager_window=None, position=None):
     """Open the round editor for a specific fixed lightning round playlist"""
@@ -18086,7 +18383,8 @@ def open_round_editor(round_info, manager_window=None, position=None):
             if len(display_name) > 50:
                 display_name = display_name[:47] + "..."
             rounds_listbox.insert(tk.END, f"{i+1}. [{rnd_type}] {display_name}")
-            if rnd_theme and rnd_theme not in directory_files:
+            clean_theme = get_clean_filename(rnd_theme)
+            if rnd_theme and clean_theme not in directory_files and not is_animethemes_stream_file(rnd_theme):
                 rounds_listbox.itemconfig(i, fg='red')
         
         # Details panel
@@ -18128,6 +18426,15 @@ def open_round_editor(round_info, manager_window=None, position=None):
                 details_label.config(text="\n".join(details_lines))
         
         rounds_listbox.bind('<<ListboxSelect>>', on_select)
+        
+        def on_double_click(event):
+            """Handle double-click to open field editor"""
+            selection = rounds_listbox.curselection()
+            if selection:
+                selected_round_index[0] = selection[0]
+                edit_selected_round()
+        
+        rounds_listbox.bind('<Double-Button-1>', on_double_click)
         
         if selected_round_index[0] is not None and selected_round_index[0] < len(rounds):
             rounds_listbox.selection_set(selected_round_index[0])
@@ -18359,6 +18666,9 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
             all_fields = [f for f in all_fields if f != 'start_time']
         
         for field_name in all_fields:
+            # Check if field should be shown based on conditions
+            if not should_show_field(field_name, round_data):
+                continue
             field_info = FIXED_LIGHTNING_ROUND_FIELD_INDEX.get(field_name, {"type": "file", "required": True})
             field_type = field_info.get("type", "file")
             is_required = field_info.get("required", False)
@@ -18369,6 +18679,11 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
             
             # Label
             label_text = field_name.replace("_", " ").title()
+            # Custom labels for zoom area fields
+            if field_name == "image_selected_area":
+                label_text = "Starting Zoom Area"
+            elif field_name == "image_ending_area":
+                label_text = "Ending Zoom Area"
             if is_required:
                 label_text += " *"
             tk.Label(field_frame, text=label_text, font=font_label, bg=BACKGROUND_COLOR, 
@@ -18590,6 +18905,14 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 dropdown = ttk.Combobox(field_frame, textvariable=var, values=options, 
                                        state='readonly', font=font_entry, width=32)
                 dropdown.pack(side="left")
+                
+                # If this is a variant selector, rebuild fields when it changes
+                if field_name.endswith("_variant"):
+                    def on_variant_change(event, fn=field_name, v=var):
+                        round_data[fn] = v.get()
+                        rebuild_fields()
+                    dropdown.bind("<<ComboboxSelected>>", on_variant_change)
+                
                 field_widgets[field_name] = ("dropdown", var)
             
             elif field_type == "text":
@@ -18623,6 +18946,152 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                                          fg="white", activeforeground="white")
                 checkbox.pack(side="left")
                 field_widgets[field_name] = ("toggle", var)
+            
+            elif field_type == "area_selector":
+                # Area selector field with SELECT AREA button
+                area_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                area_frame.pack(side="left")
+                
+                # Store the selected area
+                selected_area = [round_data.get(field_name, None)]
+                
+                # Display current selection
+                if selected_area[0]:
+                    # Display as percentages for clarity
+                    area_text = f"x:{selected_area[0]['x_pct']:.1%}, y:{selected_area[0]['y_pct']:.1%}, w:{selected_area[0]['w_pct']:.1%}, h:{selected_area[0]['h_pct']:.1%}"
+                else:
+                    area_text = "(No area selected)"
+                
+                area_label = tk.Label(area_frame, text=area_text, font=font_entry, 
+                                     bg=BACKGROUND_COLOR, fg="white", width=30, anchor="w")
+                area_label.pack(side="left", padx=(0, 5))
+                
+                def open_area_selector(_field_name=field_name, _selected_area=selected_area, _area_label=area_label):
+                    # Get image URL from image_url field
+                    image_url_widget = field_widgets.get("image_url")
+                    if not image_url_widget:
+                        messagebox.showwarning("No Image URL", "Please set the Image URL field first.")
+                        return
+                    
+                    image_url = image_url_widget[1].get().strip()
+                    if not image_url:
+                        messagebox.showwarning("No Image URL", "Please set the Image URL field first.")
+                        return
+                    
+                    # Download and show image for area selection
+                    try:
+                        response = requests.get(image_url, timeout=10)
+                        response.raise_for_status()
+                        pil_img = Image.open(BytesIO(response.content))
+                        
+                        # Create popup window for area selection
+                        selector_window = tk.Toplevel()
+                        # Set title based on field type
+                        window_title = "Select Starting Zoom Area" if _field_name == "image_selected_area" else "Select Ending Zoom Area"
+                        selector_window.title(window_title)
+                        selector_window.configure(bg="black")
+                        
+                        # Calculate display size
+                        screen_w = selector_window.winfo_screenwidth()
+                        screen_h = selector_window.winfo_screenheight()
+                        max_w = int(screen_w * 0.8)
+                        max_h = int(screen_h * 0.8)
+                        
+                        img_w, img_h = pil_img.size
+                        scale_w = max_w / img_w
+                        scale_h = max_h / img_h
+                        scale = min(scale_w, scale_h, 1.0)
+                        
+                        display_w = int(img_w * scale)
+                        display_h = int(img_h * scale)
+                        
+                        display_img = pil_img.resize((display_w, display_h), Image.LANCZOS)
+                        tk_img = ImageTk.PhotoImage(display_img)
+                        
+                        # Canvas for image and selection
+                        canvas = tk.Canvas(selector_window, width=display_w, height=display_h, 
+                                         bg="black", highlightthickness=0)
+                        canvas.pack(padx=10, pady=10)
+                        canvas.create_image(0, 0, anchor="nw", image=tk_img)
+                        canvas.image = tk_img
+                        
+                        # Selection rectangle
+                        selection_rect = [None]
+                        start_pos = [None, None]
+                        
+                        def on_mouse_down(event):
+                            start_pos[0] = event.x
+                            start_pos[1] = event.y
+                            if selection_rect[0]:
+                                canvas.delete(selection_rect[0])
+                            selection_rect[0] = canvas.create_rectangle(
+                                event.x, event.y, event.x, event.y,
+                                outline="red", width=3
+                            )
+                        
+                        def on_mouse_drag(event):
+                            if selection_rect[0]:
+                                canvas.coords(selection_rect[0], 
+                                            start_pos[0], start_pos[1], event.x, event.y)
+                        
+                        def on_mouse_up(event):
+                            if start_pos[0] is not None:
+                                # Calculate area in display coordinates
+                                x1 = min(start_pos[0], event.x)
+                                y1 = min(start_pos[1], event.y)
+                                x2 = max(start_pos[0], event.x)
+                                y2 = max(start_pos[1], event.y)
+                                
+                                # Convert to original image coordinates
+                                orig_x = int(x1 / scale)
+                                orig_y = int(y1 / scale)
+                                orig_w = int((x2 - x1) / scale)
+                                orig_h = int((y2 - y1) / scale)
+                                
+                                # Ensure area is within bounds
+                                orig_x = max(0, min(orig_x, img_w - 1))
+                                orig_y = max(0, min(orig_y, img_h - 1))
+                                orig_w = max(1, min(orig_w, img_w - orig_x))
+                                orig_h = max(1, min(orig_h, img_h - orig_y))
+                                
+                                # Store as percentages of image dimensions
+                                _selected_area[0] = {
+                                    "x_pct": orig_x / img_w,
+                                    "y_pct": orig_y / img_h,
+                                    "w_pct": orig_w / img_w,
+                                    "h_pct": orig_h / img_h
+                                }
+                                
+                                _area_label.config(text=f"x:{_selected_area[0]['x_pct']:.1%}, y:{_selected_area[0]['y_pct']:.1%}, w:{_selected_area[0]['w_pct']:.1%}, h:{_selected_area[0]['h_pct']:.1%}")
+                                selector_window.destroy()
+                        
+                        canvas.bind("<Button-1>", on_mouse_down)
+                        canvas.bind("<B1-Motion>", on_mouse_drag)
+                        canvas.bind("<ButtonRelease-1>", on_mouse_up)
+                        
+                        # Instructions
+                        instruction_text = "Click and drag to select the starting zoom area (zoomed in)" if _field_name == "image_selected_area" else "Click and drag to select the ending zoom area (zoomed out)"
+                        instructions = tk.Label(selector_window, 
+                                              text=instruction_text,
+                                              font=("Arial", 12), bg="black", fg="white")
+                        instructions.pack(pady=(0, 10))
+                        
+                    except Exception as e:
+                        messagebox.showerror("Error", f"Failed to load image: {e}")
+                
+                def clear_selection(_selected_area=selected_area, _area_label=area_label):
+                    _selected_area[0] = None
+                    _area_label.config(text="(No area selected)")
+                
+                select_btn = tk.Button(area_frame, text="SELECT AREA", font=font_entry, 
+                                      bg="black", fg="white", command=open_area_selector)
+                select_btn.pack(side="left", padx=(0, 5))
+                
+                clear_btn = tk.Button(area_frame, text="CLEAR", font=font_entry, 
+                                    bg="black", fg="white", width=6, command=clear_selection)
+                clear_btn.pack(side="left")
+                
+                field_widgets[field_name] = ("area_selector", lambda area=selected_area: area[0])
             
             elif field_type == "video_url":
                 # Video URL field with two buttons
@@ -18739,11 +19208,15 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
             elif widget_type == "video_url":
                 widget = widget_data[1]
                 value = widget.get().strip()
+            elif widget_type == "area_selector":
+                # widget is a getter function that returns the area dict
+                widget = widget_data[1]
+                value = widget()
             else:
                 value = ""
             
             # Validate required fields
-            if is_required and not value:
+            if is_required and not value and field_type != "area_selector":
                 messagebox.showwarning("Required Field", f"'{field_name.replace('_', ' ').title()}' is required.")
                 return False
             
@@ -18755,8 +19228,8 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     messagebox.showwarning("Invalid Value", f"'{field_name.replace('_', ' ').title()}' must be a number.")
                     return False
             
-            # Only add non-empty values (or toggles which can be False)
-            if value or field_type == "toggle":
+            # Only add non-empty values (or toggles which can be False, or area_selector which can be a dict)
+            if value or field_type == "toggle" or (field_type == "area_selector" and value is not None):
                 new_round_data[field_name] = value
         
         # Save to round info
@@ -18833,12 +19306,6 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         fixed_lightning_queue = temp_round_info
         fixed_lightning_round_playlist_data = None  # Reset any existing data
         play_video(playlist["current_index"])
-        #                      "Test round - this will play only the current saved round.\nMake sure to save any changes first.", 
-        #                      queue=True)
-        
-        # Show confirmation
-        # test_button.configure(text="QUEUED!")
-        # field_window.after(1000, lambda: test_button.configure(text="TEST ROUND"))
     
     save_button = tk.Button(button_frame, text="SAVE", font=("Arial", 10, "bold"), 
                            bg="black", fg="white", command=save_round, width=15, pady=8)
@@ -21722,7 +22189,7 @@ def toggle_censor_box(filename, censor, enabled, time=None):
             censor_boxes[censor_id]["destroying"] = True
             def delete_censor(cid, cen):
                 pj_time = projected_vlc_time/1000
-                if show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
+                if not blind_enabled and show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
                     censor_boxes[cid]["destroying"] = False
                 elif censor_boxes[censor_id]["destroying"]: 
                     censor_boxes[cid]["box"].destroy()
@@ -22257,15 +22724,7 @@ def open_censor_editor(refresh=False):
         censor_editor = tk.Toplevel()
         censor_editor.configure(bg=BACKGROUND_COLOR)
         censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
-        x = root.winfo_x()
-        y = root.winfo_y()
-        censor_editor.update_idletasks()
-        censor_editor.geometry(f"+{x}+{y}")
-        # Set always on top if root is docked
-        if is_docked():
-            censor_editor.attributes("-topmost", True)
-        censor_editor.lift()
-        censor_editor.focus_force()
+        get_window_position_and_setup(censor_editor)
         
     # Create header and pagination controls
     def create_header_with_pagination():
@@ -23098,6 +23557,36 @@ def move_root_to_bottom(toggle=True):
 
 def is_docked():
     return root.attributes("-topmost")
+
+def get_window_position_and_setup(window=None, set_topmost_if_docked=True, offset_x=0, offset_y=0):
+    """
+    Get the root window position and optionally set window attributes based on docked state.
+    
+    Args:
+        window: Optional Toplevel window to configure. If provided, will set geometry and topmost attribute.
+        set_topmost_if_docked: If True and window is provided, sets topmost when root is docked.
+        offset_x: Optional x-axis offset from root window position.
+        offset_y: Optional y-axis offset from root window position.
+    
+    Returns:
+        tuple: (x, y) position of root window (after applying offset)
+    """
+    root.update_idletasks()
+    x = root.winfo_x() + offset_x
+    y = root.winfo_y() + offset_y
+    
+    if window:
+        window.update_idletasks()
+        window.geometry(f"+{x}+{y}")
+        
+        # Set topmost if root is docked
+        if set_topmost_if_docked and is_docked():
+            window.attributes("-topmost", True)
+        
+        window.lift()
+        window.focus_force()
+    
+    return (x, y)
 
 # =========================================
 #                  *LISTS
@@ -24505,7 +24994,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         global resize_after_id
 
         def do_resize():
-            if not popout_controls:
+            if not popout_controls or not popout_currently_playing:
                 return
 
             width = popout_controls.winfo_width()
@@ -24552,19 +25041,19 @@ def create_popout_controls(columns=5, title="Popout Controls"):
     popout_controls.title(title)
     popout_controls.configure(bg=BACKGROUND_COLOR)
     
-    # Position popout on the same monitor as the main window
-    root.update_idletasks()  # Ensure main window geometry is updated
-    main_x = root.winfo_x()
-    main_y = root.winfo_y()
-    main_width = root.winfo_width()
-    
-    # Center the popout relative to the main window's monitor
+    # Set size and position using the generic function
     popout_width = 1440
     popout_height = 810
-    popout_x = main_x + (main_width - popout_width) // 2
-    popout_y = main_y + 50  # Slightly below the main window
+    popout_controls.geometry(f"{popout_width}x{popout_height}")
     
-    popout_controls.geometry(f"{popout_width}x{popout_height}+{popout_x}+{popout_y}")
+    # Calculate centered position relative to main window
+    root.update_idletasks()
+    main_width = root.winfo_width()
+    offset_x = (main_width - popout_width) // 2
+    offset_y = 50  # Slightly below the main window
+    
+    get_window_position_and_setup(popout_controls, offset_x=offset_x, offset_y=offset_y)
+    
     popout_controls.protocol("WM_DELETE_WINDOW", on_popout_close)
     popout_controls.bind("<Configure>", on_popout_resize)
 
@@ -24628,7 +25117,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         ],
         "MISC TOGGLES": [
             (dock_button, "DOCK", False),
-            (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get("filename","")))})", False),
+            (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get('filename','')) or [])})", False),
             ("toggle_metadata", "METADATA", False),
             (filter_button, "FILTERS", False),
             (end_button, "END SESSION", False)
@@ -25131,7 +25620,7 @@ def create_first_row_buttons():
         widget.destroy()
     
     global collapse_button
-    collapse_button = create_button(first_row_frame, "▼", toggle_player_collapse, True,
+    collapse_button = create_button(first_row_frame, "▼", toggle_player_collapse, False,
                                 help_title="COLLAPSE PLAYER",
                                 help_text="Collapses or expands the player info columns. "
                                 "Click to toggle between collapsed (arrow up) and expanded (arrow down) states.")
@@ -25283,7 +25772,7 @@ def create_first_row_buttons():
     blank_space(first_row_frame)
 
     global save_button
-    save_button = create_button(first_row_frame, "SAVE", save, True,
+    save_button = create_button(first_row_frame, "SAVE", save, False,
                                 help_title="SAVE PLAYLIST",
                                 help_text=("Use this to save your current playlist. Playlists are stored as JSON files in the "
                                 "playlists/ folder.\n\nCurrently loaded playlists are automatically saved in the config file, "
@@ -25417,7 +25906,7 @@ def create_first_row_buttons():
                                                 "How close they can be is determined by playlist size."))
     
     global settings_button
-    settings_button = create_button(first_row_frame, "⚙️", show_settings_popup, True,
+    settings_button = create_button(first_row_frame, "⚙️", show_settings_popup, False,
                                       help_title="CONFIGURATION SETTINGS",
                                       help_text=("Open settings menu to edit configuration values.\n"
                                                  "\nVolume Level: Sets the default volume for the player."
