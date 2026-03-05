@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.3"  # Update this when making releases
+APP_VERSION = "15.4"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -3947,14 +3947,17 @@ def show_youtube_playlist(update = False):
     _youtube_playlist = all_videos
     show_list("youtube", right_column, all_videos, get_youtube_title, load_youtube_video, selected, update)
 
+def shorten_youtube_title(title):
+    pattern = re.compile(r'(can you guess the|guess the|how well do you know|can you|guess|their|from the|from|by|with|its|just)\s*', re.IGNORECASE)
+    return pattern.sub('', title)
+
 def get_youtube_title(key, value):
     icon = stream_icon if not value.get('downloaded', False) else ""
     display_title = get_youtube_display_title(value)
     
     # Remove common phrases (case-insensitive, anywhere in title)
-    pattern = re.compile(r'(can you guess the|guess the|how well do you know|can you|guess|their|from|by|with|its|just)\s*', re.IGNORECASE)
-    display_title = pattern.sub('', display_title)
-    
+    display_title = shorten_youtube_title(display_title)
+        
     return f"{icon}[{str(format_seconds(get_youtube_duration(value)))}]{display_title}"
 
 def load_youtube_video(index):
@@ -9612,7 +9615,7 @@ def search(update = False, ask = True, add = False):
         search_results = []
     else:
         search_results = search_playlist(search_term)
-    search_results.sort(key=lambda file: get_title(file, file).lower())
+    # search_results.sort(key=lambda file: get_title(file, file).lower())
     if search_queue and search_queue in search_results:
         selected = search_results.index(search_queue)+1
     search_list = {file: file for file in (["SEARCHING: " + search_term] + search_results)}
@@ -9658,16 +9661,17 @@ def search_playlist(search_term):
         list: Filenames that match the search term (deduplicated by theme).
     """
     search_term = search_term.lower()  # Make search case-insensitive
+    priority_results = []
     results = []
     artist_results = []
     for filename in get_directory_files(include_non_local=True):
         metadata = get_metadata(filename)
         filename_trim = filename.lower().replace(".webm", "").replace(".mp4", "")
         title = metadata.get("title", "").lower()
-        english_title = metadata.get("eng_title")
-        if english_title:
-            english_title = english_title.lower()
-        if (search_term in filename_trim) or (title and search_term in title) or (english_title and search_term in english_title):
+        english_title = (metadata.get("eng_title") or "").lower()
+        if (english_title or title).startswith(search_term):
+            priority_results.append(filename)
+        elif (search_term in filename_trim) or (title and search_term in title) or (english_title and search_term in english_title):
             results.append(filename)
         else:
             song_string = get_song_string(metadata, artist_limit=None).lower()
@@ -9675,7 +9679,8 @@ def search_playlist(search_term):
                 artist_results.append(filename)
     
     # Deduplicate versions using shared helper function
-    all_results = results + artist_results
+    results.sort(key=lambda file: get_title(file, file).lower())
+    all_results = priority_results + results + artist_results
     return deduplicate_theme_versions(all_results)
 
 def get_playlist_name(key, value):
@@ -16285,6 +16290,9 @@ stream_icon = '📶'
 active_downloads = {}  # {filename: thread_object}
 cache_metadata = {}  # {filename: {size, play_count, last_played}}
 downloads_completed = 0  # Track completed downloads for progressive download logic
+download_ui_update_pending = False  # Flag to indicate UI needs update after download
+pending_play_queue = {}  # {filename: {'playlist_entry': ..., 'fullscreen': ..., 'start_time': ...}}
+download_progress = {}  # {filename: {'downloaded_mb': 0, 'total_mb': 0, 'popup': window_obj}}
 
 def get_animethemes_stream_url(filename):
     """Get streaming URL for a theme from AnimThemes using the filename as basename."""
@@ -16621,6 +16629,82 @@ def move_cached_file_to_directory(filename, button=None):
     # Start move in background thread
     threading.Thread(target=do_move, daemon=True).start()
 
+def create_download_popup(filename):
+    """Create a progress popup window for a downloading file.
+    
+    Args:
+        filename: Name of the file being downloaded
+        
+    Returns:
+        Dictionary with popup and widget references
+    """
+    popup = tk.Toplevel(root)
+    popup.overrideredirect(True)  # Borderless window
+    popup.attributes('-topmost', True)  # Keep on top
+    popup.transient(root)
+    
+    # Configure colors
+    bg_color = "#1e1e1e"  # gray12
+    fg_color = "white"
+    border_color = "#444"
+    
+    # Main frame with border
+    main_frame = tk.Frame(popup, bg=border_color, padx=2, pady=2)
+    main_frame.pack(fill="both", expand=True)
+    
+    inner_frame = tk.Frame(main_frame, bg=bg_color)
+    inner_frame.pack(fill="both", expand=True)
+    
+    # Title label
+    title_label = tk.Label(inner_frame, text="Caching theme...", font=("Arial", 12, "bold"), 
+                          bg=bg_color, fg=fg_color)
+    title_label.pack(pady=(15, 5))
+    
+    # Filename label (truncate if too long)
+    display_name = filename if len(filename) <= 45 else filename[:42] + "..."
+    filename_label = tk.Label(inner_frame, text=display_name, font=("Arial", 11), 
+                             bg=bg_color, fg="#aaa")
+    filename_label.pack(pady=(0, 10))
+    
+    # Progress bar with custom style
+    style = ttk.Style()
+    style.theme_use('default')
+    style.configure("Download.Horizontal.TProgressbar", 
+                   troughcolor='#333', 
+                   background='#0078d7',
+                   bordercolor=bg_color,
+                   lightcolor='#0078d7',
+                   darkcolor='#0078d7')
+    
+    progress_bar = ttk.Progressbar(inner_frame, length=450, mode='determinate', 
+                                  style="Download.Horizontal.TProgressbar")
+    progress_bar.pack(pady=(0, 10), padx=20, ipady=8)
+    
+    # Status label (bigger text)
+    status_label = tk.Label(inner_frame, text="Starting download...", font=("Arial", 11), 
+                           bg=bg_color, fg=fg_color)
+    status_label.pack(pady=(0, 15))
+    
+    # Center the popup
+    popup.update_idletasks()
+    width = 500
+    height = 170
+    x = (popup.winfo_screenwidth() // 2) - (width // 2)
+    y = (popup.winfo_screenheight() // 2) - (height // 2)
+    popup.geometry(f"{width}x{height}+{x}+{y}")
+    
+    # Force the window to display
+    popup.deiconify()
+    popup.lift()
+    popup.focus_force()
+    popup.update()
+    
+    return {
+        'popup': popup,
+        'progress_bar': progress_bar,
+        'status_label': status_label
+    }
+
 def download_to_cache(filename, silent=False):
     """Download an AnimThemes file to cache folder for temporary storage.
     
@@ -16631,7 +16715,7 @@ def download_to_cache(filename, silent=False):
     Returns:
         True if download started successfully, False otherwise
     """
-    global active_downloads, cache_metadata, downloads_completed
+    global active_downloads, cache_metadata, downloads_completed, download_progress
     
     # Check if already downloading
     if filename in active_downloads:
@@ -16645,8 +16729,26 @@ def download_to_cache(filename, silent=False):
     if filename in directory_files:
         return False
     
+    # Create progress popup window
+    if not silent:
+        popup_info = create_download_popup(filename)
+        download_progress[filename] = {
+            'downloaded_mb': 0,
+            'total_mb': 0,
+            'popup': popup_info['popup'],
+            'progress_bar': popup_info['progress_bar'],
+            'status_label': popup_info['status_label']
+        }
+    else:
+        # For silent downloads, just track progress without popup
+        download_progress[filename] = {
+            'downloaded_mb': 0,
+            'total_mb': 0,
+            'popup': None
+        }
+    
     def do_cache_download():
-        global downloads_completed, cache_metadata
+        global downloads_completed, cache_metadata, download_ui_update_pending
         try:
             # Get metadata to determine season/year
             data = get_metadata(filename)
@@ -16678,6 +16780,11 @@ def download_to_cache(filename, silent=False):
             last_percent = [-1]  # Use list to allow modification in nested function
             
             def progress_callback(mb_downloaded, mb_total):
+                # Update progress dict (will be read by main thread checker)
+                if filename in download_progress:
+                    download_progress[filename]['downloaded_mb'] = mb_downloaded
+                    download_progress[filename]['total_mb'] = mb_total
+                
                 if not silent:
                     percent = int((mb_downloaded / mb_total) * 100)
                     # Only print every 5% to reduce spam
@@ -16717,7 +16824,9 @@ def download_to_cache(filename, silent=False):
                 filesize_mb = cache_metadata[filename]['size'] / 1024 / 1024
                 print(f"\rCached: {filename} ({filesize_mb:.1f} MB)" + " " * 30)  # Clear line and show final status
             
-            up_next_text()
+            # Set flag to indicate UI needs update (checked periodically on main thread)
+            download_ui_update_pending = True
+            
         except Exception as e:
             if not silent:
                 print(f"Cache download error for {filename}: {e}")
@@ -16725,6 +16834,16 @@ def download_to_cache(filename, silent=False):
             # Remove from active downloads
             if filename in active_downloads:
                 del active_downloads[filename]
+            
+            # Close popup window if it exists (schedule on main thread)
+            if filename in download_progress:
+                popup_ref = download_progress[filename].get('popup')
+                if popup_ref:
+                    try:
+                        root.after(0, popup_ref.destroy)
+                    except:
+                        pass
+                del download_progress[filename]
     
     # Start download in background thread
     thread = threading.Thread(target=do_cache_download, daemon=True)
@@ -17763,7 +17882,7 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "image_source": {"type": "text", "required": False},
     "image_header": {"type": "text", "required": False, "default": "Image"},
     # Reveal-specific fields
-    "reveal_direction": {
+    "slide_direction": {
         "type": "dropdown",
         "required": False,
         "options": {"top": "Top", "bottom": "Bottom", "left": "Left", "right": "Right"},
@@ -17884,7 +18003,8 @@ def show_fixed_lightning_list(update=False):
         minutes = int(total_duration // 60)
         seconds = int(total_duration % 60)
         duration_str = f"[{minutes}:{seconds:02d}] "
-        return duration_str + value.get("name", "Unnamed Round")
+        name = shorten_youtube_title(value.get("name", "Unnamed Round"))
+        return duration_str + name
 
     selected = -1
     if fixed_lightning_queue:
@@ -20735,6 +20855,8 @@ def play_video(index=playlist["current_index"]):
         if fixed_lightning_queue and (not fixed_lightning_round_playlist_data or (fixed_lightning_round_playlist_data.get("name") != fixed_lightning_queue.get("name"))):
             fixed_lightning_round_playlist_data = copy.deepcopy(fixed_lightning_queue)
             fixed_lightning_round_playlist_data["current_index"] = 0
+            # Update playlist display to show fixed rounds
+            update_playlist_display()
         else:
             fixed_lightning_round_playlist_data["current_index"] += skip_direction
         index = fixed_lightning_round_playlist_data["current_index"]
@@ -20743,6 +20865,10 @@ def play_video(index=playlist["current_index"]):
             fixed_lightning_queue = None
             fixed_current_round = None
             light_round_answer_length = lightning_mode_settings["_misc_settings"].get("answer_length", LIGHT_ROUND_ANSWER_LENGTH_DEFAULT)
+            
+            # Revert playlist display back to normal
+            update_playlist_display()
+            
             toggle_light_mode()
             play_video(playlist["current_index"] + skip_direction)
             return
@@ -20750,6 +20876,10 @@ def play_video(index=playlist["current_index"]):
         filename = fixed_current_round.get("theme")
         rnd_mode = fixed_current_round.get("type", "regular")
         light_round_answer_length = fixed_current_round.get("answer_duration", lightning_mode_settings["_misc_settings"].get("answer_length", LIGHT_ROUND_ANSWER_LENGTH_DEFAULT))
+        
+        # Update playlist display to show current fixed round
+        update_playlist_display()
+        
         if light_mode != rnd_mode:
             toggle_light_mode(rnd_mode, queue=False)
         if play_filename(filename):
@@ -20913,19 +21043,72 @@ def skip_filename():
     skip_limit += 1
     play_video(playlist["current_index"] + skip_direction)  # Try playing the next video
 
+def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
+    """Handle streaming fallback when download times out."""
+    global animethemes_stream
+    
+    # Force streaming mode by setting filepath to stream URL
+    filename = get_clean_filename(playlist_entry) 
+    stream_url = None
+    if isinstance(playlist_entry, dict) and '_stream_url' in playlist_entry:
+        stream_url = playlist_entry['_stream_url']
+    else:
+        stream_url = get_animethemes_stream_url(filename)
+    
+    # Create modified entry with filepath
+    if isinstance(playlist_entry, dict):
+        modified_entry = playlist_entry.copy()
+        modified_entry['filepath'] = stream_url
+    else:
+        modified_entry = {'filename': playlist_entry, 'filepath': stream_url}
+    
+    animethemes_stream = True
+    return play_filename(modified_entry, fullscreen)
+
 def play_filename(playlist_entry, fullscreen=True):
     global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle, currently_playing
-    global video_stopped, previous_media, skip_limit, animethemes_stream
+    global video_stopped, previous_media, skip_limit, animethemes_stream, pending_play_queue, download_progress
     filename = get_clean_filename(playlist_entry)
     data = get_metadata(filename, fetch=auto_fetch_missing)
     
-    # Check if file is currently downloading, wait for it
+    # Check if file is currently downloading - add to pending queue instead of blocking
     if filename in active_downloads:
-        print(f"Waiting for download to complete: {filename}")
-        wait_for_download(filename, timeout=30)
+        print(f"Download in progress, queuing play: {filename}")
+        
+        # If there's no popup for this download (silent/prefetch), create one now
+        if filename not in download_progress or download_progress[filename].get('popup') is None:
+            popup_info = create_download_popup(filename)
+            if filename in download_progress:
+                # Update existing progress entry with popup
+                download_progress[filename]['popup'] = popup_info['popup']
+                download_progress[filename]['progress_bar'] = popup_info['progress_bar']
+                download_progress[filename]['status_label'] = popup_info['status_label']
+            else:
+                # Create new progress entry
+                download_progress[filename] = {
+                    'downloaded_mb': download_progress.get(filename, {}).get('downloaded_mb', 0),
+                    'total_mb': download_progress.get(filename, {}).get('total_mb', 0),
+                    'popup': popup_info['popup'],
+                    'progress_bar': popup_info['progress_bar'],
+                    'status_label': popup_info['status_label']
+                }
+        
+        pending_play_queue[filename] = {
+            'playlist_entry': playlist_entry,
+            'fullscreen': fullscreen,
+            'start_time': time.time(),
+            'timeout': 30
+        }
+        return False
     
-    filepath = get_file_path(playlist_entry)  # Get file path from playlist (checks local and cache)
-    animethemes_stream = False
+    # Check if filepath is already specified in entry (e.g., for streaming fallback)
+    if isinstance(playlist_entry, dict) and 'filepath' in playlist_entry:
+        filepath = playlist_entry['filepath']
+        if filepath and filepath.startswith('https://v.animethemes.moe/'):
+            animethemes_stream = True
+    else:
+        filepath = get_file_path(playlist_entry)  # Get file path from playlist (checks local and cache)
+        animethemes_stream = False
     
     # If not found locally or in cache, check if it's a streamable file
     if not filepath and is_animethemes_stream_file(filename):
@@ -20934,22 +21117,17 @@ def play_filename(playlist_entry, fullscreen=True):
         if cached_path:
             filepath = cached_path
         else:
-            # Attempt to start download to cache
+            # Attempt to start download to cache in background
             download_started = download_to_cache(filename, silent=False)
             if download_started:
-                # Wait for download to complete
-                if wait_for_download(filename, timeout=60):
-                    filepath = get_cached_file_path(filename)
-                    if not filepath:
-                        # Download failed or cache full, fall back to streaming
-                        print(f"Cache download failed, streaming: {filename}")
-                        filepath = get_animethemes_stream_url(filename)
-                        animethemes_stream = True
-                else:
-                    # Timeout waiting for download, fall back to streaming
-                    print(f"Download timeout, streaming: {filename}")
-                    filepath = get_animethemes_stream_url(filename)
-                    animethemes_stream = True
+                # Add to pending play queue instead of blocking
+                pending_play_queue[filename] = {
+                    'playlist_entry': playlist_entry,
+                    'fullscreen': fullscreen,
+                    'start_time': time.time(),
+                    'timeout': 60  # 60 second timeout before falling back to streaming
+                }
+                return False
             else:
                 # Cache full or other issue, stream directly
                 filepath = get_animethemes_stream_url(filename)
@@ -23679,7 +23857,54 @@ def add_field_to_playlist(index):
         save_config()
 
 def show_playlist(update = False):
-    show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=remove_theme)
+    # Check if fixed lightning round is active - display those rounds instead
+    if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
+        rounds = fixed_lightning_round_playlist_data.get("rounds", [])
+        rounds_dict = convert_fixed_rounds_to_dict(rounds)
+        current_index = fixed_lightning_round_playlist_data.get("current_index", 0)
+        show_list("playlist", right_column, rounds_dict, get_fixed_round_title, play_fixed_round_by_index, current_index, update, right_click_func=None)
+    else:
+        show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=remove_theme)
+
+def convert_fixed_rounds_to_dict(rounds):
+    """Convert fixed lightning rounds to dict for display"""
+    return {f"round_{i}": round_data for i, round_data in enumerate(rounds)}
+
+def get_fixed_round_title(key, round_data):
+    """Get display title for a fixed lightning round"""
+    theme = round_data.get("theme", "Unknown")
+    round_type = round_data.get("type", "regular")
+    
+    # Get anime title from metadata if possible
+    try:
+        data = get_metadata(theme, fetch=False)
+        title = data.get("title", theme)
+    except:
+        title = theme
+    
+    # Get icon from light_modes dictionary
+    icon = light_modes.get(round_type, {}).get("icon", "⚡")
+    
+    return f"{icon}{title}"
+
+def play_fixed_round_by_index(index):
+    """Play a fixed lightning round by index"""
+    global fixed_lightning_round_playlist_data, skip_direction
+    
+    if not fixed_lightning_round_playlist_data:
+        return
+    
+    rounds = fixed_lightning_round_playlist_data.get("rounds", [])
+    if 0 <= index < len(rounds):
+        # Calculate skip direction based on current vs target index
+        current_index = fixed_lightning_round_playlist_data.get("current_index", 0)
+        skip_direction = 1 if index > current_index else -1
+        
+        # Set to one before target so play_video advances to it
+        fixed_lightning_round_playlist_data["current_index"] = index - skip_direction
+        
+        # Play the video which will advance to the target index
+        play_video()
 
 def remove(update = False):
     show_list("remove", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, remove_theme, playlist["current_index"], update)
@@ -23690,9 +23915,19 @@ def convert_playlist_to_dict(playlis):
 def update_playlist_display():
     """Helper function to update the playlist display when the playlist changes"""
     if list_loaded == "playlist":
-        global current_list_content, current_list_selected
-        current_list_content = convert_playlist_to_dict(playlist["playlist"])
-        current_list_selected = playlist["current_index"]
+        global current_list_content, current_list_selected, current_list_name_func
+        
+        # Check if fixed lightning round is active
+        if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
+            rounds = fixed_lightning_round_playlist_data.get("rounds", [])
+            current_list_content = convert_fixed_rounds_to_dict(rounds)
+            current_list_selected = fixed_lightning_round_playlist_data.get("current_index", 0)
+            current_list_name_func = get_fixed_round_title
+        else:
+            current_list_content = convert_playlist_to_dict(playlist["playlist"])
+            current_list_selected = playlist["current_index"]
+            current_list_name_func = get_title
+        
         refresh_current_list()
 
 def remove_theme(index):
@@ -23834,8 +24069,16 @@ def refresh_current_list():
     """Refresh the current list display without changing the list type."""
     if list_loaded == "playlist":
         # Update the current list content from the actual playlist data
-        global current_list_content
-        current_list_content = convert_playlist_to_dict(playlist["playlist"])
+        global current_list_content, current_list_name_func
+        
+        # Check if fixed lightning round is active
+        if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
+            rounds = fixed_lightning_round_playlist_data.get("rounds", [])
+            current_list_content = convert_fixed_rounds_to_dict(rounds)
+            current_list_name_func = get_fixed_round_title
+        else:
+            current_list_content = convert_playlist_to_dict(playlist["playlist"])
+            current_list_name_func = get_title
         
         entries_count = get_list_entries_count()
         current_count = len(persistent_buttons) if persistent_buttons else 0
@@ -24127,7 +24370,11 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
         # For playlist, center on current playing item
         if type == "playlist":
             entries_count = get_list_entries_count()
-            current_playing = playlist.get("current_index", -1)
+            # Use fixed round index if active, otherwise regular playlist index
+            if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
+                current_playing = fixed_lightning_round_playlist_data.get("current_index", -1)
+            else:
+                current_playing = playlist.get("current_index", -1)
             if current_playing >= 0:
                 current_list_offset = max(0, current_playing - entries_count // 2)
                 max_offset = max(0, list_size - entries_count)
@@ -24207,6 +24454,11 @@ external_drag_active = False
 def start_playlist_drag(event, index):
     """Start dragging a playlist item."""
     global drag_start_index, drag_current_y
+    
+    # Don't allow dragging for fixed lightning rounds
+    if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
+        return
+    
     # Clear any existing highlighting
     clear_drop_highlight()
     
@@ -25214,7 +25466,7 @@ def create_popout_controls(columns=5, title="Popout Controls"):
                             search_results = search_playlist(query)
                         else:
                             search_results = []
-                        search_results.sort(key=lambda file: get_title(file, file).lower())
+                        # search_results.sort(key=lambda file: get_title(file, file).lower())
                         # Update dropdown
                         titles = [get_title(f, f) for f in search_results]
                         search_results_dropdown["values"] = titles
@@ -26951,6 +27203,67 @@ def refresh_list_on_resize():
 # Bind resize event to root window
 root.bind("<Configure>", on_window_resize)
 
+def check_download_ui_updates():
+    """Periodically check if downloads have completed and update UI accordingly"""
+    global download_ui_update_pending, pending_play_queue, download_progress
+    
+    if download_ui_update_pending:
+        download_ui_update_pending = False
+        try:
+            up_next_text()
+        except:
+            pass
+    
+    # Update download progress popups
+    for filename, progress_info in list(download_progress.items()):
+        popup = progress_info.get('popup')
+        if popup:
+            try:
+                downloaded = progress_info.get('downloaded_mb', 0)
+                total = progress_info.get('total_mb', 0)
+                
+                if total > 0:
+                    percent = int((downloaded / total) * 100)
+                    progress_bar = progress_info.get('progress_bar')
+                    status_label = progress_info.get('status_label')
+                    
+                    if progress_bar:
+                        progress_bar['value'] = percent
+                    if status_label:
+                        status_label.config(text=f"{downloaded:.1f} / {total:.1f} MB ({percent}%)")
+            except:
+                pass
+    
+    # Check pending plays
+    completed_plays = []
+    for filename, play_info in list(pending_play_queue.items()):
+        current_time = time.time()
+        elapsed = current_time - play_info['start_time']
+        
+        # Check if download completed
+        if filename not in active_downloads:
+            # Download finished, play the file
+            completed_plays.append(filename)
+            # Give a small delay for cache metadata to sync
+            root.after(100, lambda pe=play_info['playlist_entry'], fs=play_info['fullscreen']: play_filename(pe, fs))
+        # Check for timeout
+        elif elapsed > play_info['timeout']:
+            print(f"Download timeout ({play_info['timeout']}s), falling back to streaming: {filename}")
+            completed_plays.append(filename)
+            # Fall back to streaming by modifying the playlist entry to use streaming URL
+            stream_url = get_animethemes_stream_url(filename)
+            # We need to create a special playlist entry for streaming
+            streaming_entry = play_info['playlist_entry'].copy() if isinstance(play_info['playlist_entry'], dict) else {'filename': filename}
+            streaming_entry['_stream_url'] = stream_url
+            root.after(100, lambda pe=streaming_entry, fs=play_info['fullscreen']: play_filename_streaming_fallback(pe, fs))
+    
+    # Remove completed plays from queue
+    for filename in completed_plays:
+        pending_play_queue.pop(filename, None)
+    
+    # Check again in 500ms
+    root.after(500, check_download_ui_updates)
+
 root.after(1000, create_new_session)
 
 # Start updating the seek bar
@@ -26960,5 +27273,6 @@ root.after(1000, check_video_end)
 root.after(1000, set_volume, volume_level)
 root.after(3000, check_for_updates_on_startup)
 root.after(1000, update_living_playlists)
+root.after(500, check_download_ui_updates)  # Start checking for download UI updates
 
 root.mainloop()
