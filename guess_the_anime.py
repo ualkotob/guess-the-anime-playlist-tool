@@ -32,7 +32,6 @@ from tkinter import filedialog, messagebox, simpledialog, ttk, StringVar, font, 
 import webbrowser
 from PIL import Image, ImageTk, ImageFilter, ImageFont, ImageDraw
 import threading  # For asynchronous metadata loading
-import vlc
 from tinytag import TinyTag
 from yt_dlp import YoutubeDL
 from pynput import keyboard, mouse
@@ -54,6 +53,27 @@ import tempfile
 import unicodedata
 
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
+
+# Helper function for VLC error messages
+def _vlc_error_exit(error_details=None):
+    """Display VLC error message and exit."""
+    print("\n" + "="*60)
+    print(" ERROR: VLC is not installed or configured properly")
+    print(" This application requires VLC media player.")
+    if error_details:
+        print(f" Error details: {error_details}")
+    print("")
+    print(" Download VLC from: https://www.videolan.org/vlc/")
+    print(" After installing, restart this application.")
+    print("="*60 + "\n")
+    input("Press Enter to exit...")
+    sys.exit(1)
+
+# Try to import VLC with helpful error message if it fails
+try:
+    import vlc
+except Exception as e:
+    _vlc_error_exit(str(e))
 
 # =========================================
 #        *MODAL DIALOG SHORTCUT GUARD
@@ -85,7 +105,32 @@ simpledialog.askfloat = _wrap_modal_dialog(simpledialog.askfloat)
 
 # Explicitly load libvlc.dll and its dependencies
 vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installation path
-os.add_dll_directory(vlc_path)  # Add VLC directory to DLL search path
+
+# Check if VLC is installed
+if not os.path.exists(vlc_path):
+    print(f"\n{'='*60}\n WARNING: VLC installation not found at default path!\n{'='*60}\n Expected path: {vlc_path}\n")
+    
+    # Check common alternative paths
+    alternative_paths = [
+        r'C:\Program Files (x86)\VideoLAN\VLC',
+        os.path.expandvars(r'%LOCALAPPDATA%\Programs\VideoLAN\VLC')
+    ]
+    
+    found_path = None
+    for alt_path in alternative_paths:
+        if os.path.exists(alt_path):
+            found_path = alt_path
+            print(f" Found VLC at: {alt_path}\n Using alternative VLC installation path.\n{'='*60}\n")
+            vlc_path = alt_path
+            break
+    
+    if not found_path:
+        _vlc_error_exit()
+
+try:
+    os.add_dll_directory(vlc_path)  # Add VLC directory to DLL search path
+except Exception as e:
+    _vlc_error_exit(str(e))
 
 hw_acc_enabled = True
 current_vout = None  # Track current video output module
@@ -222,7 +267,10 @@ def set_vout(vout_module=None, reload_current=False):
             pass
 
 # Create initial player (automatic / file-defined vout)
-create_vlc_instance()
+try:
+    create_vlc_instance()
+except Exception as e:
+    _vlc_error_exit(str(e))
 
 # =========================================
 #            FFMPEG AVAILABILITY CHECK
@@ -11664,7 +11712,7 @@ def queue_next_lightning_mode():
             next_filename = next_fixed_round.get("theme")
         else:
             next_index = playlist["current_index"] + 1
-            if next_index < len(playlist["playlist"]) and get_file_path(playlist["playlist"][next_index]):
+            if next_index < len(playlist["playlist"]) and (get_file_path(playlist["playlist"][next_index]) or is_animethemes_stream_file(playlist["playlist"][next_index])):
                 next_filename = get_clean_filename(playlist["playlist"][next_index])
             else:
                 return
@@ -26957,7 +27005,7 @@ def on_press(key):
     global disable_shortcuts, modal_dialog_open
     try:
         if modal_dialog_open:
-            pass
+            return
         if disable_shortcuts:
             pass
         elif grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values()):
@@ -26989,7 +27037,7 @@ def on_release(key):
     global disable_shortcuts, modal_dialog_open
     try:
         if modal_dialog_open:
-            pass
+            return
         if popout_searching:
             pass
         elif disable_shortcuts:
