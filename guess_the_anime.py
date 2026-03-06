@@ -16295,6 +16295,7 @@ def is_animethemes_stream_file(filename):
 animethemes_stream = None
 stream_icon = '📶'
 active_downloads = {}  # {filename: thread_object}
+download_cancel_flags = {}  # {filename: bool} - Set to True to cancel download
 cache_metadata = {}  # {filename: {size, play_count, last_played}}
 downloads_completed = 0  # Track completed downloads for progressive download logic
 download_ui_update_pending = False  # Flag to indicate UI needs update after download
@@ -16453,6 +16454,11 @@ def _download_animethemes_file_to_path(filename, dest_path, progress_callback=No
         # Write to file with progress tracking
         with open(dest_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
+                # Check for cancellation
+                if filename in download_cancel_flags and download_cancel_flags[filename]:
+                    print(f"Download cancelled: {filename}")
+                    return False
+                
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
@@ -16655,6 +16661,8 @@ def create_download_popup(filename):
     bg_color = "#1e1e1e"  # gray12
     fg_color = "white"
     border_color = "#444"
+    button_bg = "#333"
+    button_hover = "#555"
     
     # Main frame with border
     main_frame = tk.Frame(popup, bg=border_color, padx=2, pady=2)
@@ -16691,12 +16699,34 @@ def create_download_popup(filename):
     # Status label (bigger text)
     status_label = tk.Label(inner_frame, text="Starting download...", font=("Arial", 11), 
                            bg=bg_color, fg=fg_color)
-    status_label.pack(pady=(0, 15))
+    status_label.pack(pady=(0, 5))
+    
+    # Button frame
+    button_frame = tk.Frame(inner_frame, bg=bg_color)
+    button_frame.pack(pady=(0, 10))
+    
+    # Cancel button
+    def on_cancel():
+        cancel_download(filename)
+    
+    cancel_button = tk.Button(button_frame, text="Cancel", font=("Arial", 10), 
+                             bg=button_bg, fg=fg_color, activebackground=button_hover,
+                             command=on_cancel, width=10, relief=tk.FLAT)
+    cancel_button.pack(side=tk.LEFT, padx=5)
+    
+    # Retry button
+    def on_retry():
+        retry_download(filename)
+    
+    retry_button = tk.Button(button_frame, text="Retry", font=("Arial", 10), 
+                            bg=button_bg, fg=fg_color, activebackground=button_hover,
+                            command=on_retry, width=10, relief=tk.FLAT)
+    retry_button.pack(side=tk.LEFT, padx=5)
     
     # Center the popup
     popup.update_idletasks()
     width = 500
-    height = 170
+    height = 220
     x = (popup.winfo_screenwidth() // 2) - (width // 2)
     y = (popup.winfo_screenheight() // 2) - (height // 2)
     popup.geometry(f"{width}x{height}+{x}+{y}")
@@ -16710,8 +16740,73 @@ def create_download_popup(filename):
     return {
         'popup': popup,
         'progress_bar': progress_bar,
-        'status_label': status_label
+        'status_label': status_label,
+        'cancel_button': cancel_button,
+        'retry_button': retry_button
     }
+
+def cancel_download(filename):
+    """Cancel an active download.
+    
+    Args:
+        filename: Name of the file being downloaded
+    """
+    global download_cancel_flags, active_downloads, pending_play_queue
+    
+    if filename in active_downloads:
+        # Set cancel flag
+        download_cancel_flags[filename] = True
+        print(f"Cancelling download: {filename}")
+        
+        # Remove from pending play queue if present
+        if filename in pending_play_queue:
+            pending_play_queue.pop(filename, None)
+        
+        # The download thread will check this flag and exit
+        # The cleanup will happen in the download thread's finally block
+
+def retry_download(filename):
+    """Retry a failed or cancelled download.
+    
+    Args:
+        filename: Name of the file to retry downloading
+    """
+    global download_cancel_flags, download_progress
+    
+    # If currently downloading, cancel it first
+    if filename in active_downloads:
+        print(f"Stopping current download to retry: {filename}")
+        cancel_download(filename)
+        
+        # Wait a moment for cancellation to complete, then start new download
+        def start_retry():
+            # Clear any cancel flags
+            download_cancel_flags.pop(filename, None)
+            
+            # Start new download
+            download_to_cache(filename, silent=False)
+            print(f"Retrying download: {filename}")
+        
+        # Schedule retry after 500ms to allow cancellation to complete
+        root.after(500, start_retry)
+    else:
+        # Not downloading, start immediately
+        # Clear any cancel flags
+        download_cancel_flags.pop(filename, None)
+        
+        # Close existing popup if present
+        if filename in download_progress:
+            popup_ref = download_progress[filename].get('popup')
+            if popup_ref:
+                try:
+                    popup_ref.destroy()
+                except:
+                    pass
+            download_progress.pop(filename, None)
+        
+        # Start new download
+        download_to_cache(filename, silent=False)
+        print(f"Retrying download: {filename}")
 
 def download_to_cache(filename, silent=False):
     """Download an AnimThemes file to cache folder for temporary storage.
@@ -16723,7 +16818,7 @@ def download_to_cache(filename, silent=False):
     Returns:
         True if download started successfully, False otherwise
     """
-    global active_downloads, cache_metadata, downloads_completed, download_progress
+    global active_downloads, cache_metadata, downloads_completed, download_progress, download_cancel_flags
     
     # Check if already downloading
     if filename in active_downloads:
@@ -16736,6 +16831,9 @@ def download_to_cache(filename, silent=False):
     # Check if file is in local directory
     if filename in directory_files:
         return False
+    
+    # Clear any previous cancel flags
+    download_cancel_flags.pop(filename, None)
     
     # Create progress popup window
     if not silent:
@@ -16756,7 +16854,8 @@ def download_to_cache(filename, silent=False):
         }
     
     def do_cache_download():
-        global downloads_completed, cache_metadata, download_ui_update_pending
+        global downloads_completed, cache_metadata, download_ui_update_pending, download_cancel_flags
+        cancelled = False
         try:
             # Get metadata to determine season/year
             data = get_metadata(filename)
@@ -16804,6 +16903,20 @@ def download_to_cache(filename, silent=False):
                 print(f"Caching {filename}: 0%", end='', flush=True)
             
             success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
+            
+            # Check if cancelled
+            if filename in download_cancel_flags and download_cancel_flags[filename]:
+                cancelled = True
+                # Delete partial file
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except:
+                        pass
+                if not silent:
+                    print(f"\rDownload cancelled: {filename}" + " " * 30)
+                return
+            
             if not success:
                 if not silent:
                     print(f"\rCache download failed: {filename}" + " " * 30)  # Clear line
@@ -16842,6 +16955,9 @@ def download_to_cache(filename, silent=False):
             # Remove from active downloads
             if filename in active_downloads:
                 del active_downloads[filename]
+            
+            # Clean up cancel flag
+            download_cancel_flags.pop(filename, None)
             
             # Close popup window if it exists (schedule on main thread)
             if filename in download_progress:
@@ -21055,8 +21171,14 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
     """Handle streaming fallback when download times out."""
     global animethemes_stream
     
+    # Extract filename from dict if necessary
+    if isinstance(playlist_entry, dict):
+        filename = playlist_entry.get('filename', playlist_entry.get('filepath', ''))
+    else:
+        filename = playlist_entry
+    
     # Force streaming mode by setting filepath to stream URL
-    filename = get_clean_filename(playlist_entry) 
+    filename = get_clean_filename(filename) 
     stream_url = None
     if isinstance(playlist_entry, dict) and '_stream_url' in playlist_entry:
         stream_url = playlist_entry['_stream_url']
