@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.4"  # Update this when making releases
+APP_VERSION = "15.4.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -4702,7 +4702,8 @@ def get_anilist_matching_files(user_id, only_watched, include_non_local):
 
 def get_animethemes_matching_files(hashid, include_non_local):
     """Fetch and return matching files, playlist name, and total count for an AnimeThemes playlist."""
-    response = requests.get(f'https://api.animethemes.moe/playlist/{hashid}?include=tracks.video&fields[playlist]=name&fields[video]=path')
+    headers = {'User-Agent': f'GuessTheAnime/{APP_VERSION} (https://github.com/ualkotob/guess-the-anime-playlist-tool)'}
+    response = requests.get(f'https://api.animethemes.moe/playlist/{hashid}?include=tracks.video&fields[playlist]=name&fields[video]=path', headers=headers)
     if response.status_code != 200:
         return None, None, None
     
@@ -5695,6 +5696,12 @@ def get_next_infinite_track(increment=True):
             try_count += 1
             continue
         file = groups[p][t].pop(0)
+        
+        # Skip if file is None
+        if file is None:
+            try_count += 1
+            continue
+        
         extra_file = False
         if "[EXTRA]" in file:
             file = file.replace("[EXTRA]", "")
@@ -16436,7 +16443,8 @@ def _download_animethemes_file_to_path(filename, dest_path, progress_callback=No
     """
     try:
         url = get_animethemes_stream_url(filename)
-        response = requests.get(url, stream=True, timeout=30)
+        headers = {'User-Agent': f'GuessTheAnime/{APP_VERSION} (https://github.com/ualkotob/guess-the-anime-playlist-tool)'}
+        response = requests.get(url, stream=True, timeout=30, headers=headers)
         response.raise_for_status()
         
         total_size = int(response.headers.get('content-length', 0))
@@ -16656,7 +16664,7 @@ def create_download_popup(filename):
     inner_frame.pack(fill="both", expand=True)
     
     # Title label
-    title_label = tk.Label(inner_frame, text="Caching theme...", font=("Arial", 12, "bold"), 
+    title_label = tk.Label(inner_frame, text="Loading theme...", font=("Arial", 12, "bold"), 
                           bg=bg_color, fg=fg_color)
     title_label.pack(pady=(15, 5))
     
