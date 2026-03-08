@@ -2,59 +2,73 @@
 
 ## Description
 
-Guess The Anime - Playlist Tool is a Python-based program I created to help me run trivia sessions with anime openings from the AnimeThemes website. It supports playlist management, metadata fetching from AnimeThemes and Jikan API, and multiple lightning rounds.
+Guess The Anime - Playlist Tool is a comprehensive Python-based application designed for hosting anime trivia sessions. It features deep integration with AnimeThemes and Jikan APIs, VLC-powered video playback, and an extensive suite of lightning round modes. Perfect for anime clubs, stream entertainment, or personal anime knowledge testing.
 
-## Features
+## Core Features
 
-- Play local anime openings & endings.
-- Pull and display information using API.
-- Multiple Lightning Round modes:
-  - **Regular** (Random 12 seconds)
-  - **Frame** (Still images only)
-  - **Blind** (Audio-only)
-  - **Clues** (Metadata hints only)
-  - **Variety** (Random mix of modes)
-- Save & load custom playlists and filters.
-- Search, filter, and sort playlists.
-- Keyboard shortcuts for running everything with just the keyboard.
-- Documentation in-application by right clicking buttons.
+### Video Playback & Sources
+- **Local Files**: Play anime openings, endings, and video files from your computer
+- **AnimeThemes Integration**: Stream directly from AnimeThemes.moe or download themes on-demand
+- **YouTube Integration**: Add YouTube videos via a manager
+
+### Lightning Round Modes
+
+**20+ Unique Lightning Round Types:**
+
+- **🗲 Regular**: Random 12-second clip from opening/ending
+- **👁 Blind**: Audio-only mode (screen hidden)
+- **👀 Peek**: Small viewport that grows or moves across the screen
+- **📷 Frame**: Show 4 still frames from the video, revealed one at a time
+- **📚 Cover**: Anime cover art revealed gradually
+- **🌐 Image**: Random Google image search result revealed over time
+- **👤 Character**: 4 character images revealed gradually
+- **🔍 Clues**: Display anime statistics (year, score, rank, members)
+- **𝕋 Title**: Letters randomly fill in to spell the anime title
+- **📰 Synopsis**: Synopsis revealed word-by-word
+- **❓ Trivia**: AI-generated trivia question about the anime (requires OpenAI API)
+- **😄 Emoji**: 6 emojis representing the anime (requires OpenAI API)
+- **🎵 Song**: Show song metadata with audio in final seconds
+- **💿 OST**: Play a clip from the anime's soundtrack (requires YouTube API)
+- **🔖 Tags**: Detailed genre tags revealed over time
+- **📺 Episodes**: Display 6 episode titles revealed gradually
+- **🎭 Names**: Show 6 character names revealed over time
+- **🎬 Clip**: Play a random YouTube clip or trailer (requires YouTube API)
+- **✨ Character Reveal**: Single character image revealed gradually
+- **📝 Character Profile**: Character description and gender, image in final seconds
+- **🔤 Character Name**: Letters fill in to spell character name
+- **🎲 Variety**: Dynamic mix of all modes based on popularity
+
+Each lightning round is fully customizable with adjustable timing, reveal patterns, and round length.
 
 ## Installation
 
-### Windows EXE
+### Windows Executable (Recommended)
 
-You should be able to just download the windows exe in releases and run the application without python. See below for running in Python.
+Download the latest `.exe` from the [Releases](https://github.com/ualkotob/guess-the-anime-playlist-tool/releases) page. The executable is standalone and doesn't require Python installation.
 
-## Folders
+**Requirements:**
+- Windows 10 or later
+- [VLC Media Player](https://www.videolan.org/vlc/) (required for video playback)
+- (OPTIONAL) [FFmpeg](https://www.ffmpeg.org/) installed in system path for downloading YouTube videos and editing video files 
 
-In whichever place you keep the exe, it will create/check folders for files. Here's an explanation of each.
+## Folder Edxplanation
+- **files**: Configuration and data files
+  - `config.txt` - Current playlist, index, and directory settings
+  - `censors.json` - Censors for titles, and NSFW things
+  - `settings.json` - Application settings and API keys
+  
+- **playlists**: Saved playlist files (`.json` format)
+  - Includes system playlists: Tagged Themes, Favorite Themes, etc.
+  
+- **filters**: Saved filter configurations (`.json` format)
 
-- **banners**: This folder is checked for the banners for ligning rounds. You can grab them from this repository, or just use your own as long as they have the same names.
-- **files**: The following files are stored here.
-  - **config.txt** Stores currently loaded playlist, index, and directory information.
-  - **censors.txt** Stores all censors created for files. These are created outside of the application. My file is in the repository, and also the censor_bar_tool.py for help in creating them.
-  - **youtube_links.txt** This is where youtbe links are read, then downloaded. I have an example file in the repository.
-  - **youtube_archive.txt** Just a copy of any link read in the youtube_links.txt to keep a history.
-- **filters**: Filters will be stored here.
-- **metadata**: Metadata for files, anime, and youtube videos are stored here.
-- **music**: Create this folder and place music files in it to have them play in the background of Frame and Clues lightning rounds.
-- **playlists**: Saved playlists are stored here, including Tagged Themes, and Favorite Themes.
-- **youtube**: This is where downloaded youtube videos will be stored. They are automatically deleted if remoed from the youtube_links.txt file.
+- **metadata**: Cached API responses for faster loading
+  - Separate caches for AnimeThemes, Jikan, and YouTube data
 
-### Python Requirements
-
-Ensure you have the following installed:
-
-- Python **3.10+**
-- VLC Media Player (for video playback)
-- Required dependencies from below.
-
-## Dependencies
-
-The project has a lot of features, including video playback, music playback, and even a function for getting the average color of the screen. Therefore there are quite a few dependencies that must be installed first:
-
-```plaintext
-os, ctypes, random, math, json, requests, re, dxcam, time, numpy, BytesIO, datetime,
-tkinter, PIL (Pillow), threading, vlc, yt_dlp, pynput, pygame
-```
-
+- **banners**: Lightning round banner images (grab from repository or use custom)
+  
+- **music**: Background music for lightning rounds
+  - Place any audio files here for background music to play during lightning rounds
+  
+- **youtube**: Auto-downloaded YouTube videos
+  - Downloaded YouTube videos are stored here

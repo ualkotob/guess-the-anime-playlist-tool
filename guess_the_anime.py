@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.4.1"  # Update this when making releases
+APP_VERSION = "15.4.2"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -8944,7 +8944,8 @@ def show_filter_popup():
     """Opens a properly formatted, scrollable popup for filtering the playlist."""
     global filter_popup
     if playlist.get("infinite", False):
-        playlis = copy.deepcopy(directory_files)
+        inf_settings = get_infinite_settings()
+        playlis = get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=False, deduplicate_versions=False)
     else:
         playlis = playlist["playlist"]
 
@@ -9192,8 +9193,8 @@ def show_filter_popup():
         filters = assign_filter_range_value(filters, 'rank', rank_entry, get_highest_parameter("rank", playlis), get_lowest_parameter("rank", playlis))
         filters = assign_filter_range_value(filters, 'members', members_entry, get_lowest_parameter("members", playlis), get_highest_parameter("members", playlis))
         filters = assign_filter_range_value(filters, 'popularity', popularity_entry, get_highest_parameter("popularity", playlis), get_lowest_parameter("popularity", playlis))
-        if season_start_var.get() != all_seasons[0]: filters["season_min"] = season_start_var.get()
-        if season_end_var.get() != all_seasons[-1]: filters["season_max"] = season_end_var.get()
+        if all_seasons and season_start_var.get() != all_seasons[0]: filters["season_min"] = season_start_var.get()
+        if all_seasons and season_end_var.get() != all_seasons[-1]: filters["season_max"] = season_end_var.get()
         if themes_exclude_listbox.curselection(): filters["themes_exclude"] = [themes_exclude_listbox.get(i) for i in themes_exclude_listbox.curselection()]
         if themes_include_listbox.curselection(): filters["themes_include"] = [themes_include_listbox.get(i) for i in themes_include_listbox.curselection()]
         if artists_listbox.curselection(): filters["artists"] = [artists_listbox.get(i) for i in artists_listbox.curselection()]
@@ -16725,10 +16726,10 @@ def create_download_popup(filename):
     title_label.pack(pady=(15, 5))
     
     # Filename label (truncate if too long)
-    display_name = filename if len(filename) <= 45 else filename[:42] + "..."
-    filename_label = tk.Label(inner_frame, text=display_name, font=("Arial", 11), 
-                             bg=bg_color, fg="#aaa")
-    filename_label.pack(pady=(0, 10))
+    # display_name = filename if len(filename) <= 45 else filename[:42] + "..."
+    # filename_label = tk.Label(inner_frame, text=display_name, font=("Arial", 11), 
+    #                          bg=bg_color, fg="#aaa")
+    # filename_label.pack(pady=(0, 10))
     
     # Progress bar with custom style
     style = ttk.Style()
@@ -16774,7 +16775,7 @@ def create_download_popup(filename):
     # Center the popup
     popup.update_idletasks()
     width = 500
-    height = 220
+    height = 170
     x = (popup.winfo_screenwidth() // 2) - (width // 2)
     y = (popup.winfo_screenheight() // 2) - (height // 2)
     popup.geometry(f"{width}x{height}+{x}+{y}")
@@ -16819,7 +16820,10 @@ def retry_download(filename):
     Args:
         filename: Name of the file to retry downloading
     """
-    global download_cancel_flags, download_progress
+    global download_cancel_flags, download_progress, pending_play_queue
+    
+    # Preserve pending play info if it exists (so file plays after retry completes)
+    pending_play_info = pending_play_queue.get(filename)
     
     # If currently downloading, cancel it first
     if filename in active_downloads:
@@ -16830,6 +16834,12 @@ def retry_download(filename):
         def start_retry():
             # Clear any cancel flags
             download_cancel_flags.pop(filename, None)
+            
+            # Restore pending play queue entry if it existed
+            if pending_play_info:
+                pending_play_queue[filename] = pending_play_info
+                # Reset start time so timeout doesn't trigger immediately
+                pending_play_queue[filename]['start_time'] = time.time()
             
             # Start new download
             download_to_cache(filename, silent=False)
@@ -16851,6 +16861,23 @@ def retry_download(filename):
                 except:
                     pass
             download_progress.pop(filename, None)
+        
+        # Restore or create pending play queue entry
+        if pending_play_info:
+            pending_play_queue[filename] = pending_play_info
+            # Reset start time so timeout doesn't trigger immediately
+            pending_play_queue[filename]['start_time'] = time.time()
+        else:
+            # Create a new pending play entry if one didn't exist
+            # (This handles retry when download wasn't queued for play)
+            if currently_playing and currently_playing.get('filename') == filename:
+                # File is currently playing (streaming), so queue it to play after download
+                pending_play_queue[filename] = {
+                    'playlist_entry': currently_playing.get('playlist_entry', filename),
+                    'fullscreen': True,
+                    'start_time': time.time(),
+                    'timeout': 60
+                }
         
         # Start new download
         download_to_cache(filename, silent=False)
