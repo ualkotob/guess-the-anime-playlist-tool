@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.4.2"  # Update this when making releases
+APP_VERSION = "15.5"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -1863,9 +1863,11 @@ def get_theme_list(data, file_slug=None, file_version=None):
                     
                     overlap = None
                     if entry.get("videos") and entry["videos"]:
-                        overlap = entry["videos"][0].get("overlap")
-                        if overlap and overlap != "None":
+                        for video in entry["videos"]:
+                            overlap = video.get("overlap", "None")
                             version_data["overlap"] = overlap
+                            if not overlap or overlap == "None":
+                                break
                     
                     versions.append(version_data)
 
@@ -2566,7 +2568,6 @@ def update_metadata():
                 tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
                 for index, tag in enumerate(tags):
                     left_column.insert(tk.END, f"{tag}", "white")
-                    add_field_total_button(left_column, get_filenames_from_tag(tag), blank = False)
                     if index < len(tags)-1:
                         left_column.insert(tk.END, f", ", "white")
                 left_column.insert(tk.END, "\n\n", "blank")
@@ -3144,50 +3145,156 @@ def create_cover_popup(title, cover_url):
 
     return _popup
 
-def update_series_song_information(data, mal):
+SERIES_COLLAPSE_THRESHOLD = 20   # total themes across all anime in series before collapsing non-playing
+SECTION_COLLAPSE_THRESHOLD = 8   # themes in one anime before collapsing non-playing section type
+
+_collapsed_anime = set()     # str(anime_id) — collapsed series entries
+_collapsed_sections = set()  # (str(mal_id), type_str) — collapsed OP/ED section headers
+
+def _rerender_songs(scroll_to=None):
+    d = currently_playing.get('data')
+    if d:
+        update_series_song_information(d, d.get('mal'), rerender=True, scroll_to=scroll_to)
+
+def _auto_init_series_collapse(all_series_themes, playing_mal):
+    """Auto-collapse non-playing anime entries if the series is large."""
+    _collapsed_anime.clear()
+    total_themes = sum(len(anime.get("songs", [])) for _, anime in all_series_themes)
+    if total_themes > SERIES_COLLAPSE_THRESHOLD:
+        for anime_id, _ in all_series_themes:
+            if str(anime_id) != str(playing_mal):
+                _collapsed_anime.add(str(anime_id))
+
+def _auto_init_section_collapse(mal_key, theme_list, playing_slug):
+    """Auto-collapse non-playing section type if the anime has many themes."""
+    _collapsed_sections.discard  # don't clear all; only touch this anime's keys
+    types_present = set(t.get("type") for t in theme_list)
+    # Remove any old keys for this anime first
+    for t in list(_collapsed_sections):
+        if isinstance(t, tuple) and t[0] == mal_key:
+            _collapsed_sections.discard(t)
+    if len(theme_list) <= SECTION_COLLAPSE_THRESHOLD:
+        return
+    playing_type = None
+    for theme in theme_list:
+        if theme.get("slug") == playing_slug:
+            playing_type = theme.get("type")
+            break
+    for t in types_present:
+        if t != playing_type:
+            _collapsed_sections.add((mal_key, t))
+
+def update_series_song_information(data, mal, rerender=False, scroll_to=None):
     middle_column.config(state=tk.NORMAL)
     middle_column.delete("1.0", tk.END)
+    playing_mal = str(data.get("mal"))
+    playing_slug = data.get("slug")
+    scroll_anchor = None  # widget whose position we'll scroll to after render
+
     if not data.get("series"):
-        update_song_information(data, mal)
+        if not rerender:
+            _collapsed_anime.clear()
+            _collapsed_sections.clear()
+            _auto_init_section_collapse(str(mal), data.get("songs", []), playing_slug)
+        update_song_information(data, mal, scroll_to=scroll_to, scroll_anchor_out=[])
     else:
         all_series_themes = get_all_theme_from_series(data)
         if len(all_series_themes) == 1:
-            update_song_information(data, mal)
+            if not rerender:
+                _collapsed_anime.clear()
+                _collapsed_sections.clear()
+                _auto_init_section_collapse(str(mal), data.get("songs", []), playing_slug)
+            update_song_information(data, mal, scroll_to=scroll_to, scroll_anchor_out=[])
         else:
-            index = 0
-            for anime_id, anime in all_series_themes:
-                index += 1
-                middle_column.insert(tk.END, f"{get_display_title(anime)} [{get_format(anime)} / {anime.get("season")}]:\n", "bold underline")
-                if anime_id == data.get("mal"):
-                    slug = data.get("slug")
-                else:
-                    slug = "SKIP"
-                update_song_information(anime, anime_id, slug)
-                if index < len(all_series_themes):
+            if not rerender:
+                _collapsed_sections.clear()
+                _auto_init_series_collapse(all_series_themes, playing_mal)
+                for anime_id, anime in all_series_themes:
+                    if str(anime_id) == playing_mal:
+                        _auto_init_section_collapse(str(anime_id), anime.get("songs", []), playing_slug)
+                        break
+
+            for i, (anime_id, anime) in enumerate(all_series_themes):
+                aid_key = str(anime_id)
+                is_collapsed = aid_key in _collapsed_anime
+
+                def toggle_anime(key=aid_key):
+                    _collapsed_anime.discard(key) if key in _collapsed_anime else _collapsed_anime.add(key)
+                    _rerender_songs(scroll_to=key)
+
+                btn = tk.Button(middle_column, text="▶" if is_collapsed else "▼",
+                    borderwidth=0, pady=0, command=toggle_anime, bg="black", fg="white")
+                middle_column.window_create(tk.END, window=btn)
+                if scroll_to == aid_key:
+                    scroll_anchor = btn
+                header = f" {get_display_title(anime)} [{get_format(anime)} / {anime.get('season')}]:\n"
+                middle_column.insert(tk.END, header, "bold underline")
+
+                if not is_collapsed:
+                    slug = playing_slug if str(anime_id) == playing_mal else "SKIP"
+                    anchor_out = []
+                    update_song_information(anime, anime_id, slug, scroll_to=scroll_to, scroll_anchor_out=anchor_out)
+                    if anchor_out and scroll_anchor is None:
+                        scroll_anchor = anchor_out[0]
+
+                if i < len(all_series_themes) - 1:
                     middle_column.insert(tk.END, "\n", "blank")
     middle_column.config(state=tk.DISABLED)
+    if scroll_anchor is not None:
+        middle_column.after_idle(lambda w=scroll_anchor: middle_column.see(middle_column.index(w)))
 
-def update_song_information(data, mal, slug=None):
-    openingAdded = False
-    endingAdded = False
+def update_song_information(data, mal, slug=None, scroll_to=None, scroll_anchor_out=None):
     extra_scroll = 0
     max_scroll = 3
     if not slug:
         slug = data.get("slug")
     theme_list = data.get("songs", [])
-    for index, theme in enumerate(theme_list):
-        if not openingAdded and theme["type"] == "OP":
-            openingAdded = True
-            middle_column.insert(tk.END, "OPENINGS:\n", "bold")
-        elif not endingAdded and theme["type"] == "ED":
-            endingAdded = True
-            middle_column.insert(tk.END, "ENDINGS:\n", "bold")
-        version_count = add_op_ed(theme, middle_column, slug, data.get("title"), mal)
-        if (extra_scroll and extra_scroll < max_scroll) or theme.get("slug") == slug:
-            extra_scroll += 1 + (version_count // 4)
-            middle_column.see("end-1c")
-        if index < len(theme_list) - 1:
+    mal_key = str(mal)
+
+    # Group themes by type while preserving order of first appearance
+    sections = {}
+    for theme in theme_list:
+        t = theme.get("type", "OTHER")
+        sections.setdefault(t, []).append(theme)
+
+    first_section = True
+    for type_str, type_themes in sections.items():
+        sec_key = (mal_key, type_str)
+        is_sec_collapsed = sec_key in _collapsed_sections
+
+        if type_str == "OP":
+            header_text = "OPENINGS"
+        elif type_str == "ED":
+            header_text = "ENDINGS"
+        else:
+            header_text = f"{type_str}S"
+
+        if not first_section:
             middle_column.insert(tk.END, "\n", "blank")
+        first_section = False
+
+        def toggle_section(key=sec_key):
+            _collapsed_sections.discard(key) if key in _collapsed_sections else _collapsed_sections.add(key)
+            _rerender_songs(scroll_to=key)
+
+        btn = tk.Button(middle_column, text="▶" if is_sec_collapsed else "▼",
+            borderwidth=0, pady=0, command=toggle_section, bg="black", fg="white")
+        middle_column.window_create(tk.END, window=btn)
+        if scroll_to == sec_key and scroll_anchor_out is not None and not scroll_anchor_out:
+            scroll_anchor_out.append(btn)
+        middle_column.insert(tk.END, f"{header_text}:\n", "bold")
+
+        if not is_sec_collapsed:
+            for i, theme in enumerate(type_themes):
+                version_count = add_op_ed(theme, middle_column, slug, data.get("title"), mal)
+                if scroll_to is None:
+                    if (extra_scroll and extra_scroll < max_scroll) or theme.get("slug") == slug:
+                        extra_scroll += 1 + (version_count // 4)
+                        if extra_scroll <= max_scroll:
+                            middle_column.see("end-1c")
+                if i < len(type_themes) - 1:
+                    middle_column.insert(tk.END, "\n", "blank")
+
 
 def up_next_text():
     update_up_next_display(right_top)
@@ -3543,6 +3650,49 @@ def overall_theme_num_display(filename):
     else:
         return ""
 
+def get_file_props_label(filename):
+    """Build a compact property label for a theme file showing resolution, source, NC, Lyrics."""
+    fp = (get_file_metadata_by_name(filename) or {}).get("file_properties", {})
+    parts = []
+    res = fp.get("resolution")
+    if res:
+        parts.append(str(res))
+    src = fp.get("source")
+    if src:
+        parts.append(src)
+    if fp.get("nc"):
+        parts.append("NC")
+    if fp.get("lyrics"):
+        parts.append("Lyrics")
+    return f"[{' '.join(parts)}]" if parts else ""
+
+def _get_version_flags(obj):
+    """Return list of flag strings for a version or theme dict."""
+    flags = []
+    if obj.get("overlap") == "Over":
+        flags.append("(OVERLAP)")
+    if obj.get("overlap") == "Transition":
+        flags.append("(TRANSITION)")
+    if obj.get("spoiler"):
+        flags.append("(SPOILER)")
+    if obj.get("nsfw"):
+        flags.append("(NSFW)")
+    return flags
+
+def _render_file_props(column, files, playing_f):
+    """Render file property label (single file) or clickable buttons (multiple files)."""
+    for f in files:
+        props_label = get_file_props_label(f) or "[ALT]"
+        if len(files) == 1:
+            column.tag_configure("file_props_small", font=(None, scl(9, "UI")), foreground="white")
+            column.insert(tk.END, " " + props_label, "file_props_small")
+        else:
+            is_playing = f == playing_f
+            display_label = (props_label[0] + ">" + props_label[1:]) if is_playing else props_label
+            column.window_create(tk.END, window=tk.Button(column, text=display_label, borderwidth=0, pady=0,
+                command=lambda fi=f: play_video_from_filename(fi), bg="black", fg="white", relief="flat",
+                font=(None, scl(9, "UI"), "bold") if is_playing else (None, scl(9, "UI"))))
+
 def add_op_ed(theme, column, slug, title, mal_id):
     theme_slug = theme.get("slug")
     song_title = theme.get("title")
@@ -3571,16 +3721,16 @@ def add_op_ed(theme, column, slug, title, mal_id):
     else:
         # Multiple versions - no play button at top
         column.insert(tk.END, no_file_icon, format)
+
     overall_display = ""
-    filename = get_theme_filename(mal_id, theme_slug)  # Initialize filename variable
-    
+    filename = get_theme_filename(mal_id, theme_slug)
     if filename:
         overall_display = overall_theme_num_display(filename)
     if theme_slug == slug:
         format = "highlight"
     column.insert(tk.END, f"{theme_slug}{overall_display}: {song_title}\n", format)
 
-    # Artist section - use same format as theme title
+    # Artist section
     column.insert(tk.END, f"by: ", format)
     if not artist_list:
         column.insert(tk.END, f"N/A ", format)
@@ -3638,7 +3788,6 @@ def add_op_ed(theme, column, slug, title, mal_id):
     # Versions or Episodes + Flags
     version_format = "white"
     if versions:
-        # For single version, don't show individual play buttons since we have one at the top
         if len(versions) == 1:
             version_format = format
             version = versions[0]
@@ -3648,93 +3797,68 @@ def add_op_ed(theme, column, slug, title, mal_id):
                 version_text += f"v{version_num}: "
             if version.get('episodes'):
                 version_text += f"(Eps: {version.get('episodes')})"
-            
-            flags = []
-            if version.get("overlap") == "Over":
-                flags.append("(OVERLAP)")
-            if version.get("overlap") == "Transition":
-                flags.append("(TRANSITION)")
-            if version.get("spoiler"):
-                flags.append("(SPOILER)")
-            if version.get("nsfw"):
-                flags.append("(NSFW)")
-
+            flags = _get_version_flags(version)
             if flags:
                 version_text += f" {' '.join(flags)}"
-
             if version_text:
                 column.insert(tk.END, f"\n{version_text}", format)
+            all_ver_files = get_theme_filenames(mal_id, theme_slug, version_num)
+            if all_ver_files:
+                if not version_text:
+                    column.insert(tk.END, "\n", format)
+                _render_file_props(column, all_ver_files, currently_playing.get('filename'))
         else:
             # Multiple versions - display with individual play buttons
             for i, version in enumerate(versions):
-                if i > 0:
-                    column.insert(tk.END, f"\n", version_format)
-                else:
-                    column.insert(tk.END, f"\n", format)
+                column.insert(tk.END, "\n", version_format if i > 0 else format)
                 version_num = version.get('version')
                 version_filename = get_theme_filename(mal_id, theme_slug, version_num, need_version=True)
                 if version_num == 1 and not version_filename:
                     version_filename = get_theme_filename(mal_id, theme_slug, None, need_version=True)
-                if version_num == None:
+                if version_num is None:
                     version_num = 1
 
                 version_format = "white"
-                if theme_slug == slug and version_filename:
-                    try:
-                        current_filename = currently_playing.get('filename') if 'currently_playing' in globals() else None
-                        if current_filename == version_filename:
-                            version_format = "highlight"
-                    except:
-                        pass
-                
+                if theme_slug == slug and version_filename and currently_playing.get('filename') == version_filename:
+                    version_format = "highlight"
+
                 if version_filename:
                     column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(version_filename), borderwidth=0, pady=0, command=lambda f=version_filename: play_video_from_filename(f), bg="black", fg="white"))
                     column.insert(tk.END, get_file_marks(version_filename), version_format)
                 else:
                     column.insert(tk.END, no_versions_icon, version_format)
 
-                version_text = ""
-                if version_num:
-                    version_text += f"v{version_num}"
-                
-                flags = []
-                if version.get("overlap") == "Over":
-                    flags.append("(OVERLAP)")
-                if version.get("overlap") == "Transition":
-                    flags.append("(TRANSITION)")
-                if version.get("spoiler"):
-                    flags.append("(SPOILER)")
-                if version.get("nsfw"):
-                    flags.append("(NSFW)")
-
+                version_text = f"v{version_num}" if version_num else ""
+                flags = _get_version_flags(version)
                 if version.get("episodes") or flags:
                     version_text += ":"
                     if version.get('episodes'):
                         version_text += f" (Eps: {version.get('episodes')})"
                     if flags:
                         version_text += f" {' '.join(flags)}"
-
-                column.insert(tk.END, f"{version_text}", version_format)
-        column.insert(tk.END, f"", "white")
+                column.insert(tk.END, version_text, version_format)
+                all_ver_files = get_theme_filenames(mal_id, theme_slug, version_num, need_version=True)
+                _render_file_props(column, all_ver_files, currently_playing.get('filename'))
+        column.insert(tk.END, "", "white")
     else:
         version_text = ""
         if episodes:
             version_text += f"(Eps: {episodes})"
-        if theme.get("overlap") == "Over":
-            version_text += f" (OVERLAP)"
-        if theme.get("overlap") == "Transition":
-            version_text += f" (TRANSITION)"
-        if theme.get("spoiler"):
-            version_text += f" (SPOILER)"
-        if theme.get("nsfw"):
-            version_text += f" (NSFW)"
+        flags = _get_version_flags(theme)
+        if flags:
+            version_text += f" {' '.join(flags)}"
         if version_text:
             column.insert(tk.END, f"\n{version_text}", format)
-    
+        all_theme_files = get_theme_filenames(mal_id, theme_slug)
+        if all_theme_files:
+            if not version_text:
+                column.insert(tk.END, "\n", format)
+            _render_file_props(column, all_theme_files, currently_playing.get('filename'))
+
     if theme.get("special"):
         column.insert(tk.END, f" (SPECIAL)", format)
 
-    column.insert(tk.END, f"\n", version_format)
+    column.insert(tk.END, "\n", version_format)
     return len(versions)
 
 def get_filename_icon(filename):
@@ -3854,6 +3978,49 @@ def get_theme_filename(mal_id, slug, version=None, need_version=False):
                 found_filenames.append(filename)
     
     return prioritize_theme_files(found_filenames)
+
+def get_theme_filenames(mal_id, slug, version=None, need_version=False):
+    """Like get_theme_filename but returns all matching files sorted by quality (best first)."""
+    mal_id_str = str(mal_id)
+    anime_entry = file_metadata.get(mal_id_str)
+    if not anime_entry:
+        return []
+    themes = anime_entry.get("themes", {})
+    if not themes or slug not in themes:
+        return []
+    slug_versions = themes[slug]
+    found_filenames = []
+    for version_str, files_dict in slug_versions.items():
+        file_version = int(version_str) if version_str.isdigit() else None
+        if version is None:
+            if need_version and file_version is not None:
+                continue
+        elif file_version != version:
+            if not (version == 1 and version_str == "1"):
+                continue
+        for filename in files_dict.keys():
+            if filename in directory_files or is_animethemes_stream_file(filename):
+                found_filenames.append(filename)
+    if not found_filenames:
+        return []
+    local_files = [f for f in found_filenames if f in directory_files]
+    if local_files:
+        found_filenames = local_files
+    files_with_props = []
+    for f in found_filenames:
+        file_data = get_file_metadata_by_name(f)
+        props = file_data.get("file_properties", {}) if file_data else {}
+        files_with_props.append((f, props))
+    def sort_key(item):
+        _, props = item
+        res = props.get("resolution", 0)
+        if not isinstance(res, (int, float)):
+            res = 0
+        lyrics = 1 if props.get("lyrics") else 0
+        not_nc = 1 if not props.get("nc") else 0
+        return (-res, -lyrics, -not_nc)
+    files_with_props.sort(key=sort_key)
+    return [f for f, _ in files_with_props]
 
 def play_video_from_filename(filename):
     global search_queue
@@ -4073,7 +4240,7 @@ def load_youtube_metadata():
     if os.path.exists(YOUTUBE_METADATA_FILE):
         with open(YOUTUBE_METADATA_FILE, "r") as f:
             youtube_metadata = json.load(f)
-            print("Loaded metadata for " + str(len(youtube_metadata.get("videos", []))) + " youtube videos...")
+            print("Loaded youtube metadata for " + str(len(youtube_metadata.get("videos", []))) + " videos...")
         
         # Migration: Add date_added field to existing videos that don't have it
         migration_needed = False
@@ -4763,7 +4930,7 @@ def get_animethemes_matching_files(hashid, include_non_local):
         return [], playlist_name, 0
     
     # Get available files as a set for fast lookup
-    available_files = set(get_directory_files(include_non_local=include_non_local))
+    available_files = set(get_directory_files(include_non_local=include_non_local)) if not include_non_local else set()
     
     # Match files in playlist order
     matching_files = []
@@ -4773,7 +4940,7 @@ def get_animethemes_matching_files(hashid, include_non_local):
         if video and video.get('path'):
             total_count += 1
             filename = os.path.basename(video['path'])
-            if filename in available_files:
+            if include_non_local or filename in available_files:
                 matching_files.append(filename)
     
     if total_count == 0:
@@ -5042,7 +5209,7 @@ def create_infinite_playlist():
     playlist["infinite_settings"]["include_non_local_files"] = len(directory_files) == 0
     # Set default filter to exclude overlap and NSFW themes without censors
     playlist["filter"] = {
-        "themes_exclude": ["OVERLAP", "NSFW (Without Censors)"]
+        "themes_exclude": ["OVERLAP", "NSFW (Without Censors)", "TRANSITION (Without Censors)"]
     }
     get_pop_time_groups(refetch=True)
     get_next_infinite_track()
@@ -5578,6 +5745,7 @@ def get_pop_time_groups(refetch=False):
         current_session_lightning = get_current_session_lightning_tracks()
         
         # Build playlist history excluding lightning rounds from previous sessions
+        # Also build a dict mapping MAL ID -> last position for O(1) distance lookups
         playlist_mal_history = []
         for f in playlist_history:
             clean_f = get_clean_filename(f)
@@ -5586,43 +5754,64 @@ def get_pop_time_groups(refetch=False):
                 if not f.startswith("[L]") or clean_f in current_session_lightning:
                     playlist_mal_history.append(metadata.get("mal"))
 
+        # Pre-build MAL ID -> last index dict for O(1) lookups (replaces O(n) reversed list scans)
+        mal_last_index = {}
+        for idx, mal_id in enumerate(playlist_mal_history):
+            mal_last_index[mal_id] = idx  # Last occurrence wins since we iterate forward
+        history_len = len(playlist_mal_history)
+
+        # Pre-build tagged/new/favorited sets for O(1) lookups instead of repeated file I/O + list scans
+        check_theme("", "Tagged Themes")    # Ensure cache is loaded
+        check_theme("", "New Themes")       # Ensure cache is loaded
+        check_theme("", "Favorite Themes")  # Ensure cache is loaded
+        tagged_set = check_theme_cache.get("Tagged Themes", set())
+        new_themes_set = check_theme_cache.get("New Themes", set())
+        favorited_set = check_theme_cache.get("Favorite Themes", set())
+
+        # Pre-compute season boost lookup for O(1) instead of calling get_last_three_seasons() per file
+        last_three = get_last_three_seasons()
+        recent_boost = inf_settings["recent_boost_multiplier"]
+        season_boost_map = {s: recent_boost[i] for i, s in enumerate(last_three)}
+
+        # Pre-extract difficulty group settings for inner loop
+        difficulty_groups_list = [(k, inf_settings["difficulty_groups"].get(l)) for k, l in enumerate(group_limits)]
+        score_boost_min = inf_settings["score_boost"]["min_score"]
+        score_boost_mult = inf_settings["score_boost"]["multiplier"]
+        fav_boost = inf_settings["favorites_boost_multiplier"]
+        group_series = inf_settings["group_series"]
+
         shows_files_map = {}
         for f, d in all_metadata.items():
-            if not d or check_tagged(f) or check_theme(f, "New Themes"):
+            if not d or f in tagged_set or f in new_themes_set:
                 cached_skipped_themes.append(f)
                 continue
             
-            if inf_settings["group_series"]:
+            if group_series:
                 p = get_series_popularity(d)
             else:
                 p = d.get("popularity") or INT_INF
             mal = d.get("mal")
             placed = False
 
-            for k, l in enumerate(group_limits):
-                difficulty_group = inf_settings["difficulty_groups"].get(l)
-                if p >= difficulty_group["range"][0] and p <= difficulty_group["range"][1]:
+            for k, difficulty_group in difficulty_groups_list:
+                dg_range = difficulty_group["range"]
+                if p >= dg_range[0] and p <= dg_range[1]:
                     boost = 0
                     if mal not in shows_files_map:
-                        boost += (max(0, (d.get("score", 0) or 0) - inf_settings["score_boost"]["min_score"]) % 0.5) * inf_settings["score_boost"]["multiplier"]
-                        boost += get_boost_multiplier(d.get("season", "Fall 2000"))
-                        distance_from_end = 0
-                        # More efficient: find exact position and calculate boost directly
-                        try:
-                            # Find the last occurrence of this MAL ID in playlist history
-                            last_index = len(playlist_mal_history) - 1 - playlist_mal_history[::-1].index(mal)
-                            # Calculate how far back it was (distance from end)
-                            distance_from_end = len(playlist_mal_history) - 1 - last_index
-                        except ValueError:
-                            # MAL ID not found in history, give maximum boost based on history length
-                            distance_from_end = len(playlist_mal_history)
+                        boost += (max(0, (d.get("score", 0) or 0) - score_boost_min) % 0.5) * score_boost_mult
+                        boost += season_boost_map.get(d.get("season", "Fall 2000"), 1)
+                        # O(1) dict lookup instead of O(n) reversed list scan
+                        if mal in mal_last_index:
+                            distance_from_end = history_len - 1 - mal_last_index[mal]
+                        else:
+                            distance_from_end = history_len
                         distance_boost = (distance_from_end // 2000) * (distance_from_end // 2000)
                         boost += distance_boost
                     elif len(shows_files_map[mal]) <= difficulty_group["file_boost_limit"]:
                         boost += 1
 
-                    if inf_settings["favorites_boost_multiplier"] and check_favorited(f):
-                        boost += inf_settings["favorites_boost_multiplier"]
+                    if fav_boost and f in favorited_set:
+                        boost += fav_boost
                     
                     sorted_groups[k].extend([f] * int(boost))
                     shows_files_map.setdefault(mal, []).append(f)
@@ -5634,18 +5823,20 @@ def get_pop_time_groups(refetch=False):
                 cached_skipped_themes.append(f)
         
         if playlist["difficulty"] == 5:
-            sorted_groups = [[sum(sorted_groups, []), [], []], [[],[],[]], [[],[],[]]]
+            sorted_groups = [[sorted_groups[0] + sorted_groups[1] + sorted_groups[2], [], []], [[],[],[]], [[],[],[]]]
         else:
-            # Sort by year (cached)
-            def sort_by_year(entries):
-                def get_year(entry):
-                    meta = all_metadata.get(entry.replace("[EXTRA]", ""), {})
+            # Pre-compute year cache for sort_by_year to avoid redundant metadata lookups
+            year_cache = {}
+            for entry, meta in all_metadata.items():
+                if meta:
                     if meta.get("aired"):
                         season = aired_to_season_year(meta.get("aired"), False)
                     else:
                         season = meta.get("season", "9999")[-4:]
-                    return int(season[-4:])
-                return sorted(entries, key=get_year, reverse=True)
+                    year_cache[entry] = int(season[-4:])
+
+            def sort_by_year(entries):
+                return sorted(entries, key=lambda e: year_cache.get(e.replace("[EXTRA]", ""), 9999), reverse=True)
 
             for i, g in enumerate(sorted_groups):
                 sorted_subgroups = split_into_three(sort_by_year(g))
@@ -5662,24 +5853,28 @@ def get_pop_time_groups(refetch=False):
         
         compute_cooldowns(sorted_groups, True)
     if refetch or not cached_boosted_show_files_map:
+        # Build file -> last position dict for O(1) lookups
+        file_last_index = {}
+        for idx, f in enumerate(playlist_history):
+            file_last_index[f] = idx  # Last occurrence wins
+        ph_len = len(playlist_history)
+        fav_boost = inf_settings["favorites_boost_multiplier"]
+        # Pre-build favorited set for O(1) lookups
+        check_theme("", "Favorite Themes")  # Ensure cache is loaded
+        favorited_set = check_theme_cache.get("Favorite Themes", set())
+
         boosted_show_files_map = {}
         for mal_id, files in cached_show_files_map.items():
             for file in files:
                 file_boost = 1
-                distance_from_end = 0
-                # More efficient: find exact position and calculate boost directly
-                try:
-                    # Find the last occurrence of this file in playlist history
-                    last_index = len(playlist_history) - 1 - playlist_history[::-1].index(file)
-                    # Calculate how far back it was (distance from end)
-                    distance_from_end = len(playlist_history) - 1 - last_index
-                    # Give boost based on 1000-entry ranges
-                except ValueError:
-                    # File not found in history, give maximum boost based on history length
-                    distance_from_end = len(playlist_history)
+                # O(1) dict lookup instead of O(n) reversed list scan
+                if file in file_last_index:
+                    distance_from_end = ph_len - 1 - file_last_index[file]
+                else:
+                    distance_from_end = ph_len
                 file_boost += (distance_from_end // 2000) * (distance_from_end // 2000)
-                if inf_settings["favorites_boost_multiplier"] and check_favorited(file):
-                    file_boost = file_boost * inf_settings["favorites_boost_multiplier"]
+                if fav_boost and file in favorited_set:
+                    file_boost = file_boost * fav_boost
                 boosted_show_files_map.setdefault(mal_id, []).extend([file] * int(file_boost))
         cached_pop_time_cooldown = 0
         cached_boosted_show_files_map = boosted_show_files_map
@@ -5716,7 +5911,7 @@ def get_next_infinite_track(increment=True):
     if p < len(groups) and t < len(groups[p]) and groups[p][t]:
         random.shuffle(groups[p][t])
     selected_file = None
-    checked_mal_ids = []
+    checked_mal_ids = set()
     try_count = 0
     tag_cooldown_failures = 0
     tag_failed_files = []
@@ -5724,6 +5919,14 @@ def get_next_infinite_track(increment=True):
     op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
     playlist_history = playlist["playlist"][-inf_settings.get("max_history_check", 5000):]
     series_boost_cache = {}
+    current_session_lightning = get_current_session_lightning_tracks()
+
+    # Precompute recent tag union for tag cooldown checks
+    recent_tags_union = set()
+    if inf_settings["tag_cooldown"] and playlist["playlist"]:
+        tag_cooldown_limit = inf_settings["tag_cooldown"]
+        for recent_file in playlist["playlist"][-tag_cooldown_limit:]:
+            recent_tags_union.update(get_tags(get_metadata(get_clean_filename(recent_file))))
 
     while not selected_file:
         group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
@@ -5760,7 +5963,7 @@ def get_next_infinite_track(increment=True):
             if extra_file:
                 show_files = [file]
             else:
-                checked_mal_ids.append(selected_mal)
+                checked_mal_ids.add(selected_mal)
                 show_files = shows_files_map.get(selected_mal, [])
                 random.shuffle(show_files)
             checked_files = []
@@ -5792,30 +5995,20 @@ def get_next_infinite_track(increment=True):
                 series_boost = get_series_boost_multiplier(series, cache=series_boost_cache)
                 
                 if inf_settings["tag_cooldown"]:
-                    # Tag cooldown check - prevent same tags within 3 entries
+                    # Tag cooldown check - prevent same tags within recent entries
                     selected_tags = set(get_tags(d))
-                    if selected_tags and len(playlist["playlist"]) >= 1 and tag_cooldown_failures < max_tag_tries:
-                        tag_cooldown_limit = inf_settings["tag_cooldown"]
-                        recent_tracks = playlist["playlist"][-tag_cooldown_limit:]
-                        
-                        for recent_file in reversed(recent_tracks):
-                            clean_recent = get_clean_filename(recent_file)
-                            recent_d = get_metadata(clean_recent)
-                            recent_tags = set(get_tags(recent_d))
-                            
-                            if selected_tags & recent_tags:  # Set intersection
-                                selected_file = None
-                                tag_cooldown_failures += 1
-                                tag_failed_files.append(selected_file)
-                                if tag_cooldown_failures >= max_tag_tries:
-                                    #merge with group
-                                    groups[p][t].extend(tag_failed_files)
-                                    tag_failed_files = []
-                                break
+                    if selected_tags and recent_tags_union and tag_cooldown_failures < max_tag_tries:
+                        if selected_tags & recent_tags_union:  # Set intersection
+                            tag_failed_files.append(selected_file)
+                            selected_file = None
+                            tag_cooldown_failures += 1
+                            if tag_cooldown_failures >= max_tag_tries:
+                                #merge with group
+                                groups[p][t].extend(tag_failed_files)
+                                tag_failed_files = []
                     if not selected_file:
                         continue
                 if s_limit > 1 or f_limit > 1:
-                    current_session_lightning = get_current_session_lightning_tracks()
                     cooldown_count = 0
                     
                     for f in reversed(playlist_history):
@@ -5859,9 +6052,12 @@ def get_next_infinite_track(increment=True):
             if p < len(groups) and t < len(groups[p]) and groups[p][t]:
                 random.shuffle(groups[p][t])
                 tag_cooldown_failures = 0
-            checked_mal_ids = []
-            s_limit_mod = s_limit_mod * 0.9
-            f_limit_mod = f_limit_mod * 0.9
+            checked_mal_ids = set()
+            if recent_tags_union:
+                recent_tags_union = set()
+            else:
+                s_limit_mod = s_limit_mod * 0.9
+                f_limit_mod = f_limit_mod * 0.9
 
 def get_cooldown_for_popularity(popularity_rank, difficulty_range, groups):
     """Calculate cooldowns using computed values with smooth interpolation based on popularity rank"""
@@ -6911,27 +7107,6 @@ def load_metadata():
         anime_metadata = data
         suffix = " (compressed)" if is_compressed else ""
         print("Loaded anime metadata for " + str(len(anime_metadata)) + " entries..." + suffix)
-    
-    # Load anidb_metadata
-    data, is_compressed = load_metadata_compressed(ANIDB_METADATA_FILE, name="anidb metadata")
-    if data is not None:
-        anidb_metadata = data
-        suffix = " (compressed)" if is_compressed else ""
-        print("Loaded anidb metadata for " + str(len(anidb_metadata)) + " entries..." + suffix)
-    
-    # Load ai_metadata
-    data, is_compressed = load_metadata_compressed(AI_METADATA_FILE, encoding="utf-8", name="AI metadata")
-    if data is not None:
-        ai_metadata = data
-        suffix = " (compressed)" if is_compressed else ""
-        print(f"Loaded AI metadata for {len(ai_metadata)} entries.{suffix}")
-    
-    # Load anilist_metadata
-    data, is_compressed = load_metadata_compressed(ANILIST_METADATA_FILE, encoding="utf-8", name="AniList metadata")
-    if data is not None:
-        anilist_metadata = data
-        suffix = " (compressed)" if is_compressed else ""
-        print(f"Loaded AniList metadata for {len(anilist_metadata)} entries.{suffix}")
 
     if os.path.exists(manual_metadata_file):
         with open(manual_metadata_file, "r", encoding="utf-8") as m:
@@ -6950,8 +7125,29 @@ def load_metadata():
     if data is not None:
         anime_metadata_overrides = data
         suffix = " (compressed)" if is_compressed else ""
-        print("Loaded metadata overrides for " + str(len(anime_metadata_overrides)) + " entries..." + suffix)
+        print("Loaded anime metadata overrides for " + str(len(anime_metadata_overrides)) + " entries..." + suffix)
         deep_merge(anime_metadata, anime_metadata_overrides)
+    
+    # Load anilist_metadata
+    data, is_compressed = load_metadata_compressed(ANILIST_METADATA_FILE, encoding="utf-8", name="anilist metadata")
+    if data is not None:
+        anilist_metadata = data
+        suffix = " (compressed)" if is_compressed else ""
+        print(f"Loaded anilist metadata for {len(anilist_metadata)} entries...{suffix}")
+    
+    # Load anidb_metadata
+    data, is_compressed = load_metadata_compressed(ANIDB_METADATA_FILE, name="anidb metadata")
+    if data is not None:
+        anidb_metadata = data
+        suffix = " (compressed)" if is_compressed else ""
+        print("Loaded anidb metadata for " + str(len(anidb_metadata)) + " entries..." + suffix)
+    
+    # Load ai_metadata
+    data, is_compressed = load_metadata_compressed(AI_METADATA_FILE, encoding="utf-8", name="ai metadata")
+    if data is not None:
+        ai_metadata = data
+        suffix = " (compressed)" if is_compressed else ""
+        print(f"Loaded ai metadata for {len(ai_metadata)} entries...{suffix}")
 
 # Import data package URL - modify this to point to your exported metadata package
 IMPORT_PACKAGE_URL = "https://github.com/ualkotob/guess-the-anime-playlist-tool/releases/download/data-latest/metadata_package.zip"
@@ -9102,7 +9298,8 @@ def show_filter_popup():
         "NSFW (Without Censors)",
         "NSFW (With Censors)",
         "SPOILER",
-        "TRANSITION"
+        "TRANSITION (Without Censors)",
+        "TRANSITION (With Censors)"
     ]
     themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
@@ -9344,6 +9541,15 @@ def get_all_studios(playlis, games=True, repeats=False):
                     studios.append(studio)
     return sorted(studios)
 
+def _season_to_tuple(season_str):
+    """Convert a season string like 'Fall 2020' to a sortable tuple."""
+    try:
+        part, year = season_str.split()
+        _season_order = {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}
+        return (int(year), _season_order.get(part, -1))
+    except Exception:
+        return (0, -1)  # Very early season so it passes min filters but fails max
+
 def filter_playlist(filters):
     """Filters the playlist based on given criteria."""
     global playlist
@@ -9355,8 +9561,74 @@ def filter_playlist(filters):
 
     filtered = []
 
+    # --- Pre-compute filter presence flags (avoid repeated dict lookups in loop) ---
+    has_playlist_filter = "playlist_filter" in filters
+    has_keywords = "keywords" in filters
+    has_theme_type = "theme_type" in filters
+    has_score_min = "score_min" in filters
+    has_score_max = "score_max" in filters
+    has_rank_min = "rank_min" in filters
+    has_rank_max = "rank_max" in filters
+    has_members_min = "members_min" in filters
+    has_members_max = "members_max" in filters
+    has_popularity_min = "popularity_min" in filters
+    has_popularity_max = "popularity_max" in filters
+    has_season_min = "season_min" in filters
+    has_season_max = "season_max" in filters
+    has_themes_exclude = "themes_exclude" in filters
+    has_themes_include = "themes_include" in filters
+    has_themes_filtering = has_themes_exclude or has_themes_include
+    has_artists = "artists" in filters
+    has_studios = "studios" in filters
+    has_tags_include = "tags_include" in filters
+    has_tags_include_and = "tags_include_and" in filters
+    has_tags_exclude = "tags_exclude" in filters
+
+    # --- Pre-compute constant filter values ---
+    filter_score_min = filters.get("score_min")
+    filter_score_max = filters.get("score_max")
+    filter_rank_min = filters.get("rank_min")
+    filter_rank_max = filters.get("rank_max")
+    filter_members_min = filters.get("members_min")
+    filter_members_max = filters.get("members_max")
+    filter_popularity_min = filters.get("popularity_min")
+    filter_popularity_max = filters.get("popularity_max")
+    filter_theme_type = filters.get("theme_type")
+    filter_season_min_tuple = _season_to_tuple(filters["season_min"]) if has_season_min else None
+    filter_season_max_tuple = _season_to_tuple(filters["season_max"]) if has_season_max else None
+
+    # Pre-compute keyword list (lowered, stripped) once
+    if has_keywords:
+        keyword_list = [kw.strip().lower() for kw in filters["keywords"].split(",") if kw.strip()]
+    else:
+        keyword_list = []
+
+    # Convert list filters to sets for O(1) intersection
+    filter_artists_set = set(filters["artists"]) if has_artists else None
+    filter_studios_set = set(filters["studios"]) if has_studios else None
+    filter_tags_include_set = set(filters["tags_include"]) if has_tags_include else None
+    filter_tags_include_and_set = set(filters["tags_include_and"]) if has_tags_include_and else None
+    filter_tags_exclude_set = set(filters["tags_exclude"]) if has_tags_exclude else None
+
+    # Pre-compute theme filtering constants
+    if has_themes_filtering:
+        themes_exclude_set = set(filters.get("themes_exclude", []))
+        themes_include_set = set(filters.get("themes_include", []))
+        all_theme_filter_flags = themes_exclude_set | themes_include_set
+        needs_nsfw_check = "NSFW (With Censors)" in all_theme_filter_flags or "NSFW (Without Censors)" in all_theme_filter_flags
+        needs_transition_check = "TRANSITION (With Censors)" in all_theme_filter_flags or "TRANSITION (Without Censors)" in all_theme_filter_flags
+        needs_duplicates = "DUPLICATES" in all_theme_filter_flags
+        needs_versions = "LATER VERSIONS" in all_theme_filter_flags
+        exclude_duplicates = has_themes_exclude and "DUPLICATES" in themes_exclude_set
+        include_duplicates = has_themes_include and "DUPLICATES" in themes_include_set
+        exclude_versions = has_themes_exclude and "LATER VERSIONS" in themes_exclude_set
+        include_versions = has_themes_include and "LATER VERSIONS" in themes_include_set
+    else:
+        needs_duplicates = False
+        needs_versions = False
+
     playlist_filter_files = set()
-    if "playlist_filter" in filters:
+    if has_playlist_filter:
         playlist_names = filters['playlist_filter']
         if isinstance(playlist_names, str):
             playlist_names = [playlist_names]  # Handle old single playlist format
@@ -9367,122 +9639,137 @@ def filter_playlist(filters):
                     ref_data = json.load(f)
                     playlist_filter_files.update(ref_data.get("playlist", []))
                 
-    if ("themes_exclude" in filters and "DUPLICATES" in filters["themes_exclude"]) or ("themes_include" in filters and "DUPLICATES" in filters["themes_include"]):
+    if needs_duplicates:
         build_best_duplicate_map(playlis)
-    if ("themes_exclude" in filters and "LATER VERSIONS" in filters["themes_exclude"]) or ("themes_include" in filters and "LATER VERSIONS" in filters["themes_include"]):
+    if needs_versions:
         build_version_index(playlis)
 
     for filename in playlis:
+        # Cheapest filter first: set membership check
+        if has_playlist_filter and filename not in playlist_filter_files:
+            continue
+
         data = get_metadata(filename)
-        # Extract metadata
         if not data:
             continue
-        title = data.get("title", "").lower()
-        eng_title = (data.get("eng_title", "") or "").lower()
-        theme_type = format_slug(data.get("slug"))
-        score = float(data.get("score") or 0)
-        rank = data.get("rank") or 100000
-        members = int(data.get("members") or 0)
-        popularity = data.get("popularity") or INT_INF
-        season = data.get("season", "")  # Example: "Fall 2020"
-        def season_to_tuple(season_str):
-            try:
-                part, year = season_str.split()
-                season_order = {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}
-                return (int(year), season_order.get(part, -1))
-            except Exception:
-                return (0, -1)  # Very early season so it passes min filters but fails max
-        season_tuple = season_to_tuple(season)
-        theme = get_song_by_slug(data, data.get("slug", ""))
-        artists = theme.get("artist", [])
-        studios = data.get("studios", [])
-        tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))  # Ensure tags are a set for fast lookup
 
-        # Apply filters
-        if "playlist_filter" in filters and filename not in playlist_filter_files:
-            continue
-        if "keywords" in filters and not any(any(keyword.lower() in field.lower() for field in [filename, title, eng_title]) for keyword in filters["keywords"].split(",")):
-            continue
-        if "theme_type" in filters and filters["theme_type"] not in theme_type:
-            continue
-        if "score_min" in filters and score < filters["score_min"]:
-            continue
-        if "score_max" in filters and score > filters["score_max"]:
-            continue
-        if "rank_min" in filters and rank > filters["rank_min"]:
-            continue
-        if "rank_max" in filters and rank < filters["rank_max"]:
-            continue
-        if "members_max" in filters and members > filters["members_max"]:
-            continue
-        if "members_min" in filters and members < filters["members_min"]:
-            continue
-        if "popularity_min" in filters and popularity > filters["popularity_min"]:
-            continue
-        if "popularity_max" in filters and popularity < filters["popularity_max"]:
-            continue
-        if "season_min" in filters and season_tuple < season_to_tuple(filters["season_min"]):
-            continue
-        if "themes_exclude" in filters or "themes_include" in filters:
+        # --- Cheap numeric/string filters before expensive lookups ---
+        if has_score_min or has_score_max:
+            score = float(data.get("score") or 0)
+            if has_score_min and score < filter_score_min:
+                continue
+            if has_score_max and score > filter_score_max:
+                continue
+
+        if has_rank_min or has_rank_max:
+            rank = data.get("rank") or 100000
+            if has_rank_min and rank > filter_rank_min:
+                continue
+            if has_rank_max and rank < filter_rank_max:
+                continue
+
+        if has_members_min or has_members_max:
+            members = int(data.get("members") or 0)
+            if has_members_max and members > filter_members_max:
+                continue
+            if has_members_min and members < filter_members_min:
+                continue
+
+        if has_popularity_min or has_popularity_max:
+            popularity = data.get("popularity") or INT_INF
+            if has_popularity_min and popularity > filter_popularity_min:
+                continue
+            if has_popularity_max and popularity < filter_popularity_max:
+                continue
+
+        if has_season_min or has_season_max:
+            season_tuple = _season_to_tuple(data.get("season", ""))
+            if has_season_min and season_tuple < filter_season_min_tuple:
+                continue
+            if has_season_max and season_tuple > filter_season_max_tuple:
+                continue
+
+        if has_keywords:
+            title = data.get("title", "").lower()
+            eng_title = (data.get("eng_title", "") or "").lower()
+            filename_lower = filename.lower()
+            if not any(kw in filename_lower or kw in title or kw in eng_title for kw in keyword_list):
+                continue
+
+        if has_theme_type:
+            theme_type = format_slug(data.get("slug"))
+            if filter_theme_type not in theme_type:
+                continue
+
+        if has_tags_include or has_tags_include_and or has_tags_exclude:
+            tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))
+            if has_tags_include and tags.isdisjoint(filter_tags_include_set):
+                continue
+            if has_tags_include_and and not filter_tags_include_and_set.issubset(tags):
+                continue
+            if has_tags_exclude and not tags.isdisjoint(filter_tags_exclude_set):
+                continue
+
+        # --- Slightly more expensive: requires get_song_by_slug ---
+        if has_artists or has_studios:
+            if has_artists:
+                slug = data.get("slug", "")
+                theme = get_song_by_slug(data, slug)
+                artists = theme.get("artist", [])
+                if filter_artists_set.isdisjoint(artists):
+                    continue
+            if has_studios:
+                studios = data.get("studios", [])
+                if filter_studios_set.isdisjoint(studios):
+                    continue
+
+        # --- Most expensive: theme flag checks (version extraction, censor lookups) ---
+        if has_themes_filtering:
             theme_flags = set()
+            slug = data.get("slug", "")
+            theme = get_song_by_slug(data, slug)
             if theme:
                 file_version = extract_version(filename)
                 current_version_data = None
+                has_censors = None
                 
                 # Find the matching version in the versions array
-                if theme.get("versions"):
-                    for version_data in theme.get("versions", []):
+                versions = theme.get("versions")
+                if versions:
+                    for version_data in versions:
                         if version_data.get("version") == file_version:
                             current_version_data = version_data
                             break
                 
-                if current_version_data:
-                    # Use version-specific flags
-                    if current_version_data.get("overlap") == "Over":
-                        theme_flags.add("OVERLAP")
-                    if current_version_data.get("overlap") == "Transition":
-                        theme_flags.add("TRANSITION")
-                    if current_version_data.get("spoiler"):
-                        theme_flags.add("SPOILER")
-                    if ("NSFW (With Censors)" in (filters.get("themes_exclude", []) + filters.get("themes_include", [])) or "NSFW (Without Censors)" in (filters.get("themes_exclude", []) + filters.get("themes_include", []))) and current_version_data.get("nsfw"):
-                        censors = get_file_censors(filename)
-                        if censors:
-                            theme_flags.add("NSFW (With Censors)")
-                        else:
-                            theme_flags.add("NSFW (Without Censors)")
-                else:
-                    if theme.get("overlap") == "Over":
-                        theme_flags.add("OVERLAP")
-                    if theme.get("overlap") == "Transition":
-                        theme_flags.add("TRANSITION")
-                    if theme.get("spoiler"):
-                        theme_flags.add("SPOILER")
-                    if ("NSFW (With Censors)" in (filters.get("themes_exclude", []) + filters.get("themes_include", [])) or "NSFW (Without Censors)" in (filters.get("themes_exclude", []) + filters.get("themes_include", []))) and theme.get("nsfw"):
-                        censors = get_file_censors(filename)
-                        if censors:
-                            theme_flags.add("NSFW (With Censors)")
-                        else:
-                            theme_flags.add("NSFW (Without Censors)")
-            if "themes_exclude" in filters and any(flag in filters["themes_exclude"] for flag in theme_flags):
+                source = current_version_data if current_version_data else theme
+                overlap = source.get("overlap")
+                if overlap == "Over":
+                    theme_flags.add("OVERLAP")
+                elif needs_transition_check and overlap == "Transition":
+                    if has_censors is None:
+                        has_censors = bool(get_file_censors(filename))
+                    if has_censors:
+                        theme_flags.add("TRANSITION (With Censors)")
+                    else:
+                        theme_flags.add("TRANSITION (Without Censors)")
+                if source.get("spoiler"):
+                    theme_flags.add("SPOILER")
+                if needs_nsfw_check and source.get("nsfw"):
+                    if has_censors is None:
+                        has_censors = bool(get_file_censors(filename))
+                    if has_censors:
+                        theme_flags.add("NSFW (With Censors)")
+                    else:
+                        theme_flags.add("NSFW (Without Censors)")
+
+            if has_themes_exclude and not theme_flags.isdisjoint(themes_exclude_set):
                 continue 
-            if "themes_include" in filters and not any(flag in filters["themes_include"] for flag in theme_flags):
+            if has_themes_include and theme_flags.isdisjoint(themes_include_set):
                 continue 
-            if ("themes_exclude" in filters and "DUPLICATES" in filters["themes_exclude"] and not check_best_duplicate_theme(filename, data)) or ("themes_include" in filters and "DUPLICATES" in filters["themes_include"] and check_best_duplicate_theme(filename, data)):
+            if (exclude_duplicates and not check_best_duplicate_theme(filename, data)) or (include_duplicates and check_best_duplicate_theme(filename, data)):
                 continue
-            if ("themes_exclude" in filters and "LATER VERSIONS" in filters["themes_exclude"] and not check_lowest_version(filename, data)) or ("themes_include" in filters and "LATER VERSIONS" in filters["themes_include"] and check_lowest_version(filename, data)):
+            if (exclude_versions and not check_lowest_version(filename, data)) or (include_versions and check_lowest_version(filename, data)):
                 continue
-        if "season_max" in filters and season_tuple > season_to_tuple(filters["season_max"]):
-            continue
-        if "artists" in filters and not any(artist in artists for artist in filters["artists"]):
-            continue
-        if "studios" in filters and not any(studio in studios for studio in filters["studios"]):
-            continue
-        if "tags_include" in filters and not any(tag in tags for tag in filters["tags_include"]):
-            continue
-        if "tags_include_and" in filters and not all(tag in tags for tag in filters["tags_include_and"]):
-            continue
-        if "tags_exclude" in filters and any(tag in tags for tag in filters["tags_exclude"]):
-            continue
 
         # If all checks pass, add to filtered list
         filtered.append(filename)
@@ -11643,9 +11930,13 @@ def append_lightning_history():
         else:
             append = data.get("mal")
         if append:
-            playlist["lightning_history"].setdefault(light_mode, []).append(append)
-            while len(playlist["lightning_history"][light_mode]) > mode_limits.get("no_repeat_limit"):
-                playlist["lightning_history"][light_mode].pop(0)
+            history_by_mode = playlist.get("lightning_history")
+            if not isinstance(history_by_mode, dict):
+                history_by_mode = {}
+                playlist["lightning_history"] = history_by_mode
+            history_by_mode.setdefault(light_mode, []).append(append)
+            while len(history_by_mode[light_mode]) > mode_limits.get("no_repeat_limit"):
+                history_by_mode[light_mode].pop(0)
 
 def check_recent_history(mode, data=None):
     if not data:
@@ -14031,12 +14322,10 @@ def get_cached_sfw_themes():
         if not check_nsfw(filename):
             data = get_metadata(filename)
             if data:
-                theme = get_song_by_slug(data, data.get("slug", ""))
-                if not theme.get("nsfw"):
-                    if is_slug_op(data.get("slug")):
-                        cached_sfw_themes["ops"].append(filename)
-                    else:
-                        cached_sfw_themes["eds"].append(filename)
+                if is_slug_op(data.get("slug")):
+                    cached_sfw_themes["ops"].append(filename)
+                else:
+                    cached_sfw_themes["eds"].append(filename)
 
 instance2 = vlc.Instance(
     "--no-audio", 
@@ -14122,6 +14411,11 @@ def get_mismatched_theme():
 def check_nsfw(filename):
     for censor in get_file_censors(filename):
         if censor.get("nsfw"):
+            return True
+    data = get_metadata(filename)
+    if data:
+        theme = get_song_by_slug(data, data.get("slug", ""))
+        if theme.get("nsfw"):
             return True
     return False
 
@@ -17886,7 +18180,9 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
 
         # Music icon
-        if light_mode == 'ost':
+        if fixed_current_round.get("music_icon"):
+            music_icon = fixed_current_round["music_icon"]
+        elif light_mode == 'ost':
             music_icon = "🎼"
         else:
             music_icon = "🎵"
@@ -17985,6 +18281,7 @@ FIXED_LIGHTNING_ROUNDS = {
     ],
     "regular": [],
     "blind": [
+        "music_icon",
         "blind_variant"
     ],
     "frame": [
@@ -18020,6 +18317,7 @@ FIXED_LIGHTNING_ROUNDS = {
         "clip_author",
         "clip_for_answer",
         "reveal_title_halfway",
+        "music_icon",
         "volume_adjustment"
     ],
     "clues": [
@@ -18063,6 +18361,7 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "censor_bottom": {"type": "toggle", "required": False, "default": False},
     "clip_for_answer": {"type": "toggle", "required": False, "default": False},
     "reveal_title_halfway": {"type": "toggle", "required": False, "default": True},
+    "music_icon": {"type": "text", "required": False},
     "volume_adjustment": {"type": "integer", "required": False, "default": 0},
     # Image round fields
     "image_variant": {
@@ -20141,7 +20440,7 @@ def toggle_title_popup(show, info_type=None):
                         
                         # Sort by popularity (lower number = more popular)
                         all_sorted_anime = sorted(anime_themes.items(), 
-                                                 key=lambda x: x[1]["popularity"])
+                                                 key=lambda x: x[1]["popularity"] or float('inf'))
                         total_count = len(all_sorted_anime)
                         sorted_anime = all_sorted_anime[:artist_max]
                         
@@ -23663,8 +23962,10 @@ def check_theme(filename=None, playlist_name=None, recache=False):
                 loaded_data = json.load(f)
                 # Convert infinity markers (though only using playlist array, good practice)
                 loaded_data = convert_infinity_markers(loaded_data)
-                check_theme_cache[playlist_name] = loaded_data.get("playlist", [])
-    return filename in check_theme_cache.get(playlist_name, [])
+                check_theme_cache[playlist_name] = set(loaded_data.get("playlist", []))
+        else:
+            check_theme_cache[playlist_name] = set()
+    return filename in check_theme_cache.get(playlist_name, set())
 
 def tag():
     """Toggles the current theme in the 'Tagged Themes' playlist."""
@@ -27115,6 +27416,8 @@ def on_release(key):
             except AttributeError:
                 if key.char == '`':
                     toggle_disable_shortcuts()
+                elif key.char == ' ':
+                    play_pause()
                 elif key.char == 'm':
                     toggle_mute()
                 elif key.char == 't':
