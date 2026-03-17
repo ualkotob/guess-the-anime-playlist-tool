@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.5"  # Update this when making releases
+APP_VERSION = "15.6"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -3884,7 +3884,7 @@ def get_file_marks(filename):
     return marks
 
 def prioritize_theme_files(filenames):
-    """Prioritize a list of theme files by local availability, resolution, lyrics, and NC status.
+    """Prioritize a list of theme files by local availability, censors, resolution, lyrics, and NC status.
     
     Returns the best filename from the list.
     """
@@ -3898,6 +3898,11 @@ def prioritize_theme_files(filenames):
     local_files = [f for f in filenames if f in directory_files]
     if local_files:
         filenames = local_files
+    
+    # Prioritize files with censors
+    files_with_censors = [f for f in filenames if get_file_censors(f)]
+    if files_with_censors:
+        filenames = files_with_censors
     
     # Collect files with their properties
     files_with_props = []
@@ -6281,6 +6286,7 @@ def save_config():
         "host": host,
         "volume_level": volume_level,
         "stream_volume_boost": stream_volume_boost,
+        "background_music_volume_modifier": background_music_volume_modifier,
         "themes_cache_size": themes_cache_size,
         "skip_play_seconds": skip_play_seconds,
         "skip_jump_seconds": skip_jump_seconds,
@@ -6332,7 +6338,7 @@ def load_config():
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, themes_cache_size, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
-    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, stream_instance, ost_stream_instance
+    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, background_music_volume_modifier, stream_instance, ost_stream_instance
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -6391,6 +6397,7 @@ def load_config():
             special_round_playlist = config.get("special_round_playlist", True)
             volume_level = config.get("volume_level", 100)
             stream_volume_boost = config.get("stream_volume_boost", 0)
+            background_music_volume_modifier = float(config.get("background_music_volume_modifier", 0.1))
             themes_cache_size = config.get("themes_cache_size", 500)
             skip_play_seconds = config.get("skip_play_seconds", 0)
             skip_jump_seconds = config.get("skip_jump_seconds", 5)
@@ -6504,7 +6511,7 @@ def show_settings_popup():
     global settings_window
     global volume_level, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
     global YOUTUBE_API_KEY, OPENAI_API_KEY, SERPAPI_KEY, title_top_info_txt, end_session_txt, selected_rules_file, scoreboard_rules
-    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
+    global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, background_music_volume_modifier
 
     if settings_window and settings_window.winfo_exists():
         try:
@@ -6595,7 +6602,7 @@ def show_settings_popup():
         global volume_level, stream_volume_boost, themes_cache_size, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, inverted_positions, half_points
         global YOUTUBE_API_KEY, OPENAI_API_KEY, SERPAPI_KEY, serpapi_limited, serpapi_limited_count
         global title_top_info_txt, end_session_txt, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
-        global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS
+        global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, background_music_volume_modifier
         
         try:
             # Capture original scale_main_ui value to detect changes
@@ -6603,6 +6610,7 @@ def show_settings_popup():
             
             volume_level = int(volume_var.get())
             stream_volume_boost = int(stream_volume_var.get())
+            background_music_volume_modifier = max(0.0, min(1.0, float(music_volume_var.get())))
             themes_cache_size = max(0, int(cache_size_var.get()))
             skip_play_seconds = max(0, float(skip_play_seconds_var.get()))
             skip_jump_seconds = max(0, float(skip_jump_seconds_var.get()))
@@ -6698,10 +6706,6 @@ def show_settings_popup():
     setting_descriptions = {
         "Volume Level": "Master volume level for all audio playback (0-100).",
         "Stream Volume Boost": "Additional volume boost specifically for stream audio from youtube clips/trailers.",
-        "Skip Play Seconds": "Seconds to play before skipping forward. Set to 0 to disable auto-skip.",
-        "Skip Jump Seconds": "Seconds to jump ahead when auto-skip triggers.",
-        "Skip Fade Out (ms)": "Milliseconds to fade volume down before the skip triggers.",
-        "Skip Fade In (ms)": "Milliseconds to fade volume back in after the skip triggers.",
         "Background Color": "Background color of overlay windows.",
         "Text Color": "Text color displayed in overlay windows.",
         "Inverted Positions": "Swaps alignment of some elements to adjust for scoreboard position. Enable if scoreboard is aligned right.",
@@ -6731,7 +6735,7 @@ def show_settings_popup():
     volume_label.pack(side="left")
     ToolTip(volume_label, setting_descriptions["Volume Level"])
     volume_var = tk.StringVar(value=str(volume_level))
-    volume_entry = tk.Entry(volume_frame, textvariable=volume_var, bg="black", fg="white", width=10)
+    volume_entry = tk.Entry(volume_frame, textvariable=volume_var, bg="black", fg="white", width=10, justify='center')
     volume_entry.pack(side="left", padx=(5, 0))
     
     # Stream Volume Boost
@@ -6741,8 +6745,18 @@ def show_settings_popup():
     stream_volume_label.pack(side="left")
     ToolTip(stream_volume_label, setting_descriptions["Stream Volume Boost"])
     stream_volume_var = tk.StringVar(value=str(stream_volume_boost))
-    stream_volume_entry = tk.Entry(stream_volume_frame, textvariable=stream_volume_var, bg="black", fg="white", width=10)
+    stream_volume_entry = tk.Entry(stream_volume_frame, textvariable=stream_volume_var, bg="black", fg="white", width=10, justify='center')
     stream_volume_entry.pack(side="left", padx=(5, 0))
+
+    # Music Volume Modifier
+    music_volume_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    music_volume_frame.pack(fill="x", pady=5)
+    music_volume_label = tk.Label(music_volume_frame, text="Music Volume Modifier:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    music_volume_label.pack(side="left")
+    ToolTip(music_volume_label, "Volume multiplier for background music during lightning rounds (0.0 - 1.0).")
+    music_volume_var = tk.StringVar(value=str(background_music_volume_modifier))
+    music_volume_entry = tk.Entry(music_volume_frame, textvariable=music_volume_var, bg="black", fg="white", width=10, justify='center')
+    music_volume_entry.pack(side="left", padx=(5, 0))
 
     # Themes Cache Size
     cache_size_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -6751,48 +6765,43 @@ def show_settings_popup():
     cache_size_label.pack(side="left")
     ToolTip(cache_size_label, setting_descriptions.get("Themes Cache Size", "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."))
     cache_size_var = tk.StringVar(value=str(themes_cache_size))
-    cache_size_entry = tk.Entry(cache_size_frame, textvariable=cache_size_var, bg="black", fg="white", width=10)
+    cache_size_entry = tk.Entry(cache_size_frame, textvariable=cache_size_var, bg="black", fg="white", width=10, justify='center')
     cache_size_entry.pack(side="left", padx=(5, 0))
 
+    # Skip Play Settings (Consolidated)
+    skip_play_main_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
+    skip_play_main_frame.pack(fill="x", pady=5)
+    skip_play_main_label = tk.Label(skip_play_main_frame, text="Skip Play Settings:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+    skip_play_main_label.pack(side="left")
+    ToolTip(skip_play_main_label, "Auto-skip settings: play duration, jump distance, and fade timing.")
+    
+    # Container for the 4 text boxes
+    skip_play_inputs_frame = tk.Frame(skip_play_main_frame, bg=BACKGROUND_COLOR)
+    skip_play_inputs_frame.pack(side="left", padx=(5, 0))
+    
     # Skip Play Seconds
-    skip_play_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
-    skip_play_frame.pack(fill="x", pady=5)
-    skip_play_label = tk.Label(skip_play_frame, text="Skip Play Seconds:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-    skip_play_label.pack(side="left")
-    ToolTip(skip_play_label, setting_descriptions["Skip Play Seconds"])
     skip_play_seconds_var = tk.StringVar(value=str(skip_play_seconds))
-    skip_play_entry = tk.Entry(skip_play_frame, textvariable=skip_play_seconds_var, bg="black", fg="white", width=10)
-    skip_play_entry.pack(side="left", padx=(5, 0))
-
+    skip_play_entry = tk.Entry(skip_play_inputs_frame, textvariable=skip_play_seconds_var, bg="black", fg="white", width=6, justify='center')
+    skip_play_entry.pack(side="left", padx=(0, 3))
+    ToolTip(skip_play_entry, "Play Seconds: Duration to play before auto-skip (0 = disabled)")
+    
     # Skip Jump Seconds
-    skip_jump_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
-    skip_jump_frame.pack(fill="x", pady=5)
-    skip_jump_label = tk.Label(skip_jump_frame, text="Skip Jump Seconds:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-    skip_jump_label.pack(side="left")
-    ToolTip(skip_jump_label, setting_descriptions["Skip Jump Seconds"])
     skip_jump_seconds_var = tk.StringVar(value=str(skip_jump_seconds))
-    skip_jump_entry = tk.Entry(skip_jump_frame, textvariable=skip_jump_seconds_var, bg="black", fg="white", width=10)
-    skip_jump_entry.pack(side="left", padx=(5, 0))
-
+    skip_jump_entry = tk.Entry(skip_play_inputs_frame, textvariable=skip_jump_seconds_var, bg="black", fg="white", width=6, justify='center')
+    skip_jump_entry.pack(side="left", padx=(0, 3))
+    ToolTip(skip_jump_entry, "Jump Seconds: Distance to jump forward when skip triggers")
+    
     # Skip Fade Out (ms)
-    skip_fade_out_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
-    skip_fade_out_frame.pack(fill="x", pady=5)
-    skip_fade_out_label = tk.Label(skip_fade_out_frame, text="Skip Fade Out (ms):", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-    skip_fade_out_label.pack(side="left")
-    ToolTip(skip_fade_out_label, setting_descriptions["Skip Fade Out (ms)"])
     skip_fade_out_ms_var = tk.StringVar(value=str(SKIP_FADE_WINDOW_MS))
-    skip_fade_out_entry = tk.Entry(skip_fade_out_frame, textvariable=skip_fade_out_ms_var, bg="black", fg="white", width=10)
-    skip_fade_out_entry.pack(side="left", padx=(5, 0))
-
+    skip_fade_out_entry = tk.Entry(skip_play_inputs_frame, textvariable=skip_fade_out_ms_var, bg="black", fg="white", width=6, justify='center')
+    skip_fade_out_entry.pack(side="left", padx=(0, 3))
+    ToolTip(skip_fade_out_entry, "Fade Out (ms): Milliseconds to fade volume down before skip")
+    
     # Skip Fade In (ms)
-    skip_fade_in_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
-    skip_fade_in_frame.pack(fill="x", pady=5)
-    skip_fade_in_label = tk.Label(skip_fade_in_frame, text="Skip Fade In (ms):", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-    skip_fade_in_label.pack(side="left")
-    ToolTip(skip_fade_in_label, setting_descriptions["Skip Fade In (ms)"])
     skip_fade_in_ms_var = tk.StringVar(value=str(SKIP_FADE_IN_WINDOW_MS))
-    skip_fade_in_entry = tk.Entry(skip_fade_in_frame, textvariable=skip_fade_in_ms_var, bg="black", fg="white", width=10)
-    skip_fade_in_entry.pack(side="left", padx=(5, 0))
+    skip_fade_in_entry = tk.Entry(skip_play_inputs_frame, textvariable=skip_fade_in_ms_var, bg="black", fg="white", width=6, justify='center')
+    skip_fade_in_entry.pack(side="left")
+    ToolTip(skip_fade_in_entry, "Fade In (ms): Milliseconds to fade volume up after skip")
     
     # Background Color
     back_color_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -18180,7 +18189,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
 
         # Music icon
-        if fixed_current_round.get("music_icon"):
+        if fixed_current_round and fixed_current_round.get("music_icon"):
             music_icon = fixed_current_round["music_icon"]
         elif light_mode == 'ost':
             music_icon = "🎼"
@@ -20000,6 +20009,7 @@ def next_background_track():
         music_changed = True
 
 checked_music_folder = False
+background_music_volume_modifier = 0.1
 def play_background_music(toggle):
     """Function to play or pause background music"""
     global music_loaded, current_music_index, music_changed, checked_music_folder
@@ -20048,7 +20058,7 @@ def play_background_music(toggle):
             if disable_video_audio:
                 pygame.mixer.music.set_volume(0)
             else:
-                pygame.mixer.music.set_volume(0.15*(volume_level/100))  # Adjust volume
+                pygame.mixer.music.set_volume(background_music_volume_modifier*(volume_level/100))  # Adjust volume
             music_changed = False
             # Record track usage only when actually played
             record_background_track_usage(track_path)
@@ -22958,7 +22968,7 @@ def apply_censors(time, length):
     global censors_enabled
     if censors_enabled and not mismatch_visuals and not currently_streaming:
         check_file_censors(currently_playing.get('filename'), time, False, not pre_censor)
-        if not video_stopped and not (mute_peek_round_toggle or peek_round_toggle or blind_round_toggle) and length - time <= 0.3 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(get_clean_filename(playlist["playlist"][playlist["current_index"]+1]), time, True, auto_info_start):
+        if not video_stopped and not (light_mode or mute_peek_round_toggle or peek_round_toggle or blind_round_toggle) and length - time <= 0.3 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(get_clean_filename(playlist["playlist"][playlist["current_index"]+1]), time, True, auto_info_start):
             pre_censor = True
         else:
             remove_all_censor_boxes(filename=currently_playing.get('filename'))
@@ -23009,8 +23019,6 @@ def set_censor_position(window, pos_x_percent, pos_y_percent, video_x, video_y, 
 
 def check_file_censors(filename, time, video_end, check_title=True):
     global censor_used, mute_censor_used
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
     
     video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
     
@@ -23798,23 +23806,33 @@ def open_censor_editor(refresh=False):
             messagebox.showinfo("No Similar Censors", "No censors found from previous versions of this theme.")
             return
         
-        # If multiple similar files exist, let user choose
+        # If multiple similar files exist, check if they're all identical
         if len(similar_censors) > 1:
-            options = list(similar_censors.keys())
-            choice = simpledialog.askstring(
-                "Choose Source", 
-                f"Multiple versions found. Enter the number of the file to import from:\n" + 
-                "\n".join([f"{i+1}. {fname}" for i, fname in enumerate(options)]) + 
-                f"\n\nEnter 1-{len(options)}:"
-            )
-            try:
-                choice_index = int(choice) - 1
-                if 0 <= choice_index < len(options):
-                    source_filename = options[choice_index]
-                else:
+            # Check if all censor lists are identical
+            censor_lists = list(similar_censors.values())
+            first_list = censor_lists[0]
+            all_identical = all(censors == first_list for censors in censor_lists[1:])
+            
+            if all_identical:
+                # All identical, just use the first one without prompting
+                source_filename = list(similar_censors.keys())[0]
+            else:
+                # Different censors, let user choose
+                options = list(similar_censors.keys())
+                choice = simpledialog.askstring(
+                    "Choose Source", 
+                    f"Multiple versions found. Enter the number of the file to import from:\n" + 
+                    "\n".join([f"{i+1}. {fname}" for i, fname in enumerate(options)]) + 
+                    f"\n\nEnter 1-{len(options)}:"
+                )
+                try:
+                    choice_index = int(choice) - 1
+                    if 0 <= choice_index < len(options):
+                        source_filename = options[choice_index]
+                    else:
+                        return
+                except (ValueError, TypeError):
                     return
-            except (ValueError, TypeError):
-                return
         else:
             source_filename = list(similar_censors.keys())[0]
         
@@ -25416,7 +25434,7 @@ def toggle_mute(muted=None, lightning=False):
             if disable_video_audio:
                 pygame.mixer.music.set_volume(0)
             else:
-                pygame.mixer.music.set_volume(0.2*(volume_level/100))
+                pygame.mixer.music.set_volume(background_music_volume_modifier*(volume_level/100))
         button_seleted(mute_button, disable_video_audio)
 
 # =========================================
@@ -26403,7 +26421,7 @@ def create_first_row_buttons():
     global import_data_button
     import_data_button = create_button(first_row_frame, "IMPORT", import_data_from_source, False,
                                 help_title="IMPORT DATA",
-                                help_text="Imports metadata from a remote source (GitHub/Google Drive). "
+                                help_text="Imports metadata from a remote GitHub. "
                                 "Downloads a zip package and merges all metadata with your existing data.")
 
     global import_censors_button
@@ -26476,7 +26494,7 @@ def create_first_row_buttons():
                                            "to download and match all themes from that playlist."))
     global empty_button
     empty_button = create_button(first_row_frame, "❌", empty_playlist, True,
-                                help_title="EMPTY PLAYLIST",
+                                help_title="CREATE EMPTY PLAYLIST",
                                 help_text=("This resets you to a blank playlist. "
                                 "This is only if you want to manually add themes to the "
                                 "playlist using the SEARCH+ button. That's not really what "
@@ -26485,7 +26503,7 @@ def create_first_row_buttons():
 
     global show_playlist_button
     show_playlist_button = create_button(first_row_frame, "[P]LAYLIST", show_playlist, False,
-                                help_title="VIEW [P]LAYLIST/[P]LAY HISTORY (Shortcut Key = 'p')",
+                                help_title="VIEW [P]LAYLIST (Shortcut Key = 'p')",
                                 help_text=("List all themes in the playlist. It will scroll to whichever "
                                 "theme the current index is at. Select a theme to play it immediately "
                                 "and set the current index to it.\n\nAs with all lists, it loads buttons "
@@ -27184,7 +27202,7 @@ def set_volume(value):
     volume_level = int(value)
     player.audio_set_volume(volume_level)  # Adjust VLC volume
     if music_loaded:
-        pygame.mixer.music.set_volume(0.2*(volume_level/100))  # Adjust volume
+        pygame.mixer.music.set_volume(background_music_volume_modifier*(volume_level/100))  # Adjust volume
     update_volume_display()
 
 def update_volume_display():
