@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.6"  # Update this when making releases
+APP_VERSION = "15.7"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -1618,22 +1618,8 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                         
                         mal_entry["themes"][theme_slug][version_key][video_basename] = video_props
         
-        # For manual [MAL] files, add this file to the themes structure
-        if "[MAL]" in filename and slug:
-            if slug not in mal_entry["themes"]:
-                mal_entry["themes"][slug] = {}
-            
-            version_key = str(version) if version is not None else "null"
-            if version_key not in mal_entry["themes"][slug]:
-                mal_entry["themes"][slug][version_key] = {}
-            
-            # Add manual file with video properties
-            if filename not in mal_entry["themes"][slug][version_key]:
-                video_properties = extract_video_file_properties(filename)
-                mal_entry["themes"][slug][version_key][filename] = video_properties
-        
-        # For [ID] files, add this file to the themes structure
-        if "[ID]" in filename and slug:
+        # For [ID] and [MAL] files, add this file to the themes structure
+        if ("[ID]" in filename or "[MAL]" in filename) and slug:
             if slug not in mal_entry["themes"]:
                 mal_entry["themes"][slug] = {}
             
@@ -1644,6 +1630,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             # Add ID file with video properties
             if filename not in mal_entry["themes"][slug][version_key]:
                 video_properties = extract_video_file_properties(filename)
+                video_properties["source"] = "LOCAL"
                 mal_entry["themes"][slug][version_key][filename] = video_properties
         
         # Fetch and store anime metadata
@@ -1682,7 +1669,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                     "demographics":get_name_list(jikan_data, "demographics"),
                     "synopsis":jikan_data.get('synopsis', "N/A"),
                     "cover":jikan_data.get("images", {}).get("jpg", {}).get("large_image_url"),
-                    "trailer":jikan_data.get("trailer", {}).get("youtube_id")
+                    "trailer":extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
                 }
                 if "N/A" in anime_data.get("season"):
                     if anime_themes.get("season"):
@@ -1956,7 +1943,7 @@ def refresh_jikan_data(mal_id, data, label=""):
         data["demographics"] = get_name_list(jikan_data, "demographics")
         data["synopsis"] = jikan_data.get("synopsis", "N/A")
         data["cover"] = jikan_data.get("images", {}).get("jpg", {}).get("large_image_url")
-        data["trailer"] = jikan_data.get("trailer", {}).get("youtube_id")
+        data["trailer"] = extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
         
         save_metadata()
         print(f"\r{label}Refreshing Jikan data for {data['title']}...COMPLETE")
@@ -3105,44 +3092,35 @@ def select_extra_metadata(extra_metadata):
     selected_extra_metadata = extra_metadata
     update_extra_metadata()
 
+def open_image_popup(url, title="Image"):
+    """Display any image URL in a centered popup. Can be called directly."""
+    if not url:
+        messagebox.showwarning("No Image", "No image URL provided.")
+        return
+    try:
+        popup = tk.Toplevel()
+        popup.title(title)
+        popup.configure(bg="black")
+        tk_img = load_image_from_url(url, size=(600, 800))
+        if tk_img:
+            label = tk.Label(popup, image=tk_img, bg="black")
+            label.image = tk_img
+            label.pack(pady=10)
+        else:
+            tk.Label(popup, text="[Failed to load image]",
+                    font=("Arial", 12), bg="black", fg="white").pack(pady=10)
+        popup.update_idletasks()
+        w = popup.winfo_width()
+        h = popup.winfo_height()
+        sw = popup.winfo_screenwidth()
+        sh = popup.winfo_screenheight()
+        popup.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+    except Exception as e:
+        messagebox.showerror("Image Load Error", f"Could not load image: {e}")
+
 def create_cover_popup(title, cover_url):
     def _popup():
-        try:
-            popup = tk.Toplevel()
-            popup.title(title)
-            popup.configure(bg="black")
-
-            # Title
-            tk.Label(
-                popup, text=title, font=("Arial", 18, "bold", "underline"),
-                bg="black", fg="white"
-            ).pack(pady=(10, 0))
-
-            # Load cover image
-            tk_img = load_image_from_url(cover_url, size=(600, 800))
-            if tk_img:
-                label = tk.Label(popup, image=tk_img, bg="black")
-                label.image = tk_img  # Keep reference
-                label.pack(pady=10)
-            else:
-                tk.Label(popup, text="[Failed to load image]", 
-                        font=("Arial", 12), bg="black", fg="white").pack(pady=10)
-
-            # Center the popup window on screen
-            popup.update_idletasks()  # Update window to get actual size
-            window_width = popup.winfo_width()
-            window_height = popup.winfo_height()
-            screen_width = popup.winfo_screenwidth()
-            screen_height = popup.winfo_screenheight()
-            
-            x = (screen_width // 2) - (window_width // 2)
-            y = (screen_height // 2) - (window_height // 2)
-            
-            popup.geometry(f"+{x}+{y}")
-
-        except Exception as e:
-            messagebox.showerror("Image Load Error", f"Could not load image: {e}")
-
+        open_image_popup(cover_url, title)
     return _popup
 
 SERIES_COLLAPSE_THRESHOLD = 20   # total themes across all anime in series before collapsing non-playing
@@ -4158,12 +4136,16 @@ def show_youtube_playlist(update = False):
     sorted_videos = sorted(all_videos.items(), key=get_sort_key, reverse=True)
     all_videos = dict(sorted_videos)
 
-    for index, (key, value) in enumerate(all_videos.items()):
-        value['index'] = index
+    # Update youtube_queue index and find selected video
+    selected = -1
     if youtube_queue:
-        selected = youtube_queue.get('index', -1) or -1
-    else:
-        selected = -1
+        queue_video_id = youtube_queue.get('url')
+        for index, (key, value) in enumerate(all_videos.items()):
+            if key == queue_video_id:
+                selected = index
+                youtube_queue['index'] = selected  # Update the queue's index too
+                break
+    
     _youtube_playlist = all_videos
     show_list("youtube", right_column, all_videos, get_youtube_title, load_youtube_video, selected, update)
 
@@ -6017,19 +5999,25 @@ def get_next_infinite_track(increment=True):
                     cooldown_count = 0
                     
                     for f in reversed(playlist_history):
-                        # Skip lightning rounds from previous sessions in cooldown calculations
+                        if f.startswith("[L]"):
+                            cooldown_count += 0.25
+                        else:
+                            cooldown_count += 1
+
                         clean_f = get_clean_filename(f)
+                        
+                        # Skip lightning rounds from previous sessions in cooldown calculations
                         if not light_mode and f.startswith("[L]") and clean_f not in current_session_lightning:
                             continue
                         
+                        if cooldown_count >= max(min_f_limit*f_limit_mod, ((f_limit)/file_boost)):
+                            break
+                        
                         f_d = get_metadata(clean_f)
-                        if clean_f == selected_file or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (cooldown_count < max(min_s_limit*s_limit_mod, (s_limit/series_boost)) and series == (f_d.get("series") or [f_d.get("title")])):
+                        if clean_f == selected_file or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (cooldown_count <= max(min_s_limit*s_limit_mod, (s_limit/series_boost)) and series == (f_d.get("series") or [f_d.get("title")])):
                             selected_file = None
                             break
                         
-                        cooldown_count += 1
-                        if cooldown_count >= max(min_f_limit*f_limit_mod, ((f_limit)/file_boost)):
-                            break
                 if selected_file:
                     if False:
                         print(f"🎵 INFINITE TRACK: {selected_file}")
@@ -8929,7 +8917,7 @@ def tag_stats(column):
     for filename in files_list:
         data = get_metadata(filename)
         # Tags
-        tags = data.get("themes", []) + data.get("genres", []) + data.get("demographics", [])
+        tags = get_tags(data)
         for tag in tags:
             tag_counter[tag] += 1
     column.config(state=tk.NORMAL)
@@ -10313,6 +10301,7 @@ lightning_mode_settings_default = {
         "length": 20,
         "muted": True,
         "variants": {
+            "standard": False,
             "blur": True,
             "parts": True,
             "pixel": True,
@@ -10401,6 +10390,7 @@ lightning_mode_settings_default = {
         "length": 20,
         "muted": True,
         "variants": {
+            "standard": False,
             "blur": True,
             "pixel": True,
             "slice": True,
@@ -10427,6 +10417,7 @@ lightning_mode_settings_default = {
         "length": 20,
         "muted": True,
         "variants": {
+            "standard": False,
             "blur": True,
             "pixel": True,
             "slice": True,
@@ -11199,9 +11190,10 @@ def get_light_round_time():
 light_speed_modifier = 1
 light_blind_one_second_count = None
 stream_start_time = 0
+current_light_mode = None
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
-    global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count
+    global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count, current_light_mode
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
         if time < 1 and not frame_light_round_started:
             player.pause()
@@ -11274,10 +11266,14 @@ def update_light_round(time):
             if time_left < 1 and light_speed_modifier != 1:
                 light_speed_modifier = 1
                 player.set_rate(light_speed_modifier)
-            if song_overlay_boxes:
-                toggle_song_overlay(show_title=True, show_artist=time_left<=9, show_theme=time_left<=6, show_music=time_left<=4)
-                player.audio_set_mute(time_left > 4)
-                play_background_music(time_left > 4)
+            if current_light_mode == 'song' or song_overlay_boxes:
+                show_title_time = light_round_length if not fixed_current_round else fixed_current_round.get("song_title_reveal_time", light_round_length)
+                show_artist_time = light_round_length * 0.75 if not fixed_current_round else fixed_current_round.get("song_artist_reveal_time", light_round_length * 0.75)
+                show_slug_time = light_round_length * 0.5 if not fixed_current_round else fixed_current_round.get("song_slug_reveal_time", light_round_length * 0.5)
+                show_music_time = light_round_length * (1/3) if not fixed_current_round else fixed_current_round.get("song_music_reveal_time", light_round_length * (1/3))
+                toggle_song_overlay(show_title=time_left<=show_title_time, show_artist=time_left<=show_artist_time, show_theme=time_left<=show_slug_time, show_music=time_left<=show_music_time)
+                player.audio_set_mute(time_left > show_music_time)
+                play_background_music(time_left > show_music_time)
             elif clues_overlay:
                 data = currently_playing.get("data")
                 if time_left <= 15:
@@ -11493,6 +11489,7 @@ def update_light_round(time):
         toggle_coming_up_popup(False, "Lightning Round")
         if not light_round_started:
             light_round_started = True
+            current_light_mode = light_mode
             if light_mode in ['regular', 'peek']:
                 root.after(500, set_black_screen, False)
             def set_double_speed():
@@ -11577,7 +11574,7 @@ def update_light_round(time):
             elif light_mode == 'clues':
                 toggle_clues_overlay()
             elif light_mode == 'song':
-                toggle_song_overlay(show_title=True, show_artist=False, show_theme=False, show_music=False)
+                toggle_song_overlay(show_title=False, show_artist=False, show_theme=False, show_music=False)
             elif light_mode == 'synopsis':
                 pick_synopsis()
                 toggle_synopsis_overlay(text=get_light_synopsis_string(words = 1))
@@ -11607,73 +11604,37 @@ def update_light_round(time):
                     get_character_round_characters()
                 toggle_character_overlay(num_characters=1)
                 top_info("CHARACTERS")
-            elif light_mode == 'cover':
-                top_info("COVER ART")
-                get_light_cover_image()
-                cover_reveal_mode = get_next_cover_reveal_mode()
-                if cover_reveal_mode == 'pixel':
-                    generate_pixelation_steps(pil_image=ImageTk.getimage(light_cover_image).convert("RGBA"))
-                    toggle_character_pixel_overlay()
-                elif cover_reveal_mode == 'slide':
-                    toggle_character_reveal_overlay(direction=random.choice(['top','bottom','left','right']))
-                elif cover_reveal_mode == 'blur':
-                    toggle_character_blur_reveal_overlay(percent=1.0)
-                elif cover_reveal_mode == 'zoom':
-                    toggle_character_zoom_reveal_overlay(percent=1.0)
-                elif cover_reveal_mode == 'slice':
-                    toggle_slice_overlay(num_revealed=1, vertical=random.choice([True, False]))
-                elif cover_reveal_mode == 'tile':
-                    toggle_tile_overlay(num_revealed=1, grid_size=5)
-                elif cover_reveal_mode == 'swap':
-                    toggle_tile_overlay(grid_size=10, swap=True)
-            elif light_mode == 'image':
-                # Handle fixed vs random image rounds
-                if fixed_current_round:
-                    # Fixed image round - use specified parameters
-                    image_header = fixed_current_round.get("image_header", "IMAGE")
-                    top_info(image_header.upper())
-                    
-                    # Load image from specified URL
+            elif light_mode in ['cover', 'image']:
+                header = ""
+                reveal_mode = ""
+                if light_mode == 'cover':
+                    get_light_cover_image()
+                    if fixed_current_round:
+                        header = fixed_current_round.get("cover_header", "")
+                        reveal_mode = fixed_current_round.get("image_variant", "standard")
+                    else:
+                        header = "COVER ART"
+                        reveal_mode = get_next_cover_reveal_mode()
+                elif light_mode == 'image':
                     get_light_image_from_google()
-                    
-                    # Get variant and variant-specific parameters
-                    image_variant = fixed_current_round.get("image_variant", "slide")
-                    
-                    if image_variant == 'slide':
-                        direction = fixed_current_round.get("slide_direction", "top")
-                        toggle_character_reveal_overlay(direction=direction)
-                    elif image_variant == 'blur':
-                        # blur_radius = fixed_current_round.get("blur_radius", 50)
-                        toggle_character_blur_reveal_overlay(percent=1.0)
-                    elif image_variant == 'zoom':
-                        toggle_character_zoom_reveal_overlay(percent=1.0)
-                    elif image_variant == 'slice':
-                        slice_count = fixed_current_round.get("slice_count", 10)
-                        slice_vertical = fixed_current_round.get("slice_vertical", True)
-                        toggle_slice_overlay(num_revealed=1, num_slices=slice_count, vertical=slice_vertical)
-                    elif image_variant == 'tile':
-                        tile_grid_size = fixed_current_round.get("tile_grid_size", 4)
-                        toggle_tile_overlay(num_revealed=1, grid_size=tile_grid_size)
-                else:
-                    # Random image round - existing behavior
-                    top_info("RANDOM IMAGE")
-                    get_light_image_from_google()
-                    image_reveal_mode = get_next_image_reveal_mode()
-                    if image_reveal_mode == 'pixel':
-                        generate_pixelation_steps(pil_image=ImageTk.getimage(light_cover_image).convert("RGBA"))
-                        toggle_character_pixel_overlay()
-                    elif image_reveal_mode == 'slide':
-                        toggle_character_reveal_overlay(direction=random.choice(['top','bottom','left','right']))
-                    elif image_reveal_mode == 'blur':
-                        toggle_character_blur_reveal_overlay(percent=1.0)
-                    elif image_reveal_mode == 'zoom':
-                        toggle_character_zoom_reveal_overlay(percent=1.0)
-                    elif image_reveal_mode == 'slice':
-                        toggle_slice_overlay(num_revealed=1, vertical=random.choice([True, False]))
-                    elif image_reveal_mode == 'tile':
-                        toggle_tile_overlay(num_revealed=1, grid_size=5)
-                    elif image_reveal_mode == 'swap':
-                        toggle_tile_overlay(grid_size=10, swap=True)
+                    if fixed_current_round:
+                        header = fixed_current_round.get("image_header", "")
+                        reveal_mode = fixed_current_round.get("image_variant", "standard")
+                    else:
+                        header = "RANDOM IMAGE"
+                        reveal_mode = get_next_image_reveal_mode()
+                fixed_round = fixed_current_round or {}
+                slide_direction = fixed_round.get("slide_direction", "top")
+                slice_count = fixed_round.get("slice_count", 10)
+                slice_vertical = fixed_round.get("slice_vertical", True)
+                tile_grid_size = fixed_round.get("tile_grid_size", 4)
+                top_info(header.upper())
+                apply_reveal_mode(reveal_mode, 
+                                    image_source=ImageTk.getimage(light_cover_image).convert("RGBA"),
+                                    slide_direction=slide_direction,
+                                    slice_vertical=slice_vertical,
+                                    slice_count=slice_count,
+                                    tile_grid_size=tile_grid_size)
             elif 'c.' in light_mode:
                 top_info("GUESS THE CHARACTER", inverse=True)
                 character_round_answer = lightning_queue_data.get(currently_playing.get("filename", {}), {}).get("character_answer")
@@ -11687,21 +11648,8 @@ def update_light_round(time):
                     if c_reveal_mode == 'parts':
                         get_char_parts_round_character()
                         toggle_character_overlay(num_characters=1)
-                    elif c_reveal_mode == 'pixel':
-                        generate_pixelation_steps()
-                        toggle_character_pixel_overlay()
-                    elif c_reveal_mode == 'slide':
-                        toggle_character_reveal_overlay()
-                    elif c_reveal_mode == 'blur':
-                        toggle_character_blur_reveal_overlay(percent=1.0)
-                    elif c_reveal_mode == 'zoom':
-                        toggle_character_zoom_reveal_overlay(percent=1.0)
-                    elif c_reveal_mode == 'slice':
-                        toggle_slice_overlay(num_revealed=1, vertical=False)
-                    elif c_reveal_mode == 'tile':
-                        toggle_tile_overlay(num_revealed=1, grid_size=5)
-                    elif c_reveal_mode == 'swap':
-                        toggle_tile_overlay(grid_size=10, swap=True)
+                    else:
+                        apply_reveal_mode(c_reveal_mode, slice_vertical=False)
                 elif light_mode == 'c. profile':
                     toggle_character_profile_overlay()
                 elif light_mode == 'c. name':
@@ -11763,8 +11711,8 @@ def update_light_round(time):
                         elif stream_player.is_playing() and stream_player.get_length() > 0:
                             def stream_overlay():
                                 if light_mode == 'ost':
-                                    if fixed_current_round and fixed_current_round.get("clip_header"):
-                                        top_info(fixed_current_round.get("clip_header").upper())
+                                    if fixed_current_round and fixed_current_round.get("ost_header"):
+                                        top_info(fixed_current_round.get("ost_header").upper())
                                     else:
                                         top_info("SOUNDTRACK / OST")
                                     set_progress_overlay(0, light_round_length*100)
@@ -11814,6 +11762,52 @@ def update_light_round(time):
         set_light_round_number()
         if light_mode != 'peek':
             update_light_round_number(inverse=character_round_answer)
+
+def apply_reveal_mode(reveal_mode, image_source=None, slide_direction=None, slice_vertical=None, slice_count=None, tile_grid_size=None):
+    """
+    Apply a reveal mode overlay with the specified parameters.
+    
+    Args:
+        reveal_mode: The reveal mode type ('pixel', 'slide', 'blur', 'zoom', 'slice', 'tile', 'swap')
+        image_source: PIL Image for pixel mode, or None to use character_round_answer image
+        slide_direction: Direction for slide mode ('top', 'bottom', 'left', 'right'), or None for random/default
+        slice_vertical: Bool for slice orientation, or None for random
+        slice_count: Number of slices, or None for default
+        tile_grid_size: Grid size for tiles, or None for default
+    """
+    if reveal_mode == 'standard':
+        char_answer = copy.copy(character_round_answer)
+        cover_answer = light_cover_image
+        if char_answer:
+            toggle_character_image_overlay(char_answer[1])
+        elif cover_answer:
+            toggle_character_image_overlay(cover_answer)
+    elif reveal_mode == 'pixel':
+        if image_source:
+            generate_pixelation_steps(pil_image=image_source)
+        else:
+            generate_pixelation_steps()
+        toggle_character_pixel_overlay()
+    elif reveal_mode == 'slide':
+        if slide_direction:
+            toggle_character_reveal_overlay(direction=slide_direction)
+        else:
+            toggle_character_reveal_overlay(direction=random.choice(['top','bottom','left','right']))
+    elif reveal_mode == 'blur':
+        toggle_character_blur_reveal_overlay(percent=1.0)
+    elif reveal_mode == 'zoom':
+        toggle_character_zoom_reveal_overlay(percent=1.0)
+    elif reveal_mode == 'slice':
+        vertical = slice_vertical if slice_vertical is not None else random.choice([True, False])
+        if slice_count:
+            toggle_slice_overlay(num_revealed=1, num_slices=slice_count, vertical=vertical)
+        else:
+            toggle_slice_overlay(num_revealed=1, vertical=vertical)
+    elif reveal_mode == 'tile':
+        grid_size = tile_grid_size if tile_grid_size else 5
+        toggle_tile_overlay(num_revealed=1, grid_size=grid_size)
+    elif reveal_mode == 'swap':
+        toggle_tile_overlay(grid_size=10, swap=True)
 
 def start_title_round():
     title_mode = get_next_title_mode(get_base_title())
@@ -12400,8 +12394,9 @@ def setup_frame_light_round():
     frame_light_round_pause = False
     play_background_music(True)
     update_light_round_number()
-    root.after(500, update_frame_light_round, currently_playing.get('filename'))
-    root.after(800, set_black_screen, False)
+    # Increased delay to give video more time to load before attempting first frame
+    root.after(1000, update_frame_light_round, currently_playing.get('filename'))
+    root.after(1300, set_black_screen, False)
 
 def update_frame_light_round(currently_playing_filename):
     global frame_light_round_started, frame_light_round_frames, frame_light_round_frame_index, frame_light_round_frame_time, frame_light_round_pause
@@ -12439,15 +12434,33 @@ def update_frame_light_round(currently_playing_filename):
         if frame_light_round_frame_index > -1:
             set_countdown(int(((light_round_length*1000)-((show_frame_length*frame_light_round_frame_index)+frame_light_round_frame_time))/1000))
         if frame_light_round_frame_time >= show_frame_length:
+            # Check if video is loaded before attempting to show next frame
+            length = player.get_length()
+            if length <= 0:
+                # Video not loaded yet, wait for next cycle without incrementing frame
+                root.after(SEEK_POLLING, update_frame_light_round, currently_playing_filename)
+                return
+            
             frame_light_round_frame_index = frame_light_round_frame_index + 1
             if frame_light_round_frame_index < len(frame_light_round_frames):
                 frame_light_round_frame_time = 0
                 if frame_light_round_frame_index == 0:
                     frame_light_round_frame_time = -1000
                 time = int(frame_light_round_frames[frame_light_round_frame_index]*1000)
-                length = player.get_length()
                 apply_censors(time/1000, length/1000)
-                player.set_time(time)
+                
+                # Attempt to set time with retry limit to avoid infinite loop
+                max_attempts = 20
+                for attempt in range(max_attempts):
+                    player.set_time(time)
+                    root.update()  # Process pending events
+                    if abs(player.get_time() - time) < 100:  # Within 100ms is close enough
+                        break
+                
+                # Ensure player stays paused after seeking
+                if player.is_playing():
+                    player.pause()
+                
                 player.set_fullscreen(True)
                 update_progress_bar(time, length, currently_playing.get("filename"))
                 set_frame_number(str(frame_light_round_frame_index+1) + "/" + str(len(frame_light_round_frames)))
@@ -16562,6 +16575,46 @@ last_streamed = ["","","",""]
 last_image_source = ["", ""]  # [filename, image_url]
 _cached_streams = {}
 
+def extract_youtube_id_from_trailer(trailer_data):
+    """Extract YouTube ID from trailer data, handling cases where youtube_id is None.
+    
+    Args:
+        trailer_data: Dictionary with 'youtube_id', 'url', and/or 'embed_url'
+        
+    Returns:
+        YouTube ID string or None if not found
+    """
+    if not trailer_data:
+        return None
+    
+    # Try to get youtube_id directly first
+    youtube_id = trailer_data.get('youtube_id')
+    if youtube_id:
+        return youtube_id
+    
+    # Try to extract from embed_url if youtube_id is None
+    embed_url = trailer_data.get('embed_url')
+    if embed_url:
+        # Pattern: https://www.youtube-nocookie.com/embed/VIDEO_ID?params
+        # or https://www.youtube.com/embed/VIDEO_ID?params
+        match = re.search(r'/embed/([a-zA-Z0-9_-]+)', embed_url)
+        if match:
+            return match.group(1)
+    
+    # Try to extract from url if available
+    url = trailer_data.get('url')
+    if url:
+        # Pattern: https://www.youtube.com/watch?v=VIDEO_ID
+        match = re.search(r'[?&]v=([a-zA-Z0-9_-]+)', url)
+        if match:
+            return match.group(1)
+        # Pattern: https://youtu.be/VIDEO_ID
+        match = re.search(r'youtu\.be/([a-zA-Z0-9_-]+)', url)
+        if match:
+            return match.group(1)
+    
+    return None
+
 def get_youtube_stream_url(youtube_url, include_other_info=False):
     try:
         if youtube_url in _cached_streams:
@@ -17597,7 +17650,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "#animeexplain", "top 3", "top 5", "top 10", "top 11", "top 12", "top 13",
                     "anime mix", "english dub greeting video", "best of 20", "reacts to", "anime boston",
                     "best anime fights compilation", "best anime fight compilation", "best anime battles compilation",
-                    "best anime battle compilation", "#animeindo", "first impressions"
+                    "best anime battle compilation", "#animeindo", "first impressions", ") hype reel"
                 ]
                 ost_bad_keywords = [
                     "insert song", "anime songs", "cd single", "theme song", "full album", "extended"
@@ -17686,7 +17739,8 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "Explained", "Mother's Basement", "Crunchyroll: Inside Anime", "Crunchyroll TV", "It's Certified Otaku Vibes",
                     "Crunchyroll en Español", "Crunchyroll FR", "Crunchyroll India", "Crunchyroll DE", "WatchMojo", "Watch Mojo",
                     "AnimeVersa", "Crunchyroll en Español", "Netflix Jr.", "MWAMVEVO", "Tarkeus", "Gigguk", "ryuuarm", "Jent Watches"
-                    "IGN Anime Club", "Albert Senpai", "AnimeSekaiStore", "ForgottenRelics", "Anuj Lama", "Garnt", " Watches"
+                    "IGN Anime Club", "Albert Senpai", "AnimeSekaiStore", "ForgottenRelics", "Anuj Lama", "Garnt", " Watches",
+                    "ProfessorOtakuD2", "The Best Anime Here"
                 ]
                 ost_blacklisted_channels = [
                     " - Topic"
@@ -18297,7 +18351,11 @@ FIXED_LIGHTNING_ROUNDS = {
         "frame1",
         "frame2",
         "frame3",
-        "frame4"
+        "frame4",
+        "test_frame",
+        "test_frame",
+        "test_frame",
+        "test_frame"
     ],
     "synopsis": [
         "synopsis_header",
@@ -18319,7 +18377,7 @@ FIXED_LIGHTNING_ROUNDS = {
         "volume_adjustment"
     ],
     "ost": [
-        "clip_header",
+        "ost_header",
         "clip_start_time",
         "clip_url",
         "clip_title",
@@ -18337,13 +18395,30 @@ FIXED_LIGHTNING_ROUNDS = {
         "image_source",
         "image_header",
         "slide_direction",
-        # "blur_steps",
-        # "blur_radius",
         "image_selected_area",
         "image_ending_area",
         "slice_count",
         "slice_vertical",
         "tile_grid_size"
+    ],
+    "cover": [
+        "image_variant",
+        "cover_fill",
+        "image_url",
+        "image_source",
+        "cover_header",
+        "slide_direction",
+        "image_selected_area",
+        "image_ending_area",
+        "slice_count",
+        "slice_vertical",
+        "tile_grid_size"
+    ],
+    "song": [
+        "song_title_reveal_time",
+        "song_artist_reveal_time",
+        "song_slug_reveal_time",
+        "song_music_reveal_time"
     ]
 }
 
@@ -18357,12 +18432,14 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "frame2": {"type": "time", "required": True},
     "frame3": {"type": "time", "required": True},
     "frame4": {"type": "time", "required": True},
+    "test_frame": {"type": "time", "required": False},
     "synopsis_header": {"type": "text", "required": False, "default": "Synopsis"},
     "synopsis_text": {"type": "textarea", "required": True},
     "trivia_header": {"type": "text", "required": False, "default": "Trivia"},
     "trivia_question": {"type": "textarea", "required": True},
     "trivia_answer": {"type": "text", "required": True},
     "clip_header": {"type": "text", "required": False, "default": "Random Clip"},
+    "ost_header": {"type": "text", "required": False, "default": "SOUNDTRACK / OST"},
     "clip_start_time": {"type": "time", "required": False},
     "clip_url": {"type": "video_url", "required": True},
     "clip_title": {"type": "text", "required": False},
@@ -18376,16 +18453,12 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "image_variant": {
         "type": "dropdown",
         "required": True,
-        "options": {
-            "slide": "Slide",
-            "blur": "Blur Reveal",
-            "zoom": "Zoom Reveal",
-            "slice": "Slice Reveal",
-            "tile": "Tile Grid"
-        },
-        "default": "slide"
+        "options": lightning_mode_settings_default.get("image",{}).get("variants",{}),
+        "default": "standard"
     },
-    "image_url": {"type": "text", "required": True},
+    "image_url": {"type": "image_url", "required": True},
+    "cover_fill": {"type": "cover_fill", "required": False},
+    "cover_header": {"type": "text", "required": False, "default": "Cover"},
     "image_source": {"type": "text", "required": False},
     "image_header": {"type": "text", "required": False, "default": "Image"},
     # Reveal-specific fields
@@ -18441,7 +18514,11 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
         "required": False,
         "default": 4,
         "show_if": {"image_variant": ["tile"]}
-    }
+    },
+    "song_title_reveal_time": {"type": "time", "required": False},
+    "song_artist_reveal_time": {"type": "time", "required": False},
+    "song_slug_reveal_time": {"type": "time", "required": False},
+    "song_music_reveal_time": {"type": "time", "required": False}
 }
 
 FIXED_LIGHTNING_FOLDER = "fixed_playlists"
@@ -18934,6 +19011,9 @@ def should_show_field(field_name, round_data):
     # show_if format: {"field_name": ["value1", "value2", ...]}
     for condition_field, valid_values in show_if.items():
         current_value = round_data.get(condition_field)
+        if current_value is None:
+            # Fall back to the field's declared default so new rounds respect defaults
+            current_value = FIXED_LIGHTNING_ROUND_FIELD_INDEX.get(condition_field, {}).get("default")
         if current_value not in valid_values:
             return False
     
@@ -19281,6 +19361,12 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
     
     def rebuild_fields():
         """Rebuild field widgets based on selected type"""
+        # Preserve theme value across rebuilds
+        if "theme" in field_widgets:
+            theme_getter = field_widgets["theme"][1]
+            current_theme = theme_getter()
+            if current_theme:
+                round_data["theme"] = current_theme
         for widget in scrollable_frame.winfo_children():
             widget.destroy()
         field_widgets.clear()
@@ -19545,12 +19631,65 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
             elif field_type == "text":
                 # Single-line text field
                 entry = tk.Entry(field_frame, font=font_entry, bg="black", fg="white", width=35)
-                current_value = round_data.get(field_name, "")
+                default_value = field_info.get("default", "")
+                current_value = round_data.get(field_name, default_value)
                 if current_value:
                     entry.insert(0, current_value)
                 entry.pack(side="left")
                 field_widgets[field_name] = ("text", entry)
-            
+
+            elif field_type == "image_url":
+                # Image URL field with VIEW IMAGE button
+                url_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                url_frame.pack(side="left")
+                entry = tk.Entry(url_frame, font=font_entry, bg="black", fg="white", width=35)
+                default_value = field_info.get("default", "")
+                current_value = round_data.get(field_name, default_value)
+                if current_value:
+                    entry.insert(0, current_value)
+                entry.pack(side="left", padx=(0, 5))
+                def view_img(e=entry):
+                    url = e.get().strip()
+                    if url:
+                        open_image_popup(url, "Image Preview")
+                    else:
+                        messagebox.showwarning("No URL", "Please enter an image URL first.")
+                tk.Button(url_frame, text="VIEW IMAGE", font=font_entry,
+                          bg="black", fg="white", command=view_img).pack(side="left")
+                field_widgets[field_name] = ("text", entry)
+
+            elif field_type == "cover_fill":
+                # Read-only helper: shows cover URL from the round's theme file, with a fill button
+                cf_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                cf_frame.pack(side="left")
+                def _theme_cover_url():
+                    theme_wid = field_widgets.get("theme")
+                    if theme_wid:
+                        filename = theme_wid[1]()
+                        if filename:
+                            return (get_metadata(filename) or {}).get("cover") or ""
+                    return ""
+                cover_url_var = [_theme_cover_url()]
+                url_label = tk.Label(cf_frame,
+                                     text=cover_url_var[0] if cover_url_var[0] else "(no cover available)",
+                                     font=("Arial", 8), bg=BACKGROUND_COLOR, fg="gray",
+                                     width=40, anchor="w")
+                url_label.pack(side="left", padx=(0, 5))
+                def fill_cover_url(lbl=url_label, var=cover_url_var):
+                    url = _theme_cover_url()
+                    var[0] = url
+                    lbl.config(text=url if url else "(no cover available)")
+                    img_wid = field_widgets.get("image_url")
+                    if img_wid:
+                        img_wid[1].delete(0, tk.END)
+                        if url:
+                            img_wid[1].insert(0, url)
+                    else:
+                        messagebox.showwarning("Not Ready", "Image URL field not found.")
+                tk.Button(cf_frame, text="FILL IMAGE URL", font=font_entry,
+                          bg="black", fg="white", command=fill_cover_url).pack(side="left")
+                # cover_fill is a helper only — not added to field_widgets so it's never saved
+
             elif field_type == "textarea":
                 text_widget = tk.Text(field_frame, font=font_entry, bg="black", fg="white", 
                                      width=40, height=4, wrap="word")
@@ -20735,6 +20874,7 @@ def prompt_title_top_info_text(event=None):
 guessing_extra = None
 showing_bonus_answer = False
 bonus_points = ['1 PT', '2 PTs', '2 PTs']
+used_multiple_titles = {}  # tracks how many times each title has appeared as an option
 def guess_extra(extra = None):
     global guessing_extra, showing_bonus_answer, bonus_chars, bonus_correct_indices
     buttons = [guess_year_button, guess_members_button, guess_score_button, guess_tags_button, 
@@ -20997,6 +21137,7 @@ def get_random_tags():
         return sorted(tags)
     return ["",""]
 
+
 def get_random_titles(amount=4):
     data = currently_playing.get("data")
     if not data:
@@ -21018,20 +21159,47 @@ def get_random_titles(amount=4):
 
     correct_words = get_words(correct_base_title)
 
-    def get_similarity_score(anime):
+    def get_series_key(anime):
+        s = anime.get("series") or [anime.get("title")]
+        return s[0] if s else anime.get("title", "")
+
+    # Build series title-count lookup once (O(n)) to avoid O(n²) in scoring
+    series_title_count = {}
+    for a in anime_metadata.values():
+        key = get_series_key(a)
+        series_title_count[key] = series_title_count.get(key, 0) + 1
+
+    # Build MAL ID -> AniList tag {name: rank} dict from file_metadata (anilist id lives there, not in anime_metadata)
+    mal_to_anilist_tags = {}
+    for mal_id, fm_entry in file_metadata.items():
+        anilist_id = fm_entry.get("anilist")
+        if anilist_id:
+            al = anilist_metadata.get(str(anilist_id))
+            if al:
+                mal_to_anilist_tags[mal_id] = {t["name"]: t.get("rank", 0) for t in al.get("tags", []) if t.get("name")}
+
+    correct_mal_id = data.get("mal")
+    correct_studios = set(data.get("studios", []))
+    correct_tags = set(get_tags(data))
+    correct_anilist_tags = mal_to_anilist_tags.get(correct_mal_id, {})
+
+    def get_similarity_score(entry):
+        mal_id, anime = entry
         score = 0
-        score += len(set(anime.get("genres", [])) & set(data.get("genres", [])))
-        score += len(set(anime.get("themes", [])) & set(data.get("genres", [])))
-        score += len(set(anime.get("studios", [])) & set(data.get("studios", [])))
-        score += len(set(get_tags(anime)) & set(get_tags(data)))
-        score -= max(0, (get_series_total(anime) - 2))
-        anime_words = get_words(get_base_title(anime))
-        overlap = len(correct_words & anime_words)
+        score += len(set(anime.get("studios", [])) & correct_studios)
+        candidate_tags = mal_to_anilist_tags.get(mal_id, {})
+        if correct_anilist_tags and candidate_tags:
+            score += sum(min(correct_anilist_tags[name], candidate_tags[name]) / 100
+                         for name in correct_anilist_tags if name in candidate_tags)
+        else:
+            score += len(set(get_tags(anime)) & correct_tags) * 2
+        score -= max(0, (series_title_count.get(get_series_key(anime), 1) - 2))
+        score -= used_multiple_titles.get(get_series_key(anime), 0) * 2
         return score
 
-    # Step 1: Filter and score
+    # Step 1: Filter and score (iterate items to have mal_id available)
     similar_anime = [
-        a for a in anime_metadata.values()
+        (mal_id, a) for mal_id, a in anime_metadata.items()
         if get_display_title(a) != correct_title
     ]
 
@@ -21040,7 +21208,7 @@ def get_random_titles(amount=4):
 
     unique_series_anime = []
     seen_series = set(used_series)
-    for anime in similar_anime:
+    for mal_id, anime in similar_anime:
         series = anime.get("series") or [anime.get("title")]
         if isinstance(series, str):
             series = [series]
@@ -21060,19 +21228,24 @@ def get_random_titles(amount=4):
         if group:
             pick = random.choice(group)
             distractors.append(get_display_title(pick))
+            key = get_series_key(pick)
+            used_multiple_titles[key] = used_multiple_titles.get(key, 0) + 1
+
+    correct_key = correct_series[0] if correct_series else correct_title
+    used_multiple_titles[correct_key] = used_multiple_titles.get(correct_key, 0) + 1
 
     titles.extend(distractors)
     random.shuffle(titles)
     return titles
 
 def get_series_total(data):
-    get_series_totals(refetch=False)
     series = data.get("series")
-    if series:
-        series = series[0]
-    else:
-        series = data.get("title")
-    return series_totals[series]
+    series_key = series[0] if series else data.get("title")
+    count = sum(
+        1 for a in anime_metadata.values()
+        if series_key in (a.get("series") or [a.get("title")])
+    )
+    return max(count, 1)
 
 def split_array(arr, parts=2):
     if parts <= 0:
@@ -21365,6 +21538,18 @@ def play_video(index=playlist["current_index"]):
             fixed_lightning_round_playlist_data["current_index"] = 0
             # Update playlist display to show fixed rounds
             update_playlist_display()
+            
+            # Add session log entry for starting fixed rounds
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            fixed_rounds_entry = {
+                "timestamp": timestamp,
+                "type": "fixed_rounds_start",
+                "playlist_name": fixed_lightning_round_playlist_data.get("name", "Unknown"),
+                "creator": fixed_lightning_round_playlist_data.get("creator", "N/A"),
+                "round_count": len(fixed_lightning_round_playlist_data.get("rounds", []))
+            }
+            session_data.append(fixed_rounds_entry)
+            save_session_history(create_text_file=False)
         else:
             fixed_lightning_round_playlist_data["current_index"] += skip_direction
         index = fixed_lightning_round_playlist_data["current_index"]
@@ -21982,6 +22167,11 @@ def generate_text_from_session_data():
             title = entry.get("title", "")
             name = entry.get("name", "")
             session_string = f"{session_string} [YOUTUBE VIDEO({url})] - {title} by {name}"
+        elif entry_type == "fixed_rounds_start":
+            playlist_name = entry.get("playlist_name", "Unknown")
+            creator = entry.get("creator", "N/A")
+            round_count = entry.get("round_count", 0)
+            session_string = f"{session_string} [FIXED LIGHTNING ROUNDS START] {playlist_name} by {creator} ({round_count} rounds)"
         elif entry_type == "scoreboard_score":
             player = entry.get("player", "")
             delta = entry.get("delta", 0)
@@ -24402,7 +24592,7 @@ def get_fixed_round_title(key, round_data):
     # Get anime title from metadata if possible
     try:
         data = get_metadata(theme, fetch=False)
-        title = data.get("title", theme)
+        title = get_display_title(data)
     except:
         title = theme
     
