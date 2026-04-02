@@ -1,9 +1,9 @@
-# =========================================
+﻿# =========================================
 #      GUESS THE ANIME - PLAYLIST TOOL
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "15.7"  # Update this when making releases
+APP_VERSION = "16.0"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -143,7 +143,7 @@ def load_vlc_parameters(override_vout=None):
     value as-is. Passing override_vout="automatic" removes explicit --vout.
     """
     global hw_acc_enabled
-    param_file = os.path.join("files", "vlc-parameters.txt")
+    param_file = os.path.join("config", "vlc-parameters.txt")
     if os.path.isfile(param_file):
         with open(param_file, "r", encoding="utf-8") as f:
             print("Loaded custom vlc parameters.")
@@ -714,17 +714,19 @@ selected_rules_file = "rules.json"
 YOUTUBE_API_KEY = ""
 OPENAI_API_KEY = ""
 SERPAPI_KEY = ""
-CONFIG_FILE = "files/config.json"
+CONFIG_FOLDER = "config"
+CONFIG_FILE = "config/config.json"
+CENSORS_FOLDER = "censors"
+RULES_FOLDER = "rules"
+LIGHTNING_SETTINGS_FOLDER = "lightning_settings"
+INFINITE_SETTINGS_FOLDER = "infinite_settings"
+POPOUT_LAYOUTS_FOLDER = "popout_layouts"
 YOUTUBE_FOLDER = "youtube"
-ARCHIVE_FILE = "files/youtube_archive.txt"
 PLAYLISTS_FOLDER = "playlists/"
 FILTERS_FOLDER = "filters"
-YOUTUBE_LINKS_FILE = "files/youtube_links.txt"
-CENSOR_FILE = "files/censors.csv"
-CENSOR_JSON_FILE = "files/censors.json"
-TAGGED_FILE = "files/tagged.txt"
+CENSOR_JSON_FILE = "censors/censors.json"
 THEMES_CACHE_FOLDER = "themes_cache"
-CACHE_METADATA_FILE = "files/cache_metadata.json"
+CACHE_METADATA_FILE = "themes_cache/cache_metadata.json"
 themes_cache_size = 500  # Size in MB
 HIGHLIGHT_COLOR = "gray26"
 OVERLAY_BACKGROUND_COLOR = "black"
@@ -2395,14 +2397,18 @@ def refresh_all_metadata(delay=1):
 #        *METADATA DISPLAY
 # =========================================
 
+LISTS_TO_CLOSE = ['load_playlist', 'merge_playlist', 'load_system_playlist', 'delete_playlist', 'load_filters', 'delete_filters', 'sort', 'show_fixed_lightning_list', 'show_youtube_playlist']
+
 def clear_metadata():
     """Function to clear metadata fields"""
-    global list_loaded
+    global list_loaded, current_list_title
     left_column.delete(1.0, tk.END)
     middle_column.delete(1.0, tk.END)
-    if list_loaded != "playlist":
+    if not list_loaded or list_loaded in LISTS_TO_CLOSE:
         list_set_loaded(None)
         right_column.delete(1.0, tk.END)
+        current_list_title = ""
+        _insert_list_title_row(right_column)
 
 def open_mal_page(mal_id):
     url = f"https://myanimelist.net/anime/{mal_id}"
@@ -2452,11 +2458,6 @@ def update_metadata():
     if True:
         filename = currently_playing.get("filename")
         if filename:
-            button_seleted(tag_button, check_tagged(filename))
-            button_seleted(favorite_button, check_favorited(filename))
-            button_seleted(blind_mark_button, check_blind_mark(filename))
-            button_seleted(peek_mark_button, check_peek_mark(filename))
-            button_seleted(mute_peek_mark_button, check_mute_peek_mark(filename))
             data = currently_playing.get('data')
             reset_metadata()
             # count number of times file appears in playlist
@@ -2477,8 +2478,7 @@ def update_metadata():
                 left_column.insert(tk.END, "\n\n", "blank")
 
             if data:
-                add_single_data_line(left_column, data, "TITLE: ", 'title', False)
-                add_field_total_button(left_column, get_all_matching_field("mal", data.get("mal")), True)
+                add_single_data_line(left_column, data, "TITLE: ", 'title', True)
                 add_single_data_line(left_column, data, "ENGLISH: ", 'eng_title', True)
                 if data.get("synonyms"):
                     add_multiple_data_line(left_column, data, "SYNONYMS: ", "synonyms", True)
@@ -2487,7 +2487,7 @@ def update_metadata():
                 else:
                     add_single_data_line(left_column, data, "AIR: ", "aired", False)
                     add_single_data_line(left_column, data, ", ", "season", False, title_font="white")
-                    add_field_total_button(left_column, get_all_matching_field("season", data.get("season")), blank=True)
+                    add_field_total_button(left_column, get_all_matching_field("season", data.get("season")), blank=True, title=(data.get("season") or "").upper())
                 add_single_data_line(left_column, data, "SCORE: ", 'score', False)
                 if not is_game(data):
                     add_single_data_line(left_column, data, " (#", 'rank', False, title_font="white")
@@ -2561,18 +2561,18 @@ def update_metadata():
                 left_column.insert(tk.END, "STUDIOS: ", "bold")
                 for index, studio in enumerate(data.get("studios", [])):
                     left_column.insert(tk.END, f"{studio}", "white")
-                    add_field_total_button(left_column, get_filenames_from_studio(studio), blank = False)
+                    add_field_total_button(left_column, get_filenames_from_studio(studio), blank = False, title=studio)
                     if index < len(data.get("studios"))-1:
                         left_column.insert(tk.END, f", ", "white")
                 if data.get("series"):
                     left_column.insert(tk.END, "\n\n", "blank")
                     add_multiple_data_line(left_column, data, "SERIES: ", "series", False)
-                    add_field_total_button(left_column, get_all_matching_field("series", data.get("series")))
+                    _series_val = data.get("series", "")
+                    add_field_total_button(left_column, get_all_matching_field("series", _series_val), title=(", ".join(_series_val) if isinstance(_series_val, list) else str(_series_val or "")))
 
                 update_series_song_information(data, data.get("mal"))
 
-            if list_loaded != "playlist":
-                update_extra_metadata()
+            update_extra_metadata()
                 
             toggleColumnEdit(False)
 
@@ -2647,6 +2647,7 @@ def update_popout_currently_playling(data, clear=False):
     popout_currently_playing_extra.config(state=tk.DISABLED)
 
 def update_extra_metadata(column=None):
+    global current_list_title
     if currently_playing.get("type") == "youtube":
         show_youtube_playlist()
         return
@@ -2654,10 +2655,16 @@ def update_extra_metadata(column=None):
     data = currently_playing.get("data")
     if column is None:
         column = right_column
+    # Don't overwrite a loaded list — it will show metadata when the list is closed
+    if column is right_column and not (not list_loaded or list_loaded in LISTS_TO_CLOSE):
+        return
+    if column is right_column and current_list_title:
+        current_list_title = ""
+        _insert_list_title_row(column)
     column.config(state=tk.NORMAL, wrap="word")
     column.delete(1.0, tk.END)
     extra_data = [
-        "synopsis", "characters", "episode_info", "tags", "links"
+        "synopsis", "characters", "episode_info", "tags", "clips"
     ]
     column.insert(tk.END, "   ", "blank")
     if data:
@@ -2668,7 +2675,7 @@ def update_extra_metadata(column=None):
                 bg="black"
             column.window_create(tk.END, window=tk.Button(column, text=(f"{e.upper().replace("EPISODE_INFO", "EPS").replace("CsHARACTERS", "")}"), font=("Arial", scl(11, "UI"), "bold", "underline"), command=lambda x=e: select_extra_metadata(x), padx=scl(2), bg=bg, fg="white"))
         column.insert(tk.END, "\n\n", "blank")
-    if not data or selected_extra_metadata == "links":
+    if not data or selected_extra_metadata == "clips":
         filename = currently_playing.get("filename")
         if not filename:
             column.config(state=tk.DISABLED, wrap="word")
@@ -2690,26 +2697,6 @@ def update_extra_metadata(column=None):
         _cached_clips_links = _cached_clips.get(_cached_id) or _cached_clips.get(_cached_id_base) or []
         _cached_ost_clips_links = _cached_ost_clips.get(_cached_id) or _cached_ost_clips.get(_cached_id_base) or []
         links = [
-            ["FILE ACTIONS", "header", True],
-            ["⎘COPY FILENAME", lambda: pyperclip.copy(filename), True],
-            ["📁OPEN FOLDER", lambda: open_file_folder_by_filename(filename), is_local_file],
-            ["⬇️DOWNLOAD", None, is_animethemes_stream],  # Command set during button creation
-            ["✂️CUT BEFORE", lambda: cut_before_current_time(filename), ffmpeg_available and is_local_file],
-            ["✂️CUT AFTER", lambda: cut_after_current_time(filename), ffmpeg_available and is_local_file],
-            ["✏️RENAME", lambda: rename_file_by_filename(filename), is_local_file],
-            ["🔄CONVERT", lambda: convert_file_format_by_filename(filename), ffmpeg_available and is_local_file],
-            ["🔊EDIT VOLUME", lambda: edit_file_volume_by_filename(filename), ffmpeg_available and is_local_file],
-            ["❌DELETE", lambda: delete_file_by_filename(filename), is_local_file],
-            ["EXTERNAL SITES", "header", data and not is_game(data)],
-            ["MYANIMELIST", lambda: open_mal_page(data.get("mal")), data.get("mal") and not is_game(data)],
-            ["ANIDB", lambda: open_anidb_page(data.get("anidb")), not is_game(data) and data.get("anidb")],
-            ["ANILIST", lambda: open_anilist_page(data.get("anilist")), not is_game(data) and data.get("anilist")],
-            ["ANIMETHEMES", lambda: open_animethemes_anime_page(data.get("animethemes_slug")), data and data.get("animethemes_slug") and "[MAL]" not in filename and "[ID]" not in filename and currently_playing.get("type") == "theme"],
-            ["▶", lambda: anime_themes_video(filename), data and data.get("animethemes_slug") and "[MAL]" not in filename and "[ID]" not in filename and currently_playing.get("type") == "theme"],
-            ["MEDIA", "header", data.get("trailer") or data.get("cover") or (OPENAI_API_KEY and data.get("synopsis"))],
-            ["SHOW COVER", lambda: create_cover_popup(f"{get_display_title(data)} Cover", data.get("cover"))(), data.get("cover")],
-            ["PLAY TRAILER", play_trailer, data.get("trailer")],
-            ["TRIVIA", lambda: generate_anime_trivia(data, True), data and OPENAI_API_KEY],
             ["YOUTUBE CLIPS", "header", data and YOUTUBE_API_KEY],
             ["LOAD YOUTUBE CLIPS", load_random_clips, data and YOUTUBE_API_KEY and not _cached_clips_links],
             ["YOUTUBE CLIP LIST", stream_clip, _cached_clips_links],
@@ -2759,6 +2746,11 @@ def update_extra_metadata(column=None):
                             create_link_button(
                                 "🔗",
                                 lambda u=url: webbrowser.open(u),
+                                blank=False
+                            )
+                            create_link_button(
+                                "⎘",
+                                lambda u=url: pyperclip.copy(u),
                                 blank=False
                             )
                             column.insert(tk.END, f"{title} by {channel_title}\n", "white")
@@ -3312,27 +3304,17 @@ def update_up_next_display(widget, clear=False):
                 if playlist["current_index"] + 1 < len(playlist["playlist"]):
                     playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
                     next_filename = get_clean_filename(playlist_entry)
-                if next_filename and check_file_availability(next_filename) and playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2:
+                if next_filename and is_reroll_valid():
                     reroll_button = tk.Button(
                             widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
-                            pady=0, command=refetch_next_track, bg="black", fg="white"
+                            pady=0, command=reroll_next, bg="black", fg="white"
                         )
-                    if is_popout:
-                        popout_buttons_by_name["reroll"].configure(
-                            text="RE-ROLL\nNEXT 🔄",
-                            command=refetch_next_track
-                        )
-                    else:
+                    if not is_popout:
                         widget.window_create(
                             tk.END,
                             window=reroll_button
                         )
                 else:
-                    if is_popout:
-                        popout_buttons_by_name["reroll"].configure(
-                            text="",
-                            command=lambda: None
-                        )
                     reroll_button = None
             if not is_popout:
                 widget.insert(tk.END, "NEXT: ", "bold")
@@ -3370,10 +3352,13 @@ def update_up_next_display(widget, clear=False):
                             version_num = f"v{version_num}"
                         else:
                             version_num = ""
+                        title = get_display_title(next_up_data)
+                        if is_popout and len(title) > 35:
+                            title = title[:32] + "..."
                         if lightning_queue and lightning_queue[0] == next_filename and variety_light_mode_enabled:
                             widget.insert(tk.END, f"[{lightning_queue[1].upper()}] ", "white")
                         next_up_text = (
-                            f"{get_file_marks(next_filename)}{get_display_title(next_up_data)}\n"
+                            f"{get_file_marks(next_filename)}{title}\n"
                             f"{format_slug(next_up_data.get('slug'))}{version_num} | {next_up_data.get('members') or 0:,} "
                             f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
                         )
@@ -3395,10 +3380,15 @@ def update_up_next_display(widget, clear=False):
 
 def adjust_up_next_height(widget, is_popout):
     widget.config(state=tk.NORMAL, wrap="word")
+    widget.update_idletasks()   # ensure display lines are measured at actual rendered width
     total_lines = widget.count("1.0", "end", "displaylines")[0]
     if is_popout:
-        total_lines = total_lines - 1
-    widget.config(state=tk.NORMAL, height=total_lines + 1, wrap="word")
+        # subtract the trailing-newline phantom line, but always keep at least 2
+        total_lines = 2
+        widget.config(state=tk.NORMAL, height=total_lines, wrap="word")
+    else:
+        # main player needs +1 to avoid clipping the last display line
+        widget.config(state=tk.NORMAL, height=total_lines + 1, wrap="word")
     widget.config(state=tk.DISABLED, wrap="word")
 
 def get_display_title(data):
@@ -3407,7 +3397,7 @@ def get_display_title(data):
 def is_game(data):
     return get_format(data) == "Game" or get_format(data) == "Visual Novel" or data.get("platforms")
 
-def add_field_total_button(column, group, blank = True, show_count=True, button_text=None):
+def add_field_total_button(column, group, blank = True, show_count=True, button_text=None, title=None):
     count = len(group)
     if count > 0:
         if not button_text:
@@ -3415,7 +3405,7 @@ def add_field_total_button(column, group, blank = True, show_count=True, button_
                 button_text = f"[{count}]"
             else:
                 button_text = "▶"
-        btn = tk.Button(column, text=button_text, borderwidth=0, pady=0, command=lambda: show_field_themes(group=group), bg="black", fg="white", font=("Arial", scl(11), "bold"))
+        btn = tk.Button(column, text=button_text, borderwidth=0, pady=0, command=lambda: show_field_themes(group=group, title=title), bg="black", fg="white", font=("Arial", scl(11), "bold"))
         column.window_create(tk.END, window=btn)
     if blank:
         column.insert(tk.END, "\n\n", "blank")
@@ -3759,7 +3749,8 @@ def add_op_ed(theme, column, slug, title, mal_id):
     else:
         for index, artist in enumerate(artist_list):
             column.insert(tk.END, f"{artist}", format)
-            add_field_total_button(column, get_filenames_from_artist(artist), blank=False)
+            if theme_slug == slug:
+                add_field_total_button(column, get_filenames_from_artist(artist), blank=False, title=artist)
             if index < len(artist_list) - 1:
                 column.insert(tk.END, ", ", format)
 
@@ -4147,7 +4138,7 @@ def show_youtube_playlist(update = False):
                 break
     
     _youtube_playlist = all_videos
-    show_list("youtube", right_column, all_videos, get_youtube_title, load_youtube_video, selected, update)
+    show_list("youtube", right_column, all_videos, get_youtube_title, load_youtube_video, selected, update, title="YOUTUBE VIDEOS")
 
 def shorten_youtube_title(title):
     pattern = re.compile(r'(can you guess the|guess the|how well do you know|can you|guess|their|from the|from|by|with|its|just)\s*', re.IGNORECASE)
@@ -4265,14 +4256,9 @@ def open_youtube_editor():
     
     def youtube_editor_close():
         global youtube_editor_window, youtube_page_offset
-        button_seleted(manage_youtube_button, False)
-        manage_youtube_button.configure(text="➕")
         youtube_page_offset = 0
         youtube_editor_window.destroy()
         youtube_editor_window = None
-
-    button_seleted(manage_youtube_button, True)
-    manage_youtube_button.configure(text="❌")
 
     if youtube_editor_window:
         youtube_editor_close()
@@ -4875,12 +4861,11 @@ def empty_playlist():
     playlist = copy.deepcopy(BLANK_PLAYLIST)
 
 # Generate playlist button
-def generate_playlist_button():
+def generate_playlist_button(include_non_local=None):
     global playlist
-    include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
-    extra_locations = ""
-    if include_non_local:
-        extra_locations = " and metadata"
+    if include_non_local is None:
+        include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
+    extra_locations = " and metadata" if include_non_local else ""
     confirm = messagebox.askyesno("Create Playlist", f"Are you sure you want to create a new playlist with all {len(get_directory_files(include_non_local=include_non_local))} files in directory{extra_locations}?")
     if not confirm:
         return  # User canceled
@@ -4961,13 +4946,14 @@ def create_living_playlist_with_confirmation(matching_files, playlist_name, sour
     playlist["source"] = source_data
     return True
 
-def generate_anilist_playlist():
+def generate_anilist_playlist(include_non_local=None):
     user_id = simpledialog.askstring("AniList User ID", "Enter the AniList user ID:")
     if not user_id:
         return
     
     only_watched = messagebox.askyesno("AniList Only Watched", f"Do you want to limit results to only watched entries?")
-    include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
+    if include_non_local is None:
+        include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
     
     matching_files = get_anilist_matching_files(user_id, only_watched, include_non_local)
     
@@ -4987,12 +4973,13 @@ def generate_anilist_playlist():
     }
     create_living_playlist_with_confirmation(matching_files, f"{user_id}'s AniList", source_data)
 
-def generate_animethemes_playlist():
+def generate_animethemes_playlist(include_non_local=None):
     hashid = simpledialog.askstring("AnimeThemes Playlist", "Enter the AnimeThemes playlist hashid:")
     if not hashid:
         return
     
-    include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
+    if include_non_local is None:
+        include_non_local = messagebox.askyesno("Create Playlist: Include non-local files", f"Would you like to include non-local files from metadata(they will stream)?")
     
     try:
         matching_files, playlist_name, total_count = get_animethemes_matching_files(hashid, include_non_local)
@@ -5114,7 +5101,7 @@ def confirm_save_playlist(text=""):
         if len(playlist.get("playlist", [])) > 15:
             confirm = messagebox.askyesno("Save Playlist", f"Do you want to save your current playlist before {text}?")
             if confirm:
-                save()
+                save_as()
         return
     elif playlist.get("name") in SYSTEM_PLAYLISTS:
         return  # Do not ask to save for these special playlists
@@ -5172,7 +5159,6 @@ def new_playlist(playlis, name=None):
     up_next_text()
     update_playlist_name(name=name)
     playlist["playlist"] = playlis
-    create_first_row_buttons()
     update_current_index(0)
     update_playlist_name()
     save_config()
@@ -5184,23 +5170,23 @@ def new_playlist(playlis, name=None):
         if is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
             threading.Thread(target=lambda: download_to_cache(first_filename, silent=False), daemon=True).start()
 
-def create_infinite_playlist():
+def create_infinite_playlist(include_non_local=None):
     global playlist
     confirm = messagebox.askyesno("Create Infinite Playlist", f"Are you sure you want to create a new infinite playlist?")
     if not confirm:
         return  # User canceled
     new_playlist([])
     playlist["infinite"] = True
-    # Copy global settings as template, but set include_non_local_files based on local files
+    # Copy global settings as template, then set include_non_local_files
     playlist["infinite_settings"] = copy.deepcopy(infinite_settings)
-    playlist["infinite_settings"]["include_non_local_files"] = len(directory_files) == 0
-    # Set default filter to exclude overlap and NSFW themes without censors
+    playlist["infinite_settings"]["include_non_local_files"] = include_non_local if include_non_local is not None else False
+    # Set default filter to exclude overlap and NSFW themes without censors, and exclude Tagged/New Themes playlists
     playlist["filter"] = {
-        "themes_exclude": ["OVERLAP", "NSFW (Without Censors)", "TRANSITION (Without Censors)"]
+        "themes_exclude": ["OVERLAP", "NSFW (Without Censors)", "TRANSITION (Without Censors)"],
+        "playlist_filter_exclude": ["Tagged Themes", "New Themes"]
     }
     get_pop_time_groups(refetch=True)
     get_next_infinite_track()
-    create_first_row_buttons()
     update_playlist_name("")
     save_config()
     
@@ -5503,7 +5489,6 @@ def toggle_infinite_playlist():
         current_list_selected = playlist["current_index"]
         refresh_current_list()
     
-    create_first_row_buttons()
     save_config()
 
 SEASON_ORDER = ["Winter", "Spring", "Summer", "Fall"]
@@ -5566,6 +5551,21 @@ def select_difficulty(event=None):
     if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
         value = difficulty_dropdown.get()
         popout_buttons_by_name["DIFFICULTY DROPDOWN"].set(value)
+    _refresh_popout_toggles()
+    save_config()
+
+def _set_difficulty_from_menu(idx):
+    """Set infinite playlist difficulty from a menu radiobutton selection."""
+    playlist["difficulty"] = idx
+    refresh_pop_time_groups()
+    try:
+        selected_difficulty.set(difficulty_options[idx])
+        difficulty_dropdown.selection_clear()
+    except Exception:
+        pass
+    if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
+        popout_buttons_by_name["DIFFICULTY DROPDOWN"].set(difficulty_options[idx])
+    _refresh_popout_toggles()
     save_config()
 
 def refresh_pop_time_groups(refetch_next=True):
@@ -5747,12 +5747,8 @@ def get_pop_time_groups(refetch=False):
             mal_last_index[mal_id] = idx  # Last occurrence wins since we iterate forward
         history_len = len(playlist_mal_history)
 
-        # Pre-build tagged/new/favorited sets for O(1) lookups instead of repeated file I/O + list scans
-        check_theme("", "Tagged Themes")    # Ensure cache is loaded
-        check_theme("", "New Themes")       # Ensure cache is loaded
+        # Pre-build favorited set for O(1) lookups instead of repeated file I/O + list scans
         check_theme("", "Favorite Themes")  # Ensure cache is loaded
-        tagged_set = check_theme_cache.get("Tagged Themes", set())
-        new_themes_set = check_theme_cache.get("New Themes", set())
         favorited_set = check_theme_cache.get("Favorite Themes", set())
 
         # Pre-compute season boost lookup for O(1) instead of calling get_last_three_seasons() per file
@@ -5769,7 +5765,7 @@ def get_pop_time_groups(refetch=False):
 
         shows_files_map = {}
         for f, d in all_metadata.items():
-            if not d or f in tagged_set or f in new_themes_set:
+            if not d:
                 cached_skipped_themes.append(f)
                 continue
             
@@ -6244,6 +6240,147 @@ def convert_infinity_markers(obj):
         return [convert_infinity_markers(item) for item in obj]
     return obj
 
+def _migrate_old_file_structure():
+    """One-time migration from the legacy 'files/' folder to the new folder layout.
+
+    Explicit files:
+      files/config.json          → config/config.json
+      files/vlc-parameters.txt   → config/vlc-parameters.txt
+      files/cache_metadata.json  → themes_cache/cache_metadata.json
+      files/censors.json         → censors/censors.json
+      files/ramuns_censors.json  → censors/ramuns_censors.json
+
+    All *.json files in files/ ending with 'rules.json' (case-insensitive) → rules/
+
+    After migration, removes 'files/' if it is empty.
+
+    Preset migration (saved_lightning_mode_settings / saved_infinite_settings) always
+    runs against config/config.json so it works even if files/ was already removed.
+    """
+    if os.path.exists("files"):
+        explicit = [
+            (os.path.join("files", "config.json"),         CONFIG_FILE),
+            (os.path.join("files", "vlc-parameters.txt"),  os.path.join(CONFIG_FOLDER, "vlc-parameters.txt")),
+            (os.path.join("files", "cache_metadata.json"), CACHE_METADATA_FILE),
+            (os.path.join("files", "censors.json"),        CENSOR_JSON_FILE),
+            (os.path.join("files", "ramuns_censors.json"), os.path.join(CENSORS_FOLDER, "ramuns_censors.json")),
+        ]
+        for src, dst in explicit:
+            if os.path.exists(src) and not os.path.exists(dst):
+                os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
+                os.replace(src, dst)
+                print(f"Migrated {src} → {dst}")
+
+        # Move all rules files (any *.json ending with 'rules.json') to rules/
+        try:
+            for fname in os.listdir("files"):
+                if fname.lower().endswith("rules.json") and os.path.isfile(os.path.join("files", fname)):
+                    dst = os.path.join(RULES_FOLDER, fname)
+                    if not os.path.exists(dst):
+                        os.makedirs(RULES_FOLDER, exist_ok=True)
+                        os.replace(os.path.join("files", fname), dst)
+                        print(f"Migrated files/{fname} → {dst}")
+        except Exception as e:
+            print(f"Warning: rules migration error: {e}")
+
+        # Remove files/ if now empty (ignoring subdirectories)
+        try:
+            remaining = [f for f in os.listdir("files") if os.path.isfile(os.path.join("files", f))]
+            if not remaining:
+                # Only remove the folder itself if there are no subdirectories either
+                if not any(os.path.isdir(os.path.join("files", d)) for d in os.listdir("files")):
+                    os.rmdir("files")
+                    print("Removed empty 'files/' folder.")
+        except Exception:
+            pass
+
+    # Migrate saved_lightning_mode_settings and saved_infinite_settings from config.json.
+    # This runs unconditionally so it works even when files/ was already removed in a prior run.
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                old_config = json.load(f)
+            for name, diff in old_config.get("saved_lightning_mode_settings", {}).items():
+                dst = os.path.join(LIGHTNING_SETTINGS_FOLDER, f"{name}.json")
+                if not os.path.exists(dst):
+                    os.makedirs(LIGHTNING_SETTINGS_FOLDER, exist_ok=True)
+                    with open(dst, "w", encoding="utf-8") as f:
+                        json.dump(diff, f, indent=4)
+                    print(f"Migrated lightning preset '{name}' \u2192 {dst}")
+            for name, diff in old_config.get("saved_infinite_settings", {}).items():
+                dst = os.path.join(INFINITE_SETTINGS_FOLDER, f"{name}.json")
+                if not os.path.exists(dst):
+                    os.makedirs(INFINITE_SETTINGS_FOLDER, exist_ok=True)
+                    with open(dst, "w", encoding="utf-8") as f:
+                        json.dump(diff, f, indent=4)
+                    print(f"Migrated infinite preset '{name}' \u2192 {dst}")
+    except Exception as e:
+        print(f"Warning: preset migration error: {e}")
+
+def _load_settings_presets(folder):
+    """Load all preset JSON files from a folder, returning {name: diff_dict}."""
+    presets = {}
+    if not os.path.exists(folder):
+        return presets
+    for fname in sorted(os.listdir(folder)):
+        if fname.endswith(".json"):
+            name = fname[:-5]
+            try:
+                with open(os.path.join(folder, fname), "r", encoding="utf-8") as f:
+                    presets[name] = json.load(f)
+            except Exception as e:
+                print(f"Failed to load preset '{fname}': {e}")
+    return presets
+
+def _load_popout_layout_presets():
+    """Return {name: {layout: [...], columns: N}} for all saved popout layout presets."""
+    presets = {}
+    if not os.path.exists(POPOUT_LAYOUTS_FOLDER):
+        return presets
+    for fname in sorted(os.listdir(POPOUT_LAYOUTS_FOLDER)):
+        if fname.endswith(".json"):
+            name = fname[:-5]
+            try:
+                with open(os.path.join(POPOUT_LAYOUTS_FOLDER, fname), "r", encoding="utf-8") as f:
+                    presets[name] = json.load(f)
+            except Exception as e:
+                print(f"Failed to load popout layout preset '{fname}': {e}")
+    return presets
+
+def _save_popout_layout_preset(name, layout_list, columns):
+    """Write a single popout layout preset to POPOUT_LAYOUTS_FOLDER/<name>.json."""
+    os.makedirs(POPOUT_LAYOUTS_FOLDER, exist_ok=True)
+    path = os.path.join(POPOUT_LAYOUTS_FOLDER, f"{name}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"layout": layout_list, "columns": columns}, f, indent=4)
+
+def _save_settings_presets(folder, saved_dict, default_dict, update_fn=None, convert_inf=False):
+    """Sync all presets in saved_dict to individual JSON files in folder.
+    Writes current presets as diffs against default_dict, removes orphan files."""
+    os.makedirs(folder, exist_ok=True)
+    for name, settings in saved_dict.items():
+        if update_fn:
+            full = update_fn(settings)
+        else:
+            full = sync_with_default(copy.deepcopy(settings), default_dict)
+        diff = compute_settings_diff(default_dict, full)
+        data = diff if diff is not None else {}
+        if convert_inf:
+            data = convert_infinities_to_markers(data)
+        try:
+            with open(os.path.join(folder, f"{name}.json"), "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            print(f"Failed to save preset '{name}': {e}")
+    # Remove orphan files
+    current_names = set(saved_dict.keys())
+    for fname in os.listdir(folder):
+        if fname.endswith(".json") and fname[:-5] not in current_names:
+            try:
+                os.remove(os.path.join(folder, fname))
+            except Exception:
+                pass
+
 def save_config():
     """Function to save configuration"""
     files_folder = os.path.dirname(CONFIG_FILE)  # Get the folder path
@@ -6251,24 +6388,13 @@ def save_config():
     if not os.path.exists(files_folder):
         os.makedirs(files_folder)
     lightning_diff = compute_settings_diff(lightning_mode_settings_default, lightning_mode_settings) or {}
-    compact_saved = {}
-    for name, settings in saved_lightning_mode_settings.items():
-        # Ensure each saved entry is trimmed before saving
-        full = update_lightning_mode_settings(settings)
-        diff = compute_settings_diff(lightning_mode_settings_default, full)
-        compact_saved[name] = diff if diff is not None else {}
-    
     infinite_diff = compute_settings_diff(INFINITE_SETTINGS_DEFAULT, infinite_settings) or {}
-    # Convert infinities in the diff before saving
     infinite_diff = convert_infinities_to_markers(infinite_diff)
-    
-    compact_saved_infinite = {}
-    for name, settings in saved_infinite_settings.items():
-        # Ensure each saved entry is trimmed before saving
-        full = sync_with_default(copy.deepcopy(settings), INFINITE_SETTINGS_DEFAULT)
-        diff = compute_settings_diff(INFINITE_SETTINGS_DEFAULT, full)
-        # Convert infinities before storing
-        compact_saved_infinite[name] = convert_infinities_to_markers(diff if diff is not None else {})
+
+    _save_settings_presets(LIGHTNING_SETTINGS_FOLDER, saved_lightning_mode_settings,
+                           lightning_mode_settings_default, update_fn=update_lightning_mode_settings)
+    _save_settings_presets(INFINITE_SETTINGS_FOLDER, saved_infinite_settings,
+                           INFINITE_SETTINGS_DEFAULT, convert_inf=True)
 
     config = {
         "host": host,
@@ -6299,14 +6425,14 @@ def save_config():
         "directory": directory,
         "lightning_mode_settings": lightning_diff,
         "selected_light_mode_settings": selected_light_mode_settings,
-        "saved_lightning_mode_settings": compact_saved,
         "infinite_settings": infinite_diff,
         "selected_infinite_settings": selected_infinite_settings,
-        "saved_infinite_settings": compact_saved_infinite,
-        "playlist": playlist,
-        "directory_files": directory_files,
+        "popout_layout": popout_layout if popout_layout is not None else [],
         "metadata_last_updated": metadata_last_updated,
-        "censors_last_updated": censors_last_updated
+        "censors_last_updated": censors_last_updated,
+        "popout_columns": popout_columns,
+        "playlist": playlist,
+        "directory_files": directory_files
     }
     
     # Convert infinities in playlist's infinite_settings before saving
@@ -6327,6 +6453,7 @@ def load_config():
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, themes_cache_size, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
     global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, background_music_volume_modifier, stream_instance, ost_stream_instance
+    global popout_layout, popout_columns
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -6349,14 +6476,14 @@ def load_config():
             set_rules()
             lightning_mode_settings = update_lightning_mode_settings(config.get("lightning_mode_settings", copy.deepcopy(lightning_mode_settings_default)))
             selected_light_mode_settings = config.get("selected_light_mode_settings", "")
-            saved_lightning_mode_settings = config.get("saved_lightning_mode_settings", {})
-            
+            saved_lightning_mode_settings = convert_infinity_markers(_load_settings_presets(LIGHTNING_SETTINGS_FOLDER))
+
             # Load infinite settings
             loaded_infinite = config.get("infinite_settings", {})
             infinite_settings.clear()
             infinite_settings.update(sync_with_default(copy.deepcopy(loaded_infinite), INFINITE_SETTINGS_DEFAULT))
             selected_infinite_settings = config.get("selected_infinite_settings", "")
-            saved_infinite_settings = config.get("saved_infinite_settings", {})
+            saved_infinite_settings = convert_infinity_markers(_load_settings_presets(INFINITE_SETTINGS_FOLDER))
             
             inverted_colors = config.get("inverted_colors", False)
             inverted_positions = config.get("inverted_positions", False)
@@ -6424,6 +6551,10 @@ def load_config():
             send_scoreboard_colors()
             metadata_last_updated = config.get("metadata_last_updated", 0)
             censors_last_updated = config.get("censors_last_updated", 0)
+            # Popout layout — None means "use default"
+            _saved_layout = config.get("popout_layout", None)
+            popout_layout = _saved_layout if _saved_layout else None  # empty list → None (use default)
+            popout_columns = int(config.get("popout_columns", 5))
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -6494,6 +6625,40 @@ def rgb_to_hex(rgb):
     return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
 
 settings_window = None
+class ToolTip:
+    """Hover tooltip for any Tkinter widget."""
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        self._after_id = None
+        widget.bind("<Enter>", self.show_tooltip)
+        widget.bind("<Leave>", self.hide_tooltip)
+
+    def show_tooltip(self, event=None):
+        self._after_id = self.widget.after(1000, self._display)
+
+    def _display(self):
+        if self.tooltip_window or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        self.tooltip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        tk.Label(tw, text=self.text, justify="left",
+                 background="#ffffe0", relief="solid", borderwidth=1,
+                 font=("Arial", 9), wraplength=400).pack()
+
+    def hide_tooltip(self, event=None):
+        if self._after_id:
+            self.widget.after_cancel(self._after_id)
+            self._after_id = None
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
 def show_settings_popup():
     """Opens a settings popup for editing configuration values."""
     global settings_window
@@ -6662,34 +6827,7 @@ def show_settings_popup():
         get_window_position_and_setup(settings_window)
     except tk.TclError:
         pass
-    
-    class ToolTip:
-        def __init__(self, widget, text):
-            self.widget = widget
-            self.text = text
-            self.tooltip_window = None
-            self.widget.bind("<Enter>", self.show_tooltip)
-            self.widget.bind("<Leave>", self.hide_tooltip)
-        
-        def show_tooltip(self, event=None):
-            if self.tooltip_window or not self.text:
-                return
-            x = self.widget.winfo_rootx() + 20
-            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
-            self.tooltip_window = tw = tk.Toplevel(self.widget)
-            tw.wm_overrideredirect(True)
-            tw.wm_geometry(f"+{x}+{y}")
-            tw.attributes("-topmost", True)
-            label = tk.Label(tw, text=self.text, justify='left',
-                           background="#ffffe0", relief='solid', borderwidth=1,
-                           font=("Arial", 9), wraplength=300)
-            label.pack()
-        
-        def hide_tooltip(self, event=None):
-            if self.tooltip_window:
-                self.tooltip_window.destroy()
-                self.tooltip_window = None
-    
+
     # Setting descriptions
     setting_descriptions = {
         "Volume Level": "Master volume level for all audio playback (0-100).",
@@ -6916,7 +7054,7 @@ def show_settings_popup():
     rules_file_label = tk.Label(rules_file_frame, text="Rules File:", bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
     rules_file_label.pack(side="left")
     ToolTip(rules_file_label, setting_descriptions["Rules File"])
-    available_rules = get_available_rules_files("files")
+    available_rules = get_available_rules_files()
     rules_file_var = tk.StringVar(value=selected_rules_file)
     rules_file_dropdown = ttk.Combobox(rules_file_frame, textvariable=rules_file_var, values=available_rules, width=25, state='readonly')
     rules_file_dropdown.pack(side="left", padx=(5, 0))
@@ -7195,7 +7333,7 @@ def check_for_censor_updates():
     
     # Check if ramuns_censors.json doesn't exist AND last_updated is not 0
     # If both conditions are true, skip the check (no file and never checked before)
-    ramuns_censors_file = "files/ramuns_censors.json"
+    ramuns_censors_file = os.path.join(CENSORS_FOLDER, "ramuns_censors.json")
     if not os.path.exists(ramuns_censors_file) and censors_last_updated != 0:
         return
     
@@ -7351,7 +7489,7 @@ def import_censors(prompt=True):
             new_censors = response.json()
             
             # Ensure the files folder exists
-            ramuns_censors_file = "files/ramuns_censors.json"
+            ramuns_censors_file = os.path.join(CENSORS_FOLDER, "ramuns_censors.json")
             folder = os.path.dirname(ramuns_censors_file)
             if not os.path.exists(folder):
                 os.makedirs(folder)
@@ -7540,7 +7678,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
                 load_metadata()
                 scan_directory()
                 if list_loaded == "playlist":
-                    reload_playlist(True)
+                    show_playlist(True)
             
         except requests.exceptions.RequestException as e:
             errors.append(f"Failed to download package: {e}")
@@ -7683,37 +7821,43 @@ def merge_songs_by_slug(base_songs, override_songs):
 #           *SAVE/*LOAD PLAYLISTS
 # =========================================
 
-def save(autosave = False):
-    save_playlist(playlist, playlist["current_index"], root, autosave)
+def save():
+    save_playlist(playlist, playlist["current_index"], root)
 
-def save_playlist(playlist, index, parent, autosave):
-    """Opens a popup to enter a name, then saves the playlist, and index as JSON."""
+def save_as():
+    save_playlist_as(root)
+
+def _write_playlist(name):
+    """Write the current playlist to disk under the given name."""
     if not os.path.exists(PLAYLISTS_FOLDER):
         os.makedirs(PLAYLISTS_FOLDER)
-
-    if autosave:
-        name = playlist["name"]
-    else:
-        name = simpledialog.askstring("Save Playlist", "Enter playlist name:", initialvalue=playlist["name"], parent=parent)
-        if not name:
-            return  # User canceled
-        elif name.lower() == "missing artists":
-            check_missing_artists()
-    playlist["name"] = name
     filename = os.path.join(PLAYLISTS_FOLDER, f"{name}.json")
-
-    # Save playlist data
     playlist_to_save = copy.deepcopy(playlist)
-    # Convert infinities in infinite_settings before saving
     if playlist_to_save.get("infinite_settings"):
         playlist_to_save["infinite_settings"] = convert_infinities_to_markers(playlist_to_save["infinite_settings"])
-    
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(playlist_to_save, f, indent=4)
-    
     update_playlist_name(name)
     save_config()
     print(f"Playlist saved as {filename}")
+
+def save_playlist(playlist, index, parent=None):
+    """Saves the playlist using its current name. Falls back to Save As if unnamed."""
+    if not playlist.get("name"):
+        save_playlist_as(parent)
+        return
+    _write_playlist(playlist["name"])
+
+def save_playlist_as(parent=None):
+    """Prompts for a name, then saves the playlist."""
+    name = simpledialog.askstring("Save Playlist As", "Enter playlist name:", initialvalue=playlist["name"], parent=parent)
+    if not name:
+        return  # User canceled
+    elif name.lower() == "missing artists":
+        check_missing_artists()
+        return
+    playlist["name"] = name
+    _write_playlist(name)
 
 playlist_loaded = False
 
@@ -7754,14 +7898,16 @@ def load_playlist(index):
     update_playlist_name()
     print(f"Loaded playlist: {name}")
     playlist_loaded = True
-    create_first_row_buttons()
     if playlist.get("infinite"):
         refresh_pop_time_groups(False)
     if name.lower() == "missing artists":
         check_missing_artists()
     update_current_index()
     save_config()
-    reload_playlist(True)
+    if list_loaded == "load_playlist":
+        load(True)
+    elif list_loaded == "load_system_playlist":
+        load_system_playlist(True)
 
 def load(update = False):
     selected = -1
@@ -7772,7 +7918,7 @@ def load(update = False):
             selected = key
             break
         
-    show_list("load_playlist", right_column, playlists, get_playlist_name, load_playlist, selected, update, delete_playlist)
+    show_list("load_playlist", right_column, playlists, get_playlist_name, load_playlist, selected, update, delete_playlist, title="LOAD PLAYLIST")
 
 def load_system_playlist(update = False):
     selected = -1
@@ -7783,7 +7929,7 @@ def load_system_playlist(update = False):
             selected = key
             break
         
-    show_list("load_system_playlist", right_column, playlists, get_playlist_name, load_playlist, selected, update, delete_playlist)
+    show_list("load_system_playlist", right_column, playlists, get_playlist_name, load_playlist, selected, update, delete_playlist, title="SYSTEM PLAYLISTS")
 
 def delete(update = False):
     selected = -1
@@ -7793,7 +7939,7 @@ def delete(update = False):
             selected = key
             break
         
-    show_list("delete_playlist", right_column, playlists, get_playlist_name, delete_playlist, selected, update)
+    show_list("delete_playlist", right_column, playlists, get_playlist_name, delete_playlist, selected, update, title="DELETE PLAYLIST")
 
 def get_mergeable_playlists():
     playlists = get_playlists_dict()
@@ -7815,7 +7961,7 @@ def merge_playlist(update=False):
     if not playlists:
         messagebox.showinfo("Merge Playlist", "No non-infinite playlists available to merge.")
         return
-    show_list("merge_playlist", right_column, playlists, get_playlist_name, merge_playlist_select, -1, update)
+    show_list("merge_playlist", right_column, playlists, get_playlist_name, merge_playlist_select, -1, update, title="MERGE INTO PLAYLIST")
 
 def merge_playlist_select(index):
     playlists = get_mergeable_playlists()
@@ -7840,7 +7986,7 @@ def merge_playlist_select(index):
         playlist_changed = True
         save_config()
         update_current_index(save=False)
-        reload_playlist(True)
+        merge_playlist(True)
     messagebox.showinfo("Merge Playlist", f"Added {added} new theme(s) from '{name}'.")
 
 def delete_playlist(index):
@@ -7878,7 +8024,12 @@ def delete_playlist(index):
         return
 
     # Refresh the list display
-    reload_playlist(True)
+    if list_loaded == "load_playlist":
+        load(True)
+    elif list_loaded == "load_system_playlist":
+        load_system_playlist(True)
+    elif list_loaded == "delete_playlist":
+        delete(True)
 
 def delete_file_by_filename(filename):
     """Find the full path from directory_files and delete the file after confirmation."""
@@ -8820,132 +8971,173 @@ def check_for_updates_on_startup():
 #           *STATS DISPLAY
 # =========================================
 
-def year_stats(column):
-    year_counter = Counter()
-    year_to_filenames = {}
+_stat_token = 0
 
-    files_list = get_cached_deduplicated_files()
-    for filename in files_list:
-        data = get_metadata(filename)
-        season = data.get("season", "")
-        year_str = season[-4:] if season and season[-4:].isdigit() else "Unknown"
+def _run_stat_in_background(title, compute_fn):
+    """Run a stats computation in a background thread to avoid freezing the UI.
 
-        # Group into decades
-        if year_str.isdigit():
-            year = int(year_str)
-            if year >= 2000:
-                group = str(year)
-            elif year >= 1990:
-                group = "1990s"
-            elif year >= 1980:
-                group = "1980s"
-            elif year >= 1970:
-                group = "1970s"
-            elif year >= 1960:
-                group = "1960s"
-            else:
-                group = f"Pre-60s"
-        else:
-            group = "Unknown"
+    compute_fn: callable that returns a list of (label, files) pairs.
+    Results are discarded if a newer stat request arrives before this one finishes.
+    """
+    global _stat_token
+    _stat_token += 1
+    token = _stat_token
 
-        year_counter[group] += 1
-        year_to_filenames.setdefault(group, []).append(filename)
-
-    # Output to text widget
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY YEAR\n", ("bold", "underline"))
-
-    # Sort order: recent years first, then 90s, 80s, etc.
-    def sort_key(group):
-        if group.isdigit():
-            return -int(group)
-        elif group.endswith("s"):
-            return -int(group[:4])
-        elif group == "Pre-60s":
-            return -1950
-        else:
-            return 9999
-
-    total_files = len(files_list) or 1  # Avoid division by zero
-    for group in sorted(year_counter, key=sort_key):
-        count = year_counter[group]
-        percent = round(count / total_files * 100, 2)
-        column.insert(tk.END, f"{group}: ", "bold")
-        column.insert(tk.END, f"{count} ({percent}%)", "white")
-        add_field_total_button(column, year_to_filenames[group], False, False)
-        column.insert(tk.END, "\n")
-
-    column.config(state=tk.DISABLED)
-
-def season_stats(column):
-    season_year_counter = Counter()
-    files_list = get_cached_deduplicated_files()
-    for filename in files_list:
-        data = get_metadata(filename)
-        season_year = data.get("season", "Unknown")
-        if not season_year or season_year == "N/A":
-            season_year = "Unknown"
-        season_year_counter[season_year] += 1
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY SEASON\n", ("bold", "underline"))
-    total_files = len(files_list) or 1  # Avoid division by zero
-    def season_sort_key(season_year_str):
-        if season_year_str == "Unknown":
-            return (9999, 4)  # Sort "Unknown" at the bottom
+    def _worker():
         try:
-            season, year = season_year_str.split()
-            season_order = {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}
-            return (int(year), season_order.get(season, 4))
-        except:
-            return (9999, 4)
-    for season_year in sorted(season_year_counter, key=season_sort_key, reverse=True):
-        column.insert(tk.END, f"{season_year}: ", "bold")
-        column.insert(
-            tk.END,
-            f"{season_year_counter[season_year]} ({(round(season_year_counter[season_year]/total_files*100, ndigits=2))}%)",
-            "white",
-        )
-        add_field_total_button(column, get_all_matching_field("season", season_year), False, False)
-        column.insert(tk.END, "\n")
-    column.config(state=tk.DISABLED)
+            groups = compute_fn()
+        except Exception as e:
+            print(f"[stat error] {e}")
+            groups = []
+        def _apply():
+            if token != _stat_token:
+                return  # A newer stat was requested — discard these results
+            show_directory_stat_groups(title, groups)
+        root.after(0, _apply)
 
-def tag_stats(column):
-    tag_counter = Counter()
-    files_list = get_cached_deduplicated_files()
-    for filename in files_list:
-        data = get_metadata(filename)
-        # Tags
-        tags = get_tags(data)
-        for tag in tags:
-            tag_counter[tag] += 1
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY TAG\n", ("bold", "underline"))
-    total_files = len(files_list) or 1  # Avoid division by zero
-    for tag, count in sorted(tag_counter.items(), key=lambda x: (-x[1], x[0].lower())):
-        column.insert(tk.END, f"{tag}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
-        add_field_total_button(column, get_filenames_from_tag(tag), False, False)
-        column.insert(tk.END, f"\n")
-    column.config(state=tk.DISABLED)
+    threading.Thread(target=_worker, daemon=True).start()
 
-def series_stats(column):
-    series_counter = get_series_totals()
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY SERIES\n", ("bold", "underline"))
-    total_files = len(get_cached_deduplicated_files()) or 1  # Avoid division by zero
-    total_buttons = 0
-    for series, count in sorted(series_counter.items(), key=lambda x: (-x[1], x[0].lower())):
-        column.insert(tk.END, f"{series}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
-        if total_buttons < 300:
-            total_buttons += 1
-            add_field_total_button(column, get_all_matching_field("series", [series]), False, False)
-        column.insert(tk.END, f"\n")
-    column.config(state=tk.DISABLED)
+
+def year_stats():
+    def compute():
+        year_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            season = data.get("season", "")
+            year_str = season[-4:] if season and season[-4:].isdigit() else "Unknown"
+            if year_str.isdigit():
+                year = int(year_str)
+                if year >= 2000:   group = str(year)
+                elif year >= 1990: group = "1990s"
+                elif year >= 1980: group = "1980s"
+                elif year >= 1970: group = "1970s"
+                elif year >= 1960: group = "1960s"
+                else:              group = "Pre-60s"
+            else:
+                group = "Unknown"
+            year_to_filenames.setdefault(group, []).append(filename)
+        def sort_key(g):
+            if g.isdigit(): return -int(g)
+            elif g.endswith("s"): return -int(g[:4])
+            elif g == "Pre-60s": return -1950
+            else: return 9999
+        return [(g, year_to_filenames[g]) for g in sorted(year_to_filenames, key=sort_key)]
+    _run_stat_in_background("THEMES BY YEAR", compute)
+
+
+def season_stats():
+    def compute():
+        season_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            s = data.get("season") or "Unknown"
+            if s == "N/A": s = "Unknown"
+            season_to_filenames.setdefault(s, []).append(filename)
+        def season_sort_key(s):
+            if s == "Unknown": return (9999, 4)
+            try:
+                season, year = s.split()
+                return (int(year), {"Winter":0,"Spring":1,"Summer":2,"Fall":3}.get(season, 4))
+            except: return (9999, 4)
+        return [(s, season_to_filenames[s]) for s in sorted(season_to_filenames, key=season_sort_key, reverse=True)]
+    _run_stat_in_background("THEMES BY SEASON", compute)
+
+
+def artist_stats():
+    def compute():
+        artist_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            file_data = get_file_metadata_by_name(filename)
+            if not file_data: continue
+            slug = file_data.get("slug")
+            data = get_metadata(filename)
+            for song in data.get("songs", []):
+                if song.get("slug") == slug:
+                    for artist in song.get("artist", []):
+                        artist_to_filenames.setdefault(artist, []).append(filename)
+                    break
+        return sorted(artist_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+    _run_stat_in_background("THEMES BY ARTIST", compute)
+
+
+def series_stats():
+    def compute():
+        series_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            series = data.get("series") or data.get("title", "Unknown")
+            if isinstance(series, list):
+                for s in series:
+                    series_to_filenames.setdefault(s, []).append(filename)
+            else:
+                series_to_filenames.setdefault(series, []).append(filename)
+        return sorted(series_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+    _run_stat_in_background("THEMES BY SERIES", compute)
+
+
+def studio_stats():
+    def compute():
+        studio_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            for studio in data.get("studios", []):
+                studio_to_filenames.setdefault(studio, []).append(filename)
+        return sorted(studio_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+    _run_stat_in_background("THEMES BY STUDIO", compute)
+
+
+def tag_stats():
+    def compute():
+        tag_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            for tag in get_tags(data):
+                tag_to_filenames.setdefault(tag, []).append(filename)
+        return sorted(tag_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+    _run_stat_in_background("THEMES BY TAG", compute)
+
+
+def type_stats():
+    def compute():
+        type_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            t = get_format(data) or "Unknown"
+            type_to_filenames.setdefault(t, []).append(filename)
+        return sorted(type_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+    _run_stat_in_background("THEMES BY TYPE", compute)
+
+
+def slug_stats():
+    def compute():
+        slug_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            slug = data.get("slug", "Unknown")
+            slug_to_filenames.setdefault(slug, []).append(filename)
+        return sorted(slug_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+    _run_stat_in_background("THEMES BY SLUG", compute)
+
+
+_current_stat_groups = {}
+
+def _get_stat_group_name(key, value):
+    label, files, total = value
+    count = len(files)
+    pct = round(count / total * 100, 1) if total else 0
+    return f"{label} ({count}, {pct}%)"
+
+def _select_stat_group(index):
+    if index in _current_stat_groups:
+        label, files, _ = _current_stat_groups[index]
+        show_field_themes(group=list(files), title=label)
+
+def show_directory_stat_groups(title, groups):
+    """Display stat groups using the standard scrollable show_list infrastructure."""
+    global _current_stat_groups
+    total = sum(len(files) for _, files in groups)
+    _current_stat_groups = {i: (label, list(files), total) for i, (label, files) in enumerate(groups)}
+    show_list("directory_stat", right_column, _current_stat_groups, _get_stat_group_name, _select_stat_group, -1, True, title=title)
 
 series_totals = None
 def get_series_totals(refetch=True, check_all=True):
@@ -8958,7 +9150,6 @@ def get_series_totals(refetch=True, check_all=True):
         series_counter = Counter()
         for filename in check_list:
             data = get_metadata(filename)
-            # Series
             series = data.get("series") or data.get("title", "Unknown")
             if isinstance(series, list):
                 for s in series:
@@ -8967,109 +9158,17 @@ def get_series_totals(refetch=True, check_all=True):
                 series_counter[series] += 1
         series_totals = series_counter
     return series_totals
-        
-def artist_stats(column):
-    artist_counter = Counter()
-    files_list = get_cached_deduplicated_files()
-    for filename in files_list:
-        file_data = get_file_metadata_by_name(filename)
-        if not file_data:
-            continue
-        slug = file_data.get("slug")
-        data = get_metadata(filename)
-        for song in data.get("songs", []):
-            if song.get("slug") == slug:
-                for artist in song.get("artist", []):
-                    artist_counter[artist] += 1
-                break  # Found matching song, no need to continue
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY ARTIST\n", ("bold", "underline"))
-    total_files = len(files_list) or 1  # Avoid division by zero
-    total_buttons = 0
-    for artist, count in sorted(artist_counter.items(), key=lambda x: (-x[1], x[0].lower())):
-        column.insert(tk.END, f"{artist}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
-        if total_buttons < 300:
-            total_buttons += 1
-            add_field_total_button(column, get_filenames_from_artist(artist), False, False)
-        column.insert(tk.END, f"\n")
-    column.config(state=tk.DISABLED)
-
-def studio_stats(column):
-    studio_counter = Counter()
-    files_list = get_cached_deduplicated_files()
-    for filename in files_list:
-        data = get_metadata(filename)
-        # Studios
-        for studio in data.get("studios", []):
-            studio_counter[studio] += 1
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY STUDIO\n", ("bold", "underline"))
-    total_files = len(files_list) or 1  # Avoid division by zero
-    for studio, count in sorted(studio_counter.items(), key=lambda x: (-x[1], x[0].lower())):
-        column.insert(tk.END, f"{studio}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
-        add_field_total_button(column, get_filenames_from_studio(studio), False, False)
-        column.insert(tk.END, f"\n")
-    column.config(state=tk.DISABLED)
-
-def type_stats(column):
-    type_counter = Counter()
-    files_list = get_cached_deduplicated_files()
-    for filename in files_list:
-        data = get_metadata(filename)
-        type_counter[get_format(data) or "Unknown"] += 1
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY TYPE\n", ("bold", "underline"))
-    total_files = len(files_list) or 1  # Avoid division by zero
-    for type, count in sorted(type_counter.items(), key=lambda x: (-x[1], x[0].lower())):
-        column.insert(tk.END, f"{type}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
-        add_field_total_button(column, get_all_matching_field("type", type), False, False)
-        column.insert(tk.END, f"\n")
-    column.config(state=tk.DISABLED)
-
-def slug_stats(column):
-    slug_counter = Counter()
-    files_list = get_cached_deduplicated_files()
-    for filename in files_list:
-        data = get_metadata(filename)
-        slug_counter[data.get("slug", "Unknown")] += 1
-    column.config(state=tk.NORMAL)
-    column.delete("1.0", tk.END)
-    column.insert(tk.END, "THEMES BY SLUG\n", ("bold", "underline"))
-    total_files = len(files_list) or 1  # Avoid division by zero
-    for slug, count in sorted(slug_counter.items(), key=lambda x: (-x[1], x[0].lower())):
-        column.insert(tk.END, f"{slug}: ", "bold")
-        column.insert(tk.END, f"{count} ({(round(count/total_files*100, ndigits=2))}%)", "white")
-        add_field_total_button(column, get_all_matching_field("slug", slug), False, False)
-        column.insert(tk.END, f"\n")
-    column.config(state=tk.DISABLED)
 
 STAT_TYPES = [
-    {"name":"THEMES BY YEAR", "func":year_stats},
-    {"name":"THEMES BY SEASON", "func":season_stats},
-    {"name":"THEMES BY ARTIST", "func":artist_stats},
-    {"name":"THEMES BY SERIES", "func":series_stats},
-    {"name":"THEMES BY STUDIO", "func":studio_stats},
-    {"name":"THEMES BY TAG", "func":tag_stats},
-    {"name":"THEMES BY TYPE", "func":type_stats},
-    {"name":"THEMES BY SLUG", "func":slug_stats}
+    {"name":"THEMES BY YEAR",   "func": year_stats},
+    {"name":"THEMES BY SEASON", "func": season_stats},
+    {"name":"THEMES BY ARTIST", "func": artist_stats},
+    {"name":"THEMES BY SERIES", "func": series_stats},
+    {"name":"THEMES BY STUDIO", "func": studio_stats},
+    {"name":"THEMES BY TAG",    "func": tag_stats},
+    {"name":"THEMES BY TYPE",   "func": type_stats},
+    {"name":"THEMES BY SLUG",   "func": slug_stats},
 ]
-
-def display_theme_stats_in_columns():
-    """Displays year stats, artist stats, series stats, and studio stats in the respective UI columns."""
-    left_column.config(state=tk.NORMAL)
-    left_column.delete("1.0", tk.END)
-    left_column.insert(tk.END, "THEME DIRECTORY/STATS\n", ("bold", "underline"))
-    for s in STAT_TYPES:
-        btn = tk.Button(left_column, text=f"{s.get("name")}▶", font=("Arial", scl(12)), borderwidth=0, pady=0, command=lambda func=s.get("func"): func(middle_column), bg="black", fg="white")
-        left_column.window_create(tk.END, window=btn)
-        left_column.insert(tk.END, f"\n")
-    left_column.config(state=tk.DISABLED)
 
 # =========================================
 #           *FILTERING PLAYLISTS
@@ -9077,7 +9176,7 @@ def display_theme_stats_in_columns():
 
 def load_filters(update = False):
     filters = get_all_filters()
-    show_list("load_filters", right_column, filters, get_filter_name, load_filter, -1, update, delete_filter)
+    show_list("load_filters", right_column, filters, get_filter_name, load_filter, -1, update, delete_filter, title="LOAD FILTER")
 
 def get_filter_name(key, value):
     return value.get("name")
@@ -9100,7 +9199,7 @@ def load_filter(index):
 
 def delete_filters(update = False):
     filters = get_all_filters()
-    show_list("delete_filters", right_column, filters, get_filter_name, delete_filter, -1, update)
+    show_list("delete_filters", right_column, filters, get_filter_name, delete_filter, -1, update, title="DELETE FILTER")
 
 def delete_filter(index):
     """Deletes a playlist by index after confirmation."""
@@ -9127,7 +9226,10 @@ def delete_filter(index):
         return
 
     # Refresh the list display
-    reload_playlist(True)
+    if list_loaded == "load_filters":
+        load_filters(True)
+    elif list_loaded == "delete_filters":
+        delete_filters(True)
 
 def filters():
     show_filter_popup()
@@ -9191,7 +9293,7 @@ def show_filter_popup():
     popup = tk.Toplevel(bg="black")
     popup.title("Filter Playlist")
     popup_width = 550
-    popup_height = 600
+    popup_height = 700
     filter_popup = popup
     # If popout_controls exists, use its position
     if popout_controls and popout_controls.winfo_exists():
@@ -9225,6 +9327,7 @@ def show_filter_popup():
 
     available_playlists = list(get_playlists_dict().values())
     playlist_listbox = filter_entry_listbox("PLAYLISTS\nINCLUDE\n(OR)", left_column, available_playlists, height=4)
+    playlist_and_listbox = filter_entry_listbox("PLAYLISTS\nINCLUDE\n(AND)", left_column, available_playlists, height=4)
 
     tk.Label(left_column, text="KEYWORDS (separated by commas):", bg=BACKGROUND_COLOR, fg="white").pack(anchor="w", pady=(5, 0))
     keywords_entry = tk.Text(left_column, height=1, width=31, bg="black", fg="white", wrap="word")
@@ -9300,6 +9403,7 @@ def show_filter_popup():
     ]
     themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
+    playlist_exclude_listbox = filter_entry_listbox("PLAYLISTS\nEXCLUDE\n(OR)", right_column, available_playlists, height=4)
     artists_listbox = filter_entry_listbox("ARTISTS\nINCLUDE\n(OR)", right_column, get_all_artists(playlis))
     studio_listbox = filter_entry_listbox("STUDIOS\nINCLUDE\n(OR)", right_column, get_all_studios(playlis))
     all_tags = get_all_tags(playlis)
@@ -9350,6 +9454,8 @@ def show_filter_popup():
         # Listbox selections
         for listbox, key in [
             (playlist_listbox, "playlist_filter"),
+            (playlist_and_listbox, "playlist_filter_and"),
+            (playlist_exclude_listbox, "playlist_filter_exclude"),
             (artists_listbox, "artists"),
             (studio_listbox, "studios"),
             (tags_listbox, "tags_include"),
@@ -9380,6 +9486,8 @@ def show_filter_popup():
         filters = {}
 
         if playlist_listbox.curselection(): filters["playlist_filter"] = [playlist_listbox.get(i) for i in playlist_listbox.curselection()]
+        if playlist_and_listbox.curselection(): filters["playlist_filter_and"] = [playlist_and_listbox.get(i) for i in playlist_and_listbox.curselection()]
+        if playlist_exclude_listbox.curselection(): filters["playlist_filter_exclude"] = [playlist_exclude_listbox.get(i) for i in playlist_exclude_listbox.curselection()]
         if keywords_entry.get("1.0", "end-1c").strip() != "": filters['keywords'] = str(keywords_entry.get("1.0", "end-1c").strip())
         if theme_var.get() != "Both": filters['theme_type'] = str(theme_var.get())
         if float(min_score_slider.get()) != round(lowest_score, 1): filters['score_min'] = float(min_score_slider.get())
@@ -9560,6 +9668,8 @@ def filter_playlist(filters):
 
     # --- Pre-compute filter presence flags (avoid repeated dict lookups in loop) ---
     has_playlist_filter = "playlist_filter" in filters
+    has_playlist_filter_and = "playlist_filter_and" in filters
+    has_playlist_filter_exclude = "playlist_filter_exclude" in filters
     has_keywords = "keywords" in filters
     has_theme_type = "theme_type" in filters
     has_score_min = "score_min" in filters
@@ -9624,17 +9734,25 @@ def filter_playlist(filters):
         needs_duplicates = False
         needs_versions = False
 
-    playlist_filter_files = set()
-    if has_playlist_filter:
-        playlist_names = filters['playlist_filter']
-        if isinstance(playlist_names, str):
-            playlist_names = [playlist_names]  # Handle old single playlist format
-        for playlist_name in playlist_names:
-            ref_playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
-            if os.path.exists(ref_playlist_path):
-                with open(ref_playlist_path, "r") as f:
-                    ref_data = json.load(f)
-                    playlist_filter_files.update(ref_data.get("playlist", []))
+    def _load_playlist_files(names):
+        """Return a set of filenames from a list of playlist names."""
+        result = set()
+        for name in (names if isinstance(names, list) else [names]):
+            path = os.path.join(PLAYLISTS_FOLDER, f"{name}.json")
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    result.update(json.load(f).get("playlist", []))
+        return result
+
+    playlist_filter_files = _load_playlist_files(filters["playlist_filter"]) if has_playlist_filter else set()
+
+    # AND: build per-playlist sets; a file must appear in ALL of them
+    playlist_filter_and_sets = []
+    if has_playlist_filter_and:
+        for name in filters["playlist_filter_and"]:
+            playlist_filter_and_sets.append(_load_playlist_files([name]))
+
+    playlist_filter_exclude_files = _load_playlist_files(filters["playlist_filter_exclude"]) if has_playlist_filter_exclude else set()
                 
     if needs_duplicates:
         build_best_duplicate_map(playlis)
@@ -9642,8 +9760,12 @@ def filter_playlist(filters):
         build_version_index(playlis)
 
     for filename in playlis:
-        # Cheapest filter first: set membership check
+        # Cheapest filter first: set membership checks
         if has_playlist_filter and filename not in playlist_filter_files:
+            continue
+        if has_playlist_filter_and and not all(filename in s for s in playlist_filter_and_sets):
+            continue
+        if has_playlist_filter_exclude and filename in playlist_filter_exclude_files:
             continue
 
         data = get_metadata(filename)
@@ -9883,9 +10005,6 @@ SORTING_TYPES = [
     {"sort":"season", "order":"desc"}
 ]
 
-def sort(update = False):
-    show_list("sort", right_column, {f"{s['sort']} ({s['order']})": s for s in SORTING_TYPES}, get_sort_name, sort_playlist, list_index, update)
-
 def get_sort_name(key, value):
     return value.get('sort').replace("_", " ").title() + " " + value.get('order').upper()
 
@@ -9940,10 +10059,29 @@ def sort_playlist(index):
 # =========================================
 
 search_term = ""
+search_bar_entry = None
+SEARCH_BAR_PLACEHOLDER = "SEARCH THEMES"
 search_queue = None
 search_results = []
+_search_token = 0  # Incremented on each new search; stale threads discard their results
+
+def _apply_search_results(token, results, term, update, add):
+    """Called on the main thread once a background search finishes."""
+    global search_results, _search_token
+    if token != _search_token:
+        return  # A newer search was started — discard these results
+    search_results = results
+    selected = 0
+    if search_queue and search_queue in search_results:
+        selected = search_results.index(search_queue) + 1
+    search_list = {file: file for file in (["SEARCHING: " + term] + search_results)}
+    if add:
+        show_list("search_add", right_column, search_list, get_title, add_search_playlist, selected, update, title="SEARCH: ADD TO PLAYLIST")
+    else:
+        show_list("search", right_column, search_list, get_title, set_search_queue, selected, update, title="SEARCH RESULTS")
+
 def search(update = False, ask = True, add = False):
-    global search_results, search_term
+    global search_results, search_term, _search_token
     selected = 0
     if ask and disable_shortcuts:
         search_term_ask = simpledialog.askstring("Search Themes", "Search Term:", initialvalue=search_term, parent=root)
@@ -9951,18 +10089,19 @@ def search(update = False, ask = True, add = False):
             return
         search_term = search_term_ask
         update = True
-    if search_term == "":
+    # Bump the token so any in-flight thread knows to discard its results
+    _search_token += 1
+    token = _search_token
+    term = search_term
+    if term == "":
         search_results = []
-    else:
-        search_results = search_playlist(search_term)
-    # search_results.sort(key=lambda file: get_title(file, file).lower())
-    if search_queue and search_queue in search_results:
-        selected = search_results.index(search_queue)+1
-    search_list = {file: file for file in (["SEARCHING: " + search_term] + search_results)}
-    if add:
-        show_list("search_add", right_column, search_list, get_title, add_search_playlist, selected, update)
-    else:
-        show_list("search", right_column, search_list, get_title, set_search_queue, selected, update)
+        _apply_search_results(token, [], term, update, add)
+        return
+    # Run the heavy search on a background thread; marshal results back to the main thread
+    def _run():
+        results = search_playlist(term)
+        root.after(0, lambda: _apply_search_results(token, results, term, update, add))
+    threading.Thread(target=_run, daemon=True).start()
 
 def search_add(update = False, ask = True):
     search(update, ask, True)
@@ -9989,6 +10128,18 @@ def set_search_queue(index):
                 return
         search(True, False)
         up_next_text()
+
+def _focus_search_entry():
+    """Focus the toolbar search entry, clearing placeholder if present."""
+    if 'search_bar_entry' in globals() and search_bar_entry and search_bar_entry.winfo_exists():
+        if search_bar_entry.get() == SEARCH_BAR_PLACEHOLDER:
+            search_bar_entry.delete(0, tk.END)
+            search_bar_entry.configure(fg="white")
+        else:
+            search_bar_entry.select_range(0, tk.END)
+        search_bar_entry.focus_set()
+    else:
+        search(add=playlist.get("infinite", False))
 
 def search_playlist(search_term):
     """Returns a list of filenames where the search term matches the title or english_title.
@@ -10427,7 +10578,7 @@ lightning_mode_settings_default = {
             "zoom": True
         },
         "variety": {
-            "enabled": True,
+            "enabled": False,
             "popularity": {
                 "range": [0, 0],
                 "weight": 10
@@ -11024,13 +11175,17 @@ def open_infinite_settings_editor():
     if 'selected_infinite_settings' not in globals():
         globals()['selected_infinite_settings'] = ""
     
+    # When an infinite playlist is active, edit its own settings directly so the
+    # editor reflects the actual current values (e.g. include_non_local_files).
+    # Otherwise edit the global template used for new playlists.
+    active_settings = get_infinite_settings()
+
     def on_apply(new_settings, selected_name):
         global selected_infinite_settings, cached_pop_time_group, series_cooldowns_cache
         selected_infinite_settings = selected_name
-        # Update current playlist settings if it's an infinite playlist
+        # active_settings was already updated in-place by the generic editor.
+        # If an infinite playlist is active, refetch pop groups with the new settings.
         if playlist.get("infinite", False):
-            playlist["infinite_settings"] = copy.deepcopy(infinite_settings)
-            # Refetch pop groups with new settings
             get_pop_time_groups(refetch=True)
         # Clear caches when settings change
         cached_pop_time_group = None
@@ -11038,7 +11193,7 @@ def open_infinite_settings_editor():
     
     open_generic_settings_editor(
         title="Infinite Playlist Settings Editor",
-        current_settings_dict=infinite_settings,
+        current_settings_dict=active_settings,
         default_settings_dict=INFINITE_SETTINGS_DEFAULT,
         saved_settings_dict=saved_infinite_settings,
         selected_setting_name=selected_infinite_settings,
@@ -11093,7 +11248,7 @@ def compute_settings_diff(default, saved):
     return diff if diff else None
 
 def toggle_light_mode(type=None, queue=True):
-    global light_mode, variety_light_mode_enabled, light_dropdown, start_light_mode_button
+    global light_mode, variety_light_mode_enabled
     if type == None or light_mode == type or (variety_light_mode_enabled and type == 'variety'):
         unselect_light_modes()
         toggle_coming_up_popup(False, "Lightning Round")
@@ -11103,20 +11258,14 @@ def toggle_light_mode(type=None, queue=True):
         light_mode = type
         if type == 'variety':
             variety_light_mode_enabled = True
-            button_seleted(globals()['variety_light_mode_button'], True)
         else:
-            light_dropdown.set(f"{mode.get("icon")} {type.upper()}")
+            selected_mode.set(f"{mode.get("icon")} {type.upper()}")
             configure_style()
-            light_dropdown.update_idletasks()
-            light_dropdown.configure(state="readonly", style='Black.TCombobox')
             unhighlight_selection(None, setting=True)
-            light_dropdown.update_idletasks()
         if queue:
             queue_next_lightning_mode()
-        button_seleted(globals()['start_light_mode_button'], True)
-        start_light_mode_button.configure(text="⏹️")
-        if popout_buttons_by_name.get(start_light_mode_button):
-            popout_buttons_by_name[start_light_mode_button].configure(text="⏹️STOP")
+        if popout_buttons_by_name.get("lightning_start"):
+            popout_buttons_by_name["lightning_start"].configure(text="⏹️ STOP")
         if light_round_number == 0:
             image_path = "banners/" + type + "_lightning_round.webp"
             image_tk = None
@@ -11130,27 +11279,24 @@ def toggle_light_mode(type=None, queue=True):
             else:
                 mode_type = 'anime'
             if type == "variety":
-                min_length = 0
-                max_length = LIGHT_ROUND_LENGTH_DEFAULT
+                min_length = None
+                max_length = None
                 for l in lightning_mode_settings:
-                    if min_length > lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT):
+                    if not min_length or min_length > lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT):
                         min_length = lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT)
-                    if max_length < lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT):
+                    if not max_length or max_length < lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT):
                         max_length = lightning_mode_settings[l].get("length", LIGHT_ROUND_LENGTH_DEFAULT)
                 mode_length = f"{min_length} - {max_length}"
-            mode_desc = f"{mode.get("desc")}\nYou have {mode_length} seconds to guess.\n\n1 PT for the first to guess the {mode_type}!"
+            mode_desc = f"{mode.get('desc')}\nYou have {mode_length} seconds to guess.\n\n1 PT for the first to guess the {mode_type}!"
 
-            toggle_coming_up_popup(True, f"{light_mode.replace("c.", "Character")} Lightning Round", mode_desc, image_tk, queue=True)
+            toggle_coming_up_popup(True, f"{light_mode.replace('c.', 'Character')} Lightning Round", mode_desc, image_tk, queue=True)
 
 def unselect_light_modes():
-    global light_mode, variety_light_mode_enabled, start_light_mode_button
+    global light_mode, variety_light_mode_enabled
     light_mode = None
     variety_light_mode_enabled = False
-    button_seleted(globals()['variety_light_mode_button'], False)
-    button_seleted(globals()['start_light_mode_button'], False)
-    start_light_mode_button.configure(text="▶")
-    if popout_buttons_by_name.get(start_light_mode_button):
-        popout_buttons_by_name[start_light_mode_button].configure(text="▶START")
+    if popout_buttons_by_name.get("lightning_start"):
+        popout_buttons_by_name["lightning_start"].configure(text="▶ START")
 
 
 # =========================================
@@ -11191,6 +11337,7 @@ light_speed_modifier = 1
 light_blind_one_second_count = None
 stream_start_time = 0
 current_light_mode = None
+current_light_variant = None
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
     global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count, current_light_mode
@@ -11298,20 +11445,18 @@ def update_light_round(time):
                 else:
                     clues_overlay_labels["Song"].config(text=f"SONG in...{round(time_left-5)}")
             elif synopsis_start_index is not None:
-                def get_synopsis_progress(time_left, total_duration, words):
-                    """
-                    Returns the number of words to show based on time left and total duration.
-                    `words` should be a list of the synopsis words.
-                    """
-                    elapsed = total_duration - time_left
-                    progress = elapsed / total_duration
-                    word_count = round(len(words) * progress)
-                    return " ".join(words[:word_count])
                 answer_time = 8
                 if light_trivia_answer:
                     answer_time = 6
                 synopsis_words = get_light_synopsis_string().split()
-                shown_text = get_synopsis_progress(max(0, time_left-answer_time), light_round_length-answer_time, synopsis_words)
+                reveal_duration = light_round_length - answer_time
+                if reveal_duration > 0:
+                    elapsed = light_round_length - time_left
+                    progress = max(0.0, min(1.0, elapsed / reveal_duration))
+                else:
+                    progress = 1.0
+                word_count = max(1, round(len(synopsis_words) * progress))
+                shown_text = " ".join(synopsis_words[:word_count])
                 toggle_synopsis_overlay(text=shown_text)
             elif emoji_overlay_window:
                 # Reveal emojis one by one over the round
@@ -11324,20 +11469,31 @@ def update_light_round(time):
                 set_progress_overlay(round((time - light_round_start_time)*100), light_round_length*100)
                 if stream_player.is_playing() and (not fixed_current_round or fixed_current_round.get("reveal_title_halfway")):
                     half_time = (light_round_length / 2)
-                    if time_left >= half_time:
-                        set_frame_number(f"TRACK NAME in...{round(time_left-half_time)}")
-                    else:
-                        track_name = extract_track_name_from_youtube_title(last_streamed[1], currently_playing.get("data", {}))
-                        set_frame_number(track_name)
-            elif title_overlay:
-                starting_letters = min(5, max(1, len(title_light_letters) // 5))
-                interval = len(title_light_letters) * 0.09
-                final_count = round((5*interval)+starting_letters)
+                    track_name = extract_track_name_from_youtube_title(last_streamed[1], currently_playing.get("data", {}))
+                    if track_name.strip() != "":
+                        if time_left >= half_time:
+                            set_frame_number(f"TRACK NAME in...{round(time_left-half_time)}")
+                        else:
+                            set_frame_number(track_name)
+            elif (current_light_mode == 'title' and current_light_variant == 'reveal') or title_overlay:
+                if fixed_current_round and fixed_current_round.get("reveal_letter_order"):
+                    starting_letters = int(fixed_current_round.get("reveal_starting_count", 0))
+                    final_count = len(fixed_current_round.get("reveal_letter_order", "").split(","))
+                    reveal_count = final_count - starting_letters
+                    interval = reveal_count / 5 if reveal_count > 0 else 1
+                else:
+                    starting_letters = min(5, max(1, len(title_light_letters) // 5))
+                    interval = len(title_light_letters) * 0.09
+                    final_count = round((5*interval)+starting_letters)
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval)+starting_letters)
                 set_frame_number(f"{word_num}/{final_count} REVEALS", inverse=character_round_answer)
                 toggle_title_overlay(get_title_light_string(word_num))
             elif scramble_overlay_root:
-                total_letters = max(1, round(len(scramble_overlay_letters) * 0.45))  # Just in case
+                if fixed_current_round and fixed_current_round.get("scramble_place_order"):
+                    order_count = len([x for x in fixed_current_round["scramble_place_order"].split(",") if x.strip().isdigit()])
+                    total_letters = min(order_count, len(scramble_overlay_letters))
+                else:
+                    total_letters = max(1, round(len(scramble_overlay_letters) * 0.45))
                 placement_cutoff = light_round_length * (2 / 3)
 
                 if time_left >= light_round_length - placement_cutoff:
@@ -11475,9 +11631,10 @@ def update_light_round(time):
                 set_frame_number(f"{tags_num}/{final_count}")
                 toggle_tag_cloud_overlay(tags_num)
             elif light_episode_names:
-                reveal_num = min(6, (int(light_round_length - time_left) // (light_round_length // 6)) + 1)
+                total_eps = min(len(light_episode_names), 6)
+                reveal_num = min(6, (int(light_round_length - time_left) // (light_round_length // total_eps)) + 1)
                 toggle_episode_overlay(reveal_num)
-                set_frame_number(f"{reveal_num}/{6}")
+                set_frame_number(f"{reveal_num}/{total_eps}", inverse=character_round_answer)
             if edge_overlay_box:
                 set_countdown(round(time_left/light_speed_modifier), position="center")
             elif light_blind_one_second_count is not None:
@@ -11586,7 +11743,12 @@ def update_light_round(time):
                 toggle_emoji_overlay(max_emojis=1)
             elif light_mode == 'title':
                 start_title_round()
-                top_info("MUST SAY FULL TITLE")
+                top_header = ""
+                if fixed_current_round:
+                    top_header = fixed_current_round.get("title_header", "")
+                else:
+                    top_header = "MUST SAY FULL TITLE"
+                top_info(top_header.upper())
             elif light_mode == 'peek':
                 send_scoreboard_command("hide")
                 peek_mode = get_next_peek_mode()
@@ -11665,7 +11827,11 @@ def update_light_round(time):
             elif light_mode == 'episodes':
                 set_light_episodes()
                 toggle_episode_overlay(1)
-                top_info("EPISODE TITLES")
+                if fixed_current_round:
+                    top_header = fixed_current_round.get("episodes_header", "")
+                else:
+                    top_header = "EPISODE TITLES"
+                top_info(top_header.upper())
             elif light_mode == 'names':
                 light_name_overlay = True
                 set_light_names()
@@ -11810,22 +11976,35 @@ def apply_reveal_mode(reveal_mode, image_source=None, slide_direction=None, slic
         toggle_tile_overlay(grid_size=10, swap=True)
 
 def start_title_round():
-    title_mode = get_next_title_mode(get_base_title())
+    global current_light_variant
+    if fixed_current_round and fixed_current_round.get("title_variant"):
+        title_mode = fixed_current_round.get("title_variant")
+    else:
+        title_mode = get_next_title_mode(get_base_title())
+    current_light_variant = title_mode
     if title_mode == 'scramble':
         toggle_scramble_overlay()
     elif title_mode == 'swap':
         toggle_swap_overlay()
     else:
         set_title_light_text()
-        toggle_title_overlay(get_title_light_string(min(5, max(1, len(title_light_letters) // 5))))
-        set_frame_number(f"2/{min(7, len(title_light_string))}")
+        # if fixed_current_round and fixed_current_round.get("reveal_letter_order"):
+        #     starting_letters = len(fixed_current_round.get("reveal_starting_letters", "").lower().split(","))
+        # starting_letters = min(5, max(1, len(title_light_letters) // 5))
+        # toggle_title_overlay(get_title_light_string(starting_letters))
+        # set_frame_number(f"2/{min(7, len(title_light_string))}")
 
 def set_title_light_text():
     global title_light_letters, title_light_string
     title = get_base_title()
-    title_light_letters = get_unique_letters(title)
     title_light_string = title
-    random.shuffle(title_light_letters)
+    
+    if fixed_current_round and fixed_current_round.get("reveal_letter_order"):
+        order = fixed_current_round.get("reveal_letter_order", "").lower().split(",")
+        title_light_letters = order
+    else:
+        title_light_letters = get_unique_letters(title)
+        random.shuffle(title_light_letters)
 
 def get_char_types_by_popularity(data=None, mode=""):
     all_types = []
@@ -12059,12 +12238,13 @@ def queue_next_lightning_mode():
             elif next_mode == "character":
                 lightning_queue_data[next_filename]["characters"] = get_character_round_characters(data=data, queue=True)
             elif next_mode == "trivia":
-                trivia_question = set_light_trivia(data=data, queue=True)
-                if trivia_question[1] == "None" and variety_light_mode_enabled:
-                    excluded_modes.append('trivia')
-                    next_mode = None
-                else:
-                    lightning_queue_data[next_filename]["trivia"] = trivia_question
+                if not fixed_data:
+                    trivia_question = set_light_trivia(data=data, queue=True)
+                    if trivia_question[1] == "None" and variety_light_mode_enabled:
+                        excluded_modes.append('trivia')
+                        next_mode = None
+                    else:
+                        lightning_queue_data[next_filename]["trivia"] = trivia_question
             elif next_mode == "emoji":
                 if not data.get("emojis"):
                     get_emoji_clues_for_title(data)
@@ -12183,7 +12363,6 @@ def set_variety_light_mode(queue=None, excluded_modes=[]):
         unselect_light_modes()
         toggle_light_mode(next_round, False)
         variety_light_mode_enabled = True
-        button_seleted(variety_light_mode_button, True)
     return next_round, forced
 
 def has_lightning_mode_info(data, round_type):
@@ -12205,7 +12384,7 @@ def has_lightning_mode_info(data, round_type):
     elif round_type == "tags":
         return len(data.get("tags", [])) >= 10
     elif round_type == "episodes":
-        return len(data.get("episode_info", [])) >= 6
+        return len(data.get("episode_info", [])) >= 6 and check_valid_episodes(data)
     elif round_type == "clip":
         return not is_game(data) and not ((youtube_api_limited or not YOUTUBE_API_KEY) and not data.get("trailer"))
     elif round_type == "ost":
@@ -13485,7 +13664,17 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         bottom_range = (box_bottom, screen_h - int(screen_h*0.2))  # start 100px below box bottom, leave 150px at bottom
 
         floating_letters = [{"char": c, "index": i} for i, c in enumerate(scramble_title_text.replace(" ", "")) if c != " " and i in target_coords]
-        random.shuffle(floating_letters)
+        if fixed_current_round and fixed_current_round.get("scramble_place_order"):
+            # scramble_place_order is in format "3,6,2,7" to determine the order of letters to reveal.
+            # Pull those letters to the front in the specified order, then append the rest in random order.
+            order_indices = [int(x.strip()) for x in fixed_current_round["scramble_place_order"].split(",") if x.strip().isdigit()]
+            ordered = [l for idx in order_indices for l in floating_letters if l["index"] == idx]
+            ordered_set = {l["index"] for l in ordered}
+            remaining = [l for l in floating_letters if l["index"] not in ordered_set]
+            random.shuffle(remaining)
+            floating_letters = ordered + remaining
+        else:
+            random.shuffle(floating_letters)
 
         scramble_overlay_letters.clear()
         scramble_overlay_targets.clear()
@@ -13847,7 +14036,6 @@ def toggle_peek():
             toggle_peek_overlay()
         if black_overlay:
             root.after(100, blind)
-        button_seleted(peek_button, True)
     else:
         send_scoreboard_command("show")
         for overlay in [toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay]:
@@ -13858,7 +14046,6 @@ peek_round_toggle = False
 def toggle_peek_round():
     global peek_round_toggle
     peek_round_toggle = not peek_round_toggle
-    button_seleted(peek_round_button, peek_round_toggle)
     if peek_round_toggle:
         if blind_round_toggle:
             toggle_blind_round()
@@ -13873,7 +14060,6 @@ mute_peek_round_toggle = False
 def toggle_mute_peek_round():
     global mute_peek_round_toggle
     mute_peek_round_toggle = not mute_peek_round_toggle
-    button_seleted(mute_peek_round_button, mute_peek_round_toggle)
     if mute_peek_round_toggle:
         if peek_round_toggle:
             toggle_peek_round()
@@ -13948,7 +14134,6 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
             peek_overlay2 = None
         gap_modifier = 0
         peeking = False
-        button_seleted(peek_button, False)
         return
 
     if not 0 <= progress <= 100:
@@ -14063,7 +14248,6 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
         else:
             peek_overlay1.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
             peek_overlay2.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
-        button_seleted(peek_button, True)
         lift_windows()
 
 # =========================================
@@ -14117,7 +14301,6 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
         if edge_overlay_box and edge_overlay_box.winfo_exists():
             edge_overlay_box.destroy()
         edge_overlay_box = None
-        button_seleted(peek_button, False)
         return
 
     # Clamp block_percent
@@ -14156,7 +14339,6 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
             pass
 
     edge_overlay_box.geometry(f"{width}x{height}+{x}+{y}")
-    button_seleted(peek_button, True)
     lift_windows()
 
 scoreboard_colors_sent = False
@@ -14274,7 +14456,6 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
             if box and box.winfo_exists():
                 box.destroy()
         grow_overlay_boxes.clear()
-        button_seleted(peek_button, False)
         return
 
     last_grow_block_percent = block_percent
@@ -14326,7 +14507,6 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
         update_or_create("right_buffer", screen_w, top - 100, 0, max(0, visible_h + 200))
 
     if grow_overlay_boxes:
-        button_seleted(peek_button, True)
         lift_windows()
 
 # =========================================
@@ -16375,6 +16555,15 @@ light_episode_names = []  # Make sure to populate this elsewhere
 
 def set_light_episodes():
     global light_episode_names
+    episode_names = []
+    if fixed_current_round and fixed_current_round.get("episode1"):
+        for num in range(6):
+            if fixed_current_round.get(f"episode{num+1}"):
+                episode_names.append(fixed_current_round.get(f"episode{num+1}"))
+            else:
+                break
+        light_episode_names = episode_names
+        return
     data = currently_playing.get("data")
     episodes = data.get("episode_info", [])
     base_title = get_base_title().lower()
@@ -16402,12 +16591,25 @@ def set_light_episodes():
 
     light_episode_names = episode_names
 
+def check_valid_episodes(data):
+    valid_count = 0
+    for ep in data.get("episode_info", []):
+        valid = True
+        if "episode" in ep[1].lower():
+            for i in range(12):
+                if f"episode {i}" == ep[1].lower():
+                    valid = False
+                    break
+        if valid:
+            valid_count += 1
+        if valid_count >= 6:
+            return True
+    return False
+
 def toggle_episode_overlay(num_episodes=6, destroy=False):
     global episode_overlay_boxes, light_episode_names
 
     max_boxes = 6
-    columns = 2
-    rows = 3
 
     if destroy:
         for i in range(max_boxes):
@@ -16420,7 +16622,22 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
 
     # Get episode names to display
     num_episodes = min(num_episodes, len(light_episode_names))
+    total_episodes = len(light_episode_names)
     selected_episodes = light_episode_names[:num_episodes]
+
+    # Dynamically calculate grid layout based on number of episodes
+    if total_episodes == 1:
+        columns, rows = 1, 1
+    elif total_episodes == 2:
+        columns, rows = 2, 1
+    elif total_episodes == 3:
+        columns, rows = 3, 1
+    elif total_episodes == 4:
+        columns, rows = 2, 2
+    elif total_episodes == 5:
+        columns, rows = 3, 2
+    else:  # 6 or more
+        columns, rows = 2, 3
 
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
@@ -17535,7 +17752,7 @@ def load_random_clips(data=None, limit_channels=False, ost=False):
             url, name, channel = get_random_anime_clip_stream_url(get_base_title(title=title), year, data, limit_channels=True)
         if not url and not limit_channels:
             url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=False)
-    if selected_extra_metadata == "links":
+    if selected_extra_metadata == "clips":
         update_extra_metadata()
     return url, name, channel
 
@@ -18112,7 +18329,7 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
     """
     global floating_windows
     size = scl(size)
-    if value is None or isinstance(value, str) and value == '0' or isinstance(value, int) and value < 0:
+    if value is None or value == "" or isinstance(value, str) and value == '0' or isinstance(value, int) and value < 0:
         if name in floating_windows:
             floating_windows[name]["window"].destroy()
             del floating_windows[name]
@@ -18333,7 +18550,7 @@ def generate_random_color(min = 0, max = 255):
 # =========================================
 #          *FIXED LIGHTNING ROUNDS
 # =========================================
-last_selected_round_type = None  # Track last selected round type for new rounds
+last_selected_round_type = "regular"  # Track last selected round type for new rounds
 
 FIXED_LIGHTNING_ROUNDS = {
     "global":[
@@ -18342,29 +18559,9 @@ FIXED_LIGHTNING_ROUNDS = {
         "duration",
         "answer_duration"
     ],
-    "regular": [],
     "blind": [
         "music_icon",
         "blind_variant"
-    ],
-    "frame": [
-        "frame1",
-        "frame2",
-        "frame3",
-        "frame4",
-        "test_frame",
-        "test_frame",
-        "test_frame",
-        "test_frame"
-    ],
-    "synopsis": [
-        "synopsis_header",
-        "synopsis_text"
-    ],
-    "trivia": [
-        "trivia_header",
-        "trivia_question",
-        "trivia_answer"
     ],
     "clip": [
         "clip_header",
@@ -18376,30 +18573,7 @@ FIXED_LIGHTNING_ROUNDS = {
         "clip_for_answer",
         "volume_adjustment"
     ],
-    "ost": [
-        "ost_header",
-        "clip_start_time",
-        "clip_url",
-        "clip_title",
-        "clip_author",
-        "clip_for_answer",
-        "reveal_title_halfway",
-        "music_icon",
-        "volume_adjustment"
-    ],
     "clues": [
-    ],
-    "image": [
-        "image_variant",
-        "image_url",
-        "image_source",
-        "image_header",
-        "slide_direction",
-        "image_selected_area",
-        "image_ending_area",
-        "slice_count",
-        "slice_vertical",
-        "tile_grid_size"
     ],
     "cover": [
         "image_variant",
@@ -18414,11 +18588,71 @@ FIXED_LIGHTNING_ROUNDS = {
         "slice_vertical",
         "tile_grid_size"
     ],
+    "episodes": [
+        "episodes_header",
+        "episode1",
+        "episode2",
+        "episode3",
+        "episode4",
+        "episode5",
+        "episode6"
+    ],
+    "frame": [
+        "frame1",
+        "frame2",
+        "frame3",
+        "frame4",
+        "test_frame",
+        "test_frame",
+        "test_frame",
+        "test_frame"
+    ],
+    "image": [
+        "image_variant",
+        "image_url",
+        "image_source",
+        "image_header",
+        "slide_direction",
+        "image_selected_area",
+        "image_ending_area",
+        "slice_count",
+        "slice_vertical",
+        "tile_grid_size"
+    ],
+    "ost": [
+        "ost_header",
+        "clip_start_time",
+        "clip_url",
+        "clip_title",
+        "clip_author",
+        "clip_for_answer",
+        "reveal_title_halfway",
+        "music_icon",
+        "volume_adjustment"
+    ],
+    "regular": [],
     "song": [
         "song_title_reveal_time",
         "song_artist_reveal_time",
         "song_slug_reveal_time",
         "song_music_reveal_time"
+    ],
+    "synopsis": [
+        "synopsis_header",
+        "synopsis_text"
+    ],
+    "title": [
+        "title_header",
+        "title_variant",
+        "reveal_starting_count",
+        "reveal_letter_order",
+        "scramble_place_order"
+        # "swap_groups"
+    ],
+    "trivia": [
+        "trivia_header",
+        "trivia_question",
+        "trivia_answer"
     ]
 }
 
@@ -18518,7 +18752,25 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "song_title_reveal_time": {"type": "time", "required": False},
     "song_artist_reveal_time": {"type": "time", "required": False},
     "song_slug_reveal_time": {"type": "time", "required": False},
-    "song_music_reveal_time": {"type": "time", "required": False}
+    "song_music_reveal_time": {"type": "time", "required": False},
+    "episodes_header": {"type": "text", "required": False, "default": "Episode Titles"},
+    "episode1": {"type": "text", "required": True},
+    "episode2": {"type": "text", "required": False},
+    "episode3": {"type": "text", "required": False},
+    "episode4": {"type": "text", "required": False},
+    "episode5": {"type": "text", "required": False},
+    "episode6": {"type": "text", "required": False},
+    "title_variant": {
+        "type": "dropdown",
+        "required": True,
+        "options": lightning_mode_settings_default.get("title",{}).get("variants",{}),
+        "default": "reveal"
+    },
+    "title_header": {"type": "text", "required": False, "default": "MUST SAY FULL TITLE"},
+    "reveal_starting_count": {"type": "integer", "required": False, "default": 0, "show_if": {"title_variant": ["reveal"]}},
+    "reveal_letter_order": {"type": "letter_select", "required": False, "show_if": {"title_variant": ["reveal"]}},
+    "scramble_place_order": {"type": "letter_order_select", "required": False, "show_if": {"title_variant": ["scramble"]}},
+    "swap_groups": {"type": "text", "required": False, "show_if": {"title_variant": ["swap"]}}
 }
 
 FIXED_LIGHTNING_FOLDER = "fixed_playlists"
@@ -18536,43 +18788,47 @@ def load_fixed_lightning_rounds(filter_missing_themes=False):
     fixed_lightning_rounds_list = []
     
     if os.path.exists(FIXED_LIGHTNING_FOLDER):
-        for filename in os.listdir(FIXED_LIGHTNING_FOLDER):
-            if filename.endswith(".json"):
-                try:
-                    filepath = os.path.join(FIXED_LIGHTNING_FOLDER, filename)
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        round_name = data.get("name", filename[:-5])
-                        
-                        # Calculate total duration and count valid rounds
-                        total_duration = 0
-                        valid_rounds = []
-                        
-                        for round_data in data.get("rounds", []):
-                            theme = round_data.get("theme", "")
-                            if not filter_missing_themes or get_clean_filename(theme) in directory_files or is_animethemes_stream_file(theme):
-                                duration = round_data.get("duration", lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
-                                answer_duration = round_data.get("answer_duration", 8)
-                                
-                                total_duration += duration + answer_duration
-                                valid_rounds.append(round_data)
-                        
-                        # Update data with only valid rounds
-                        data["rounds"] = valid_rounds
-                        
-                        fixed_lightning_rounds_list.append({
-                            "name": round_name,
-                            "filename": filename,
-                            "filepath": filepath,
-                            "data": data,
-                            "creator": data.get("creator", "N/A"),
-                            "description": data.get("description", "No description"),
-                            "rounds": valid_rounds,
-                            "total_duration": total_duration,
-                            "round_count": len(valid_rounds)
-                        })
-                except Exception as e:
-                    print(f"Error loading fixed lightning round playlist {filename}: {e}")
+        json_files = sorted(
+            [f for f in os.listdir(FIXED_LIGHTNING_FOLDER) if f.endswith(".json")],
+            key=lambda f: json.load(open(os.path.join(FIXED_LIGHTNING_FOLDER, f), 'r', encoding='utf-8')).get("date_modified", ""),
+            reverse=True
+        )
+        for filename in json_files:
+            try:
+                filepath = os.path.join(FIXED_LIGHTNING_FOLDER, filename)
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    round_name = data.get("name", filename[:-5])
+                    
+                    # Calculate total duration and count valid rounds
+                    total_duration = 0
+                    valid_rounds = []
+                    
+                    for round_data in data.get("rounds", []):
+                        theme = round_data.get("theme", "")
+                        if not filter_missing_themes or get_clean_filename(theme) in directory_files or is_animethemes_stream_file(theme):
+                            duration = round_data.get("duration", lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
+                            answer_duration = round_data.get("answer_duration", 8)
+                            
+                            total_duration += duration + answer_duration
+                            valid_rounds.append(round_data)
+                    
+                    # Update data with only valid rounds
+                    data["rounds"] = valid_rounds
+                    
+                    fixed_lightning_rounds_list.append({
+                        "name": round_name,
+                        "filename": filename,
+                        "filepath": filepath,
+                        "data": data,
+                        "creator": data.get("creator", "N/A"),
+                        "description": data.get("description", "No description"),
+                        "rounds": valid_rounds,
+                        "total_duration": total_duration,
+                        "round_count": len(valid_rounds)
+                    })
+            except Exception as e:
+                print(f"Error loading fixed lightning round playlist {filename}: {e}")
     
     return fixed_lightning_rounds_list
 
@@ -18597,7 +18853,7 @@ def show_fixed_lightning_list(update=False):
                 selected = i
                 break
     
-    show_list("fixed_lightning", right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update)
+    show_list("fixed_lightning", right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update, title="LIGHTNING ROUNDS")
 
 def queue_fixed_lightning_round(index):
     """Queue a selected fixed lightning round playlist"""
@@ -18645,13 +18901,8 @@ def open_fixed_lightning_manager():
     
     def manager_close():
         global fixed_lightning_manager_window
-        button_seleted(manage_fixed_lightning_button, False)
-        manage_fixed_lightning_button.configure(text="➕")
         fixed_lightning_manager_window.destroy()
         fixed_lightning_manager_window = None
-    
-    button_seleted(manage_fixed_lightning_button, True)
-    manage_fixed_lightning_button.configure(text="❌")
     
     if 'fixed_lightning_manager_window' in globals() and fixed_lightning_manager_window:
         manager_close()
@@ -18849,7 +19100,6 @@ def open_fixed_lightning_manager():
             creator = metadata.get('creator', '')
             
             # Create filename (sanitize)
-            filename = name.lower().replace(" ", "_")
             filename = re.sub(r'[^a-z0-9_]', '', filename)
             if not filename:
                 filename = "round"
@@ -19306,6 +19556,148 @@ def open_round_editor(round_info, manager_window=None, position=None):
     
     refresh_editor()
 
+def open_letter_order_selector(title_text, target_entry, parent=None, mode="index"):
+    """
+    Popup that lets you click letters in a title to define a letter-based field.
+    mode="index"  → outputs comma-separated 0-based indices: "3,6,2,7"  (scramble_place_order)
+    mode="letter" → outputs comma-separated characters:      "n,a,r,u"  (reveal_letter_order / reveal_starting_letters)
+    """
+    # Strip spaces to get the indexed characters (matching how scramble/reveal works)
+    stripped = title_text.replace(" ", "")
+
+    popup = tk.Toplevel(parent)
+    popup.title("Select Letter Order" if mode == "index" else "Select Letters")
+    popup.configure(bg=BACKGROUND_COLOR)
+    popup.resizable(False, False)
+    if parent:
+        popup.geometry(f"+{parent.winfo_x()+40}+{parent.winfo_y()+40}")
+    popup.grab_set()
+
+    tk.Label(popup, text="Click letters in the order you want them revealed.\nClick again to deselect.",
+             font=("Arial", 10), bg=BACKGROUND_COLOR, fg="white", justify="center").pack(pady=(10, 5))
+
+    # Track selection order:
+    #   mode="index"  → list of int indices (one entry per click)
+    #   mode="letter" → list of unique lowercase letter strings (all duplicates share one entry)
+    selected_order = []
+
+    btn_frame = tk.Frame(popup, bg=BACKGROUND_COLOR)
+    btn_frame.pack(padx=20, pady=5)
+
+    letter_buttons = {}  # index -> button
+
+    def get_preview_string():
+        if mode == "letter":
+            return ",".join(selected_order)  # already unique letter strings
+        return ",".join(str(i) for i in selected_order)
+
+    def refresh_buttons():
+        for idx, btn in letter_buttons.items():
+            if mode == "letter":
+                letter = stripped[idx].lower()
+                if letter in selected_order:
+                    pos = selected_order.index(letter) + 1
+                    btn.config(text=f"{stripped[idx]}\n{pos}", bg="#2a6496", fg="white",
+                               font=("Courier New", 14, "bold"))
+                else:
+                    btn.config(text=f"{stripped[idx]}\n ", bg="#333", fg="white",
+                               font=("Courier New", 14, "bold"))
+            else:
+                if idx in selected_order:
+                    pos = selected_order.index(idx) + 1
+                    btn.config(text=f"{stripped[idx]}\n{pos}", bg="#2a6496", fg="white",
+                               font=("Courier New", 14, "bold"))
+                else:
+                    btn.config(text=f"{stripped[idx]}\n ", bg="#333", fg="white",
+                               font=("Courier New", 14, "bold"))
+
+    def on_letter_click(idx):
+        if mode == "letter":
+            letter = stripped[idx].lower()
+            if letter in selected_order:
+                selected_order.remove(letter)
+            else:
+                selected_order.append(letter)
+        else:
+            if idx in selected_order:
+                selected_order.remove(idx)
+            else:
+                selected_order.append(idx)
+        refresh_buttons()
+        preview_var.set(get_preview_string())
+
+    # Lay out buttons — spaces shown as blank visual separators, letters as clickable buttons
+    ROW_SIZE = 12
+    row_frame = None
+    col_count = 0
+    stripped_idx = 0
+    for char in title_text:
+        if col_count == 0:
+            row_frame = tk.Frame(btn_frame, bg=BACKGROUND_COLOR)
+            row_frame.pack(pady=2)
+        if char == " ":
+            tk.Label(row_frame, text=" ", width=3, height=2,
+                     bg=BACKGROUND_COLOR, font=("Courier New", 14)).pack(side="left", padx=2)
+        else:
+            idx = stripped_idx
+            btn = tk.Button(row_frame, text=f"{char}\n ", width=3, height=2,
+                            font=("Courier New", 14, "bold"), bg="#333", fg="white",
+                            command=lambda idx=idx: on_letter_click(idx))
+            btn.pack(side="left", padx=2)
+            letter_buttons[idx] = btn
+            stripped_idx += 1
+        col_count += 1
+        if col_count >= ROW_SIZE:
+            col_count = 0
+
+    # Pre-populate from existing entry value
+    existing = target_entry.get().strip()
+    if existing:
+        if mode == "index":
+            for part in existing.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    idx = int(part)
+                    if 0 <= idx < len(stripped):
+                        selected_order.append(idx)
+        else:  # letter mode: just restore the unique letters in their saved order
+            seen = set()
+            for part in existing.split(","):
+                letter = part.strip().lower()
+                if letter and letter not in seen:
+                    seen.add(letter)
+                    selected_order.append(letter)
+    refresh_buttons()
+
+    # Preview label
+    preview_var = tk.StringVar(value=get_preview_string())
+    preview_frame = tk.Frame(popup, bg=BACKGROUND_COLOR)
+    preview_frame.pack(pady=(5, 0))
+    tk.Label(preview_frame, text="Order string:", font=("Arial", 9), bg=BACKGROUND_COLOR, fg="gray").pack(side="left")
+    tk.Label(preview_frame, textvariable=preview_var, font=("Courier New", 10), bg=BACKGROUND_COLOR, fg="white").pack(side="left", padx=5)
+
+    # Buttons
+    ctrl_frame = tk.Frame(popup, bg=BACKGROUND_COLOR)
+    ctrl_frame.pack(pady=10)
+
+    def clear_all():
+        selected_order.clear()
+        preview_var.set("")
+        refresh_buttons()
+
+    def confirm():
+        target_entry.delete(0, tk.END)
+        target_entry.insert(0, preview_var.get())
+        popup.destroy()
+
+    tk.Button(ctrl_frame, text="Clear", font=("Arial", 10), bg="#aa3333", fg="white",
+              command=clear_all, width=8).pack(side="left", padx=5)
+    tk.Button(ctrl_frame, text="Confirm", font=("Arial", 10, "bold"), bg="#2a6496", fg="white",
+              command=confirm, width=8).pack(side="left", padx=5)
+    tk.Button(ctrl_frame, text="Cancel", font=("Arial", 10), bg="#444", fg="white",
+              command=popup.destroy, width=8).pack(side="left", padx=5)
+
+
 def open_round_field_editor(round_info, round_index, refresh_callback, parent_window=None, position=None):
     """Open field editor for adding/editing a single round"""
     global last_selected_round_type
@@ -19636,6 +20028,50 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 if current_value:
                     entry.insert(0, current_value)
                 entry.pack(side="left")
+                field_widgets[field_name] = ("text", entry)
+
+            elif field_type == "letter_order_select":
+                # Text entry + button that opens a visual letter-picker popup
+                los_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                los_frame.pack(side="left")
+                entry = tk.Entry(los_frame, font=font_entry, bg="black", fg="white", width=28)
+                current_value = round_data.get(field_name, "")
+                if current_value:
+                    entry.insert(0, current_value)
+                entry.pack(side="left", padx=(0, 5))
+                def open_selector(e=entry, fw=field_widgets, fn=field_name):
+                    theme_wid = fw.get("theme")
+                    theme_filename = theme_wid[1]() if theme_wid else ""
+                    data = get_metadata(theme_filename) if theme_filename else {}
+                    title_text = get_base_title(title=get_display_title(data or {})) if theme_filename else ""
+                    if not title_text:
+                        messagebox.showwarning("No Theme", "Please set the theme first.", parent=field_window)
+                        return
+                    open_letter_order_selector(title_text, e, field_window)
+                tk.Button(los_frame, text="SELECT ORDER", font=font_entry,
+                          bg="black", fg="white", command=open_selector).pack(side="left")
+                field_widgets[field_name] = ("text", entry)
+
+            elif field_type == "letter_select":
+                # Text entry + button that opens the letter selector in letter-output mode
+                ls_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                ls_frame.pack(side="left")
+                entry = tk.Entry(ls_frame, font=font_entry, bg="black", fg="white", width=28)
+                current_value = round_data.get(field_name, "")
+                if current_value:
+                    entry.insert(0, current_value)
+                entry.pack(side="left", padx=(0, 5))
+                def open_letter_selector(e=entry, fw=field_widgets, fn=field_name):
+                    theme_wid = fw.get("theme")
+                    theme_filename = theme_wid[1]() if theme_wid else ""
+                    data = get_metadata(theme_filename) if theme_filename else {}
+                    title_text = get_base_title(title=get_display_title(data or {})) if theme_filename else ""
+                    if not title_text:
+                        messagebox.showwarning("No Theme", "Please set the theme first.", parent=field_window)
+                        return
+                    open_letter_order_selector(title_text, e, field_window, mode="letter")
+                tk.Button(ls_frame, text="SELECT LETTERS", font=font_entry,
+                          bg="black", fg="white", command=open_letter_selector).pack(side="left")
                 field_widgets[field_name] = ("text", entry)
 
             elif field_type == "image_url":
@@ -20182,7 +20618,7 @@ def play_background_music(toggle):
                     duration = tag.duration if tag.duration else 0
                     
                     # Start at random position (leave 10 seconds at end to avoid abrupt restart)
-                    play_length = LIGHT_ROUND_LENGTH_DEFAULT*2*lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"]
+                    play_length = LIGHT_ROUND_LENGTH_DEFAULT * 2 * lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"]
                     if duration > play_length:
                         max_start = duration - play_length
                         random_start_pos = random.uniform(0, max_start)
@@ -20287,38 +20723,10 @@ def toggle_artist_info_popup():
         toggle_title_popup(True, info_type="artist")
 
 def update_popout_title_button_text(show=None):
-    """Update the title_info_button text in popout based on popup state."""
-    global popout_buttons_by_name, title_info_button
-    
-    if not popout_controls or title_info_button not in popout_buttons_by_name:
-        return
-    
-    popout_button = popout_buttons_by_name[title_info_button]
-    
-    # Determine what text to show
-    if show and not title_info_only and not artist_info_display and not studio_info_display and not season_info_display and not year_info_display:
-        # Info popup is up showing title - offer artist info
-        new_text = "ARTIST INFO"
-    elif show and artist_info_display:
-        new_text = "STUDIO INFO"
-    elif show and studio_info_display:
-        new_text = "SEASON RANK"
-    elif show and season_info_display:
-        new_text = "YEAR RANK"
-    elif show and year_info_display:
-        try:
-            popout_button.configure(bg=HIGHLIGHT_COLOR, fg="white")
-        except (tk.TclError, AttributeError):
-            pass
-        new_text = "FULL INFO"
-    else:
-        # Default state - show title only
-        new_text = "TITLE ONLY"
-    
-    try:
-        popout_button.configure(text=new_text)
-    except (tk.TclError, AttributeError):
-        pass
+    """Refresh toggle-state colours for info/title/artist/studio/season/year popup
+    buttons in the popout.  The old single-cycling button pattern is replaced by
+    separate buttons for each popup action, so we just call _refresh_popout_toggles."""
+    _refresh_popout_toggles()
 
 def toggle_studio_info_popup():
     if studio_info_display:
@@ -20435,33 +20843,6 @@ def toggle_title_popup(show, info_type=None):
             year_info_display = False
             animate_window(title_window, (screen_width - window_width) // 2, screen_height, fade="out")
     
-    if info_type == "artist":
-        button_seleted(artist_info_button, True)
-    else:
-        button_seleted(artist_info_button, False)
-
-    if info_type == "studio":
-        button_seleted(studio_info_button, True)
-    else:
-        button_seleted(studio_info_button, False)
-
-    if info_type == "season":
-        button_seleted(season_info_button, True)
-    else:
-        button_seleted(season_info_button, False)
-
-    if info_type == "year":
-        button_seleted(year_info_button, True)
-    else:
-        button_seleted(year_info_button, False)
-        
-    if info_type == "title_only":
-        button_seleted(info_button, False)
-        button_seleted(title_info_button, show)
-    else: 
-        button_seleted(info_button, show and not light_mode)
-        button_seleted(title_info_button, False)
-
     # Update popout button text
     update_popout_title_button_text(show)
 
@@ -20877,11 +21258,6 @@ bonus_points = ['1 PT', '2 PTs', '2 PTs']
 used_multiple_titles = {}  # tracks how many times each title has appeared as an option
 def guess_extra(extra = None):
     global guessing_extra, showing_bonus_answer, bonus_chars, bonus_correct_indices
-    buttons = [guess_year_button, guess_members_button, guess_score_button, guess_tags_button, 
-               guess_multiple_button, guess_characters_button, guess_popularity_button,
-               guess_studio_button, guess_artist_button, guess_song_button]
-    for b in buttons:
-        button_seleted(b, False)
     ROUND_PREFIX = "BONUS?: "
     def reset_bonus():
         global guessing_extra, showing_bonus_answer
@@ -20901,7 +21277,6 @@ def guess_extra(extra = None):
         else:
             guessing_extra = extra
         if guessing_extra == "year":
-            button_seleted(guess_year_button, True)
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Year This Anime Aired", 
                                 ("Only 1 guess per person, no repeats.\n"
@@ -20909,7 +21284,6 @@ def guess_extra(extra = None):
                                 f"+{bonus_points[1]} if exact year."),
                                 up_next=False)
         elif guessing_extra == "members":
-            button_seleted(guess_members_button, True)
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The # Of Members This Anime Has", 
                                 ("Members are users who added the anime to their list on MyAnimeList.\n"
@@ -20918,7 +21292,6 @@ def guess_extra(extra = None):
                                 f"+{bonus_points[1]} PTs if first 2 digits are correct."),
                                 up_next=False)
         elif guessing_extra == "popularity":
-            button_seleted(guess_popularity_button, True)
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Popularity Rank This Anime Has", 
                                 ("The rank is based on users who added the anime to their list on MyAnimeList.\n"
@@ -20927,7 +21300,6 @@ def guess_extra(extra = None):
                                 f"+{bonus_points[1]} PTs if exact rank."),
                                 up_next=False)
         elif guessing_extra == "score":
-            button_seleted(guess_score_button, True)
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Score This Anime Has", 
                                 ("Scores takem MyAnimeList and range from 0.0 to 10.0.\n"
@@ -20936,7 +21308,6 @@ def guess_extra(extra = None):
                                 f"+{bonus_points[1]} if exact score."),
                                 up_next=False)
         elif guessing_extra == "tags":
-            button_seleted(guess_tags_button, True)
             data = currently_playing.get("data")
             if data:
                 tags = len(data.get('genres', []) + data.get('themes', []) + data.get('demographics', []))
@@ -20953,7 +21324,6 @@ def guess_extra(extra = None):
                                 "[" + "] [".join(tags_array[0]) + "]\n[" + "] [".join(tags_array[1])) + "]",
                                 up_next=False)
         elif guessing_extra == "multiple":
-            button_seleted(guess_multiple_button, True)
             data = currently_playing.get("data")
             titles = get_random_titles()
             toggle_coming_up_popup(True, 
@@ -20963,8 +21333,6 @@ def guess_extra(extra = None):
                                 f"[C] {titles[2]}\n[D] {titles[3]}"),
                                 up_next=False)
         elif guessing_extra == "characters":
-            button_seleted(guess_characters_button, True)
-            
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The 2 Characters From This Anime", 
                                 ("2 out of 6 characters are from this anime.\n"
@@ -20976,7 +21344,6 @@ def guess_extra(extra = None):
                 show_bonus_characters(bonus_chars)
             threading.Thread(target=worker, daemon=True).start()
         elif guessing_extra == "studio":
-            button_seleted(guess_studio_button, True)
             data = currently_playing.get("data")
             studios = data.get("studios", [])
             correct_studio = studios[0] if studios else "Unknown"
@@ -21008,7 +21375,6 @@ def guess_extra(extra = None):
                 f"[A] {choices[0]}\n[B] {choices[1]}\n[C] {choices[2]}\n[D] {choices[3]}"),
                 up_next=False)
         elif guessing_extra == "artist":
-            button_seleted(guess_artist_button, True)
             data = currently_playing.get("data")
             # Get the correct song entry (by type and slug)
             slug = data.get("slug")
@@ -21059,7 +21425,6 @@ def guess_extra(extra = None):
                 f"[A] {choices[0]}\n[B] {choices[1]}\n[C] {choices[2]}\n[D] {choices[3]}"),
                 up_next=False)
         elif guessing_extra == "song":
-            button_seleted(guess_song_button, True)
             data = currently_playing.get("data")
             slug = data.get("slug")
             theme = None
@@ -21122,6 +21487,7 @@ def guess_extra(extra = None):
                 up_next=False)
     else:
         reset_bonus()
+    _refresh_popout_toggles()
 
 def get_random_tags():
     data = currently_playing.get("data")
@@ -21221,10 +21587,11 @@ def get_random_titles(amount=4):
     # # Step 4: Try to include at least one with non-generic word overlap
     distractors = []
 
-    # Step 5: Fill remaining with less popular ones
+    # Step 5: Fill remaining with less popular ones, excluding the top popularity group
     needed = amount - 1 - len(distractors)
-    top_similar_sorted_by_members = sorted(unique_series_anime, key=lambda a: int(a.get("members") or 0))
-    for group in split_array(top_similar_sorted_by_members, needed):
+    top_similar_sorted_by_members = sorted(unique_series_anime, key=lambda a: get_series_popularity(a))
+    all_groups = split_array(top_similar_sorted_by_members, needed + 1)
+    for group in all_groups[1:]:  # Skip first (most popular) group
         if group:
             pick = random.choice(group)
             distractors.append(get_display_title(pick))
@@ -21445,34 +21812,38 @@ def destroy_bonus_characters():
 #         *RULES
 # =========================================
 
-def get_available_rules_files(folder="files"):
+def get_available_rules_files(folder=None):
     """
-    Get all files ending with 'rules.json' in the specified folder (case-insensitive).
-    
+    Get all JSON files in the rules folder.
+
     Args:
-        folder (str): The folder to search in.
-    
+        folder (str): The folder to search in. Defaults to RULES_FOLDER.
+
     Returns:
         list: List of rule filenames.
     """
+    if folder is None:
+        folder = RULES_FOLDER
     try:
-        files = [f for f in os.listdir(folder) if f.lower().endswith("rules.json") and os.path.isfile(os.path.join(folder, f))]
+        files = [f for f in os.listdir(folder) if f.endswith(".json") and os.path.isfile(os.path.join(folder, f))]
         return sorted(files) if files else ["rules.json"]
     except FileNotFoundError:
         return ["rules.json"]
 
-def load_rules(filename=None, folder="files"):
+def load_rules(filename=None, folder=None):
     """
-    Loads the rules JSON file from the specified folder.
+    Loads a rules JSON file from the rules folder.
 
     Args:
         filename (str): The name of the JSON file. If None, uses selected_rules_file.
-        folder (str): The folder where the file is located.
+        folder (str): The folder where the file is located. Defaults to RULES_FOLDER.
 
     Returns:
         dict: Parsed JSON data as a Python dictionary.
     """
     global selected_rules_file
+    if folder is None:
+        folder = RULES_FOLDER
     if filename is None:
         filename = selected_rules_file
     file_path = os.path.join(folder, filename)
@@ -21516,12 +21887,15 @@ def play_video(index=playlist["current_index"]):
     global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time
     global synopsis_start_index, title_light_letters, playlist_loaded, playing_next_error, light_round_started
     global fixed_lightning_queue, fixed_lightning_round_playlist_data, light_mode, fixed_current_round, light_round_answer_length
+    global current_light_mode, current_light_variant
     playlist_loaded = False
     light_round_start_time = None
     synopsis_start_index = None
     title_light_letters = None
     clean_up_light_round(True)
     light_round_started = False
+    current_light_mode = None
+    current_light_variant = None
     video_stopped = True
     playing_next_error = False
     guess_extra()
@@ -21652,6 +22026,7 @@ def play_video(index=playlist["current_index"]):
         else:
             play_filename(search_queue)
         search_queue = None
+        up_next_text()
         if "SEARCH QUEUE" in popout_buttons_by_name:
             button_seleted(popout_buttons_by_name["SEARCH QUEUE"], False)
     elif 0 <= index < len(playlist["playlist"]):
@@ -21915,7 +22290,6 @@ def play_filename(playlist_entry, fullscreen=True):
         global manual_blind
         toggle_coming_up_popup(False, "Lightning Round")
         if blind_round_toggle:
-            button_seleted(blind_round_button, blind_round_toggle)
             manual_blind = True
             set_black_screen(True)
             root.after(500, player_play)
@@ -21923,23 +22297,17 @@ def play_filename(playlist_entry, fullscreen=True):
             manual_blind = False
             set_black_screen(False)
             toggle_peek()
-            if peek_round_toggle:
-                button_seleted(peek_round_button, peek_round_toggle)
-            else:
+            if not peek_round_toggle:
                 next_background_track()
                 toggle_mute(True)
-                button_seleted(mute_peek_round_button, mute_peek_round_toggle)
             root.after(500, player_play)
         else:
             manual_blind = False
             set_black_screen(False)
             player_play()
     blind_round_toggle = False
-    button_seleted(blind_round_button, False)
     peek_round_toggle = False
-    button_seleted(peek_round_button, False)
     mute_peek_round_toggle = False
-    button_seleted(mute_peek_round_button, False)
     if light_mode not in ['frame', 'clip', 'ost', 'blind']:
         retry_delay = 500
         if animethemes_stream:
@@ -21989,6 +22357,19 @@ def parse_timestamp_flexible(timestamp_str):
 
 session_data = []  # JSON session data
 session_start_time = None
+
+def reset_session_history():
+    global session_data, session_start_time
+    if session_data:
+        confirm = messagebox.askyesno(
+            "Reset Session History",
+            "Clear the current session history?\n\nThis cannot be undone."
+        )
+        if not confirm:
+            return
+    session_data = []
+    session_start_time = datetime.now()
+    update_playlist_name()
 
 def get_top_series_from_session(session_entries):
     series_counts = {}
@@ -22160,13 +22541,14 @@ def generate_text_from_session_data():
         lightning_mode = entry.get("lightning_mode")
         
         
+        title = ""
         session_string = f"{timestamp}:"
         
         if entry_type == "youtube":
             url = entry.get("url", "")
-            title = entry.get("title", "")
+            youtube_title = entry.get("title", "")
             name = entry.get("name", "")
-            session_string = f"{session_string} [YOUTUBE VIDEO({url})] - {title} by {name}"
+            session_string = f"{session_string} [YOUTUBE VIDEO({url})] - {youtube_title} by {name}"
         elif entry_type == "fixed_rounds_start":
             playlist_name = entry.get("playlist_name", "Unknown")
             creator = entry.get("creator", "N/A")
@@ -22552,7 +22934,7 @@ def set_skip_direction(dir):
     skip_direction = dir
 
 def skip_to_lightning_answer():
-    global light_round_started, light_round_start_time, light_round_length
+    global light_round_started, light_round_start_time, light_round_length, light_blind_one_second_count
     global frame_light_round_started, frame_light_round_frame_index, frame_light_round_frame_time
     if frame_light_round_started:
         try:
@@ -22568,6 +22950,11 @@ def skip_to_lightning_answer():
             pass
     if light_round_started and light_round_start_time is not None:
         try:
+            if light_blind_one_second_count:
+                player.play()
+                light_blind_one_second_count = None
+                player.play()
+
             current_time = player.get_time() / 1000
             answer_time = light_round_start_time + light_round_length
             if current_time < answer_time:
@@ -22956,7 +23343,6 @@ def blind(manual = False):
 
 def set_black_screen(toggle, smooth=True):
     global black_overlay
-    button_seleted(blind_button, toggle)
     if toggle:
         if black_overlay is None:  # Create black overlay if it doesn't exist
             black_overlay = tk.Toplevel()
@@ -23012,7 +23398,6 @@ blind_round_toggle = False
 def toggle_blind_round():
     global blind_round_toggle
     blind_round_toggle = not blind_round_toggle
-    button_seleted(blind_round_button, blind_round_toggle)
     if blind_round_toggle:
         if peek_round_toggle:
             toggle_peek_round()
@@ -23051,7 +23436,6 @@ def toggle_desktop_black_overlay(toggle=None):
         if desktop_black_overlay and desktop_black_overlay.winfo_exists():
             desktop_black_overlay.destroy()
             desktop_black_overlay = None
-    button_seleted(desktop_black_button, desktop_black_overlay)
 
 # =========================================
 #              *CENSOR BOXES
@@ -23128,18 +23512,13 @@ def load_censors():
             censor_list = json.load(a)
             print(f"Loaded censors for {len(censor_list)} files...")
 
-    # Load other censor-related files in the same directory
-    folder = os.path.dirname(CENSOR_JSON_FILE)
-    basename = os.path.basename(CENSOR_JSON_FILE)
-    if os.path.exists(folder):
-        for fname in os.listdir(folder):
-            if (
-                "censor" in fname.lower()
-                and fname.endswith(".json")
-                and fname != basename
-            ):
+    # Load all other JSON files in the censors folder as additional censor lists
+    if os.path.exists(CENSORS_FOLDER):
+        main_basename = os.path.basename(CENSOR_JSON_FILE)
+        for fname in sorted(os.listdir(CENSORS_FOLDER)):
+            if fname.endswith(".json") and fname != main_basename:
                 try:
-                    with open(os.path.join(folder, fname), "r") as f:
+                    with open(os.path.join(CENSORS_FOLDER, fname), "r") as f:
                         data = json.load(f)
                         other_censor_lists.append(data)
                         print(f"Loaded {len(data)} entries from {fname}")
@@ -23403,10 +23782,9 @@ def rgbtohex(r,g,b):
 
 def update_censor_button_count():
     if currently_playing.get("filename"):
-        censors_num = len(get_file_censors(currently_playing.get("filename","")))
-        toggle_censor_bar_button.configure(text=f"[C]ENSOR({censors_num})")
-        if popout_buttons_by_name.get(toggle_censor_bar_button):
-            popout_buttons_by_name.get(toggle_censor_bar_button).configure(text=f"CENSORS({censors_num})")
+        censors_num = len(get_file_censors(currently_playing.get("filename", "")))
+        # if popout_buttons_by_name.get("censors"):
+        #     popout_buttons_by_name["censors"].configure(text=f"CENSORS({censors_num})")
 
 class RectangleDrawerOverlay:
     def __init__(self, on_rectangle_picked):
@@ -23579,8 +23957,6 @@ def open_censor_editor(refresh=False):
     
     def censor_editor_close():
         global censor_editor, censor_entry_widgets, censor_page_offset
-        button_seleted(edit_censors_button, False)
-        edit_censors_button.configure(text="➕")
         censor_entry_widgets = []
         censor_page_offset = 0
         censor_editor.destroy()
@@ -23589,22 +23965,19 @@ def open_censor_editor(refresh=False):
     filename = currently_playing.get("filename")
     if filename:
         current_censors = copy.deepcopy(get_file_censors(filename))
-    button_seleted(edit_censors_button, True)
-    edit_censors_button.configure(text="❌")
 
     font_big = ("Arial", 14)
     fg_color = "white"
     bg_color = "black"
 
     if censor_editor:
+        censor_editor_close()
         if not refresh:
-            censor_editor_close()
             return
-    else:
-        censor_editor = tk.Toplevel()
-        censor_editor.configure(bg=BACKGROUND_COLOR)
-        censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
-        get_window_position_and_setup(censor_editor)
+    censor_editor = tk.Toplevel()
+    censor_editor.configure(bg=BACKGROUND_COLOR)
+    censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
+    get_window_position_and_setup(censor_editor)
         
     # Create header and pagination controls
     def create_header_with_pagination():
@@ -24063,9 +24436,23 @@ def open_censor_editor(refresh=False):
         add_skip_btn.grid(row=999, column=3, columnspan=1, pady=12)
         bottom_button_widgets.append(add_skip_btn)
         
+        censor_toggle_lbl = "CENSORS: ON" if censors_enabled else "CENSORS: OFF"
+        censor_toggle_bg  = "#226622" if censors_enabled else "#662222"
+        censor_toggle_btn = tk.Button(censor_editor, text=censor_toggle_lbl, width=14, font=font_big,
+                                       bg=censor_toggle_bg, fg=fg_color, command=lambda: _toggle_censor_from_editor())
+        censor_toggle_btn.grid(row=999, column=4, columnspan=1, pady=12)
+        bottom_button_widgets.append(censor_toggle_btn)
+
+        def _toggle_censor_from_editor():
+            toggle_censor_bar()
+            censor_toggle_btn.configure(
+                text="CENSORS: ON" if censors_enabled else "CENSORS: OFF",
+                bg="#226622" if censors_enabled else "#662222"
+            )
+
         global save_censors_button
         save_censors_button = tk.Button(censor_editor, text="SAVE CENSOR(S)", width=19, font=font_big, bg=bg_color, fg=fg_color, command=save_all)
-        save_censors_button.grid(row=999, column=4, columnspan=4, pady=12)
+        save_censors_button.grid(row=999, column=6, columnspan=1, pady=12)
         bottom_button_widgets.append(save_censors_button)
         
         current_has_censors = len(current_censors) > 0
@@ -24096,7 +24483,7 @@ def get_playlist(playlist_name):
         new_playlist["name"] = playlist_name
         return new_playlist
 
-def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=False):
+def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
     """Toggles a theme in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
     if not filename:
         if currently_playing.get("filename"):
@@ -24114,8 +24501,6 @@ def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=Fal
         if not add:
             # Remove theme
             theme_list.remove(filename)
-            if button:
-                button_seleted(button, False)
             type_string = "removed from"
         else:
             return
@@ -24125,8 +24510,6 @@ def toggle_theme(playlist_name, button=None, filename=None, quiet=False, add=Fal
             theme_list = [filename]
         else:
             theme_list.append(filename)
-        if button:
-            button_seleted(button, True)
 
     # Save the updated playlist
     data["playlist"] = theme_list
@@ -24177,7 +24560,7 @@ def check_theme(filename=None, playlist_name=None, recache=False):
 
 def tag():
     """Toggles the current theme in the 'Tagged Themes' playlist."""
-    toggle_theme("Tagged Themes", tag_button)
+    toggle_theme("Tagged Themes")
 
 def check_tagged(filename):
     """Checks if a filename is in the 'Tagged Themes' playlist."""
@@ -24185,7 +24568,7 @@ def check_tagged(filename):
 
 def favorite():
     """Toggles the current theme in the 'Favorite Themes' playlist."""
-    toggle_theme("Favorite Themes", favorite_button)
+    toggle_theme("Favorite Themes")
 
 def check_favorited(filename):
     """Checks if a filename is in the 'Favorite Themes' playlist."""
@@ -24203,7 +24586,7 @@ def blind_mark(remove=False):
             peek_mark(True)
         if check_mute_peek_mark(filename):
             mute_peek_mark(True)
-    toggle_theme("Blind Themes", blind_mark_button)
+    toggle_theme("Blind Themes")
 
 def check_blind_mark(filename):
     """Checks if a filename is in the 'Blind Themes' playlist."""
@@ -24217,7 +24600,7 @@ def peek_mark(remove=False):
             blind_mark(True)
         if check_mute_peek_mark(filename):
             mute_peek_mark(True)
-    toggle_theme("Peek Themes", peek_mark_button)
+    toggle_theme("Peek Themes")
 
 def check_peek_mark(filename):
     """Checks if a filename is in the 'Peek Themes' playlist."""
@@ -24231,7 +24614,7 @@ def mute_peek_mark(remove=False):
             blind_mark(True)
         if check_peek_mark(filename):
             peek_mark(True)
-    toggle_theme("Mute Peek Themes", mute_peek_mark_button)
+    toggle_theme("Mute Peek Themes")
 
 def check_mute_peek_mark(filename):
     """Checks if a filename is in the 'Mute Peek Themes' playlist."""
@@ -24330,7 +24713,7 @@ def check_missing_artists():
                 if not previous_removed:
                     remove_previous_playlist()
                     previous_removed = True
-                toggle_theme(playlist["name"], favorite_button, filename)
+                toggle_theme(playlist["name"], filename)
                 missing_artists.append(filename)
     playlist["playlist"] = missing_artists
     update_current_index(0)
@@ -24377,8 +24760,8 @@ def toggle_player_collapse():
         
         collapse_button.config(text="▲")
     else:
-        # Show the info panel again in the right position (after third_row_frame)
-        info_panel.pack(after=third_row_frame, fill="both", expand=True, padx=scl(10, "UI"), pady=scl(5, "UI"))
+        # Show the info panel again in the right position (after first_row_frame)
+        info_panel.pack(after=first_row_frame, fill="both", expand=True, padx=scl(10, "UI"), pady=scl(5, "UI"))
         
         # Restore original window height and min height if we have it
         if original_window_height is not None:
@@ -24485,10 +24868,12 @@ def get_window_position_and_setup(window=None, set_topmost_if_docked=True, offse
 # =========================================
 
 last_themes_listed = {}
-def show_field_themes(update = False, group=[]):
+def show_field_themes(update = False, group=[], title=None):
     global last_themes_listed
     if group == []:
         field_list = last_themes_listed
+        if title is None:  # Preserve existing title when refreshing
+            title = current_list_title
     else:
         field_list = group
     if last_themes_listed != group:
@@ -24501,7 +24886,7 @@ def show_field_themes(update = False, group=[]):
             if get_clean_filename(filename) == search_queue or filename == search_queue:
                 selected = index
                 break
-    show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_title, set_field_queue, selected, update, right_click_func=add_field_to_playlist)
+    show_list("field_list", right_column, convert_playlist_to_dict(field_list), get_title, set_field_queue, selected, update, right_click_func=add_field_to_playlist, title=title)
 
 def get_title(key, value):
     try:
@@ -24576,9 +24961,9 @@ def show_playlist(update = False):
         rounds = fixed_lightning_round_playlist_data.get("rounds", [])
         rounds_dict = convert_fixed_rounds_to_dict(rounds)
         current_index = fixed_lightning_round_playlist_data.get("current_index", 0)
-        show_list("playlist", right_column, rounds_dict, get_fixed_round_title, play_fixed_round_by_index, current_index, update, right_click_func=None)
+        show_list("playlist", right_column, rounds_dict, get_fixed_round_title, play_fixed_round_by_index, current_index, update, right_click_func=None, title="LIGHTNING ROUND")
     else:
-        show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=remove_theme)
+        show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=remove_theme, title="PLAYLIST")
 
 def convert_fixed_rounds_to_dict(rounds):
     """Convert fixed lightning rounds to dict for display"""
@@ -24621,7 +25006,7 @@ def play_fixed_round_by_index(index):
         play_video()
 
 def remove(update = False):
-    show_list("remove", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, remove_theme, playlist["current_index"], update)
+    show_list("remove", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, remove_theme, playlist["current_index"], update, title="REMOVE THEME")
 
 def convert_playlist_to_dict(playlis):
     return {f"{video}_{i}": video for i, video in enumerate(playlis)}
@@ -24664,14 +25049,7 @@ def remove_theme(index):
     elif list_loaded == "remove":
         current_list_content = convert_playlist_to_dict(playlist["playlist"])
         # If we're in the remove view, we need to refresh that too
-        reload_playlist(True)
-
-def reload_playlist(update = False):
-    if list_loaded:
-        for button in list_buttons:
-            if list_loaded == button.get('label'):
-                button.get('func')(update)
-                return
+        remove_theme(True)
 
 def get_filename(key, value):
     return value
@@ -24682,8 +25060,6 @@ def button_seleted(button, selected):
             button.configure(bg=HIGHLIGHT_COLOR, fg="white")
         else:
             button.configure(bg="black", fg="white")
-        if popout_buttons_by_name.get(button):
-            button_seleted(popout_buttons_by_name[button], selected)
 
 list_loaded = None
 list_index = 0
@@ -24700,10 +25076,8 @@ def get_list_entries_count():
         if available_height <= 1:
             content = right_top.get(1.0, tk.END)
             content_stripped = content.strip()
-            if not content_stripped or content_stripped == "" or len(content_stripped) == 0:
-                return 13
-            else:
-                return 12
+            base = 13 if (not content_stripped or content_stripped == "" or len(content_stripped) == 0) else 12
+            return base
         
         # Estimate button height including padding/spacing
         # Each button is roughly 25-30 pixels with spacing, using 28 as safe estimate
@@ -24723,6 +25097,127 @@ current_list_offset = 0  # Offset for any list type
 current_list_content = {}  # Store current list content
 current_list_name_func = None  # Store current name function
 current_list_selected = -1  # Store the currently selected/playing item index
+current_list_title = ""  # Title shown at top of list, if any
+right_column_header = None  # Persistent header Frame packed above right_column
+right_column_header_label = None  # Label widget inside right_column_header
+list_title_label = None  # Points to right_column_header_label when active
+right_column_scrollbar = None  # Custom scrollbar for the list display
+list_header_font = None  # Font used by the list title header (set at GUI time)
+
+def _close_list(column, keep_focus=False):
+    """Close the current list view and clear the column."""
+    global current_list_title
+    _was_search = list_loaded in ["search", "search_add"]
+    current_list_title = ""
+    _insert_list_title_row(column)  # hides the header frame
+    list_unload(column)
+    try:
+        column.config(state=tk.NORMAL)
+        column.delete(1.0, tk.END)
+        column.config(state=tk.DISABLED)
+    except Exception:
+        pass
+    update_list_scrollbar()
+    # Clear the toolbar search entry if a search list was closed
+    if _was_search and not keep_focus:
+        try:
+            global search_term
+            search_term = ""
+            if search_bar_entry and search_bar_entry.winfo_exists():
+                search_bar_entry.delete(0, tk.END)
+                search_bar_entry.insert(0, SEARCH_BAR_PLACEHOLDER)
+                search_bar_entry.configure(fg="gray50")
+                root.focus()
+        except Exception:
+            pass
+    # Restore extra metadata if a theme is currently loaded
+    if currently_playing.get("data") or currently_playing.get("type") == "youtube":
+        update_extra_metadata(column)
+
+def _insert_list_title_row(column):
+    """Show, update, or hide the title header frame above right_column."""
+    global list_title_label
+    if right_column_header is None:
+        return
+    if current_list_title:
+        # Truncate using right_column's width (always rendered) BEFORE packing,
+        # so the label never has the full long text and can't push the frame wider.
+        _truncate_header_title()
+        if not right_column_header.winfo_ismapped():
+            right_column_header.pack(fill="x", before=right_column_row)
+        list_title_label = right_column_header_label
+    else:
+        if right_column_header.winfo_ismapped():
+            right_column_header.pack_forget()
+        list_title_label = None
+
+def _truncate_header_title(event=None):
+    """Update the header label text with ellipsis truncation to fit available width."""
+    if not current_list_title or right_column_header_label is None:
+        return
+    font_obj = list_header_font
+    if font_obj is None:
+        return
+    # Use right_column's width as reference — it's always rendered with the correct width.
+    # right_column_header.winfo_width() returns 1 until the frame is laid out, so
+    # we can't rely on it here (especially before the header is packed the first time).
+    ref_width = right_column.winfo_width() if right_column and right_column.winfo_exists() else 0
+    if ref_width < 20:
+        right_column_header_label.config(text=current_list_title)
+        return
+    close_btn_est = scl(80, "UI")
+    available_w = max(20, ref_width - close_btn_est)
+    text = current_list_title
+    if font_obj.measure(text) <= available_w:
+        right_column_header_label.config(text=text)
+        return
+    for i in range(len(text) - 1, 0, -1):
+        truncated = text[:i] + "\u2026"
+        if font_obj.measure(truncated) <= available_w:
+            right_column_header_label.config(text=truncated)
+            return
+    right_column_header_label.config(text="\u2026")
+
+def update_list_scrollbar():
+    """Sync the custom scrollbar thumb to reflect the current list offset, showing/hiding as needed."""
+    if right_column_scrollbar is None:
+        return
+    needs_scroll = False
+    if list_loaded and current_list_content:
+        list_size = len(current_list_content)
+        entries_count = get_list_entries_count()
+        if list_size > entries_count:
+            needs_scroll = True
+            first = current_list_offset / list_size
+            last = min(1.0, (current_list_offset + entries_count) / list_size)
+            right_column_scrollbar.set(first, last)
+    if needs_scroll:
+        if not right_column_scrollbar.winfo_ismapped():
+            right_column_scrollbar.pack(side="right", fill="y")
+    else:
+        if right_column_scrollbar.winfo_ismapped():
+            right_column_scrollbar.pack_forget()
+
+def on_list_scrollbar_set(action, *args):
+    """Handle scrollbar drag/click to change the list offset."""
+    global current_list_offset
+    if not list_loaded or not current_list_content:
+        return
+    list_size = len(current_list_content)
+    entries_count = get_list_entries_count()
+    max_offset = max(0, list_size - entries_count)
+    if action == "moveto":
+        fraction = float(args[0])
+        current_list_offset = max(0, min(max_offset, round(fraction * list_size)))
+    elif action == "scroll":
+        amount = int(args[0])
+        unit = args[1]
+        if unit == "pages":
+            current_list_offset = max(0, min(max_offset, current_list_offset + amount * entries_count))
+        else:
+            current_list_offset = max(0, min(max_offset, current_list_offset + amount))
+    refresh_current_list()
+
 def create_persistent_list_buttons(column, target_count=None):
     """Create persistent buttons that will be reused for any list display."""
     global persistent_buttons, button_to_index_map
@@ -24833,6 +25328,7 @@ def refresh_current_list():
     elif list_loaded and current_list_content:
         # For other lists, update the display directly
         update_persistent_list_display()
+    update_list_scrollbar()
 
 def update_persistent_list_display():
     """Update the persistent buttons with current list content."""
@@ -25006,9 +25502,6 @@ def handle_persistent_drag_start(event, button_index):
 def list_set_loaded(type):
     global list_loaded
     list_loaded = type
-    for button in list_buttons:
-        if button.get('button') and globals().get(button.get('button')):
-            button_seleted(globals().get(button.get('button')), list_loaded == button.get('label'))
 
 def list_unload(column):
     global persistent_buttons
@@ -25022,6 +25515,7 @@ def list_unload(column):
         persistent_buttons = []
     
     list_set_loaded(None)
+    update_list_scrollbar()
     update_extra_metadata()
 
 def list_move(amount):
@@ -25062,9 +25556,13 @@ def playlist_page_down():
     if list_loaded == "playlist":
         list_scroll_down()
 
-def show_list(type, column, content, name_func, btn_func, selected, update = True, right_click_func=None, items_per_page=None):
-    global list_loaded, list_index, list_func, current_list_offset, current_list_content, current_list_name_func, persistent_buttons
+def show_list(type, column, content, name_func, btn_func, selected, update = True, right_click_func=None, items_per_page=None, title=None):
+    global list_loaded, list_index, list_func, current_list_offset, current_list_content, current_list_name_func, persistent_buttons, current_list_title
     
+    # Always resolve the new title upfront so we can detect changes
+    new_title = title or ""
+    title_changed = new_title != current_list_title
+
     list_size = len(content)
     buttons_need_recreation = False
     
@@ -25110,7 +25608,11 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
         playlist_page_offset = current_list_offset
     
     handle_persistent_right_click.right_click_func = right_click_func
-    
+
+    # Apply title and update header visibility
+    current_list_title = new_title
+    _insert_list_title_row(column)
+
     # Only clear and recreate layout when switching list types
     if buttons_need_recreation:
         column.config(state=tk.NORMAL, wrap="none", spacing1=0, spacing3=0)
@@ -25155,7 +25657,11 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
             update_persistent_button(button_index, -1, name_func, content, selected)
     
     if buttons_need_recreation:
-        column.focus_set()
+        # Don't steal focus from the search bar entry
+        is_search = type in ("search", "search_add")
+        if not (is_search and search_bar_entry and search_bar_entry.winfo_exists()):
+            column.focus_set()
+    update_list_scrollbar()
 
 # Drag and drop variables
 drag_start_index = None
@@ -25505,6 +26011,9 @@ def end_playlist_drag(event):
         pass
 
 def list_keyboard_shortcuts():
+    global current_list_title
+    current_list_title = ""
+    _insert_list_title_row(right_column)
     right_column.config(state=tk.NORMAL, wrap="none")
     right_column.delete(1.0, tk.END)
     add_single_line(right_column, "SHOW KEYBOARD SHORTCUTS", "[K]")
@@ -25563,35 +26072,30 @@ def toggle_disable_shortcuts():
     global disable_shortcuts
     disable_shortcuts = not disable_shortcuts
     print("Keyboard Shortcuts Disabled: " + str(disable_shortcuts))
-    button_seleted(toggle_disable_shortcuts_button, not disable_shortcuts)
 
 auto_info_start = False
 def toggle_auto_info_start():
     global auto_info_start
     auto_info_start = not auto_info_start
     print("Auto Info Popup at start: " + str(auto_info_start))
-    button_seleted(start_info_button, auto_info_start)
 
 auto_info_end = False
 def toggle_auto_info_end():
     global auto_info_end
     auto_info_end = not auto_info_end
     print("Auto Info Popup at end: " + str(auto_info_end))
-    button_seleted(end_info_button, auto_info_end)
 
 auto_refresh_toggle = False
 def toggle_auto_auto_refresh():
     global auto_refresh_toggle
     auto_refresh_toggle = not auto_refresh_toggle
     print("Auto refresh metadata: " + str(auto_refresh_toggle))
-    button_seleted(toggle_refresh_metadata_button, auto_refresh_toggle)
 
 def toggle_censor_bar():
     global censors_enabled
     censors_enabled = not censors_enabled
     print("Censor Bar Enabled: " + str(censors_enabled))
     apply_censors(player.get_time()/1000, player.get_length()/1000)
-    button_seleted(toggle_censor_bar_button, censors_enabled)
     if not censors_enabled:
         remove_all_censor_boxes()
         
@@ -25600,7 +26104,6 @@ def toggle_progress_bar():
     progress_bar_enabled = not progress_bar_enabled
     print("Progress Bar Enabled: " + str(progress_bar_enabled))
     apply_censors(player.get_time()/1000, player.get_length()/1000)
-    button_seleted(toggle_progress_bar_button, progress_bar_enabled)
     update_progress_bar(player.get_time(), player.get_length())
 
 disable_video_audio = False
@@ -25614,7 +26117,6 @@ def toggle_mute(muted=None, lightning=False):
         if not disable_video_audio:
             player.audio_set_mute(muted)
         play_background_music(muted and not currently_streaming and light_mode not in ['clip', 'ost'])
-        button_seleted(mute_button, muted or disable_video_audio)
     else:
         if muted == None:
             muted = not disable_video_audio
@@ -25625,7 +26127,6 @@ def toggle_mute(muted=None, lightning=False):
                 pygame.mixer.music.set_volume(0)
             else:
                 pygame.mixer.music.set_volume(background_music_volume_modifier*(volume_level/100))
-        button_seleted(mute_button, disable_video_audio)
 
 # =========================================
 #              *END SESSION
@@ -25675,7 +26176,6 @@ def toggle_end_message(speed=500):
     """Toggles the 'Thanks for playing!' message with detailed stats."""
     global end_message_window
     try:
-        button_seleted(end_button, not end_message_window)
         if end_message_window:
             end_message_window.destroy()
             end_message_window = None
@@ -25872,10 +26372,91 @@ def prompt_end_session_text(event=None):
 #            *POPOUT CONTROLS
 # =========================================
 
+# ---------------------------------------------------------------------------
+# POPOUT LAYOUT CONFIGURATION
+# ---------------------------------------------------------------------------
+# Each entry: {"type": "action"|"widget"|"gap", "id": str, "colspan": int}
+#   "action"  — resolved via get_flat_registry() by id; renders as a button
+#   "widget"  — one of the special inline widgets (search, youtube, dropdowns…)
+#   "gap"     — empty placeholder cell
+#
+# Special widget IDs:
+#   "SEARCH ENTRY"        — text entry for theme search
+#   "SEARCH DROPDOWN"     — combobox listing search results
+#   "SEARCH QUEUE"        — button to queue/add the selected search result
+#   "YOUTUBE DROPDOWN"    — combobox listing downloaded YouTube videos
+#   "YOUTUBE QUEUE"       — button to queue the selected YouTube video
+#   "LIGHTNING DROPDOWN"  — combobox to pick the lightning round mode
+#   "DIFFICULTY DROPDOWN" — combobox to pick infinite-playlist difficulty
+#   "toggle_metadata"     — button that shows/hides the currently-playing info area
+# ---------------------------------------------------------------------------
+
+POPOUT_LAYOUT_DEFAULT = [
+    # ── Marks ───────────────────────────────────────────────────────────────
+    {"type": "action", "id": "mute_peek_mark",        "colspan": 1, "custom_label": "MARK"},
+    {"type": "action", "id": "tag",                   "colspan": 1},
+    {"type": "action", "id": "favorite",              "colspan": 1},
+    {"type": "action", "id": "info_popup",            "colspan": 1},
+    {"type": "action", "id": "title_popup",           "colspan": 1},
+    # ── Blind controls ──────────────────────────────────────────────────────
+    {"type": "action", "id": "blind_mark",            "colspan": 1, "custom_label": "MARK"},
+    {"type": "action", "id": "blind",                 "colspan": 1},
+    {"type": "action", "id": "queue_blind_round",     "colspan": 1},
+    {"type": "action", "id": "mute",                  "colspan": 1},
+    {"type": "action", "id": "queue_mute_peek_round", "colspan": 1},
+    # ── Peek controls ───────────────────────────────────────────────────────
+    {"type": "action", "id": "peek_mark",             "colspan": 1, "custom_label": "MARK"},
+    {"type": "action", "id": "peek",                  "colspan": 1},
+    {"type": "action", "id": "queue_peek_round",      "colspan": 1},
+    {"type": "action", "id": "widen_peek",            "colspan": 1},
+    {"type": "action", "id": "narrow_peek",           "colspan": 1},
+    # ── Bonus questions ─────────────────────────────────────────────────────
+    {"type": "action", "id": "bonus_year",            "colspan": 1},
+    {"type": "action", "id": "bonus_members",         "colspan": 1},
+    {"type": "action", "id": "bonus_score",           "colspan": 1},
+    {"type": "action", "id": "bonus_tags",            "colspan": 1},
+    {"type": "action", "id": "bonus_multiple",        "colspan": 1},
+    {"type": "action", "id": "bonus_rank",            "colspan": 1},
+    {"type": "action", "id": "bonus_studio",          "colspan": 1},
+    {"type": "action", "id": "bonus_artist",          "colspan": 1},
+    {"type": "action", "id": "bonus_song",            "colspan": 1},
+    {"type": "action", "id": "bonus_chars",           "colspan": 1},
+    # ── Lightning ───────────────────────────────────────────────────────────
+    {"type": "widget", "id": "LIGHTNING DROPDOWN",    "colspan": 2},
+    {"type": "action", "id": "lightning_start",       "colspan": 1},
+    {"type": "action", "id": "lightning_variety",     "colspan": 1},
+    {"type": "widget", "id": "DIFFICULTY DROPDOWN",   "colspan": 1},
+    # ── YouTube ─────────────────────────────────────────────────────────────
+    {"type": "widget", "id": "YOUTUBE DROPDOWN",      "colspan": 4},
+    {"type": "widget", "id": "YOUTUBE QUEUE",         "colspan": 1},
+    # ── Search ──────────────────────────────────────────────────────────────
+    {"type": "widget", "id": "SEARCH ENTRY",          "colspan": 2},
+    {"type": "widget", "id": "SEARCH DROPDOWN",       "colspan": 2},
+    {"type": "widget", "id": "SEARCH QUEUE",          "colspan": 1},
+    # ── Misc ────────────────────────────────────────────────────────────────
+    {"type": "action", "id": "dock_player",           "colspan": 1},
+    {"type": "action", "id": "censors",               "colspan": 1},
+    {"type": "widget", "id": "toggle_metadata",       "colspan": 1},
+    {"type": "action", "id": "filter_editor",         "colspan": 1},
+    {"type": "action", "id": "end_session",           "colspan": 1},
+    # ── Player controls ─────────────────────────────────────────────────────
+    {"type": "action", "id": "reroll_next",           "colspan": 1},
+    {"type": "action", "id": "play_pause",            "colspan": 1, "icon_only": True},
+    {"type": "action", "id": "stop",                  "colspan": 1, "icon_only": True},
+    {"type": "action", "id": "previous",              "colspan": 1, "icon_only": True},
+    {"type": "action", "id": "next",                  "colspan": 1, "icon_only": True},
+]
+
+# User-customised layout — None means "use POPOUT_LAYOUT_DEFAULT"
+popout_layout: list | None = None
+popout_columns: int = 5
+
 popout_controls = None
 popout_buttons_by_name = {}
 popout_up_next = None
 popout_up_next_font = None
+popout_current_font = None
+popout_current_extra_font = None
 popout_currently_playing = None
 popout_currently_playing_extra = None
 popout_button_font = None
@@ -25935,17 +26516,95 @@ def toggle_show_popout_metadata():
         update_up_next_display(popout_up_next, clear=False)
     popout_controls.event_generate("<Configure>")
 
+
+def _refresh_popout_toggles():
+    """Refresh the highlight state (and any dynamic text) of all action buttons
+    currently displayed in the popout.  Safe to call at any time — silently
+    exits if the popout is closed or the button no longer exists."""
+    if not popout_controls:
+        return
+    try:
+        flat = get_flat_registry()
+    except Exception:
+        return
+    for item_id, widget in list(popout_buttons_by_name.items()):
+        if not isinstance(widget, tk.Button):
+            continue
+        try:
+            if not widget.winfo_exists():
+                continue
+        except Exception:
+            continue
+        reg_item = flat.get(item_id)
+        if reg_item is None:
+            continue
+        # ── Update text for dynamic button_label / label lambdas ─────────────
+        bl = reg_item.get("button_label") or reg_item.get("label", "")
+        if callable(bl):
+            icon = reg_item.get("icon", "")
+            if callable(icon):
+                icon = icon()
+            # apply per-button overrides stashed at creation time
+            custom_label = getattr(widget, "_spec_custom_label", "")
+            show_icon    = getattr(widget, "_spec_show_icon", True)
+            icon_only    = getattr(widget, "_spec_icon_only", False)
+            if icon_only and icon:
+                new_text = icon
+            else:
+                if custom_label:
+                    bl_text = custom_label
+                else:
+                    bl_text = bl()
+                if not show_icon:
+                    icon = ""
+                new_text = (f"{icon}{bl_text}".strip() if icon else bl_text).strip()
+            try:
+                widget.configure(text=new_text)
+            except Exception:
+                pass
+        # ── Update highlight colour for toggle state ──────────────────────────
+        toggle_fn = reg_item.get("toggle")
+        if toggle_fn:
+            try:
+                is_on = bool(toggle_fn())
+                widget.configure(bg=HIGHLIGHT_COLOR if is_on else "black")
+            except Exception:
+                pass
+
+
 popout_searching = False
 POPOUT_SEARCH_DEFAULT = "SEARCH THEMES"
-def create_popout_controls(columns=5, title="Popout Controls"):
-    # --- SEARCH GROUP STATE ---
+def create_popout_controls(title="Popout Controls"):
+    """Open the customisable popout controls window.
+
+    Layout is driven by `popout_layout` (user-saved) or `POPOUT_LAYOUT_DEFAULT`.
+    All action buttons are resolved from the flat menu registry by ID so they
+    are always up-to-date; special widgets are rendered inline.
+    """
+    global popout_controls, popout_up_next, popout_up_next_font, popout_button_font
+    global popout_currently_playing, popout_currently_playing_extra
+    global popout_current_font, popout_current_extra_font
+
+    # ── shared cross-widget refs (mutable container for closure capture) ────
+    _refs: dict = {}   # "search_dropdown", "yt_video_map", "yt_var"
+
+    # ── shared search state ──────────────────────────────────────────────────
     global search_term, search_results
-    search_var = tk.StringVar(value=search_term if ('search_term' in globals() and search_term) else POPOUT_SEARCH_DEFAULT)
+    search_var = tk.StringVar(value=search_term if search_term else POPOUT_SEARCH_DEFAULT)
     search_results_var = tk.StringVar(value="")
-    search_results_map = {}
+    search_results_map: dict = {}
 
-    global popout_controls, popout_up_next, popout_up_next_font, popout_button_font, popout_currently_playing, popout_currently_playing_extra
+    # ── shared YouTube state ─────────────────────────────────────────────────
+    yt_var = tk.StringVar(value="")
+    yt_video_list: list = []
+    yt_video_map: dict = {}
+    for _key, _val in youtube_metadata.get("videos", {}).items():
+        if os.path.exists(os.path.join("youtube", _val["filename"])):
+            _title = _val.get("custom_title") or _val.get("title")
+            yt_video_list.append(_title)
+            yt_video_map[_title] = _key
 
+    # ── close handler ────────────────────────────────────────────────────────
     def on_popout_close():
         global popout_controls, popout_up_next, popout_currently_playing, popout_currently_playing_extra
         button_seleted(popout_controls_button, False)
@@ -25956,528 +26615,1245 @@ def create_popout_controls(columns=5, title="Popout Controls"):
         popout_currently_playing = None
         popout_currently_playing_extra = None
 
+    # Toggle: close if already open
+    if popout_controls:
+        on_popout_close()
+        return
+
+    # ── create window ────────────────────────────────────────────────────────
+    popout_controls = tk.Toplevel()
+    popout_controls.title(title)
+    popout_controls.configure(bg=BACKGROUND_COLOR)
+
+    popout_width, popout_height = 1440, 810
+    popout_controls.geometry(f"{popout_width}x{popout_height}")
+    root.update_idletasks()
+    main_width = root.winfo_width()
+    offset_x = (main_width - popout_width) // 2
+    get_window_position_and_setup(popout_controls, offset_x=offset_x, offset_y=50)
+    popout_controls.protocol("WM_DELETE_WINDOW", on_popout_close)
+
+    # ── fonts ────────────────────────────────────────────────────────────────
+    popout_up_next_font        = font.Font(family="Helvetica", size=20, weight="bold")
+    popout_current_font        = font.Font(family="Helvetica", size=25, weight="bold")
+    popout_current_extra_font  = font.Font(family="Helvetica", size=10, weight="bold")
+    popout_button_font         = font.Font(family="Helvetica", size=20, weight="bold")
+
+    # ── resize handler ───────────────────────────────────────────────────────
     def on_popout_resize(event):
         global resize_after_id
-
         def do_resize():
             if not popout_controls or not popout_currently_playing:
                 return
-
-            width = popout_controls.winfo_width()
+            width  = popout_controls.winfo_width()
             height = popout_controls.winfo_height()
-            min_dim = min(width*.5, height)
-
-            new_upnext_size = max(10, int(min_dim / 30))
-            new_button_size = max(10, int(min_dim / 25))
-            new_current_size = max(10, int(min_dim / 25))
-            new_current_extra_size = max(10, int(min_dim / 50))
-
-            popout_button_font.configure(size=new_button_size)
-
+            min_dim = min(width * 0.5, height)
+            popout_button_font.configure(size=max(10, int(min_dim / 25)))
             if popout_show_metadata:
-                popout_up_next_font.configure(size=new_upnext_size)
-                popout_current_font.configure(size=new_current_size)
-                popout_current_extra_font.configure(size=new_current_extra_size)
-
-                # Adjust text wrap to match new width
+                popout_up_next_font.configure(size=max(10, int(min_dim / 30)))
+                popout_current_font.configure(size=max(10, int(min_dim / 25)))
+                popout_current_extra_font.configure(size=max(10, int(min_dim / 50)))
                 popout_currently_playing.configure(wraplength=int(width * 0.95))
+                if popout_up_next:
+                    adjust_up_next_height(popout_up_next, True)
             else:
                 popout_up_next_font.configure(size=1)
                 popout_current_font.configure(size=1)
                 popout_current_extra_font.configure(size=1)
                 popout_currently_playing.configure(wraplength=0)
-
-            # Reapply button fonts to all cloned buttons
-            for widget in popout_buttons_by_name.values():
-                if isinstance(widget, tk.Button):
-                    widget.configure(font=popout_button_font)
-
-        # Cancel any pending resize jobs
+            for w in popout_buttons_by_name.values():
+                if isinstance(w, tk.Button):
+                    w.configure(font=popout_button_font)
         if resize_after_id is not None:
-            popout_controls.after_cancel(resize_after_id)
-
-        # Schedule a new resize job 150ms from now
+            try:
+                popout_controls.after_cancel(resize_after_id)
+            except Exception:
+                pass
         resize_after_id = popout_controls.after(150, do_resize)
-
-    if popout_controls:
-        on_popout_close()
-        return
-
-    popout_controls = tk.Toplevel()
-    popout_controls.title(title)
-    popout_controls.configure(bg=BACKGROUND_COLOR)
-    
-    # Set size and position using the generic function
-    popout_width = 1440
-    popout_height = 810
-    popout_controls.geometry(f"{popout_width}x{popout_height}")
-    
-    # Calculate centered position relative to main window
-    root.update_idletasks()
-    main_width = root.winfo_width()
-    offset_x = (main_width - popout_width) // 2
-    offset_y = 50  # Slightly below the main window
-    
-    get_window_position_and_setup(popout_controls, offset_x=offset_x, offset_y=offset_y)
-    
-    popout_controls.protocol("WM_DELETE_WINDOW", on_popout_close)
     popout_controls.bind("<Configure>", on_popout_resize)
 
-    # Shared fonts
-    popout_up_next_font = font.Font(family="Helvetica", size=20, weight="bold")
-    popout_current_font = font.Font(family="Helvetica", size=25, weight="bold")
-    popout_current_extra_font = font.Font(family="Helvetica", size=10, weight="bold")
-    popout_button_font = font.Font(family="Helvetica", size=20, weight="bold")
+    # ── determine active layout and column count ──────────────────────────────
+    _layout  = popout_layout if (popout_layout is not None) else POPOUT_LAYOUT_DEFAULT
+    _columns = popout_columns
 
-    # Button group structure
-    button_groups = {
-        "POPOUT CONTROLS": [
-            (mute_peek_mark_button, "MARK", True),
-            (tag_button, "TAG", True),
-            (favorite_button, "FAV", True),
-            (info_button, "INFO", False),
-            (title_info_button, "TITLE ONLY", False)
-        ],
-        "BLIND CONTROLS": [
-            (blind_mark_button, "MARK", True),
-            (blind_button, "BLIND", False, 1),
-            (blind_round_button, "BLIND NEXT", True, 1),
-            (mute_button, "MUTE", False),
-            (mute_peek_round_button, "MUTE PEEK NEXT", True, 1),
-        ],
-        "PEEK CONTROLS": [
-            (peek_mark_button, "MARK", True),
-            (peek_button, "PEEK", False, 1),
-            (peek_round_button, "PEEK NEXT", True, 1),
-            (widen_peek_button, "WIDEN PK", True, 1),
-            (narrow_peek_button, "NARROW PK", True, 1),
-        ],
-        "BONUS QUESTIONS": [
-            (guess_year_button, "YEAR", True),
-            (guess_members_button, "MEMBERS", True),
-            (guess_score_button, "SCORE", True),
-            (guess_tags_button, "TAGS", True),
-            (guess_multiple_button, "MULTIPLE", True)
-        ],
-        "BONUS QUESTIONS2": [
-            (guess_popularity_button, "RANK", True),
-            (guess_studio_button, "STUDIO", True),
-            (guess_artist_button, "ARTIST", True),
-            (guess_song_button, "SONG", True),
-            (guess_characters_button, "CHARACTERS", True)
-        ],
-        "LIGHTNING ROUNDS": [
-            ("LIGHTNING DROPDOWN", "MODE SELECT", 2),
-            (start_light_mode_button, "START", True),
-            (variety_light_mode_button, "VARIETY", True),
-            ("DIFFICULTY DROPDOWN", "DIFFICULTY SELECT", 1)
-        ],
-        "YOUTUBE QUEUE": [
-            ("YOUTUBE DROPDOWN", "YOUTUBE VIDEOS", 4),
-            ("YOUTUBE QUEUE", "QUEUE NEXT", 1)
-        ],
-        "SEARCH": [
-            ("SEARCH ENTRY", "SEARCH", 2),
-            ("SEARCH DROPDOWN", "RESULTS", 2),
-            ("SEARCH QUEUE", "QUEUE NEXT", 1)
-        ],
-        "MISC TOGGLES": [
-            (dock_button, "DOCK", False),
-            (toggle_censor_bar_button, f"CENSORS({len(get_file_censors(currently_playing.get('filename','')) or [])})", False),
-            ("toggle_metadata", "METADATA", False),
-            (filter_button, "FILTERS", False),
-            (end_button, "END SESSION", False)
-        ],
-        "PLAYER CONTROLS": [
-            ("reroll", "", False),
-            (play_pause_button, "PLAY/PAUSE", True),
-            (stop_button, "STOP", True),
-            (previous_button, "PREVIOUS", True),
-            (next_button, "NEXT", True)
-        ]
-    }
-
+    # ── currently-playing info area ───────────────────────────────────────────
     row = 0
-
     popout_currently_playing = tk.Label(
-        popout_controls,
-        font=popout_current_font,
-        bg=BACKGROUND_COLOR,
-        fg="white",
-        text="",
-        anchor="center",     # Center vertically
-        justify="center",    # Center multiline text
-        padx=5,
-        pady=5               # Adjust as needed for vertical spacing inside label
+        popout_controls, font=popout_current_font, bg=BACKGROUND_COLOR, fg="white",
+        text="", anchor="center", justify="center", padx=5, pady=5,
     )
-    popout_currently_playing.grid(
-        row=row,
-        column=0,
-        columnspan=columns,
-        sticky="nsew",
-        padx=5,
-        pady=(10, 10)         # Padding below the label
-    )
+    popout_currently_playing.grid(row=row, column=0, columnspan=_columns,
+                                   sticky="nsew", padx=5, pady=(10, 10))
     popout_controls.grid_rowconfigure(row, weight=0)
-    
-    # Add click binding to toggle currently playing display (on mouse up)
-    popout_currently_playing.bind("<ButtonRelease-1>", lambda e: toggle_show_popout_currently_playing())
-
+    popout_currently_playing.bind("<ButtonRelease-1>",
+                                   lambda e: toggle_show_popout_currently_playing())
     row += 1
 
     popout_currently_playing_extra = tk.Text(
-        popout_controls,
-        font=popout_current_extra_font,
-        bg=BACKGROUND_COLOR,
-        fg="white",
-        bd=0,
-        height=4
+        popout_controls, font=popout_current_extra_font, bg=BACKGROUND_COLOR,
+        fg="white", bd=0, height=4,
     )
-    popout_currently_playing_extra.grid(row=row, column=0, columnspan=columns, sticky="nsew", padx=5, pady=(0, 0))
+    popout_currently_playing_extra.grid(row=row, column=0, columnspan=_columns,
+                                         sticky="nsew", padx=5, pady=(0, 0))
     popout_controls.grid_rowconfigure(row, weight=0)
     popout_currently_playing_extra.tag_configure("white", foreground="white", justify="center")
-    
-    # Add click binding to toggle currently playing display (on mouse up)
-    popout_currently_playing_extra.bind("<ButtonRelease-1>", lambda e: toggle_show_popout_currently_playing())
-
+    popout_currently_playing_extra.bind("<ButtonRelease-1>",
+                                        lambda e: toggle_show_popout_currently_playing())
     row += 1
 
-    for group_name, button_entries in button_groups.items():
-        if row > 0:
+    # ── helper: build button text from a registry item + optional spec overrides ─
+    def _btn_text(item, spec=None):
+        icon = item.get("icon", "")
+        if callable(icon):
+            icon = icon()
+        lbl = item.get("button_label") or item.get("label", "")
+        if callable(lbl):
+            lbl = lbl()
+        if spec is not None:
+            if spec.get("custom_label", ""):
+                lbl = spec["custom_label"]
+            if not spec.get("show_icon", True):
+                icon = ""
+            if spec.get("icon_only", False) and icon:
+                return icon
+        return (f"{icon}{lbl}".strip() if icon else str(lbl)).strip()
+
+    # ── helper: wrap a command to refresh toggles afterward ───────────────────
+    def _wrap(cmd):
+        def _inner():
+            cmd()
+            _refresh_popout_toggles()
+        return _inner
+
+    # ── flat registry (evaluated once at window-open time) ───────────────────
+    flat_reg = get_flat_registry()
+
+    # ── layout rendering ──────────────────────────────────────────────────────
+    row += 1   # leave a visual gap row between info area and buttons
+    col = 0
+
+    for spec in _layout:
+        itype   = spec.get("type", "action")
+        item_id = spec.get("id", "")
+        colspan = max(1, spec.get("colspan", 1))
+
+        # wrap to next row if needed
+        if col + colspan > _columns:
             row += 1
-        col = 0
+            col = 0
 
-        for entry in button_entries:
-            # --- SEARCH GROUP ---
-            if group_name == "SEARCH":
-                if entry[0] == "SEARCH ENTRY":
-                    # Search entry
-                    search_entry = tk.Entry(
-                        popout_controls,
-                        textvariable=search_var,
-                        font=popout_button_font,
-                        bg="black",
-                        fg="white",
-                        insertbackground="white"
-                    )
-                    search_entry.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
-                    def on_search_entry_key(event=None):
-                        global search_term, search_results
-                        query = search_var.get().strip()
-                        if not query:
-                            query = ""
-                        elif query == POPOUT_SEARCH_DEFAULT:
-                            search_term = ""
-                            search_results = []
-                            search_results_dropdown["values"] = []
-                            search_results_var.set("")
-                            search_results_map.clear()
-                            return
-                        else:
-                            search_term = query
-                        # Use the standard search logic
-                        if query and query != POPOUT_SEARCH_DEFAULT:
-                            search_results = search_playlist(query)
-                        else:
-                            search_results = []
-                        # search_results.sort(key=lambda file: get_title(file, file).lower())
-                        # Update dropdown
-                        titles = [get_title(f, f) for f in search_results]
-                        search_results_dropdown["values"] = titles
-                        if titles:
-                            search_results_var.set(titles[0])
-                        else:
-                            search_results_var.set("")
-                        # Map titles to filenames
-                        search_results_map.clear()
-                        for i, f in enumerate(search_results):
-                            search_results_map[titles[i]] = f
-                    def on_focus_in(e):
-                        global popout_searching
-                        popout_searching = True
-                        if search_var.get() == POPOUT_SEARCH_DEFAULT:
-                            search_var.set("")
-                    def on_focus_out(e):
-                        global popout_searching
-                        popout_searching = False
-                        if not search_var.get().strip():
-                            search_var.set(POPOUT_SEARCH_DEFAULT)
-                    search_entry.bind("<FocusIn>", on_focus_in)
-                    search_entry.bind("<FocusOut>", on_focus_out)
-                    search_entry.bind("<KeyRelease>", on_search_entry_key)
-                    popout_buttons_by_name[entry[0]] = search_entry
-                    col += entry[2]
-                    continue
-                elif entry[0] == "SEARCH DROPDOWN":
-                    # Results dropdown
+        # ── GAP ──────────────────────────────────────────────────────────────
+        if itype == "gap":
+            tk.Label(popout_controls, text="", bg=BACKGROUND_COLOR).grid(
+                row=row, column=col, columnspan=colspan, sticky="nsew")
+            col += colspan
+            continue
+
+        # ── SPECIAL WIDGET ───────────────────────────────────────────────────
+        if itype == "widget":
+            widget = None
+
+            # ─ Search entry ──────────────────────────────────────────────────
+            if item_id == "SEARCH ENTRY":
+                w = tk.Entry(
+                    popout_controls, textvariable=search_var,
+                    font=popout_button_font, bg="black", fg="white",
+                    insertbackground="white",
+                )
+                def _on_key(event=None, _sv=search_var, _rv=search_results_var,
+                            _rm=search_results_map):
+                    global search_term, search_results
+                    q = _sv.get().strip()
+                    if not q or q == POPOUT_SEARCH_DEFAULT:
+                        search_term, search_results = "", []
+                        _rm.clear()
+                        _rv.set("")
+                        dd = _refs.get("search_dropdown")
+                        if dd:
+                            dd["values"] = []
+                        return
+                    search_term = q
+                    search_results = search_playlist(q)
                     titles = [get_title(f, f) for f in search_results]
+                    _rm.clear()
                     for i, f in enumerate(search_results):
-                        search_results_map[titles[i]] = f
-                    search_results_dropdown = ttk.Combobox(
-                        popout_controls,
-                        values=titles,
-                        textvariable=search_results_var,
-                        font=popout_button_font,
-                        height=10,
-                        style="Black.TCombobox",
-                        state='readonly'
-                    )
-                    search_results_dropdown.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
-                    def on_search_dropdown_change(event):
-                        search_results_dropdown.selection_clear()
-                        search_results_dropdown.icursor(tk.END)
-                    search_results_dropdown.bind("<<ComboboxSelected>>", on_search_dropdown_change)
-                    popout_buttons_by_name[entry[0]] = search_results_dropdown
-                    col += entry[2]
-                    continue
-                elif entry[0] == "SEARCH QUEUE":
-                    # Queue/Add Next button
-                    def queue_selected_search():
-                        global search_queue, search_results, playlist
-                        selected = search_results_var.get()
-                        if selected and selected in search_results_map:
-                            filename = search_results_map[selected]
-                            if playlist.get("infinite"):
-                                # Use add_search_playlist (index is 1-based)
-                                if filename in search_results:
-                                    idx = search_results.index(filename) + 1
-                                    add_search_playlist(idx)
-                                # Reset search box and dropdown
-                                search_var.set(POPOUT_SEARCH_DEFAULT)
-                                search_results_var.set("")
-                                search_results_map.clear()
-                                search_results_dropdown["values"] = []
-                            else:
-                                # Use the same function as regular search queue
-                                if filename in search_results:
-                                    idx = search_results.index(filename) + 1
-                                    set_search_queue(idx)
-                        if search_queue: 
-                            search_queue_button.configure(bg=HIGHLIGHT_COLOR)
-                        else:
-                            search_queue_button.configure(bg="black")
-                    button_text = "ADD NEXT" if playlist.get("infinite") else "QUEUE NEXT"
-                    search_queue_button = tk.Button(
-                        popout_controls,
-                        text=button_text,
-                        font=popout_button_font,
-                        command=queue_selected_search,
-                        bg="black",
-                        fg="white"
-                    )
-                    search_queue_button.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
-                    popout_buttons_by_name[entry[0]] = search_queue_button
-                    col += entry[2]
-                    continue
-                elif entry[0] is None:
-                    tk.Label(popout_controls, text="", bg=BACKGROUND_COLOR).grid(row=row, column=col, columnspan=entry[2], sticky="nsew")
-                    col += entry[2]
-                    continue
-            # --- END SEARCH GROUP ---
-            # --- YOUTUBE QUEUE GROUP ---
-            if group_name == "YOUTUBE QUEUE":
-                if entry[0] == "YOUTUBE DROPDOWN":
-                    # Build YouTube dropdown with only downloaded videos
-                    youtube_video_var = tk.StringVar(value="")
-                    youtube_video_list = []
-                    youtube_video_map = {}
-                    for key, value in youtube_metadata.get("videos", {}).items():
-                        if os.path.exists(os.path.join("youtube", value["filename"])):
-                            title = value.get('custom_title') or value.get('title')
-                            youtube_video_list.append(title)
-                            youtube_video_map[title] = key
-                    youtube_dropdown = ttk.Combobox(
-                        popout_controls,
-                        values=youtube_video_list,
-                        textvariable=youtube_video_var,
-                        font=popout_button_font,
-                        height=10,
-                        style="Black.TCombobox",
-                        state='readonly'
-                    )
-                    youtube_dropdown.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
-                    def set_dropdown_default():
-                        youtube_dropdown.set("YOUTUBE VIDEOS")
-                    youtube_dropdown.after(100, set_dropdown_default)
-                    def on_youtube_dropdown_change(event):
-                        youtube_dropdown.selection_clear()
-                        youtube_dropdown.icursor(tk.END)
-                    youtube_dropdown.bind("<<ComboboxSelected>>", on_youtube_dropdown_change)
-                    popout_buttons_by_name[entry[0]] = youtube_dropdown
-                    col += entry[2]
-                    continue
-                elif entry[0] == "YOUTUBE QUEUE":
-                    def queue_selected_youtube():
-                        selected = popout_buttons_by_name["YOUTUBE DROPDOWN"].get()
-                        if selected and selected in youtube_video_map:
-                            video_id = youtube_video_map[selected]
-                            # Find the index of the video_id in the current _youtube_playlist
-                            show_youtube_playlist()
-                            video_keys = list(_youtube_playlist.keys())
-                            try:
-                                index = video_keys.index(video_id)
-                            except ValueError:
-                                index = None
-                            if index is not None:
-                                load_youtube_video(index)
-                        if youtube_queue:
-                            queue_button.configure(bg=HIGHLIGHT_COLOR)
-                        else:
-                            queue_button.configure(bg="black")
-                    queue_button = tk.Button(
-                        popout_controls,
-                        text=entry[1],
-                        font=popout_button_font,
-                        command=queue_selected_youtube,
-                        bg="black",
-                        fg="white"
-                    )
-                    queue_button.grid(row=row, column=col, columnspan=entry[2], sticky="nsew", padx=2, pady=1)
-                    popout_buttons_by_name[entry[0]] = queue_button
-                    col += entry[2]
-                    continue
-                elif entry[0] is None:
-                    # Blank columns
-                    tk.Label(popout_controls, text="", bg=BACKGROUND_COLOR).grid(row=row, column=col, columnspan=entry[2], sticky="nsew")
-                    col += entry[2]
-                    continue
+                        _rm[titles[i]] = f
+                    dd = _refs.get("search_dropdown")
+                    if dd:
+                        dd["values"] = titles
+                    _rv.set(titles[0] if titles else "")
+                def _on_focus_in(e, _sv=search_var):
+                    global popout_searching
+                    popout_searching = True
+                    if _sv.get() == POPOUT_SEARCH_DEFAULT:
+                        _sv.set("")
+                def _on_focus_out(e, _sv=search_var):
+                    global popout_searching
+                    popout_searching = False
+                    if not _sv.get().strip():
+                        _sv.set(POPOUT_SEARCH_DEFAULT)
+                w.bind("<FocusIn>",   _on_focus_in)
+                w.bind("<FocusOut>",  _on_focus_out)
+                w.bind("<KeyRelease>", _on_key)
+                widget = w
 
-            # --- END YOUTUBE QUEUE GROUP ---
-            if isinstance(entry[0], str) and "DROPDOWN" in entry[0]:
-                _, label_text, colspan = entry
-                if col + colspan > columns:
-                    row += 1
-                    col = 0
-                if entry[0] == "LIGHTNING DROPDOWN":
-                    dropdown = ttk.Combobox(
-                        popout_controls,
-                        values=[display for _, display in light_mode_options],
-                        font=popout_button_font,
-                        height=len(light_mode_options),
-                        style="Black.TCombobox",
-                        state='readonly'
-                    )
+            # ─ Search results dropdown ───────────────────────────────────────
+            elif item_id == "SEARCH DROPDOWN":
+                titles = [get_title(f, f) for f in search_results]
+                for i, f in enumerate(search_results):
+                    search_results_map[titles[i]] = f
+                w = ttk.Combobox(
+                    popout_controls, values=titles,
+                    textvariable=search_results_var,
+                    font=popout_button_font, height=10,
+                    style="Black.TCombobox", state="readonly",
+                )
+                def _on_sd_change(event, _w=w):
+                    _w.selection_clear()
+                    _w.icursor(tk.END)
+                w.bind("<<ComboboxSelected>>", _on_sd_change)
+                _refs["search_dropdown"] = w
+                widget = w
 
-                    def on_popout_dropdown_change(event):
-                        dropdown = popout_buttons_by_name[light_dropdown]
-                        value = dropdown.get()
-                        light_dropdown.set(value)
+            # ─ Search queue button ───────────────────────────────────────────
+            elif item_id == "SEARCH QUEUE":
+                def _queue_search(_rv=search_results_var, _rm=search_results_map):
+                    global search_queue, search_results, playlist
+                    sel = _rv.get()
+                    if sel and sel in _rm:
+                        fn = _rm[sel]
+                        if playlist.get("infinite"):
+                            if fn in search_results:
+                                add_search_playlist(search_results.index(fn) + 1)
+                            search_var.set(POPOUT_SEARCH_DEFAULT)
+                            _rv.set("")
+                            _rm.clear()
+                            dd = _refs.get("search_dropdown")
+                            if dd:
+                                dd["values"] = []
+                        else:
+                            if fn in search_results:
+                                set_search_queue(search_results.index(fn) + 1)
+                    b = popout_buttons_by_name.get("SEARCH QUEUE")
+                    if b:
+                        button_seleted(b, bool(search_queue))
+                btn_text = "ADD NEXT" if playlist.get("infinite") else "QUEUE NEXT"
+                w = tk.Button(
+                    popout_controls, text=btn_text,
+                    font=popout_button_font, command=_queue_search,
+                    bg="black", fg="white",
+                )
+                widget = w
+
+            # ─ YouTube video dropdown ────────────────────────────────────────
+            elif item_id == "YOUTUBE DROPDOWN":
+                w = ttk.Combobox(
+                    popout_controls, values=yt_video_list,
+                    textvariable=yt_var,
+                    font=popout_button_font, height=10,
+                    style="Black.TCombobox", state="readonly",
+                )
+                def _yt_set_default(_w=w):
+                    _w.set("YOUTUBE VIDEOS")
+                w.after(100, _yt_set_default)
+                def _on_yt_change(event, _w=w):
+                    _w.selection_clear()
+                    _w.icursor(tk.END)
+                w.bind("<<ComboboxSelected>>", _on_yt_change)
+                _refs["yt_dropdown"] = w
+                widget = w
+
+            # ─ YouTube queue button ──────────────────────────────────────────
+            elif item_id == "YOUTUBE QUEUE":
+                def _queue_yt(_ym=yt_video_map):
+                    dd = _refs.get("yt_dropdown")
+                    if not dd:
+                        return
+                    sel = dd.get()
+                    if sel and sel in _ym:
+                        vid_id = _ym[sel]
+                        show_youtube_playlist()
+                        keys = list(_youtube_playlist.keys())
+                        try:
+                            idx = keys.index(vid_id)
+                        except ValueError:
+                            idx = None
+                        if idx is not None:
+                            load_youtube_video(idx)
+                    b = popout_buttons_by_name.get("YOUTUBE QUEUE")
+                    if b:
+                        button_seleted(b, bool(youtube_queue))
+                w = tk.Button(
+                    popout_controls, text="QUEUE NEXT",
+                    font=popout_button_font, command=_queue_yt,
+                    bg="black", fg="white",
+                )
+                widget = w
+
+            # ─ Lightning mode dropdown ───────────────────────────────────────
+            elif item_id == "LIGHTNING DROPDOWN":
+                w = ttk.Combobox(
+                    popout_controls,
+                    values=[disp for _, disp in light_mode_options],
+                    font=popout_button_font,
+                    height=len(light_mode_options),
+                    style="Black.TCombobox", state="readonly",
+                )
+                w.set(selected_mode.get())
+                def _on_ld_change(event, _w=w):
+                    ld = popout_buttons_by_name.get("LIGHTNING DROPDOWN")
+                    if ld:
+                        selected_mode.set(ld.get())
                         if light_mode:
                             select_lightning_mode()
-                        dropdown.selection_clear()
-                        dropdown.icursor(tk.END)
+                    _w.selection_clear()
+                    _w.icursor(tk.END)
+                w.bind("<<ComboboxSelected>>", _on_ld_change)
+                widget = w
 
-                    dropdown.set(light_dropdown.get())
-                    dropdown.bind("<<ComboboxSelected>>", on_popout_dropdown_change)
-                    popout_buttons_by_name[light_dropdown] = dropdown
-                    dropdown.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=2, pady=1)
-                elif entry[0] == "DIFFICULTY DROPDOWN":
-                    dropdown = ttk.Combobox(
-                        popout_controls,
-                        values=difficulty_options,
-                        font=popout_button_font,
-                        height=len(difficulty_options),
-                        style="Black.TCombobox",
-                        state='readonly'
-                    )
-
-                    def on_popout_dropdown_change(event):
-                        dropdown = popout_buttons_by_name["DIFFICULTY DROPDOWN"]
-                        value = dropdown.get()
-                        difficulty_dropdown.set(value)
+            # ─ Difficulty dropdown ───────────────────────────────────────────
+            elif item_id == "DIFFICULTY DROPDOWN":
+                w = ttk.Combobox(
+                    popout_controls, values=difficulty_options,
+                    font=popout_button_font,
+                    height=len(difficulty_options),
+                    style="Black.TCombobox", state="readonly",
+                )
+                w.set(difficulty_options[playlist.get("difficulty", 2)])
+                def _on_diff_change(event, _w=w):
+                    dd = popout_buttons_by_name.get("DIFFICULTY DROPDOWN")
+                    if dd:
+                        difficulty_dropdown.set(dd.get())
                         select_difficulty()
-                        dropdown.selection_clear()
-                        dropdown.icursor(tk.END)
+                    _w.selection_clear()
+                    _w.icursor(tk.END)
+                w.bind("<<ComboboxSelected>>", _on_diff_change)
+                if not playlist.get("infinite"):
+                    w.grid_remove()
+                widget = w
 
-                    dropdown.set(difficulty_options[playlist.get("difficulty", 2)])
-                    dropdown.bind("<<ComboboxSelected>>", on_popout_dropdown_change)
-                    popout_buttons_by_name[entry[0]] = dropdown
-                    dropdown.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=2, pady=1)
-                    if not playlist.get("infinite"):
-                        dropdown.grid_remove()
+            # ─ Metadata toggle button ────────────────────────────────────────
+            elif item_id == "toggle_metadata":
+                w = tk.Button(
+                    popout_controls, text="METADATA",
+                    font=popout_button_font,
+                    command=toggle_show_popout_metadata,
+                    bg=HIGHLIGHT_COLOR if popout_show_metadata else "black",
+                    fg="white",
+                )
+                widget = w
+
+            if widget is not None:
+                widget.grid(row=row, column=col, columnspan=colspan,
+                            sticky="nsew", padx=2, pady=1)
+                popout_buttons_by_name[item_id] = widget
+            col += colspan
+            continue
+
+        # ── ACTION BUTTON ─────────────────────────────────────────────────────
+        if itype == "action":
+            reg_item = flat_reg.get(item_id)
+            if reg_item is None:
                 col += colspan
                 continue
-
-            if len(entry) == 4:
-                original_button, label_text, show_original, colspan = entry
-            else:
-                original_button, label_text, show_original = entry
-                colspan = 1
-
-            if col + colspan > columns:
-                row += 1
-                col = 0
-            if original_button and not isinstance(original_button, str):
-                btn_fg = original_button.cget("fg")
-                btn_bg = original_button.cget("bg")
-                btn_cmd = original_button.cget("command")
-                original_text = original_button.cget("text")
-            else:
-                btn_fg = "white"
-                btn_bg = "black"
-                btn_cmd = None
-                original_text = ""
-                if original_button == "toggle_metadata":
-                    if popout_show_metadata:
-                        btn_bg = HIGHLIGHT_COLOR
-                    btn_cmd = toggle_show_popout_metadata
-
-            full_label = ""
-            if show_original:
-                full_label += original_text
-            full_label += label_text
-
-            clone = tk.Button(
-                popout_controls,
-                text=full_label,
-                fg=btn_fg,
-                bg=btn_bg,
-                command=btn_cmd,
+            btn_text   = _btn_text(reg_item, spec)
+            cmd        = reg_item.get("command")
+            toggle_fn  = reg_item.get("toggle")
+            wrapped    = _wrap(cmd) if cmd else (lambda: None)
+            btn_bg     = HIGHLIGHT_COLOR if (toggle_fn and toggle_fn()) else "black"
+            btn = tk.Button(
+                popout_controls, text=btn_text,
+                fg="white", bg=btn_bg,
+                command=wrapped,
                 font=popout_button_font,
-                justify="center"
+                justify="center",
             )
-            clone.grid(row=row, column=col, columnspan=colspan, sticky="nsew", padx=2, pady=1)
-            popout_buttons_by_name[original_button] = clone
-
+            # stash overrides so _refresh_popout_toggles can re-apply them
+            btn._spec_show_icon    = spec.get("show_icon", True)
+            btn._spec_custom_label = spec.get("custom_label", "")
+            btn._spec_icon_only    = spec.get("icon_only", False)
+            btn.grid(row=row, column=col, columnspan=colspan,
+                     sticky="nsew", padx=2, pady=1)
+            popout_buttons_by_name[item_id] = btn
             col += colspan
+            continue
 
-        row += 1
-
-    # "Up Next" info area
+    # ── up-next text area ─────────────────────────────────────────────────────
+    row += 1
     popout_up_next = tk.Text(
-        popout_controls,
-        font=popout_up_next_font,
-        bg=BACKGROUND_COLOR,
-        fg="white",
-        wrap="word",
-        bd=0,
-        height=1
+        popout_controls, font=popout_up_next_font, bg=BACKGROUND_COLOR,
+        fg="white", wrap="word", bd=0, height=1,
     )
-    popout_up_next.grid(row=row, column=0, columnspan=columns, sticky="nsew", padx=5, pady=(10, 5))
+    popout_up_next.grid(row=row, column=0, columnspan=_columns,
+                        sticky="nsew", padx=5, pady=(5, 10))
     popout_controls.grid_rowconfigure(row, weight=0)
-    popout_up_next.tag_configure("bold", font=popout_up_next_font.copy())
-    popout_up_next.tag_configure("white", foreground="white", justify="center")
-    popout_up_next.tag_configure("center", foreground="gray", justify="center")
-    
-    # Add click binding to toggle up next display (on mouse up)
+    popout_up_next.tag_configure("bold",   font=popout_up_next_font.copy())
+    popout_up_next.tag_configure("white",  foreground="white",  justify="center")
+    popout_up_next.tag_configure("center", foreground="gray",   justify="center")
     popout_up_next.bind("<ButtonRelease-1>", lambda e: toggle_show_popout_up_next())
 
-    # Enable expansion
-    for i in range(columns):
+    # ── grid weight ───────────────────────────────────────────────────────────
+    up_next_row = row
+    for i in range(_columns):
         popout_controls.grid_columnconfigure(i, weight=1)
-    for i in range(row):
+    # Info rows and the gap row have fixed / natural height; only button rows grow
+    popout_controls.grid_rowconfigure(0, weight=0)                      # currently-playing label
+    popout_controls.grid_rowconfigure(1, weight=0)                      # currently-playing extra text
+    popout_controls.grid_rowconfigure(2, weight=0, minsize=6)           # visual gap (no widget)
+    for i in range(3, up_next_row):                                     # button rows
         popout_controls.grid_rowconfigure(i, weight=1)
+    popout_controls.grid_rowconfigure(up_next_row, weight=1)  # up-next expands too
 
     button_seleted(popout_controls_button, True)
     if currently_playing.get("data"):
         update_popout_currently_playling(currently_playing.get("data"))
         popout_controls.after(500, up_next_text)
 
+
+# ---------------------------------------------------------------------------
+# SPECIAL WIDGET META — used by open_popout_layout_editor for display names
+# ---------------------------------------------------------------------------
+_POPOUT_SPECIAL_LABELS = {
+    "SEARCH ENTRY":       "Search Entry",
+    "SEARCH DROPDOWN":    "Search Results Dropdown",
+    "SEARCH QUEUE":       "Queue Search Result",
+    "YOUTUBE DROPDOWN":   "YouTube Videos Dropdown",
+    "YOUTUBE QUEUE":      "Queue YouTube Video",
+    "LIGHTNING DROPDOWN": "Lightning Mode Dropdown",
+    "DIFFICULTY DROPDOWN":"Difficulty Dropdown",
+    "toggle_metadata":    "Toggle Metadata Area",
+}
+
+
+def open_popout_layout_editor():
+    """Positional grid-based popout layout editor.
+
+    Items live at explicit (row, col) positions.  Empty cells are shown as
+    drop targets — no [gap] item needed for blank space.
+    • Drag a tile to an empty cell  → move it there.
+    • Drag a tile onto another tile → replace the target (target removed).
+    • Drag from the picker to any cell → add / replace.
+    • ✕ on a tile removes it, leaving the cell empty.
+    Save reloads the popout without closing this editor.
+    """
+    global popout_layout, popout_columns
+
+    ged_flat  = get_flat_registry()
+    ged_reg   = _get_menu_registry()
+    ged_cols  = [popout_columns]   # mutable int box
+    ged_nrows = [0]                # mutable row count (auto-grows)
+
+    # ── Convert flat list ↔ positional dict ─────────────────────────────────
+    def _list_to_grid(layout_list):
+        """Convert flowing list (may have gap items) → positional dict {(r,c): spec}."""
+        grid = {}
+        r, c = 0, 0
+        cols = ged_cols[0]
+        for item in layout_list:
+            itype = item.get("type", "action")
+            cs = max(1, min(item.get("colspan", 1), cols))
+            if c + cs > cols:
+                r += 1
+                c = 0
+            if itype != "gap":
+                grid[(r, c)] = {k: v for k, v in item.items()}
+            c += cs
+        return grid
+
+    def _grid_to_flowing_list(grid_dict):
+        """Convert positional dict → flowing list with gap items (for saving)."""
+        if not grid_dict:
+            return []
+        cols = ged_cols[0]
+        valid = {(r, c): s for (r, c), s in grid_dict.items() if c < cols}
+        if not valid:
+            return []
+        max_row = max(r for r, c in valid)
+        covered = set()
+        for (r, c), spec in valid.items():
+            cs = max(1, min(spec.get("colspan", 1), cols - c))
+            for dc in range(1, cs):
+                covered.add((r, c + dc))
+        result = []
+        for ri in range(max_row + 1):
+            for ci in range(cols):
+                if (ri, ci) in covered:
+                    continue
+                spec = valid.get((ri, ci))
+                result.append(dict(spec) if spec else {"type": "gap", "colspan": 1})
+        return result
+
+    ged_work = _list_to_grid(
+        popout_layout if popout_layout is not None else POPOUT_LAYOUT_DEFAULT
+    )
+
+    # ── Window ───────────────────────────────────────────────────────────────
+    ged_win = tk.Toplevel()
+    ged_win.title("Configure Popout Layout — Grid View")
+    ged_win.configure(bg=BACKGROUND_COLOR)
+    ged_win.resizable(True, True)
+
+    # ── top bar ──────────────────────────────────────────────────────────────
+    top = tk.Frame(ged_win, bg=BACKGROUND_COLOR)
+    top.pack(fill="x", padx=10, pady=(8, 0))
+    tk.Label(top, text="Columns:", bg=BACKGROUND_COLOR, fg="white",
+              font=ROOT_FONT).pack(side="left")
+    col_var = tk.IntVar(value=ged_cols[0])
+    def _on_col_change(*_):
+        ged_cols[0] = max(1, col_var.get())
+        _ged_rebuild_both()
+    col_spin = tk.Spinbox(top, from_=1, to=16, textvariable=col_var, width=4,
+                           bg="black", fg="white", buttonbackground="black",
+                           font=ROOT_FONT, command=_on_col_change)
+    col_spin.pack(side="left", padx=4)
+    col_spin.bind("<FocusOut>", _on_col_change)
+
+    def _add_row():
+        ged_nrows[0] = max(ged_nrows[0], 1) + 1
+        _ged_rebuild_both()
+
+    def _del_last_row():
+        if ged_nrows[0] <= 1:
+            return
+        last = ged_nrows[0] - 1
+        for ci in range(ged_cols[0]):
+            ged_work.pop((last, ci), None)
+        ged_nrows[0] -= 1
+        _ged_rebuild_both()
+
+    tk.Button(top, text="+ Row", font=ROOT_FONT, bg="black", fg="white",
+               relief="flat", command=_add_row).pack(side="left", padx=(10, 2))
+    tk.Button(top, text="− Row", font=ROOT_FONT, bg="black", fg="white",
+               relief="flat", command=_del_last_row).pack(side="left", padx=2)
+    tk.Label(top,
+              text="  Drag to empty cell = move  •  Drag onto tile = replace  •  ✕ = remove",
+              bg=BACKGROUND_COLOR, fg="gray", font=ROOT_FONT).pack(side="left", padx=10)
+
+    # ── body ──────────────────────────────────────────────────────────────────
+    body = tk.Frame(ged_win, bg=BACKGROUND_COLOR)
+    body.pack(fill="both", expand=True, padx=10, pady=6)
+    body.grid_columnconfigure(0, weight=1)   # grid expands
+    body.grid_columnconfigure(2, weight=0)   # picker is fixed-width, no expansion
+    body.grid_rowconfigure(0, weight=1)
+
+    # ── Grid canvas (left) ────────────────────────────────────────────────────
+    grid_outer = tk.Frame(body, bg=BACKGROUND_COLOR)
+    grid_outer.grid(row=0, column=0, sticky="nsew")
+    grid_canvas = tk.Canvas(grid_outer, bg="gray10", highlightthickness=0)
+    grid_vsb = tk.Scrollbar(grid_outer, orient="vertical", command=grid_canvas.yview)
+    grid_canvas.configure(yscrollcommand=grid_vsb.set)
+    grid_vsb.pack(side="right", fill="y")
+    grid_canvas.pack(side="left", fill="both", expand=True)
+    grid_inner = tk.Frame(grid_canvas, bg="gray10")
+    grid_canvas.create_window((0, 0), window=grid_inner, anchor="nw")
+    grid_inner.bind("<Configure>",
+                     lambda e: grid_canvas.configure(scrollregion=grid_canvas.bbox("all")))
+
+    # ── Picker canvas (right, fixed width) ───────────────────────────────────
+    tk.Frame(body, bg="gray40", width=1).grid(row=0, column=1, sticky="ns", padx=6)
+    pick_outer = tk.Frame(body, bg=BACKGROUND_COLOR, width=260)
+    pick_outer.grid(row=0, column=2, sticky="ns")
+    pick_outer.pack_propagate(False)
+    pick_canvas = tk.Canvas(pick_outer, bg=BACKGROUND_COLOR, highlightthickness=0,
+                             width=260)
+    pick_vsb = tk.Scrollbar(pick_outer, orient="vertical", command=pick_canvas.yview)
+    pick_canvas.configure(yscrollcommand=pick_vsb.set)
+    pick_vsb.pack(side="right", fill="y")
+    pick_canvas.pack(side="left", fill="both", expand=True)
+    pick_inner = tk.Frame(pick_canvas, bg=BACKGROUND_COLOR)
+    pick_win_id = pick_canvas.create_window((0, 0), window=pick_inner, anchor="nw")
+    pick_inner.bind("<Configure>",
+                     lambda e: (pick_canvas.configure(scrollregion=pick_canvas.bbox("all")),
+                                pick_canvas.itemconfigure(pick_win_id, width=pick_canvas.winfo_width())))
+
+    # Mouse-wheel scrolling on picker (enter/leave to avoid global capture)
+    def _pick_scroll(event):
+        pick_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_pick_enter(e):
+        pick_canvas.bind_all("<MouseWheel>", _pick_scroll)
+
+    def _on_pick_leave(e):
+        pick_canvas.unbind_all("<MouseWheel>")
+
+    pick_outer.bind("<Enter>", _on_pick_enter, add="+")
+    pick_outer.bind("<Leave>", _on_pick_leave, add="+")
+    ged_win.bind("<Destroy>", lambda e: pick_canvas.unbind_all("<MouseWheel>"),
+                  add="+")
+
+    # ── Drag state ────────────────────────────────────────────────────────────
+    _gds: dict     = {"active": False, "src": None}
+    _ghost_lbl     = [None]
+    _tile_frames   = []   # list of ((row, col), frame)
+    _empty_frames  = []   # list of ((row, col), frame)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _resolve_label(item_id: str, itype: str) -> str:
+        if itype == "gap":
+            return "[gap]"
+        if item_id in _POPOUT_SPECIAL_LABELS:
+            return _POPOUT_SPECIAL_LABELS[item_id]
+        reg = ged_flat.get(item_id, {})
+        lbl = reg.get("button_label") or reg.get("label", item_id)
+        if callable(lbl):
+            lbl = lbl()
+        return str(lbl)
+
+    def _destroy_ghost():
+        if _ghost_lbl[0]:
+            try:
+                _ghost_lbl[0].destroy()
+            except Exception:
+                pass
+        _ghost_lbl[0] = None
+
+    def _make_ghost(text: str, x: int, y: int):
+        _destroy_ghost()
+        g = tk.Label(grid_inner, text=text, bg=HIGHLIGHT_COLOR, fg="white",
+                      font=ROOT_FONT, relief="raised", padx=6, pady=4)
+        g.place(x=x, y=y)
+        g.lift()
+        _ghost_lbl[0] = g
+
+    def _find_tile_under(x_root: int, y_root: int):
+        """Return (grid_pos, frame) for the tile under cursor, or (None, None)."""
+        for pos, tf in _tile_frames:
+            try:
+                rx, ry = tf.winfo_rootx(), tf.winfo_rooty()
+                rw, rh = tf.winfo_width(), tf.winfo_height()
+            except Exception:
+                continue
+            if rx <= x_root <= rx + rw and ry <= y_root <= ry + rh:
+                return pos, tf
+        return None, None
+
+    def _find_empty_under(x_root: int, y_root: int):
+        """Return (grid_pos, frame) for the empty cell under cursor, or (None, None)."""
+        for pos, ef in _empty_frames:
+            try:
+                rx, ry = ef.winfo_rootx(), ef.winfo_rooty()
+                rw, rh = ef.winfo_width(), ef.winfo_height()
+            except Exception:
+                continue
+            if rx <= x_root <= rx + rw and ry <= y_root <= ry + rh:
+                return pos, ef
+        return None, None
+
+    def _highlight_all(x_root: int, y_root: int):
+        for _, tf in _tile_frames:
+            try:
+                rx, ry = tf.winfo_rootx(), tf.winfo_rooty()
+                rw, rh = tf.winfo_width(), tf.winfo_height()
+                tf.configure(bg="gray40" if (rx <= x_root <= rx + rw
+                                             and ry <= y_root <= ry + rh)
+                              else "gray22")
+            except Exception:
+                pass
+        for _, ef in _empty_frames:
+            try:
+                rx, ry = ef.winfo_rootx(), ef.winfo_rooty()
+                rw, rh = ef.winfo_width(), ef.winfo_height()
+                ef.configure(bg="gray30" if (rx <= x_root <= rx + rw
+                                             and ry <= y_root <= ry + rh)
+                              else "gray15")
+            except Exception:
+                pass
+
+    # ── Grid rebuild ──────────────────────────────────────────────────────────
+    def _ged_rebuild():
+        for w in grid_inner.winfo_children():
+            w.destroy()
+        _tile_frames.clear()
+        _empty_frames.clear()
+        _destroy_ghost()
+        _gds["active"] = False
+
+        cols = ged_cols[0]
+
+        # Determine row count: at least ged_nrows, or enough to fit occupied rows
+        if ged_work:
+            max_occ = max(r for r, c in ged_work)
+        else:
+            max_occ = -1
+        nrows = max(ged_nrows[0], max_occ + 1, 1)
+        ged_nrows[0] = nrows
+
+        # Which cells are covered by colspan of their left neighbour
+        covered = set()
+        for (r, c), spec in ged_work.items():
+            if c >= cols:
+                continue
+            cs = max(1, min(spec.get("colspan", 1), cols - c))
+            for dc in range(1, cs):
+                covered.add((r, c + dc))
+
+        for ri in range(nrows):
+            ci = 0
+            while ci < cols:
+                if (ri, ci) in covered:
+                    ci += 1
+                    continue
+
+                spec = ged_work.get((ri, ci))
+                if spec is not None:
+                    cs       = max(1, min(spec.get("colspan", 1), cols - ci))
+                    item_id  = spec.get("id", "")
+                    itype    = spec.get("type", "action")
+                    lbl_text = _resolve_label(item_id, itype)
+
+                    tile = tk.Frame(grid_inner, bg="gray22", relief="raised", bd=2)
+                    tile.grid(row=ri, column=ci, columnspan=cs,
+                               sticky="nsew", padx=2, pady=2)
+                    _tile_frames.append(((ri, ci), tile))
+
+                    # ── top-right buttons: ✎ edit  ✕ remove ─────────────────
+                    def _rm_tile(pos=(ri, ci)):
+                        ged_work.pop(pos, None)
+                        _ged_rebuild_both()
+                    rm_btn = tk.Button(tile, text="✕", font=ROOT_FONT,
+                                        bg="gray22", fg="gray50", width=2,
+                                        relief="flat", bd=0, command=_rm_tile)
+                    rm_btn.pack(side="right", anchor="ne", padx=(0, 2), pady=2)
+
+                    def _open_edit(pos=(ri, ci), it=itype):
+                        s = ged_work.get(pos)
+                        if s is None:
+                            return
+                        pop = tk.Toplevel(ged_win)
+                        pop.title("Edit tile")
+                        pop.configure(bg=BACKGROUND_COLOR)
+                        pop.resizable(False, False)
+                        pad = {"padx": 8, "pady": 3}
+
+                        # colspan
+                        tk.Label(pop, text="Colspan:", bg=BACKGROUND_COLOR,
+                                  fg="white", font=ROOT_FONT).grid(row=0, column=0, sticky="w", **pad)
+                        sv = tk.IntVar(value=s.get("colspan", 1))
+                        tk.Spinbox(pop, from_=1, to=ged_cols[0], textvariable=sv, width=4,
+                                    bg="black", fg="white", buttonbackground="black",
+                                    font=ROOT_FONT).grid(row=0, column=1, sticky="ew", **pad)
+
+                        if it == "action":
+                            # indicatoron=False turns the checkbutton into a toggle button:
+                            # bg=unchecked color, selectcolor=checked color — reliable on Windows
+                            _cb_kw = dict(
+                                indicatoron=False,
+                                bg="gray35", fg="white",
+                                selectcolor="steelblue4",
+                                activebackground="gray45",
+                                activeforeground="white",
+                                font=ROOT_FONT,
+                                relief="raised", padx=8, pady=2,
+                            )
+                            iv = tk.BooleanVar(value=s.get("show_icon", True))
+                            tk.Checkbutton(pop, text="Show icon", variable=iv,
+                                            **_cb_kw
+                                            ).grid(row=1, column=0, sticky="w", **pad)
+
+                            iov = tk.BooleanVar(value=s.get("icon_only", False))
+                            tk.Checkbutton(pop, text="Icon only", variable=iov,
+                                            **_cb_kw
+                                            ).grid(row=1, column=1, sticky="w", **pad)
+
+                            tk.Label(pop, text="Custom label:", bg=BACKGROUND_COLOR,
+                                      fg="white", font=ROOT_FONT).grid(row=2, column=0, sticky="w", **pad)
+                            lv = tk.StringVar(value=s.get("custom_label", ""))
+                            tk.Entry(pop, textvariable=lv, bg="black", fg="white",
+                                      insertbackground="white", font=ROOT_FONT, width=18
+                                      ).grid(row=2, column=1, sticky="ew", **pad)
+                        else:
+                            iv = iov = lv = None
+
+                        def _apply():
+                            s["colspan"] = max(1, sv.get())
+                            if it == "action":
+                                s["show_icon"]    = iv.get()
+                                s["icon_only"]    = iov.get()
+                                s["custom_label"] = lv.get().strip()
+                            pop.destroy()
+                            _ged_rebuild_both()
+
+                        tk.Button(pop, text="Apply", font=ROOT_FONT,
+                                   bg=HIGHLIGHT_COLOR, fg="white",
+                                   command=_apply).grid(
+                            row=10, column=0, columnspan=2, pady=(6, 8))
+                        pop.bind("<Return>", lambda e: _apply())
+                        pop.update_idletasks()
+                        pw = pop.winfo_reqwidth()
+                        ph = pop.winfo_reqheight()
+                        gx = ged_win.winfo_rootx() + (ged_win.winfo_width() - pw) // 2
+                        gy = ged_win.winfo_rooty() + (ged_win.winfo_height() - ph) // 2
+                        pop.geometry(f"+{gx}+{gy}")
+                        pop.after(1, pop.lift)
+                        pop.grab_set()
+
+                    edit_btn = tk.Button(tile, text="✎", font=ROOT_FONT,
+                                          bg="gray22", fg="gray60", width=2,
+                                          relief="flat", bd=0,
+                                          command=_open_edit)
+
+                    tk.Label(tile, text=lbl_text, bg="gray22", fg="white",
+                              font=ROOT_FONT, anchor="center", wraplength=120,
+                              pady=2).pack(fill="x", expand=True, padx=4)
+
+                    # place ✎ at bottom-right corner (after pack so it overlays)
+                    edit_btn.place(relx=1.0, rely=1.0, anchor="se", x=-2, y=-2)
+
+                    # ── Drag bindings ─────────────────────────────────────────
+                    def _tile_press(e, pos=(ri, ci), aid=item_id,
+                                    ait=itype, txt=lbl_text):
+                        _gds.update(active=True,
+                                     src={"kind": "grid", "pos": pos,
+                                          "id": aid, "type": ait})
+                        gx = e.x_root - grid_inner.winfo_rootx() - 30
+                        gy = e.y_root - grid_inner.winfo_rooty() - 15
+                        _make_ghost(txt, gx, gy)
+
+                    def _tile_motion(e):
+                        if not _gds["active"]:
+                            return
+                        gx = e.x_root - grid_inner.winfo_rootx() - 30
+                        gy = e.y_root - grid_inner.winfo_rooty() - 15
+                        if _ghost_lbl[0]:
+                            _ghost_lbl[0].place(x=gx, y=gy)
+                        _highlight_all(e.x_root, e.y_root)
+
+                    def _tile_release(e):
+                        if not _gds["active"]:
+                            return
+                        src = _gds["src"]
+                        _gds["active"] = False
+                        _destroy_ghost()
+                        tgt_tile,  _ = _find_tile_under(e.x_root, e.y_root)
+                        tgt_empty, _ = _find_empty_under(e.x_root, e.y_root)
+                        if tgt_tile is not None:
+                            if src["kind"] == "grid":
+                                # Tile → tile: swap the two items
+                                sp = src["pos"]
+                                if sp != tgt_tile:
+                                    a = ged_work.get(sp)
+                                    b = ged_work.get(tgt_tile)
+                                    if a is not None:
+                                        ged_work[tgt_tile] = a
+                                    else:
+                                        ged_work.pop(tgt_tile, None)
+                                    if b is not None:
+                                        ged_work[sp] = b
+                                    else:
+                                        ged_work.pop(sp, None)
+                            elif src["kind"] == "picker":
+                                # Picker → tile: replace target
+                                ged_work[tgt_tile] = {
+                                    "type": src["type"], "id": src["id"],
+                                    "colspan": 1,
+                                }
+                            _ged_rebuild_both()
+                        elif tgt_empty is not None:
+                            # Any source → empty cell: move / add
+                            if src["kind"] == "grid":
+                                sp = src["pos"]
+                                s = ged_work.pop(sp, None)
+                                if s:
+                                    ged_work[tgt_empty] = s
+                            elif src["kind"] == "picker":
+                                ged_work[tgt_empty] = {
+                                    "type": src["type"], "id": src["id"],
+                                    "colspan": 1,
+                                }
+                            _ged_rebuild_both()
+
+                    for child in [tile, rm_btn] + list(tile.winfo_children()):
+                        if child is rm_btn or child is edit_btn:
+                            continue
+                        child.bind("<Button-1>",        _tile_press)
+                        child.bind("<B1-Motion>",        _tile_motion)
+                        child.bind("<ButtonRelease-1>",  _tile_release)
+                    rm_btn.bind("<B1-Motion>",       _tile_motion)
+                    rm_btn.bind("<ButtonRelease-1>", _tile_release)
+
+                    ci += cs
+
+                else:
+                    # Empty cell — drop target
+                    empty = tk.Frame(grid_inner, bg="gray15",
+                                      relief="groove", bd=1)
+                    empty.grid(row=ri, column=ci, sticky="nsew", padx=2, pady=2)
+                    _empty_frames.append(((ri, ci), empty))
+
+                    def _empty_enter(e, ef=empty):
+                        if _gds["active"]:
+                            ef.configure(bg="gray30")
+
+                    def _empty_leave(e, ef=empty):
+                        ef.configure(bg="gray15")
+
+                    empty.bind("<Enter>", _empty_enter)
+                    empty.bind("<Leave>", _empty_leave)
+                    ci += 1
+
+        for ri in range(nrows):
+            grid_inner.grid_rowconfigure(ri, weight=1, minsize=60)
+        for ci2 in range(cols):
+            grid_inner.grid_columnconfigure(ci2, weight=1, minsize=80)
+
+        grid_inner.update_idletasks()
+        grid_canvas.configure(scrollregion=grid_canvas.bbox("all"))
+
+    # ── Picker rebuild (collapsible tree, starts fully collapsed) ─────────────
+    _pick_collapsed: dict = {}
+
+    def _build_picker():
+        for w in pick_inner.winfo_children():
+            w.destroy()
+
+        active_ids = {s["id"] for s in ged_work.values() if s.get("type") != "gap"}
+
+        def _pick_item(item_id: str, itype: str, display: str):
+            rf = tk.Frame(pick_inner, bg=BACKGROUND_COLOR)
+            rf.pack(fill="x", padx=4, pady=1)
+            lbl = tk.Label(rf, text=display, bg=BACKGROUND_COLOR,
+                            fg="white", font=ROOT_FONT, anchor="w", cursor="fleur")
+            lbl.pack(side="left", fill="x", expand=True, padx=4)
+
+            def _press(e, aid=item_id, ait=itype, txt=display):
+                _gds.update(active=True,
+                             src={"kind": "picker", "id": aid, "type": ait})
+                gx = e.x_root - grid_inner.winfo_rootx() - 30
+                gy = e.y_root - grid_inner.winfo_rooty() - 15
+                _make_ghost(txt, gx, gy)
+
+            def _motion(e):
+                if not _gds["active"]:
+                    return
+                gx = e.x_root - grid_inner.winfo_rootx() - 30
+                gy = e.y_root - grid_inner.winfo_rooty() - 15
+                if _ghost_lbl[0]:
+                    _ghost_lbl[0].place(x=gx, y=gy)
+                _highlight_all(e.x_root, e.y_root)
+
+            def _release(e, aid=item_id, ait=itype):
+                if not _gds["active"]:
+                    return
+                src = _gds["src"]
+                _gds["active"] = False
+                _destroy_ghost()
+                tgt_tile,  _ = _find_tile_under(e.x_root, e.y_root)
+                tgt_empty, _ = _find_empty_under(e.x_root, e.y_root)
+                if tgt_tile is not None:
+                    ged_work[tgt_tile] = {"type": ait, "id": aid, "colspan": 1}
+                    _ged_rebuild_both()
+                elif tgt_empty is not None:
+                    ged_work[tgt_empty] = {"type": ait, "id": aid, "colspan": 1}
+                    _ged_rebuild_both()
+
+            for w in [lbl, rf]:
+                w.bind("<Button-1>",        _press)
+                w.bind("<B1-Motion>",        _motion)
+                w.bind("<ButtonRelease-1>",  _release)
+
+        def _render_pick_tree(items, depth: int, path: str):
+            indent = depth * 12
+            for item in items:
+                if item == "---":
+                    tk.Frame(pick_inner, bg="gray30", height=1
+                              ).pack(fill="x", padx=indent + 4, pady=1)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                item_id  = item.get("id", "")
+                sub_path = f"{path}/{item_id or item.get('label', '')}"
+
+                if "submenu" in item:
+                    # Default collapsed on first build
+                    if sub_path not in _pick_collapsed:
+                        _pick_collapsed[sub_path] = True
+                    collapsed = _pick_collapsed[sub_path]
+                    arrow = "▶" if collapsed else "▼"
+                    icon_txt = item.get("icon", "")
+                    if callable(icon_txt):
+                        icon_txt = icon_txt()
+                    sub_lbl = item.get("label", "")
+                    display = f"{icon_txt} {sub_lbl}".strip() if icon_txt else sub_lbl
+                    hdr_bg = "gray22" if depth == 0 else "gray18"
+
+                    hdr = tk.Frame(pick_inner, bg=hdr_bg)
+                    hdr.pack(fill="x", padx=indent,
+                              pady=(4 if depth == 0 else 1, 0))
+
+                    def _tog(pk=sub_path):
+                        _pick_collapsed[pk] = not _pick_collapsed.get(pk, True)
+                        _build_picker()
+                    tk.Button(hdr, text=arrow, bg=hdr_bg, fg="gray70",
+                               font=ROOT_FONT, relief="flat", bd=0,
+                               command=_tog).pack(side="left")
+                    tk.Label(hdr, text=display, bg=hdr_bg, fg="white",
+                              font=ROOT_FONT, anchor="w"
+                              ).pack(side="left", fill="x", expand=True, padx=4)
+
+                    if (item_id and (item.get("button_label") or item.get("label"))
+                            and item_id not in active_ids):
+                        own_lbl = item.get("button_label") or item.get("label", item_id)
+                        if callable(own_lbl):
+                            own_lbl = own_lbl()
+                        icon2 = item.get("icon", "")
+                        if callable(icon2):
+                            icon2 = icon2()
+                        own_disp = (f"{icon2} {own_lbl}".strip()
+                                     if icon2 else str(own_lbl))
+                        if not collapsed:
+                            _pick_item(item_id, "action", own_disp)
+
+                    if not collapsed:
+                        _render_pick_tree(item["submenu"], depth + 1, sub_path)
+                    continue
+
+                if not item_id:
+                    continue
+                if not (item.get("button_label") or item.get("label")):
+                    continue
+                if item_id in active_ids:
+                    continue
+
+                icon_txt = item.get("icon", "")
+                if callable(icon_txt):
+                    icon_txt = icon_txt()
+                lbl_raw = item.get("button_label") or item.get("label", item_id)
+                if callable(lbl_raw):
+                    lbl_raw = lbl_raw()
+                display = (f"{icon_txt} {lbl_raw}".strip()
+                            if icon_txt else str(lbl_raw))
+                _pick_item(item_id, "action", display)
+
+        # Special widgets
+        sp_avail = [wid for wid in _POPOUT_SPECIAL_LABELS
+                     if wid not in active_ids]
+        if sp_avail:
+            sp_path = "__sp__"
+            if sp_path not in _pick_collapsed:
+                _pick_collapsed[sp_path] = True
+            collapsed = _pick_collapsed[sp_path]
+            arrow = "▶" if collapsed else "▼"
+            sp_hdr = tk.Frame(pick_inner, bg="gray22")
+            sp_hdr.pack(fill="x", pady=(4, 0))
+            def _tog_sp():
+                _pick_collapsed["__sp__"] = not _pick_collapsed.get("__sp__", True)
+                _build_picker()
+            tk.Button(sp_hdr, text=arrow, bg="gray22", fg="gray70",
+                       font=ROOT_FONT, relief="flat", bd=0,
+                       command=_tog_sp).pack(side="left")
+            tk.Label(sp_hdr, text="Special Widgets", bg="gray22",
+                      fg="white", font=ROOT_FONT, anchor="w"
+                      ).pack(side="left", fill="x", expand=True, padx=4)
+            if not collapsed:
+                for wid in sp_avail:
+                    _pick_item(wid, "widget", _POPOUT_SPECIAL_LABELS[wid])
+
+        # Registry sections (all collapsed by default)
+        for sec_key, sec_items in ged_reg.items():
+            if sec_key.startswith("_"):
+                continue
+            sec_label = sec_key.replace("_", " ").title()
+            sec_path  = f"_sec_{sec_key}"
+            if sec_path not in _pick_collapsed:
+                _pick_collapsed[sec_path] = True
+            collapsed  = _pick_collapsed[sec_path]
+            arrow      = "▶" if collapsed else "▼"
+            sec_hdr = tk.Frame(pick_inner, bg="gray22")
+            sec_hdr.pack(fill="x", pady=(4, 0))
+            def _tog_sec(pk=sec_path):
+                _pick_collapsed[pk] = not _pick_collapsed.get(pk, True)
+                _build_picker()
+            tk.Button(sec_hdr, text=arrow, bg="gray22", fg="gray70",
+                       font=ROOT_FONT, relief="flat", bd=0,
+                       command=_tog_sec).pack(side="left")
+            tk.Label(sec_hdr, text=f"  {sec_label}", bg="gray22",
+                      fg="white", font=ROOT_FONT, anchor="w"
+                      ).pack(side="left", fill="x", expand=True, padx=4)
+            if not collapsed:
+                _render_pick_tree(sec_items, 1, sec_path)
+
+        pick_inner.update_idletasks()
+        pick_canvas.configure(scrollregion=pick_canvas.bbox("all"))
+
+        # Bind mouse-wheel to every picker child so scrolling works anywhere
+        def _bind_wheel(w):
+            w.bind("<MouseWheel>", _pick_scroll)
+            for child in w.winfo_children():
+                _bind_wheel(child)
+        _bind_wheel(pick_inner)
+
+    def _fit_ged_win():
+        """Resize the editor window to snugly fit current grid content + picker panel."""
+        ged_win.update_idletasks()
+        gw = max(grid_inner.winfo_reqwidth(), 200)
+        gh = max(grid_inner.winfo_reqheight(), 100)
+        # Right panel: scrollbar ≈17 + divider+pad ≈13 + picker 260 + window chrome 40
+        extra_w = 17 + 13 + 260 + 40
+        # Vertical chrome: top bar + bottom bar + section padding
+        extra_h = top.winfo_reqheight() + bot.winfo_reqheight() + 40
+        total_w = gw + extra_w
+        total_h = gh + extra_h
+        sw = ged_win.winfo_screenwidth()
+        sh = ged_win.winfo_screenheight()
+        total_w = min(max(total_w, 500), int(sw * 0.95))
+        total_h = min(max(total_h, 350), int(sh * 0.90))
+        ged_win.geometry(f"{total_w}x{total_h}")
+
+    def _ged_rebuild_both():
+        _ged_rebuild()
+        _build_picker()
+        ged_win.after(20, _fit_ged_win)
+
+    # ── bottom bar ────────────────────────────────────────────────────────────
+    bot = tk.Frame(ged_win, bg=BACKGROUND_COLOR)
+    bot.pack(fill="x", padx=10, pady=8)
+
+    def _ged_save():
+        global popout_layout, popout_columns
+        popout_layout  = _grid_to_flowing_list(ged_work) or None
+        popout_columns = max(1, col_var.get())
+        save_config()
+        # Reload popout if open — keep this editor window open
+        if popout_controls:
+            _reopen_popout()
+
+    def _reopen_popout():
+        global popout_controls
+        if popout_controls:
+            try:
+                popout_controls.destroy()
+            except Exception:
+                pass
+            popout_controls = None   # must clear before calling create
+        create_popout_controls()
+
+    def _ged_reset():
+        ged_work.clear()
+        ged_work.update(_list_to_grid(copy.deepcopy(POPOUT_LAYOUT_DEFAULT)))
+        col_var.set(5)
+        ged_cols[0] = 5
+        ged_nrows[0] = 0
+        _ged_rebuild_both()
+
+    # Left group: Save / Reset / Close
+    left_bot = tk.Frame(bot, bg=BACKGROUND_COLOR)
+    left_bot.pack(side="left")
+    tk.Button(left_bot, text="Save", font=ROOT_FONT,
+               bg=HIGHLIGHT_COLOR, fg="white", width=10,
+               command=_ged_save).pack(side="left", padx=4)
+    tk.Button(left_bot, text="Reset to Default", font=ROOT_FONT,
+               bg="black", fg="white", width=16,
+               command=_ged_reset).pack(side="left", padx=4)
+    tk.Button(left_bot, text="Close", font=ROOT_FONT,
+               bg="black", fg="white", width=10,
+               command=ged_win.destroy).pack(side="left", padx=4)
+
+    # Right group: preset label + Save Preset / Load Preset / Delete Preset
+    right_bot = tk.Frame(bot, bg=BACKGROUND_COLOR)
+    right_bot.pack(side="right")
+
+    tk.Label(right_bot, text="Layout preset:", bg=BACKGROUND_COLOR,
+              fg="gray70", font=ROOT_FONT).pack(side="left", padx=(0, 4))
+
+    preset_var = tk.StringVar(value="")  # tracks the currently active preset name
+    preset_name_lbl = tk.Label(right_bot, textvariable=preset_var,
+                                bg=BACKGROUND_COLOR, fg="white",
+                                font=ROOT_FONT, width=18, anchor="w")
+    preset_name_lbl.pack(side="left", padx=(0, 4))
+
+    def _ged_save_preset():
+        current = preset_var.get().strip()
+        name = simpledialog.askstring("Save Layout Preset",
+                                       "Preset name:", initialvalue=current,
+                                       parent=ged_win)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        layout_list = _grid_to_flowing_list(ged_work)
+        try:
+            _save_popout_layout_preset(name, layout_list, ged_cols[0])
+        except Exception as e:
+            print(f"Failed to save layout preset '{name}': {e}")
+        preset_var.set(name)
+        _refresh_preset_menu()
+
+    def _ged_load_preset(name):
+        presets = _load_popout_layout_presets()
+        if name not in presets:
+            return
+        data = presets[name]
+        loaded_layout = data.get("layout", [])
+        loaded_cols   = int(data.get("columns", ged_cols[0]))
+        ged_work.clear()
+        ged_work.update(_list_to_grid(loaded_layout))
+        col_var.set(loaded_cols)
+        ged_cols[0] = loaded_cols
+        ged_nrows[0] = 0
+        preset_var.set(name)
+        _ged_rebuild_both()
+
+    def _ged_delete_preset():
+        name = preset_var.get().strip()
+        if not name:
+            return
+        path = os.path.join(POPOUT_LAYOUTS_FOLDER, f"{name}.json")
+        if os.path.exists(path):
+            os.remove(path)
+        preset_var.set("")
+        _refresh_preset_menu()
+
+    # Dropdown menu for existing presets
+    _preset_menu_btn = [None]
+    _preset_menu     = [None]
+
+    def _refresh_preset_menu():
+        if _preset_menu[0]:
+            _preset_menu[0].delete(0, "end")
+            presets = _load_popout_layout_presets()
+            for pname in presets:
+                _preset_menu[0].add_command(
+                    label=pname, command=lambda n=pname: _ged_load_preset(n))
+            if not presets:
+                _preset_menu[0].add_command(label="(no saved presets)", state="disabled")
+
+    def _show_preset_menu():
+        _refresh_preset_menu()
+        btn = _preset_menu_btn[0]
+        x = btn.winfo_rootx()
+        y = btn.winfo_rooty() - _preset_menu[0].winfo_reqheight()
+        try:
+            _preset_menu[0].tk_popup(x, y)
+        finally:
+            _preset_menu[0].grab_release()
+
+    _preset_menu[0] = tk.Menu(ged_win, tearoff=0, bg="gray20", fg="white",
+                               activebackground=HIGHLIGHT_COLOR,
+                               activeforeground="white", font=ROOT_FONT)
+    _refresh_preset_menu()
+
+    load_btn = tk.Button(right_bot, text="▾ Load", font=ROOT_FONT,
+                          bg="black", fg="white", command=_show_preset_menu)
+    load_btn.pack(side="left", padx=(0, 2))
+    _preset_menu_btn[0] = load_btn
+
+    tk.Button(right_bot, text="Save Preset", font=ROOT_FONT,
+               bg="black", fg="white",
+               command=_ged_save_preset).pack(side="left", padx=(0, 2))
+    tk.Button(right_bot, text="Delete", font=ROOT_FONT,
+               bg="black", fg="#c06060",
+               command=_ged_delete_preset).pack(side="left", padx=(0, 4))
+
+    _ged_rebuild_both()
+
+
 # =========================================
 #                 *GUI SETUP
 # =========================================
 
 # Load saved configuration on startup
+_migrate_old_file_structure()
 load_config()
 
 # Initialize themes cache
@@ -26494,9 +27870,10 @@ except ImportError:
 except Exception as e:
     root = tk.Tk()
 
+ROOT_MIN_HEIGHT = 540
 root.title(WINDOW_TITLE)
-root.geometry(f"{scl(1200, "UI")}x{scl(580, "UI")}")
-root.minsize(scl(900, "UI"), scl(580, "UI"))  # Set minimum window size to prevent controls squishing
+root.geometry(f"{scl(1200, "UI")}x{scl(ROOT_MIN_HEIGHT, "UI")}")
+root.minsize(scl(900, "UI"), scl(ROOT_MIN_HEIGHT, "UI"))  # Set minimum window size to prevent controls squishing
 root.configure(bg=BACKGROUND_COLOR)  # Set background color to black
 ROOT_FONT = ("Segoe UI", scl(9, "UI"))
 # root.resizable(False, False)
@@ -26516,24 +27893,64 @@ def blank_space(row, size=1):
     space_label = tk.Label(row, text="", bg=BACKGROUND_COLOR, fg="white")
     space_label.pack(side="left", padx=size)
 
-def create_button(frame, label, func, add_space=False, enabled=False, help_title="", help_text=""):
-    """Creates a button with optional spacing and right-click help functionality."""
+def create_button(frame, label, func, add_space=False, enabled=False,
+                  help_title="", help_text="", right_click=None):
+    """Creates a button with optional tooltip on hover and a configurable right-click action."""
     bg = HIGHLIGHT_COLOR if enabled else "black"
-    
-    # Create the button
-    button = tk.Button(frame, text=label, command=func, bg=bg, fg="white", font=ROOT_FONT)
-    button.pack(side="left", padx=(0,0))
+    hover_bg = "gray35" if not enabled else "gray45"
 
-    # Bind right-click to show help
-    button.bind("<Button-3>", lambda event, title=help_title, text=help_text: show_button_help(title, text))
+    button = tk.Button(frame, text=label, command=func, bg=bg, fg="white", font=ROOT_FONT,
+                       borderwidth=0, padx=scl(6, "UI"), pady=scl(3, "UI"), relief="flat")
+    button.pack(side="left", padx=0)
 
-    if add_space:
-        blank_space(frame)
-    
+    # Tooltip on hover (must be created BEFORE hover bindings so our add='+' runs after)
+    tooltip_text = (f"{help_title}\n\n{help_text}" if help_title and help_text
+                    else help_text or help_title)
+    if tooltip_text:
+        ToolTip(button, tooltip_text)
+
+    # Hover highlight — bound with add='+' so ToolTip's bindings still fire too
+    def _on_enter(e, b=button, hbg=hover_bg):
+        b.config(bg=hbg)
+    def _on_leave(e, b=button, obg=bg):
+        b.config(bg=obg)
+    button.bind("<Enter>", _on_enter, add="+")
+    button.bind("<Leave>", _on_leave, add="+")
+
+    # Right-click: (action, label_func) tuple → call action then flash label for 1 s
+    if right_click is not None:
+        if isinstance(right_click, tuple):
+            _rc_action, _rc_label = right_click
+            if not callable(_rc_action) or not _rc_label:
+                return
+            def _on_right_click(event, btn=button, act=_rc_action, lf=_rc_label):
+                act()
+                flash = lf() if callable(lf) else lf
+                if not getattr(btn, "_flash_after_id", None):
+                    # Not currently flashing — safe to capture real original
+                    btn._flash_orig = btn.cget("text")
+                else:
+                    # Already flashing — cancel timer, keep the already-stored original
+                    btn.after_cancel(btn._flash_after_id)
+                btn.config(text=flash)
+                btn._flash_after_id = btn.after(1000, lambda b=btn: (
+                    b.config(text=b._flash_orig),
+                    setattr(b, "_flash_after_id", None)
+                ))
+            button.bind("<Button-3>", _on_right_click)
+        else:
+            button.bind("<Button-3>", lambda event: right_click())
+
+    # if add_space:
+    #     blank_space(frame)
+
     return button
 
 def show_button_help(help_title, help_text):
     """Displays the help title (bold + underline) and description in the help column."""
+    global current_list_title
+    current_list_title = ""
+    _insert_list_title_row(right_column)
     right_column.config(state=tk.NORMAL, wrap="word")
     right_column.delete(1.0, tk.END)  # Clear previous help text
     # Add title in bold + underline
@@ -26544,9 +27961,70 @@ def show_button_help(help_title, help_text):
     
     right_column.config(state=tk.DISABLED)
 
+_menu_tooltip_win = [None]
+_menu_tooltip_after = [None]
+
+def attach_menu_tooltip(menu, tooltips):
+    """Show a tooltip near the cursor after hovering 1 second over a menu item.
+    tooltips: dict mapping integer item index -> tooltip string."""
+    def on_select(event):
+        if _menu_tooltip_after[0]:
+            try:
+                menu.after_cancel(_menu_tooltip_after[0])
+            except Exception:
+                pass
+            _menu_tooltip_after[0] = None
+        if _menu_tooltip_win[0]:
+            try:
+                _menu_tooltip_win[0].destroy()
+            except Exception:
+                pass
+            _menu_tooltip_win[0] = None
+        try:
+            idx = menu.index("active")
+        except Exception:
+            return
+        if idx is None or idx not in tooltips or not tooltips[idx]:
+            return
+        x = menu.winfo_pointerx() + 18
+        y = menu.winfo_pointery() + 6
+        text = tooltips[idx]
+        def show_tooltip():
+            _menu_tooltip_after[0] = None
+            try:
+                tw = tk.Toplevel()
+                tw.wm_overrideredirect(True)
+                tw.wm_geometry(f"+{x}+{y}")
+                tw.attributes("-topmost", True)
+                tk.Label(tw, text=text, justify="left", bg="#ffffcc", fg="black",
+                         relief="solid", bd=1, font=("Arial", 9), wraplength=320, padx=5, pady=3).pack()
+                _menu_tooltip_win[0] = tw
+            except Exception:
+                pass
+        _menu_tooltip_after[0] = menu.after(1000, show_tooltip)
+
+    def on_hide(event):
+        if _menu_tooltip_after[0]:
+            try:
+                menu.after_cancel(_menu_tooltip_after[0])
+            except Exception:
+                pass
+            _menu_tooltip_after[0] = None
+        if _menu_tooltip_win[0]:
+            try:
+                _menu_tooltip_win[0].destroy()
+            except Exception:
+                pass
+            _menu_tooltip_win[0] = None
+
+    menu.bind("<<MenuSelect>>", on_select)
+    menu.bind("<Unmap>", on_hide)
+
 # First row
 first_row_frame = tk.Frame(root, bg=BACKGROUND_COLOR)
-first_row_frame.pack(pady=(5,5))
+first_row_frame.pack(pady=(0, 0), fill="x", anchor="w")
+first_row_border = tk.Frame(root, bg="gray30", height=1)
+first_row_border.pack(fill="x")
 
 def select_directory():
     global directory
@@ -26581,19 +28059,1016 @@ def scan_directory(queue=False):
     else:
         worker()
 
+# =========================================
+#           *MENU REGISTRY + BUILDER
+# =========================================
+
+def build_menu(parent_menu, items):
+    """Build a tk.Menu from a declarative list of item dicts.
+
+    Each item is either the string "---" (separator) or a dict with keys:
+      id              : str  — stable identifier for shortcut binding, popout layout, flat lookup
+      icon            : str  — emoji/symbol prepended to the label (optional; kept separate for button use)
+      label           : str  — display text (required unless type=="radiogroup"); rendered as "{icon}  {label}"
+      button_label    : str  — short text for popout buttons (optional; falls back to label)
+      command         : callable — action on click
+      tooltip         : str  — hover tooltip text (optional)
+      (shortcut display is auto-resolved from DEFAULT_SHORTCUTS by item id — not stored per item)
+      toggle    : callable -> bool — if present, item becomes a checkbutton;
+                  return value drives active highlight
+      condition : callable -> bool — if present and returns False, item is skipped
+      submenu   : list  — if present, item becomes a cascade; value is a nested items list
+      type      : "radiogroup" — special: generates one radiobutton per option
+        options : list[str]   — radio labels
+        variable: callable -> int — returns current selected index
+        command : callable(int) — called with selected index
+    """
+    # Attach to the menu widget itself so vars live exactly as long as the menu does.
+    # Without this, CPython can GC the BooleanVar/StringVar while Tcl still holds
+    # a reference, causing TclErrors when the menu or root window is closed.
+    _booleans = []
+    parent_menu._keep_vars = _booleans
+
+    def _make_menu():
+        return tk.Menu(parent_menu, tearoff=0, bg="black", fg="white",
+                       activebackground=HIGHLIGHT_COLOR, activeforeground="white",
+                       font=ROOT_FONT)
+
+    def _add_items(menu, item_list):
+        tooltip_map = {}
+        visual_idx  = 0          # actual menu entry index (separators count)
+
+        def _render_label(item):
+            """Compose the menu label: '{icon}  {label}  [{shortcut}]'.
+            Shortcut display is resolved from DEFAULT_SHORTCUTS via get_shortcut()."""
+            raw_label = item["label"]() if callable(item.get("label")) else item.get("label", "")
+            icon = item.get("icon", "")
+            if callable(icon):
+                icon = icon()
+            item_id = item.get("id")
+            key = get_shortcut(item_id) if item_id else None
+            sd  = _shortcut_display_name(key) if key else None
+            text = f"{icon}  {raw_label}" if icon else raw_label
+            return f"{text}  [{sd}]" if sd else text
+
+        for item in item_list:
+            # --- separator ---
+            if item == "---":
+                menu.add_separator()
+                visual_idx += 1
+                continue
+
+            # --- condition gate ---
+            if "condition" in item and not item["condition"]():
+                continue
+
+            # --- radiogroup ---
+            if item.get("type") == "radiogroup":
+                cur = item["variable"]()
+                rv  = tk.StringVar(value=item["options"][cur])
+                _booleans.append(rv)
+                start_idx = visual_idx
+                for i, opt in enumerate(item["options"]):
+                    menu.add_radiobutton(
+                        label=opt, variable=rv, value=opt,
+                        command=lambda idx=i: item["command"](idx),
+                        selectcolor=HIGHLIGHT_COLOR,
+                    )
+                    if "tooltip" in item:
+                        tooltip_map[visual_idx] = item["tooltip"]
+                    visual_idx += 1
+                menu.entryconfig(start_idx + cur, background=HIGHLIGHT_COLOR, foreground="white")
+                continue
+
+            rendered = _render_label(item)
+
+            # --- cascade (submenu) ---
+            if "submenu" in item:
+                sub = _make_menu()
+                _add_items(sub, item["submenu"])
+                menu.add_cascade(label=rendered, menu=sub)
+                if "tooltip" in item:
+                    tooltip_map[visual_idx] = item["tooltip"]
+                visual_idx += 1
+                continue
+
+            # --- toggle (checkbutton) ---
+            if "toggle" in item:
+                state = item["toggle"]()
+                bv = tk.BooleanVar(value=state)
+                _booleans.append(bv)
+                menu.add_checkbutton(
+                    label=rendered,
+                    variable=bv,
+                    command=item["command"],
+                    selectcolor=HIGHLIGHT_COLOR,
+                )
+                if state:
+                    menu.entryconfig(visual_idx, background=HIGHLIGHT_COLOR, foreground="white")
+                if "tooltip" in item:
+                    tooltip_map[visual_idx] = item["tooltip"]
+                visual_idx += 1
+                continue
+
+            # --- plain command ---
+            menu.add_command(label=rendered, command=item["command"])
+            if "tooltip" in item:
+                tooltip_map[visual_idx] = item["tooltip"]
+            visual_idx += 1
+
+        if tooltip_map:
+            attach_menu_tooltip(menu, tooltip_map)
+
+    _add_items(parent_menu, items)
+
+
+# ---------------------------------------------------------------------------
+# SHORTCUT INFRASTRUCTURE
+# ---------------------------------------------------------------------------
+
+# Default shortcuts: {id → key_char_or_name}.
+# Single-char shortcuts are the literal character pynput returns via key.char.
+# "BackSpace" is the only special-key name currently used.
+DEFAULT_SHORTCUTS = {
+    # ── Playlist / Queue ──────────────────────────────────────────────────
+    "view_playlist":        "p",
+    "lightning_variety":    "v",
+    "show_youtube":         "y",
+    "show_fixed_lightning": "f",
+    # ── Popups ────────────────────────────────────────────────────────────
+    "info_popup":           "i",
+    "title_popup":          "o",
+    "end_session":          "e",
+    # ── Toggle / Overlays ─────────────────────────────────────────────────
+    "blind":                "BackSpace",
+    "peek":                 "=",
+    "narrow_peek":          "[",
+    "widen_peek":           "]",
+    "mute":                 "m",
+    "censors":              "c",
+    "enable_shortcuts":     "`",
+    "view_shortcuts":       "k",
+    # ── Theme ─────────────────────────────────────────────────────────────
+    "tag":                  "t",
+    "favorite":             "*",
+    # ── Bonus questions (direct) ──────────────────────────────────────────
+    "bonus_multiple":       "u",
+    "bonus_tags":           "n",
+    "bonus_chars":          "j",
+    # ── Cycling (hidden) ──────────────────────────────────────────────────
+    "cycle_blind_peek":     "b",
+    "cycle_light_mode":     "l",
+    "cycle_guess_stats":    "g",
+    "cycle_guess_music":    "h",
+    # ── Navigation (hidden) ───────────────────────────────────────────────
+    "dock_player":          "d",
+    "search_themes":        "s",
+    "reroll_next":          "r",
+    # ── Scoreboard (hidden) ───────────────────────────────────────────────
+    "scoreboard_align":     "a",
+    "scoreboard_extend":    "x",
+    "scoreboard_shrink":    "z",
+    "scoreboard_grow":      "w",
+    "scoreboard_toggle":    "q",
+}
+
+# Human-readable display overrides for special key names
+_SHORTCUT_DISPLAY = {
+    "BackSpace": "bksp",
+}
+
+def _shortcut_display_name(key_str):
+    """Return a human-readable label for a key string (e.g. 'BackSpace' → 'bksp')."""
+    return _SHORTCUT_DISPLAY.get(key_str, key_str) if key_str else None
+
+# User overrides loaded from config: {id → key_char_or_name}
+shortcuts_config = {}
+
+# Currently active bindings: {id → key_string} — used by shortcuts editor for display
+bound_shortcuts = {}
+
+def get_shortcut(item_id, default=None):
+    """Return the active shortcut key for item_id.
+
+    Resolves: shortcuts_config override → DEFAULT_SHORTCUTS → default argument.
+    """
+    if not item_id:
+        return default
+    return shortcuts_config.get(item_id, DEFAULT_SHORTCUTS.get(item_id, default))
+
+def get_default_shortcuts():
+    """Return a copy of DEFAULT_SHORTCUTS — useful for a 'reset to defaults' UI."""
+    return dict(DEFAULT_SHORTCUTS)
+
+def get_flat_registry():
+    """Return a flat {id: item} dict across all menus and submenus (items with an id only).
+
+    Useful for shortcut binding, popout layout lookup, and the shortcuts editor.
+    Includes hidden and scoreboard items — everything with an id.
+    """
+    flat = {}
+
+    def _walk(item_list):
+        for item in item_list:
+            if item == "---":
+                continue
+            if not isinstance(item, dict):
+                continue
+            if "id" in item:
+                flat[item["id"]] = item
+            if "submenu" in item:
+                _walk(item["submenu"])
+
+    registry = _get_menu_registry()
+    for section_items in registry.values():
+        _walk(section_items)
+    return flat
+
+def bind_shortcuts():
+    """Bind all registry shortcuts to root, respecting user overrides.
+
+    Safe to call multiple times — unbinds old key before binding new one.
+    Only binds items that have an 'id' with a shortcut in DEFAULT_SHORTCUTS or shortcuts_config.
+    Does not bind items whose shortcut has been cleared (set to "" in shortcuts_config).
+    """
+    flat = get_flat_registry()
+    for item_id, item in flat.items():
+        key = get_shortcut(item_id)
+
+        # Unbind previous binding for this id if key changed
+        old_key = bound_shortcuts.get(item_id)
+        if old_key and old_key != key:
+            try:
+                root.unbind(f"<{old_key}>")
+            except Exception:
+                pass
+            bound_shortcuts.pop(item_id, None)
+
+        if not key:
+            continue
+
+        cmd = item.get("command")
+        if not cmd:
+            continue
+
+        try:
+            root.bind(f"<{key}>", lambda e, c=cmd: c())
+            bound_shortcuts[item_id] = key
+        except Exception:
+            pass
+
+
+# Runtime dispatch table: {key_char_or_name: command}.
+# Built from DEFAULT_SHORTCUTS + registry commands. Queried directly by on_release.
+_shortcut_dispatch = {}
+
+def rebuild_shortcut_dispatch():
+    """Build the in-memory key → command dispatch table.
+
+    Call once at startup (after all functions are defined) and again any time
+    shortcuts_config is modified so on_release always uses the current bindings.
+    """
+    global _shortcut_dispatch
+    flat = get_flat_registry()
+    dispatch = {}
+    for item_id, item in flat.items():
+        key = get_shortcut(item_id)   # shortcuts_config override → DEFAULT_SHORTCUTS → None
+        cmd = item.get("command")
+        if key and cmd:
+            dispatch[key] = cmd
+    _shortcut_dispatch = dispatch
+
+
+# ---------------------------------------------------------------------------
+# REGISTRY HELPERS — computed predicates used as `condition` / `command` lambdas
+#                   in the theme menu submenus below.
+# ---------------------------------------------------------------------------
+
+def _cp_is_local_file():
+    """Return True if the currently playing file exists in the local directory."""
+    f = currently_playing.get("filename", "")
+    return bool(f and f in directory_files and os.path.exists(directory_files.get(f, "")))
+
+def _cp_is_stream():
+    """Return True if the currently playing file is an AnimeThemes stream (not locally stored)."""
+    f = currently_playing.get("filename", "")
+    return bool(f and is_animethemes_stream_file(f) and not _cp_is_local_file())
+
+def download_current_theme():
+    """Download or move the currently playing theme to the local directory."""
+    f = currently_playing.get("filename", "")
+    if not f:
+        return
+    if get_cached_file_path(f) is not None:
+        move_cached_file_to_directory(f, None)
+    else:
+        download_animethemes_file(f, None)
+
+
+# ---------------------------------------------------------------------------
+# MENU_REGISTRY — all item definitions (label / command / tooltip / toggle /
+#                 condition / submenu / type).  Separators are the string "---".
+# Lambdas referencing globals are fine here because this dict is evaluated
+# inside create_first_row_buttons(), which runs after all functions are defined.
+# ---------------------------------------------------------------------------
+def _get_menu_registry():
+    return {
+
+    # ── DIRECTORY ────────────────────────────────────────────────────────────
+    "directory": [
+        {"id": "dir_by_artist", "icon": "🎤", "label": "Themes by Artist",
+         "command": artist_stats, "tooltip": "List all themes grouped by artist."},
+        {"id": "dir_by_season", "icon": "🌸", "label": "Themes by Season",
+         "command": season_stats, "tooltip": "List all themes grouped by season."},
+        {"id": "dir_by_series", "icon": "📚", "label": "Themes by Series",
+         "command": series_stats, "tooltip": "List all themes grouped by series."},
+        {"id": "dir_by_slug",   "icon": "🔑", "label": "Themes by Slug",
+         "command": slug_stats,   "tooltip": "List all themes grouped by slug (OP1, ED2, etc.)."},
+        {"id": "dir_by_studio", "icon": "🏢", "label": "Themes by Studio",
+         "command": studio_stats, "tooltip": "List all themes grouped by studio."},
+        {"id": "dir_by_tag",    "icon": "🏷",  "label": "Themes by Tag",
+         "command": tag_stats,    "tooltip": "List all themes grouped by tag."},
+        {"id": "dir_by_type",   "icon": "📺", "label": "Themes by Type",
+         "command": type_stats,   "tooltip": "List all themes grouped by format/type."},
+        {"id": "dir_by_year",   "icon": "📅", "label": "Themes by Year",
+         "command": year_stats,   "tooltip": "List all themes grouped by year."},
+    ],
+
+    # ── FILE ────────────────────────────────────────────────────────────────
+    "file": [
+        {"id": "choose_directory", "icon": "📁", "label": "Choose Theme Directory",
+         "button_label": "DIRECTORY", "command": select_directory,
+         "tooltip": ("Choose the folder where your anime themes are stored.\n\n"
+                     "The app expects files from AnimeThemes (torrent or downloaded).\n"
+                     "It searches subfolders, so pick the top-level folder.\n\n"
+                     "Custom files must be labeled as:\n"
+                     "AnimeName-OP1-[MAL]49618[ART]Minami[SNG]Rude Lose Dance.webm")},
+        "---",
+        {"label": "Import", "icon": "►", "tooltip": "Import metadata or censors from GitHub.",
+         "submenu": [
+             {"id": "import_data", "label": "Import Data (from GitHub)",
+              "button_label": "IMPORT DATA", "command": import_data_from_source,
+              "tooltip": "Imports metadata from a remote GitHub.\nDownloads a zip package and merges all metadata with your existing data."},
+             {"id": "import_censors", "label": "Import Censors (Ramun's)",
+              "button_label": "IMPORT CENSORS", "command": import_censors,
+              "tooltip": "Downloads and imports Ramun's censors from GitHub.\nSaved as 'ramuns_censors.json' in your files folder."},
+         ]},
+        {"id": "export_data", "icon": "📤", "label": "Export Data",
+         "button_label": "EXPORT", "command": export_metadata_package,
+         "tooltip": "Exports all metadata files into a zip package for backup or sharing."},
+        "---",
+        {"id": "fetch_all_metadata", "icon": "❓", "label": "Fetch All Missing Metadata",
+         "button_label": "FETCH ALL", "command": fetch_all_metadata,
+         "tooltip": "Check all files in the directory for missing metadata and fetch any that are absent."},
+        {"id": "refresh_jikan", "icon": "⭮", "label": "Refresh All Jikan Metadata",
+         "button_label": "REFRESH JIKAN", "command": refresh_all_metadata,
+         "tooltip": "Refresh Jikan (MAL) metadata — score and members — for files in your directory."},
+        {"id": "refresh_anilist", "icon": "A", "label": "Refresh All AniList Metadata",
+         "button_label": "REFRESH ANILIST", "command": refresh_all_anilist_metadata,
+         "tooltip": "Refresh AniList metadata — scores, rankings, tags, characters — for files in your directory."},
+        "---",
+        {"id": "reset_session", "icon": "🗑", "label": "Reset Session History",
+         "button_label": "RESET SESSION", "command": reset_session_history,
+         "tooltip": "Clear the current session history.\nStarts a fresh session from this point."},
+        "---",
+        {"id": "settings", "icon": "⚙️", "label": "Configuration Settings",
+         "button_label": "SETTINGS", "command": show_settings_popup,
+         "tooltip": "Open settings to configure volume, colors, API keys, scaling, and more."},
+        "---",
+        {"id": "help", "label": "Help",
+         "button_label": "HELP",
+         "command": lambda: show_button_help("HELP",
+             "Tool tips should mostly explain what each button does. A tutorial will go here soon.\n\n"
+             "This application was created by Ramun Flame"),
+         "tooltip": "Pending help/tutorial. Work in progress."},
+        "---",
+        {"id": "exit", "icon": "✕", "label": "Exit",
+         "button_label": "EXIT", "command": lambda: on_app_close(),
+         "tooltip": "Close the application."},
+    ],
+
+    # ── PLAYLIST ────────────────────────────────────────────────────────────
+    "playlist": [
+        {"label": "Create Playlist", "icon": "➕",
+         "submenu": [
+             {"id": "create_infinite", "icon": "∞", "label": "Infinite",
+              "button_label": "INFINITE",
+              "tooltip": ("Creates a playlist that automatically adds new tracks as you reach the end"
+                          " balancing popularity and season groups. Can be configured heavily.\n\n"
+                          "This is the recommended playlist to use."),
+              "submenu": [
+                  {"id": "create_infinite_local", "label": "Local Files Only",
+                   "command": lambda: create_infinite_playlist(include_non_local=False),
+                   "tooltip": "Create an infinite playlist using only files present in your local directory."},
+                  {"id": "create_infinite_stream", "icon": stream_icon, "label": "Include Streaming Themes",
+                   "command": lambda: create_infinite_playlist(include_non_local=True),
+                   "tooltip": "Include non-local themes that will be streamed from AnimeThemes."},
+              ]},
+             "---",
+             {"id": "create_standard", "label": "Standard (all files)",
+              "button_label": "CREATE",
+              "tooltip": ("Creates a playlist using all videos found in the directory.\n\n"
+                          "Not recommended unless you have a curated local list of themes."),
+              "submenu": [
+                  {"id": "create_standard_local", "label": "Local Files Only",
+                   "command": lambda: generate_playlist_button(include_non_local=False),
+                   "tooltip": "Create a playlist using only files present in your local directory."},
+                  {"id": "create_standard_stream", "icon": stream_icon, "label": "Include Streaming Themes",
+                   "command": lambda: generate_playlist_button(include_non_local=True),
+                   "tooltip": "Include non-local themes from metadata that will be streamed from AnimeThemes."},
+              ]},
+             {"id": "create_anilist", "label": "From AniList ID",
+              "button_label": "ANILIST",
+              "tooltip": "Creates a playlist from an AniList user's anime list.",
+              "submenu": [
+                  {"id": "create_anilist_local", "label": "Local Files Only",
+                   "command": lambda: generate_anilist_playlist(include_non_local=False),
+                   "tooltip": "Match only themes that are stored locally in your directory."},
+                  {"id": "create_anilist_stream", "icon": stream_icon, "label": "Include Streaming Themes",
+                   "command": lambda: generate_anilist_playlist(include_non_local=True),
+                   "tooltip": "Include non-local themes from metadata that will be streamed from AnimeThemes."},
+              ]},
+             {"id": "create_animethemes", "label": "From AnimeThemes Playlist",
+              "button_label": "ANIMETHEMES",
+              "tooltip": ("Creates a playlist from an AnimeThemes playlist hashid.\n"
+                          "URL format: https://animethemes.moe/playlist/hashid"),
+              "submenu": [
+                  {"id": "create_animethemes_local", "label": "Local Files Only",
+                   "command": lambda: generate_animethemes_playlist(include_non_local=False),
+                   "tooltip": "Match only themes that are stored locally in your directory."},
+                  {"id": "create_animethemes_stream", "icon": stream_icon, "label": "Include Streaming Themes",
+                   "command": lambda: generate_animethemes_playlist(include_non_local=True),
+                   "tooltip": "Include non-local themes from metadata that will be streamed from AnimeThemes."},
+              ]},
+             "---",
+             {"id": "empty_playlist", "label": "Empty Playlist",
+              "button_label": "EMPTY", "command": empty_playlist,
+              "tooltip": "Creates an empty playlist."},
+         ]},
+        "---",
+        {"id": "view_playlist", "icon": "👁", "label": "View Playlist",
+         "button_label": "PLAYLIST", "command": show_playlist,
+         "tooltip": ("List all themes in the playlist. Scrolls to the current index.\n"
+                     "Select a theme to jump to it immediately.")},
+        {"id": "remove_theme", "icon": "➖", "label": "Remove Theme",
+         "button_label": "REMOVE", "command": remove,
+         "tooltip": ("Remove a theme from the playlist.\n\n"
+                     "There is a confirmation dialogue after selecting.")},
+        "---",
+        {"id": "save_playlist", "label": "Save Playlist",
+         "button_label": "SAVE", "command": save,
+         "tooltip": ("Save the current playlist to its existing file in the playlists/ folder.\n\n"
+                     "The current index is also saved so you can resume where you left off.")},
+        {"id": "save_playlist_as", "label": "Save Playlist As",
+         "button_label": "SAVE AS", "command": save_as,
+         "tooltip": ("Save the current playlist under a new name.\n\n"
+                     "You will be prompted for a name. Entering an existing name will overwrite it.\n"
+                     "The current index is also saved so you can resume where you left off.")},
+        {"id": "load_playlist", "label": "Load Playlist",
+         "button_label": "LOAD", "command": load,
+         "tooltip": ("Load a saved playlist.\n\n"
+                     "Won't interrupt the currently playing theme.")},
+        {"id": "load_system_playlist", "icon": "📋", "label": "Load System Playlist",
+         "button_label": "SYSTEM LIST", "command": load_system_playlist,
+         "tooltip": "Load a system playlist: Tagged, Favorite, Blind, Peek, Mute Peek, New, or Missing Artists."},
+        {"id": "merge_playlist", "icon": "➕", "label": "Merge Playlist",
+         "button_label": "MERGE", "command": merge_playlist,
+         "condition": lambda: not playlist.get("infinite", False),
+         "tooltip": ("Merge another playlist into the current one.\n"
+                     "Only non-infinite playlists are listed. Duplicates are skipped.")},
+        {"id": "delete_playlist", "icon": "❌", "label": "Delete a Playlist",
+         "button_label": "DELETE", "command": delete,
+         "tooltip": "Select a playlist from the list to delete. You will be asked to confirm."},
+        "---",
+        {"label": "Filter", "icon": "",
+         "submenu": [
+             {"id": "filter_editor", "label": "Open Filter Editor",
+              "button_label": "FILTER", "command": filters,
+              "tooltip": ("Open a window to create, apply, and save playlist filters.")},
+             {"id": "load_filter", "icon": "💾", "label": "Load Saved Filter",
+              "button_label": "LOAD FILTER", "command": load_filters,
+              "tooltip": "Apply a previously saved filter to the current playlist."},
+             {"id": "delete_filter", "icon": "❌", "label": "Delete Saved Filter",
+              "button_label": "DEL FILTER", "command": delete_filters,
+              "tooltip": "Delete a saved filter. You will be asked to confirm."},
+         ]},
+        "---",
+        {"label": "Sort", "icon": "🔀",
+         "condition": lambda: not playlist.get("infinite", False),
+         "tooltip": "Sort the playlist by field and direction.",
+         "submenu": [
+             {"label": "Filename",
+              "tooltip": "Sort by the theme's filename.",
+              "submenu": [
+                  {"id": "sort_filename_asc",  "label": "Ascending ↑",  "command": lambda: sort_playlist(0),
+                   "tooltip": "Sort filenames A → Z."},
+                  {"id": "sort_filename_desc", "label": "Descending ↓", "command": lambda: sort_playlist(1),
+                   "tooltip": "Sort filenames Z → A."},
+              ]},
+             {"label": "Title",
+              "tooltip": "Sort by the anime's Japanese title.",
+              "submenu": [
+                  {"id": "sort_title_asc",  "label": "Ascending ↑",  "command": lambda: sort_playlist(2),
+                   "tooltip": "Sort titles A → Z."},
+                  {"id": "sort_title_desc", "label": "Descending ↓", "command": lambda: sort_playlist(3),
+                   "tooltip": "Sort titles Z → A."},
+              ]},
+             {"label": "English Title",
+              "tooltip": "Sort by the anime's English title.",
+              "submenu": [
+                  {"id": "sort_eng_title_asc",  "label": "Ascending ↑",  "command": lambda: sort_playlist(4),
+                   "tooltip": "Sort English titles A → Z."},
+                  {"id": "sort_eng_title_desc", "label": "Descending ↓", "command": lambda: sort_playlist(5),
+                   "tooltip": "Sort English titles Z → A."},
+              ]},
+             {"label": "Score",
+              "tooltip": "Sort by MAL score.",
+              "submenu": [
+                  {"id": "sort_score_asc",  "label": "Ascending ↑",  "command": lambda: sort_playlist(6),
+                   "tooltip": "Sort lowest score first."},
+                  {"id": "sort_score_desc", "label": "Descending ↓", "command": lambda: sort_playlist(7),
+                   "tooltip": "Sort highest score first."},
+              ]},
+             {"label": "Members",
+              "tooltip": "Sort by MAL member count (popularity).",
+              "submenu": [
+                  {"id": "sort_members_asc",  "label": "Ascending ↑",  "command": lambda: sort_playlist(8),
+                   "tooltip": "Sort least popular first."},
+                  {"id": "sort_members_desc", "label": "Descending ↓", "command": lambda: sort_playlist(9),
+                   "tooltip": "Sort most popular first."},
+              ]},
+             {"label": "Season",
+              "tooltip": "Sort by the anime's airing season and year.",
+              "submenu": [
+                  {"id": "sort_season_asc",  "label": "Ascending ↑",  "command": lambda: sort_playlist(10),
+                   "tooltip": "Sort oldest season first."},
+                  {"id": "sort_season_desc", "label": "Descending ↓", "command": lambda: sort_playlist(11),
+                   "tooltip": "Sort newest season first."},
+              ]},
+         ]},
+        {"label": "Shuffle", "icon": "🔀",
+         "condition": lambda: not playlist.get("infinite", False),
+         "submenu": [
+             {"id": "shuffle_playlist", "label": "Random",
+              "button_label": "SHUFFLE", "command": randomize_playlist,
+              "tooltip": "Completely random shuffle of the current playlist."},
+             {"id": "weighted_shuffle", "icon": "⚖️", "label": "Weighted",
+              "button_label": "W.SHUFFLE", "command": weighted_randomize,
+              "tooltip": ("Weighted shuffle balancing popular/niche and old/new anime, "
+                          "while avoiding the same series appearing too close together.\n"
+                          "Ideal for trivia sessions.")},
+         ]},
+        {"type": "radiogroup",
+         "condition": lambda: playlist.get("infinite", False),
+         "options": difficulty_options,
+         "variable": lambda: playlist.get("difficulty", 2),
+         "command": _set_difficulty_from_menu},
+        {"id": "infinite_settings", "icon": "🛠", "label": "Infinite Settings",
+         "button_label": "INF. SETTINGS", "command": open_infinite_settings_editor,
+         "condition": lambda: playlist.get("infinite", False),
+         "tooltip": "Open the Infinite Settings editor to configure infinite playlist behavior."},
+        "---",
+        {"label": "Bulk Mark Playlist", "icon": "►",
+         "tooltip": "Apply or remove a mark for every theme in the current playlist.",
+         "submenu": [
+             {"id": "bulk_tag",           "icon": "❌", "label": "Bulk Tag Playlist",
+              "button_label": "BULK TAG",      "command": bulk_tag_playlist,
+              "tooltip": "Bulk tag or untag every theme in the current playlist. Requires confirmation."},
+             {"id": "bulk_favorite",      "icon": "❤",  "label": "Bulk Favorite Playlist",
+              "button_label": "BULK FAV",      "command": bulk_favorite_playlist,
+              "tooltip": "Bulk favorite or unfavorite every theme in the current playlist. Requires confirmation."},
+             {"id": "bulk_blind_mark",    "icon": "👁", "label": "Bulk Blind Mark Playlist",
+              "button_label": "BULK BLIND",    "command": bulk_blind_mark_playlist,
+              "tooltip": "Bulk blind-mark or unmark every theme. Mutually exclusive with Peek/Mute Peek. Requires confirmation."},
+             {"id": "bulk_peek_mark",     "icon": "👀", "label": "Bulk Peek Mark Playlist",
+              "button_label": "BULK PEEK",     "command": bulk_peek_mark_playlist,
+              "tooltip": "Bulk peek-mark or unmark every theme. Mutually exclusive with Blind/Mute Peek. Requires confirmation."},
+             {"id": "bulk_mute_peek_mark","icon": "🔇", "label": "Bulk Mute Peek Mark Playlist",
+              "button_label": "BULK MUTE PK",  "command": bulk_mute_peek_mark_playlist,
+              "tooltip": "Bulk mute-peek-mark or unmark every theme. Mutually exclusive with Blind/Peek. Requires confirmation."},
+         ]},
+    ],
+
+    # ── QUEUE ────────────────────────────────────────────────────────────────
+    "queue": [
+        {"id": "queue_blind_round", "icon": "👁", "label": "Blind Round",
+         "button_label": "BLIND NEXT", "command": toggle_blind_round,
+         "toggle":  lambda: blind_round_toggle,
+         "tooltip": "Queue the next theme as a Blind Round — audio only, screen covered."},
+        {"id": "queue_peek_round", "icon": "👀", "label": "Peek Round",
+         "button_label": "PEEK NEXT", "command": toggle_peek_round,
+         "toggle":  lambda: peek_round_toggle,
+         "tooltip": "Queue the next theme as a Peek Round — only a small moving window is visible."},
+        {"id": "queue_mute_peek_round", "icon": "🔇", "label": "Mute Peek Round",
+         "button_label": "MUTE PK NEXT", "command": toggle_mute_peek_round,
+         "toggle":  lambda: mute_peek_round_toggle,
+         "tooltip": "Queue the next theme as a Mute Peek Round — small window visible, audio muted."},
+        "---",
+        {"icon": "⚡", "label": "Lightning Rounds",
+         "tooltip": "Start a lightning round of a chosen type.",
+         "submenu": [
+             {"id": f"lightning_{k}", "icon": v.get("icon", ""), "label": k.upper(),
+              "button_label": k.upper(),
+              "command": (lambda k=k: toggle_light_mode(k)),
+              "toggle":  lambda k=k: light_mode == k,
+              "tooltip": v.get("desc", "")}
+             for k, v in light_modes.items()
+         ]},
+        {"id": "lightning_variety", "icon": "🎲", "label": "Variety Lightning Round",
+         "button_label": "VARIETY", "command": lambda: toggle_light_mode("variety"),
+         "toggle":  lambda: light_mode == "variety",
+         "tooltip": "Start a Variety Lightning Round — randomly picks round types weighted by popularity."},
+        {"id": "lightning_settings", "icon": "🛠", "label": "Lightning Settings",
+         "button_label": "LT.SETTINGS", "command": open_settings_editor,
+         "tooltip": "Edit length, variants, and variety settings for each lightning round type."},
+        "---",
+        {"id": "show_youtube", "icon": "▶", "label": "YouTube Videos",
+         "button_label": "YOUTUBE", "command": show_youtube_playlist,
+         "tooltip": "Browse and queue a YouTube video to play after the current theme."},
+        {"id": "manage_youtube", "icon": "🎥", "label": "Manage YouTube Videos",
+         "button_label": "MANAGE YT", "command": open_youtube_editor,
+         "tooltip": "Add, edit, and archive YouTube videos for queuing."},
+        "---",
+        {"id": "show_fixed_lightning", "icon": "📋", "label": "Fixed Lightning Rounds",
+         "button_label": "FIXED ROUND", "command": show_fixed_lightning_list,
+         "tooltip": "Queue up a curated fixed lightning round playlist."},
+        {"id": "manage_fixed_rounds", "icon": "📋", "label": "Manage Fixed Lightning Rounds",
+         "button_label": "MANAGE FIXED", "command": open_fixed_lightning_manager,
+         "tooltip": "Create and manage curated fixed lightning round playlists."},
+    ],
+
+    # ── POPUPS ───────────────────────────────────────────────────────────────
+    "popups": [
+        {"id": "info_popup", "icon": "ℹ", "label": "Info Popup",
+         "button_label": "INFO", "command": toggle_info_popup,
+         "toggle":  lambda: is_title_window_up() and not title_info_only,
+         "tooltip": "Show or hide the information popup at the bottom of the screen."},
+        {"id": "title_popup", "icon": "𝕋", "label": "Title Popup",
+         "button_label": "TITLE", "command": toggle_title_info_popup,
+         "toggle":  lambda: is_title_window_up() and title_info_only,
+         "tooltip": "Show or hide the title popup at the bottom of the screen."},
+        {"id": "artist_info", "icon": "🎤", "label": "Artist Info",
+         "button_label": "ARTIST INFO", "command": toggle_artist_info_popup,
+         "toggle":  lambda: bool(artist_info_display),
+         "tooltip": "Show or hide the info popup listing themes by this artist."},
+        {"id": "studio_info", "icon": "🏢", "label": "Studio Info",
+         "button_label": "STUDIO INFO", "command": toggle_studio_info_popup,
+         "toggle":  lambda: bool(studio_info_display),
+         "tooltip": "Show or hide the info popup listing anime by this studio."},
+        {"id": "season_rankings", "icon": "📅", "label": "Season Rankings",
+         "button_label": "SEASON", "command": toggle_season_info_popup,
+         "toggle":  lambda: bool(season_info_display),
+         "tooltip": "Show or hide the info popup with season popularity rankings."},
+        {"id": "year_rankings", "icon": "🗓", "label": "Year Rankings",
+         "button_label": "YEAR", "command": toggle_year_info_popup,
+         "toggle":  lambda: bool(year_info_display),
+         "tooltip": "Show or hide the info popup with year popularity rankings."},
+        "---",
+        {"id": "auto_info_start", "icon": "⏪", "label": "Auto-show at Start",
+         "button_label": "AUTO START", "command": toggle_auto_info_start,
+         "toggle":  lambda: auto_info_start,
+         "tooltip": "When enabled, automatically shows the info popup at the start of each theme."},
+        {"id": "auto_info_end", "icon": "⏩", "label": "Auto-show at End",
+         "button_label": "AUTO END", "command": toggle_auto_info_end,
+         "toggle":  lambda: auto_info_end,
+         "tooltip": "When enabled, automatically shows the info popup during the last 8 seconds."},
+        "---",
+        {"label": "Bonus Questions", "icon": "?",
+         "tooltip": "Start a bonus question for the currently playing theme.",
+         "submenu": [
+             {"id": "bonus_multiple", "icon": "４", "label": "Multiple Choice",  "button_label": "MULTIPLE",  "command": lambda: guess_extra("multiple"),  "toggle": lambda: guessing_extra == "multiple",  "tooltip": "Multiple-choice: guess the anime from 4 options."},
+             {"id": "bonus_year",     "icon": "📅", "label": "Year",              "button_label": "YEAR",       "command": lambda: guess_extra("year"),       "toggle": lambda: guessing_extra == "year",       "tooltip": "Guess the year this anime first aired."},
+             {"id": "bonus_score",    "icon": "🏆", "label": "Score",             "button_label": "SCORE",      "command": lambda: guess_extra("score"),      "toggle": lambda: guessing_extra == "score",      "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
+             {"id": "bonus_members",  "icon": "👥", "label": "Members",           "button_label": "MEMBERS",    "command": lambda: guess_extra("members"),    "toggle": lambda: guessing_extra == "members",    "tooltip": "Guess the number of MyAnimeList members."},
+             {"id": "bonus_rank",     "icon": "🥇", "label": "Popularity Rank",   "button_label": "RANK",       "command": lambda: guess_extra("popularity"), "toggle": lambda: guessing_extra == "popularity", "tooltip": "Guess the popularity rank on MyAnimeList."},
+             {"id": "bonus_tags",     "icon": "🔖", "label": "Tags",              "button_label": "TAGS",       "command": lambda: guess_extra("tags"),       "toggle": lambda: guessing_extra == "tags",       "tooltip": "Guess the genres/themes/demographics tags."},
+             {"id": "bonus_studio",   "icon": "🏢", "label": "Studio",            "button_label": "STUDIO",     "command": lambda: guess_extra("studio"),     "toggle": lambda: guessing_extra == "studio",     "tooltip": "Guess the studio that made this anime."},
+             {"id": "bonus_artist",   "icon": "🎤", "label": "Artist",            "button_label": "ARTIST",     "command": lambda: guess_extra("artist"),     "toggle": lambda: guessing_extra == "artist",     "tooltip": "Guess the artist who performed the theme."},
+             {"id": "bonus_song",     "icon": "🎵", "label": "Song Title",        "button_label": "SONG",       "command": lambda: guess_extra("song"),       "toggle": lambda: guessing_extra == "song",       "tooltip": "Guess the name of the song."},
+             {"id": "bonus_chars",    "icon": "👤", "label": "Characters",        "button_label": "CHARACTERS", "command": lambda: guess_extra("characters"), "toggle": lambda: guessing_extra == "characters", "tooltip": "Identify 2 characters from this anime out of 6 shown."},
+         ]},
+        "---",
+        {"id": "end_session", "icon": "", "label": "End Screen",
+         "button_label": "END SESSION", "command": end_session,
+         "tooltip": "Display the end session screen with a scrolling message and themes played count."},
+    ],
+
+    # ── TOGGLE ───────────────────────────────────────────────────────────────
+    "toggles": [
+        {"id": "blind", "icon": "👁", "label": "Blind",
+         "button_label": "BLIND",
+         "command": lambda: blind(True),
+         "toggle":  lambda: black_overlay is not None,
+         "tooltip": "Covers the screen with a color matching the average screen color. Shows a progress bar if a video is playing."},
+        {"id": "peek", "icon": "👀", "label": "Peek",
+         "button_label": "PEEK",
+         "command": toggle_peek,
+         "toggle":  lambda: bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes),
+         "tooltip": "Covers the screen except for a small moving peek window. Picks one of three variants at random."},
+        {"id": "narrow_peek", "icon": "◀", "label": "Narrow Peek",
+         "button_label": "NARROW PK",
+         "command": narrow_peek,
+         "tooltip": "Narrows the gap of the peek window."},
+        {"id": "widen_peek", "icon": "▶", "label": "Widen Peek",
+         "button_label": "WIDEN PK",
+         "command": widen_peek,
+         "tooltip": "Widens the gap of the peek window."},
+        {"id": "mute", "icon": "🔇", "label": "Mute",
+         "button_label": "MUTE",
+         "command": toggle_mute,
+         "toggle":  lambda: light_muted if (light_mode or light_round_started) else disable_video_audio,
+         "tooltip": "Toggles muting the video/theme audio."},
+        "---",
+        {"id": "censors", "label": lambda: f"Censors Toggle",
+         "icon": lambda: f"({len(get_file_censors(currently_playing.get('filename','')) or [])})",
+         "button_label": lambda: f"CENSORS",
+         "command": toggle_censor_bar,
+         "toggle":  lambda: censors_enabled,
+         "tooltip": "Toggle censor bars on or off. Censor data is loaded from censors.json and any json files with 'censor' in the name."},
+        {"id": "censor_editor", "icon": "➕", "label": "Censor Editor",
+         "button_label": "CENSOR ED.",
+         "command": lambda: open_censor_editor(True),
+         "tooltip": "Opens the censor editor to add, edit, or delete censor boxes for the current theme."},
+        "---",
+        {"id": "auto_refresh", "icon": "♻", "label": "Auto Refresh Metadata",
+         "button_label": "AUTO REFRESH",
+         "command": toggle_auto_auto_refresh,
+         "toggle":  lambda: auto_refresh_toggle,
+         "tooltip": "Toggle auto refreshing jikan metadata (score, members) as themes play — never refreshes the same anime twice per session."},
+        {"id": "progress_bar", "icon": "▬", "label": "Progress Bar",
+         "button_label": "PROGRESS",
+         "command": toggle_progress_bar,
+         "toggle":  lambda: progress_bar_enabled,
+         "tooltip": "Toggle a subtle progress bar overlay showing the current playback position."},
+        {"id": "desktop_black", "icon": "🖥", "label": "Desktop Black",
+         "button_label": "DESK.BLACK",
+         "command": toggle_desktop_black_overlay,
+         "toggle":  lambda: desktop_black_overlay is not None,
+         "tooltip": "Covers the desktop with a black screen behind all windows. Useful for hiding the desktop during a session."},
+        "---",
+        {"id": "enable_shortcuts", "icon": "", "label": "Enable Shortcuts",
+         "button_label": "SHORTCUTS",
+         "command": toggle_disable_shortcuts,
+         "toggle":  lambda: not disable_shortcuts,
+         "tooltip": "Toggle shortcut keys on or off."},
+        {"id": "view_shortcuts", "icon": "", "label": "View Shortcuts",
+         "button_label": "VIEW KEYS",
+         "command": list_keyboard_shortcuts,
+         "tooltip": "List all keyboard shortcuts used in the application."},
+    ],
+
+    # ── THEME ────────────────────────────────────────────────────────────────
+    "theme": [
+        {"label": "No theme loaded", "command": lambda: None,
+         "condition": lambda: not currently_playing.get("filename"),
+         "tooltip": "No theme is currently playing."},
+        {"id": "tag", "icon": "❌", "label": "Tag",
+         "button_label": "TAG", "command": tag,
+         "condition": lambda: bool(currently_playing.get("filename")),
+         "toggle":  lambda: bool(check_tagged(currently_playing.get("filename"))),
+         "tooltip": "Add or remove the current theme from the 'Tagged Themes' playlist."},
+        {"id": "favorite", "icon": "❤", "label": "Favorite",
+         "button_label": "FAVORITE", "command": favorite,
+         "condition": lambda: bool(currently_playing.get("filename")),
+         "toggle":  lambda: bool(check_favorited(currently_playing.get("filename"))),
+         "tooltip": "Add or remove the current theme from the 'Favorite Themes' playlist."},
+        {"id": "blind_mark", "icon": "👁", "label": "Blind Mark",
+         "button_label": "BLIND MARK", "command": blind_mark,
+         "condition": lambda: bool(currently_playing.get("filename")),
+         "toggle":  lambda: bool(check_blind_mark(currently_playing.get("filename"))),
+         "tooltip": "Add or remove the current theme from the 'Blind Themes' auto-round playlist."},
+        {"id": "peek_mark", "icon": "👀", "label": "Peek Mark",
+         "button_label": "PEEK MARK", "command": peek_mark,
+         "condition": lambda: bool(currently_playing.get("filename")),
+         "toggle":  lambda: bool(check_peek_mark(currently_playing.get("filename"))),
+         "tooltip": "Add or remove the current theme from the 'Peek Themes' auto-round playlist."},
+        {"id": "mute_peek_mark", "icon": "🔇", "label": "Mute Peek Mark",
+         "button_label": "MUTE PK MRK", "command": mute_peek_mark,
+         "condition": lambda: bool(currently_playing.get("filename")),
+         "toggle":  lambda: bool(check_mute_peek_mark(currently_playing.get("filename"))),
+         "tooltip": "Add or remove the current theme from the 'Mute Peek Themes' auto-round playlist."},
+        "---",
+        {"id": "refetch_metadata", "icon": "📥", "label": "Fetch Theme Data",
+         "button_label": "FETCH DATA", "command": refetch_metadata,
+         "condition": lambda: bool(currently_playing.get("filename")),
+         "tooltip": "Fetch metadata for the currently playing theme from AnimeThemes, Jikan, AniList, and AniDB."},
+        "---",
+        {"label": "File Actions", "icon": "📁",
+         "condition": lambda: bool(currently_playing.get("filename")),
+         "tooltip": "File operations for the currently playing theme.",
+         "submenu": [
+             {"id": "copy_filename", "icon": "⍘",  "label": "Copy Filename",
+              "button_label": "COPY NAME", "command": lambda: pyperclip.copy(currently_playing.get("filename", "")),
+              "tooltip": "Copy the filename to the clipboard."},
+             {"id": "open_folder", "icon": "📁", "label": "Open Folder",
+              "button_label": "OPEN FOLDER",  "command": lambda: open_file_folder_by_filename(currently_playing.get("filename", "")),
+              "condition": lambda: _cp_is_local_file(),
+              "tooltip": "Open the folder containing this file."},
+             {"id": "download_theme", "icon": "⬇️", "label": "Download",
+              "button_label": "DOWNLOAD", "command": download_current_theme,
+              "condition": lambda: _cp_is_stream(),
+              "tooltip": "Download or move this file to the local directory."},
+             {"id": "cut_before", "icon": "✂️", "label": "Cut Before",
+              "button_label": "CUT BEFORE", "command": lambda: cut_before_current_time(currently_playing.get("filename", "")),
+              "condition": lambda: ffmpeg_available and _cp_is_local_file(),
+              "tooltip": "Cut the file before the current playback position."},
+             {"id": "cut_after", "icon": "✂️", "label": "Cut After",
+              "button_label": "CUT AFTER", "command": lambda: cut_after_current_time(currently_playing.get("filename", "")),
+              "condition": lambda: ffmpeg_available and _cp_is_local_file(),
+              "tooltip": "Cut the file after the current playback position."},
+             {"id": "rename_theme", "icon": "✏️", "label": "Rename",
+              "button_label": "RENAME", "command": lambda: rename_file_by_filename(currently_playing.get("filename", "")),
+              "condition": lambda: _cp_is_local_file(),
+              "tooltip": "Rename the currently playing file."},
+             {"id": "convert_theme", "icon": "🔄", "label": "Convert",
+              "button_label": "CONVERT", "command": lambda: convert_file_format_by_filename(currently_playing.get("filename", "")),
+              "condition": lambda: ffmpeg_available and _cp_is_local_file(),
+              "tooltip": "Convert the file to a different format."},
+             {"id": "edit_volume_theme","icon": "🔊", "label": "Edit Volume",
+              "button_label": "EDIT VOL", "command": lambda: edit_file_volume_by_filename(currently_playing.get("filename", "")),
+              "condition": lambda: ffmpeg_available and _cp_is_local_file(),
+              "tooltip": "Adjust the audio volume of this file."},
+             {"id": "delete_theme_file","icon": "❌", "label": "Delete File",
+              "button_label": "DELETE FILE", "command": lambda: delete_file_by_filename(currently_playing.get("filename", "")),
+              "condition": lambda: _cp_is_local_file(),
+              "tooltip": "Permanently delete this file."},
+         ]},
+        {"label": "External Sites", "icon": "🔗",
+         "condition": lambda: bool(currently_playing.get("data")) and not is_game(currently_playing.get("data") or {}),
+         "tooltip": "Open external database pages for this anime.",
+         "submenu": [
+             {"id": "open_mal", "label": "MyAnimeList",
+              "button_label": "MAL", "command": lambda: open_mal_page((currently_playing.get("data") or {}).get("mal")),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("mal")) and not is_game(currently_playing.get("data") or {}),
+              "tooltip": "Open the MyAnimeList page for this anime."},
+             {"id": "open_anidb", "label": "AniDB",
+              "button_label": "ANIDB", "command": lambda: open_anidb_page((currently_playing.get("data") or {}).get("anidb")),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("anidb")) and not is_game(currently_playing.get("data") or {}),
+              "tooltip": "Open the AniDB page for this anime."},
+             {"id": "open_anilist", "label": "AniList",
+              "button_label": "ANILIST", "command": lambda: open_anilist_page((currently_playing.get("data") or {}).get("anilist")),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("anilist")) and not is_game(currently_playing.get("data") or {}),
+              "tooltip": "Open the AniList page for this anime."},
+             {"id": "open_animethemes", "label": "AnimeThemes",
+              "button_label": "ANIMETHEMES", "command": lambda: open_animethemes_anime_page((currently_playing.get("data") or {}).get("animethemes_slug")),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("animethemes_slug")) and "[MAL]" not in currently_playing.get("filename", "") and "[ID]" not in currently_playing.get("filename", "") and currently_playing.get("type") == "theme",
+              "tooltip": "Open the AnimeThemes page for this anime."},
+             {"id": "stream_animethemes", "icon": "▶", "label": "Stream on AnimeThemes",
+              "button_label": "STREAM AT", "command": lambda: anime_themes_video(currently_playing.get("filename", "")),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("animethemes_slug")) and "[MAL]" not in currently_playing.get("filename", "") and "[ID]" not in currently_playing.get("filename", "") and currently_playing.get("type") == "theme",
+              "tooltip": "Stream this theme on the AnimeThemes website."},
+         ]},
+        {"label": "Media", "icon": "🖼",
+         "condition": lambda: bool((currently_playing.get("data") or {}).get("trailer") or (currently_playing.get("data") or {}).get("cover") or (OPENAI_API_KEY and currently_playing.get("data"))),
+         "tooltip": "Cover art, trailer, and AI trivia for this anime.",
+         "submenu": [
+             {"id": "show_cover", "icon": "🖼",  "label": "Show Cover",
+              "button_label": "COVER", "command": lambda: create_cover_popup(f"{get_display_title(currently_playing.get('data') or {})} Cover", (currently_playing.get('data') or {}).get('cover'))(),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("cover")),
+              "tooltip": "Show the cover art for this anime."},
+             {"id": "copy_cover_url", "icon": "⍘",   "label": "Copy Cover URL",
+              "button_label": "COPY COVER", "command": lambda: pyperclip.copy((currently_playing.get("data") or {}).get("cover", "")),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("cover")),
+              "tooltip": "Copy the cover art URL to the clipboard."},
+             {"id": "play_trailer", "icon": "▶",   "label": "Play Trailer",
+              "button_label": "TRAILER", "command": play_trailer,
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("trailer")),
+              "tooltip": "Play the trailer for this anime."},
+             {"id": "copy_trailer_url",  "icon": "⍘",   "label": "Copy Trailer URL",
+              "button_label": "COPY TRAILER", "command": lambda: pyperclip.copy((currently_playing.get("data") or {}).get("trailer", "")),
+              "condition": lambda: bool((currently_playing.get("data") or {}).get("trailer")),
+              "tooltip": "Copy the trailer URL to the clipboard."},
+             {"id": "anime_trivia", "icon": "💡",  "label": "Trivia",
+              "button_label": "TRIVIA", "command": lambda: generate_anime_trivia(currently_playing.get("data"), True),
+              "condition": lambda: bool(currently_playing.get("data")) and bool(OPENAI_API_KEY),
+              "tooltip": "Generate AI trivia about this anime. Prints in console."},
+         ]},
+    ],
+
+    # ── HIDDEN (shortcuts only — no UI display) ─────────────────────────────
+    "hidden": [
+        {"id": "dock_player", "icon": "📌", "label": "Dock Player",
+         "button_label": "DOCK", "command": dock_player,
+         "tooltip": "Toggle docking the player to the bottom of the screen."},
+        {"id": "search_themes",     "label": "Search Themes",
+         "command": lambda: _focus_search_entry(),
+         "tooltip": "Open the theme search (shortcut-key mode)."},
+        {"id": "reroll_next", "icon": lambda: "🔄" if is_reroll_valid() else "", "label": "Re-roll Next Track",
+         "button_label": lambda: "RE-ROLL" if is_reroll_valid() else "", "command": reroll_next,
+         "tooltip": "Re-fetch the next track in infinite mode (only at the penultimate position)."},
+        {"id": "cycle_light_mode",  "label": "Cycle Lightning Mode",
+         "button_label": "CYCLE LIGHT", "command": cycle_light_mode,
+         "tooltip": "Cycle through all lightning round modes in order."},
+        {"id": "cycle_blind_peek",  "label": "Cycle Blind / Peek",
+         "button_label": "CYCLE BLIND/PEEK", "command": cycle_blind_peek,
+         "tooltip": "Cycle: off → blind round → peek round → mute peek round."},
+        {"id": "cycle_guess_stats", "label": "Cycle Stat Questions",
+         "button_label": "CYCLE STAT ?s", "command": cycle_guess_stats,
+         "tooltip": "Cycle bonus questions: year → score → popularity → members."},
+        {"id": "cycle_guess_music", "label": "Cycle Music Questions",
+         "button_label": "CYCLE MUSIC ?s", "command": cycle_guess_music,
+         "tooltip": "Cycle bonus questions: studio → song → artist."},
+        # ── PLAYER CONTROLS (no toolbar button — popout / shortcuts only) ──
+        {"id": "play_pause", "icon": "⏯",  "label": "Play/Pause",  "button_label": "PLAY/PAUSE",
+         "button_label": "PLAY/PAUSE", "command": play_pause,  "tooltip": "Toggle play or pause."},
+        {"id": "stop", "icon": "⏹", "label": "Stop", "button_label": "STOP",
+         "command": stop, "tooltip": "Stop playback."},
+        {"id": "previous", "icon": "⏮", "label": "Previous","button_label": "PREVIOUS",
+         "command": play_previous, "tooltip": "Go to the previous theme."},
+        {"id": "next", "icon": "⏭", "label": "Next","button_label": "NEXT",
+         "command": play_next, "tooltip": "Go to the next theme."},
+        {"id": "lightning_start", "label": "Start/Stop Lightning",
+         "button_label": lambda: "⏹ STOP" if light_mode else "▶ START",
+         "command": select_lightning_mode,
+         "toggle":  lambda: bool(light_mode),
+         "tooltip": "Start or stop the currently selected lightning round mode."},
+    ],
+
+    # ── SCOREBOARD (shortcuts only — no UI display) ───────────────────────────
+    "scoreboard": [
+        {"id": "scoreboard_align",  "label": "Align Scoreboard",
+         "command": lambda: send_scoreboard_command("align"),
+         "tooltip": "Toggles left or right alignment of scoreboard."},
+        {"id": "scoreboard_extend", "label": "Extend Scoreboard",
+         "command": lambda: send_scoreboard_command("extend"),
+         "tooltip": "Toggle showing extended stats on the scoreboard."},
+        {"id": "scoreboard_shrink", "label": "Shrink Scoreboard",
+         "command": lambda: send_scoreboard_command("shrink"),
+         "tooltip": "Make the scoreboard smaller."},
+        {"id": "scoreboard_grow",   "label": "Grow Scoreboard",
+         "command": lambda: send_scoreboard_command("grow"),
+         "tooltip": "Make the scoreboard bigger."},
+        {"id": "scoreboard_toggle", "label": "Toggle Scoreboard",
+         "command": lambda: send_scoreboard_command("toggle"),
+         "tooltip": "Show or hide the scoreboard."},
+    ],
+
+    # ── BUTTON RIGHT-CLICK ACTIONS ────────────────────────────────────────────
+    # Maps section name → callable invoked when the toolbar button is right-clicked.
+    # Add an entry here to attach a shortcut action to a button's right-click.
+    "_right_click": {
+        # Each entry: (action, label_func) — label_func called *after* action so it reflects new state
+        #file open settings
+        "file": (lambda: show_settings_popup(), lambda: "CONFIG"),
+        "playlist" : (lambda: show_playlist(), lambda: "SHOW LIST" if list_loaded == "playlist" else "HIDE LIST"),
+        "queue": (lambda: toggle_light_mode("variety"), lambda: "VARIETY UP NEXT" if light_mode == "variety" else "VARIETY DISABLED"),
+        "popups":  (toggle_info_popup,
+                    lambda: "INFO POPUP"),
+        "theme": (lambda: tag() if bool(currently_playing.get("filename")) else None, lambda: ("TAG ON" if bool(check_tagged(currently_playing.get("filename"))) else "TAG OFF") if bool(currently_playing.get("filename")) else None),
+        "toggles": (toggle_disable_shortcuts,
+                    lambda: "KEYS ON" if not disable_shortcuts else "KEYS OFF"),
+        "popout": (lambda: create_popout_controls(), lambda: "POPOUT OPEN"),
+    },
+
+    }  # end _get_menu_registry()
+
+
+def _open_toolbar_menu(name: str, button: tk.Button, section_key: str):
+    """Open a registry-backed toolbar dropdown with toggle behaviour.
+
+    tk_popup() blocks via Tcl's tkwait until the menu is dismissed.
+    When it returns, the dismiss-click has been handled by the OS but the
+    corresponding Tk ButtonRelease / command= event is still pending in the
+    queue.  We check winfo_pointerxy() right here — synchronously, before
+    the event loop resumes — to set a suppress flag that command= will see.
+    """
+    if getattr(button, '_suppress_open', False):
+        button._suppress_open = False
+        return
+
+    registry = _get_menu_registry()
+    m = tk.Menu(root, tearoff=0, bg="black", fg="white",
+                activebackground=HIGHLIGHT_COLOR, activeforeground="white", font=ROOT_FONT)
+    build_menu(m, registry[section_key])
+    m.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+
+    # Menu just closed.  If the pointer is still over this button, the button
+    # click dismissed it — suppress the pending command= so we don't reopen.
+    try:
+        px, py = root.winfo_pointerxy()
+        bx, by = button.winfo_rootx(), button.winfo_rooty()
+        if bx <= px < bx + button.winfo_width() and by <= py < by + button.winfo_height():
+            button._suppress_open = True
+    except Exception:
+        pass
+
+
 def create_first_row_buttons():
-    for widget in first_row_frame.winfo_children():
-        widget.destroy()
-    
+    for widget in list(first_row_frame.winfo_children()):
+        try:
+            widget.destroy()
+        except Exception:
+            pass
+
+    _rc = _get_menu_registry().get("_right_click", {})
+
     global collapse_button
     collapse_button = create_button(first_row_frame, "▼", toggle_player_collapse, False,
-                                help_title="COLLAPSE PLAYER",
                                 help_text="Collapses or expands the player info columns. "
                                 "Click to toggle between collapsed (arrow up) and expanded (arrow down) states.")
     
     global dock_button
-    dock_button = create_button(first_row_frame, "[D]OCK", dock_player, True, 
-                                help_title="[D]OCK PLAYER (Shortcut Key = 'd')",
+    dock_button = create_button(first_row_frame, "DOCK", dock_player, True,
                                 help_text="Docks the player on the bottom of the screen and makes it semitransparent. " +
                                 "Click again to undock.\n\nWhen shortcuts are enabled it will" + 
                                 " hide it at the bottom of the screen. Otherwise it will return to its " + 
@@ -26601,124 +29076,50 @@ def create_first_row_buttons():
                                 "information on the player, or use any buttons that don't have "+
                                 "shortcuts. Also if you are just browsing.")
 
-    global popout_controls_button
-    popout_controls_button = create_button(first_row_frame, "🗖POPOUT", create_popout_controls, True, 
-                                help_title="CONTROLS POPOUT",
-                                help_text="Opens a popout window with bigger buttons for common controls used " +
-                                "in a session. Useful if running without keyboard shortcuts, and want bigger buttons.")
-    
-    
-    global import_data_button
-    import_data_button = create_button(first_row_frame, "IMPORT", import_data_from_source, False,
-                                help_title="IMPORT DATA",
-                                help_text="Imports metadata from a remote GitHub. "
-                                "Downloads a zip package and merges all metadata with your existing data.")
-
-    global import_censors_button
-    import_censors_button = create_button(first_row_frame, "C", import_censors, False,
-                                help_title="IMPORT RAMUN'S CENSORS",
-                                help_text="Downloads and imports Ramun's censors from GitHub. "
-                                "This will be saved as 'ramuns_censors.json' in your files folder.")
-
-    global export_data_button
-    export_data_button = create_button(first_row_frame, "📤", export_metadata_package, True,
-                                help_title="EXPORT DATA",
-                                help_text="Exports all metadata files into a consolidated zip package. "
-                                "This package can be uploaded to GitHub/Google Drive and shared with others "
-                                "or used as a backup. The file includes compressed metadata when available.")
-
-    global select_button
-    select_button = create_button(first_row_frame, "FOLDER", select_directory, True,
-                                help_title="CHOOSE VIDEO DIRECTORY FOLDER",
-                                help_text="Choose the folder you have all your themes stored "+
-                                "in. This application expects files from the AnimeThemes " +
-                                "website, either grabbed from the torrent or downloaded from the site. " +
-                                "\n\nIt searches subfolders, so just pick the highest folder.\n\n" +
-                                "You can add themes not from AnimeThemes, but they must be labeled " +
-                                "properly to be able to fetch the metadata from MAL. Label them as follows:\n\n" +
-                                "AnimeName-OP1-[MAL]49618[ART]Minami[SNG]Rude Lose Dance.webm\n\n" + 
-                                "You'll want to hit the CREATE button after to create the playlist." + 
-                                "I reccomend using the ∞ button to create an infinite playlist(read more on it's help menu).")
-
-    global generate_button
-    generate_button = create_button(first_row_frame, "CREATE➕", generate_playlist_button,
-                                help_title="CREATE PLAYLIST",
-                                help_text=("This creates a playlist using all videos "
-                                "found in the directory or metadata if selected.\n\n" 
-                                "If this is your first time, maybe sure you imported metadata if you haven't already.\n\n"
-                                "if you are unsure of the different types of playlists, you can "
-                                "check the help menu for each for an explanation. By default, I "
-                                "recommend using the ∞ button to create an infinite playlist."))
-    
-    global create_infinite_button
-    create_infinite_button = create_button(first_row_frame, "∞", create_infinite_playlist, 
-                                help_title="CREATE INFINITE PLAYLIST",
-                                help_text="Creates a new infinite playlist. These playlists pull files from the directory, and go on infinitely "
-                                "based on popularity and season groups. Favorited tracks get a boost, and tagged tracks will not be picked. "
-                                "Tracks from the last 3 seasons also get a boost.\n\n"
-                                "Filters can be applied and removed freely. Sorting/shuffling is disabled.\n\n"
-                                "Difficulty can be chosen, limiting the groups to certain popularity levels. The groups are as follows:\n\n"
-                                "Easy: 1-250\n"
-                                "Medium: 250-1000\n"
-                                "Hard: >1001\n\n"
-                                "By selecting a difficulty, it doesn't change the ranges, just limit which groups are being used as follows:\n\n"
-                                "VERY EASY: [Easy]\n"
-                                "EASY: [Easy, Medium]\n"
-                                "NORMAL: [Easy, Medium, Hard]\n"
-                                "HARD: [Medium, Hard]\n"
-                                "VERY HARD: [Hard]\n"
-                                "RANDOM: [Easy, Medium, Hard] (does not balance popularity or season groups)\n\n"
-                                "So Normal will include everything, while other difficulties exclude certain groups.")
-    create_infinite_button.bind("<Button-2>", test_infinite_playlist)
-
-    global generate_from_anilist_button
-    generate_from_anilist_button = create_button(first_row_frame, "AL", generate_anilist_playlist,
-                                help_title="CREATE PLAYLIST FROM ANILIST ID",
-                                help_text=("This creates a playlist using an AniList ID as a reference and "
-                                           "selecting all themes in the directory that match the user's list."))
-    global generate_from_animethemes_button
-    generate_from_animethemes_button = create_button(first_row_frame, "AT", generate_animethemes_playlist,
-                                help_title="CREATE PLAYLIST FROM ANIMETHEMES HASHID",
-                                help_text=("This creates a playlist using an AnimeThemes playlist hashid. "
-                                           "Enter the hashid from an AnimeThemes playlist URL (https://animethemes.moe/playlist/hashid) "
-                                           "to download and match all themes from that playlist."))
-    global empty_button
-    empty_button = create_button(first_row_frame, "❌", empty_playlist, True,
-                                help_title="CREATE EMPTY PLAYLIST",
-                                help_text=("This resets you to a blank playlist. "
-                                "This is only if you want to manually add themes to the "
-                                "playlist using the SEARCH+ button. That's not really what "
-                                "this application was made for, so it may be a hassle "
-                                "depending on how many themes you want to add to the list."))
-
-    global show_playlist_button
-    show_playlist_button = create_button(first_row_frame, "[P]LAYLIST", show_playlist, False,
-                                help_title="VIEW [P]LAYLIST (Shortcut Key = 'p')",
-                                help_text=("List all themes in the playlist. It will scroll to whichever "
-                                "theme the current index is at. Select a theme to play it immediately "
-                                "and set the current index to it.\n\nAs with all lists, it loads buttons "
-                                "to select the entry, but for the playlist it may be quite a few buttons. "
-                                "It usually loads quickly, but may take a second to clear."))
-    
-    # Enable drag-and-drop on playlist button
-    def setup_playlist_drag_drop():
+    def show_popout_menu(event=None):
+        if getattr(popout_controls_button, '_suppress_open', False):
+            popout_controls_button._suppress_open = False
+            return
+        m = tk.Menu(root, tearoff=0, bg="black", fg="white",
+                    activebackground=HIGHLIGHT_COLOR, activeforeground="white", font=ROOT_FONT)
+        m.add_command(label="🗖  Open Popout", command=create_popout_controls)
+        m.add_command(label="⚙  Configure Layout", command=open_popout_layout_editor)
+        m.tk_popup(popout_controls_button.winfo_rootx(),
+                   popout_controls_button.winfo_rooty() + popout_controls_button.winfo_height())
         try:
-            enable_drag_and_drop(show_playlist_button, handle_dropped_files)
-        except Exception as e:
-            print(f"Could not enable drag-and-drop on playlist button: {e}")
+            px, py = root.winfo_pointerxy()
+            bx, by = popout_controls_button.winfo_rootx(), popout_controls_button.winfo_rooty()
+            if bx <= px < bx + popout_controls_button.winfo_width() and by <= py < by + popout_controls_button.winfo_height():
+                popout_controls_button._suppress_open = True
+        except Exception:
+            pass
+
+    global popout_controls_button
+    popout_controls_button = create_button(first_row_frame, "🗖POPOUT▾", show_popout_menu, True,
+                                help_text="Open or configure the popout controls window.\n"
+                                "Right-Click Shortcut: Open Popout",
+                                right_click=_rc.get("popout"))
     
-    # Setup drag-and-drop after widget is fully created
-    root.after(100, setup_playlist_drag_drop)
-    global remove_button
-    remove_button = create_button(first_row_frame, "❌", remove, True,
-                                help_title="REMOVE THEME",
-                                help_text=("Remove a theme from the playlist. There is a confirmation "
-                                "dialogue after selecting.\n\nIt may be a bit slow depending on how many "
-                                "themes you have added or want to delete."))
+    
+    def show_file_menu(event=None):
+        _open_toolbar_menu("file", file_menu_button, "file")
+
+    global file_menu_button
+    file_menu_button = create_button(first_row_frame, "FILE▾", show_file_menu, True,
+                                help_text="Opens the file menu with options for choosing a directory, importing/exporting data, metadata tools, settings, and help.",
+                                right_click=_rc.get("file"))
+
+    def show_playlist_menu(event=None):
+        _open_toolbar_menu("playlist", playlist_menu_button, "playlist")
+
+    global playlist_menu_button
+    playlist_menu_button = create_button(first_row_frame, "PLAYLIST▾", show_playlist_menu, True,
+                                    help_text=("Options for creating and managing playlists. \n"
+                                    "Right-Click Shortcut: Show Playlist"),
+                                    right_click=_rc.get("playlist"))
 
     global go_button
     go_button = create_button(first_row_frame, "GO:", go_to_index,
-                                help_title="GO TO INDEX",
                                 help_text=("Go to the index in the text box of the playlist. "
                                 "It will play it immediately and set the current index."))
     global current_entry
@@ -26735,102 +29136,72 @@ def create_first_row_buttons():
     playlist_size_label = tk.Label(first_row_frame, text=f"/{out_of}", bg=BACKGROUND_COLOR, fg="white", font=ROOT_FONT)
     playlist_size_label.pack(side="left")
 
-    blank_space(first_row_frame)
+    # Enable drag-and-drop on the playlist menu button
+    def setup_playlist_drag_drop():
+        try:
+            enable_drag_and_drop(playlist_menu_button, handle_dropped_files)
+        except Exception as e:
+            print(f"Could not enable drag-and-drop on playlist button: {e}")
+    root.after(100, setup_playlist_drag_drop)
 
-    global save_button
-    save_button = create_button(first_row_frame, "SAVE", save, False,
-                                help_title="SAVE PLAYLIST",
-                                help_text=("Use this to save your current playlist. Playlists are stored as JSON files in the "
-                                "playlists/ folder.\n\nCurrently loaded playlists are automatically saved in the config file, "
-                                "but if you want to be able to create a new playlist and load this one back later you'll need to "
-                                "save it.\n\nYou will be prompted to enter a name. If you enter the name of any existing playlist, "
-                                "it will overwrite it without warning. If this playlist was already saved/loaded, the title will be prefilled."
-                                "\n\nThe current index is also stored in the playlist, so you can load where you left off."))
-    global load_button
-    load_button = create_button(first_row_frame, "LOAD", load,
-                                help_title="LOAD PLAYLIST",
-                                help_text=("Load a playlist from your list of saved playlists.\n\n"
-                                "This will not interrupt the currently playing theme, but will load the playlist "
-                                "and set the current index.\n\nPlaylists are stored in the playlists/ folder.\n\n"
-                                "When shortcuts are enabled, the currently loaded playlist will auto save. This is "
-                                "so I can load up another playlist, then go back while keeping the position. I don't "
-                                "have a shortcut for saving, but if you were not using shortcuts you could just save manually "
-                                "before loading a playlist if you want to."))
-    if not playlist.get("infinite", False):
-        global merge_playlist_button
-        merge_playlist_button = create_button(first_row_frame, "➕", merge_playlist,
-                                    help_title="MERGE PLAYLIST",
-                                    help_text=("Merge another playlist into the current playlist.\n\n"
-                                               "Only non-infinite playlists are listed, and duplicates are skipped."))
-    global load_system_button
-    load_system_button = create_button(first_row_frame, "📋", load_system_playlist,
-                                help_title="LOAD SYSTEM PLAYLIST",
-                                help_text=("Load a system playlist (Tagged, Favorite, Blind, Peek, Mute Peek, New, or Missing Artists themes).\n\n"
-                                "These are special playlists managed by the application for marking and organizing themes."))
-    global delete_button
-    delete_button = create_button(first_row_frame, "❌", delete, True,
-                                help_title="DELETE PLAYLIST",
-                                help_text=("Delete a playlist from your list of saved playlists.\n\n"
-                                "You will be asked to confirm when deleting."))
-    
-    global filter_button
-    filter_button = create_button(first_row_frame, "FILTER", filters,
-                                help_title="FILTER PLAYLIST",
-                                help_text=("Open a window where you can create, apply, and save playlist filters.\n\n"
-                                "The filter will apply to the currently selected playlist.\n\n"
-                                "Saved filters are stored in the filters/ folder.\n\n" 
-                                "The values are taken from the metadata files, so this will take a while to grab all "
-                                "the metadata if you haven't already.\n\nThe Artists, Studios, and Tags filter all "
-                                "will grab any themes that match just one of the selected items if you select multiple. "
-                                "If you only want themes that match multiple items, you can run the filter another time "
-                                "after filtering to one."))
-    global load_filters_button
-    load_filters_button = create_button(first_row_frame, "💾", load_filters,
-                                help_title="APPLY SAVED FILTER",
-                                help_text=("Apply a filter from your list of saved filters. You can save filters in the FILTER "
-                                "button. The filter will apply to the currently selected playlist."))
-    global delete_filters_button
-    delete_filters_button = create_button(first_row_frame, "❌", delete_filters, True,
-                                help_title="DELETE SAVED FILTER",
-                                help_text=("Delete a filter from your list of saved filters.\n\n"
-                                "You will be asked to confirm when deleting."))
+    def show_queue_menu(event=None):
+        _open_toolbar_menu("queue", queue_menu_button, "queue")
+
+    global queue_menu_button
+    queue_menu_button = create_button(first_row_frame, "QUEUE ROUND▾", show_queue_menu, True,
+                                      help_text=("Queue special rounds, lightning rounds, and more.\n"
+                                                 "Right-Click Shortcut: Toggle Variety Mode"),
+                                      right_click=_rc.get("queue"))
+
+    def show_popup_menu(event=None):
+        _open_toolbar_menu("popups", popup_menu_button, "popups")
+
+    global popup_menu_button
+    popup_menu_button = create_button(first_row_frame, "SHOW POPUP▾", show_popup_menu, True,
+                                      help_text=("Popup information, bonus questions, and the end session screen.\n"
+                                                 "Right-Click Shortcut: Show Information Popup"),
+                                      right_click=_rc.get("popups"))
+
+    def show_theme_menu(event=None):
+        _open_toolbar_menu("theme", theme_menu_button, "theme")
+
+    global theme_menu_button
+    theme_menu_button = create_button(first_row_frame, "THEME▾", show_theme_menu, True,
+                                      help_text=("Options related to current theme including marking, fetching data, and more.\n"
+                                                 "Right-Click Shortcut: Tag/untag theme"),
+                                      right_click=_rc.get("theme"))
+
+    def show_toggle_menu(event=None):
+        _open_toolbar_menu("toggles", toggle_menu_button, "toggles")
+
+    global toggle_menu_button
+    toggle_menu_button = create_button(first_row_frame, "TOGGLES▾", show_toggle_menu, True,
+                                       help_text=("Various system toggles.\n"
+                                                  "Right-Click Shortcut: Toggle Keyboard Shortcuts"),
+                                       right_click=_rc.get("toggles"))
 
     if playlist.get("infinite", False):
         global selected_difficulty
-
         selected_difficulty = tk.StringVar()
         selected_difficulty.set(difficulty_options[playlist["difficulty"]])
         global difficulty_dropdown
-        difficulty_dropdown = ttk.Combobox(first_row_frame,
+        # Destroy any previous instance — parented to root so it won't be caught
+        # by the first_row_frame.winfo_children() destroy loop (avoiding TclError)
+        try:
+            if difficulty_dropdown.winfo_exists():
+                difficulty_dropdown.destroy()
+        except Exception:
+            pass
+        difficulty_dropdown = ttk.Combobox(root,
                                 values=difficulty_options,
                                 textvariable=selected_difficulty,
-                                width=17, 
-                                height=len(difficulty_options), 
+                                width=17,
+                                height=len(difficulty_options),
                                 state="readonly",
                                 style="Black.TCombobox",
                                 font=ROOT_FONT)
-        difficulty_dropdown.pack(side="left")
+        # Not packed/displayed — difficulty is selected via PLAYLIST▾ menu
         difficulty_dropdown.bind("<<ComboboxSelected>>", select_difficulty)
-
-        global infinite_settings_button
-        infinite_settings_button = create_button(first_row_frame, "🛠", open_infinite_settings_editor, True,
-                                    help_title="INFINITE PLAYLIST SETTINGS",
-                                    help_text=("Edit settings for infinite playlist mode and manage preset configurations.\n\n"
-                                               "DIFFICULTY_GROUPS: Settings for each difficulty tier (easy/medium/hard/all).\n\n"
-                                               "DIFFICULTY_GROUPS/RANGE: Popularity range for this difficulty tier. Format: [min, max].\n\n"
-                                               "DIFFICULTY_GROUPS/COOLDOWN: Multipliers for series and file cooldowns. Format: [series_mult, file_mult]. Lower values = more repeats.\n\n"
-                                               "DIFFICULTY_GROUPS/FILE_BOOST_LIMIT: Maximum boost a show can get from having more files(0 = no boost).\n\n"
-                                               "ENDING_LIMIT_RATIO: Ratio limiting how many endings vs openings appear(1.0 = no limit, 0.5 = limit to no more than 50%).\n\n"
-                                               "RECENT_BOOST_MULTIPLIER: Boost multipliers for recent seasonal anime. Format: [current_season, 1_season_ago, 2_seasons_ago].\n\n"
-                                               "FAVORITES_BOOST_MULTIPLIER: Multiplier for favorited themes' selection weight.\n\n"
-                                               "SCORE_BOOST: Settings for boosting highly-rated anime.\n\n"
-                                               "SCORE_BOOST/MIN_SCORE: Minimum MAL score to receive boost.\n\n"
-                                               "SCORE_BOOST/MULTIPLIER: Weight multiplier for anime above min_score.\n\n"
-                                               "GROUP_SERIES: If True, all files from same series go in the same difficulty group(causing them to play more).\n\n"
-                                               "TAG_COOLDOWN: Number of rounds before a tag can repeat in the playlist(0 = disabled).\n\n"
-                                               "INCLUDE_NON_LOCAL_FILES: If True, non-local animethemes files in the metadata are included, and will stream.\n\n"
-                                               "Changes will only stay between launches if saved."))
-        infinite_settings_button.pack(side="left")
 
         if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
             popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid()
@@ -26841,139 +29212,90 @@ def create_first_row_buttons():
             popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid_remove()
         if popout_buttons_by_name.get("SEARCH QUEUE"):
             popout_buttons_by_name.get("SEARCH QUEUE").config(text="QUEUE NEXT")
-        global sort_button
-        sort_button = create_button(first_row_frame, "SORT", sort, True,
-                                    help_title="SORT PLAYLIST",
-                                    help_text=("Sorts the current playlist using one of the premade sorts.\n\n"
-                                    "I think I covered every type of sort someone would want, " + 
-                                    "but I could add more later if needed."))
-
-        global randomize_playlist_button
-        randomize_playlist_button = create_button(first_row_frame, "SHUFFLE", randomize_playlist,
-                                    help_title="SHUFFLE PLAYLIST",
-                                    help_text=("Randomizes the current playlist.\n\n" +
-                                    "This is a completely random shuffle. For a weighted shuffle, hit the ⚖️ button "
-                                    "next to this one.\n\n" +
-                                    "You will be asked to confirm when shuffling"))
-        global weighted_randomize_playlist_button
-        weighted_randomize_playlist_button = create_button(first_row_frame, "⚖️", weighted_randomize, True,
-                                    help_title="WEIGHTED SHUFFLE PLAYLIST",
-                                    help_text=("Apply a weighted shuffle to the current playlist.\n\n"
-                                                "This will try to balance popular/niche and old/new anime "
-                                                "while still randomizing to some extent. It also tries to "
-                                                "avoid the same series appearing too close to itself.\n\n"
-                                                "This is meant to give more variety during trivia sessions.\n\n"
-                                                "The exact logic involves sorting the list by popularity, "
-                                                "then splitting by 3. After that each third is sorted by "
-                                                "year and split into 3. Each of the 9 parts are then shuffled. "
-                                                "They are then staggered into a new list, but in a random order every "
-                                                "9 to try and create a balanced, but not too formulaic order. Lastly "
-                                                "titles from the same series are moved around if they are too close. "
-                                                "How close they can be is determined by playlist size."))
     
-    global settings_button
-    settings_button = create_button(first_row_frame, "⚙️", show_settings_popup, False,
-                                      help_title="CONFIGURATION SETTINGS",
-                                      help_text=("Open settings menu to edit configuration values.\n"
-                                                 "\nVolume Level: Sets the default volume for the player."
-                                                 "\n\nStream Volume Boost: Additional volume boost for streaming audio output."
-                                                 "\n\nBackground and Text Colors: Edit the background and highlight colors used in the application. Can add/delete custom colors."
-                                                 "\n\nInverted Positions: Makes lighting round timer be on left instead of right. Good if you keep the scoreboard on the right."
-                                                 "\n\nHalf Points: Enable half points for bonus question pop-ups."
-                                                 "\n\nNon WebM OpenGL: Enable/disable non-WebM OpenGL acceleration for video playback."
-                                                 "\n\nScale Main UI: Scaling factor for the main user interface elements. Requires restart to take effect."
-                                                 "\n\nYouTube API Key: Required to be able to play clips from YouTube. for Clip and OST Lightning rounds."
-                                                 "\n\nOpenAI API Key: Required for Trivia and Emoji Lightning rounds."
-                                                 "\n\nTitle Only Info Text: Text that appears above the title only information popup."
-                                                 "\n\nEnd Session Text: Text that can replace 'THANKS FOR PLAYING!' message on the end session screen."
-                                                 ""))
-    
-    global help_button
-    help_button = create_button(first_row_frame, "HELP", lambda:show_button_help("HELP", 
-                                                                                ("Right click any button for an "
-                                                                                "explanation of it's purpose and use.\n\n"
-                                                                                "This application was created by Ramun Flame")),
-                                    help_title="HELP",
-                                    help_text=("It's just here to let people know you can right click things for explanations.\n\n"
-                                    "If you are unsure where to start, go to the FOLDER: button, and right click it to "
-                                    "see an explanation."))
+    global search_button, add_search_button, search_bar_entry, directory_menu_button
 
-# Second row
-second_row_frame = tk.Frame(root, bg=BACKGROUND_COLOR)
-second_row_frame.pack(pady=(0,5))
+    def show_directory_menu(event=None):
+        _open_toolbar_menu("directory", directory_menu_button, "directory")
+    directory_menu_button = create_button(first_row_frame, "DIRECTORY▾", show_directory_menu, True,
+                                help_text="Browse themes grouped by different parameters.")
 
-blind_button = create_button(second_row_frame, "BLIND[BKSP]", lambda: blind(True),
-                                help_title="BLIND (Shortcut Key = 'backspace')",
-                                help_text=("Covers the screen. Will be a color matching the average color of the screen. "
-                                            "If a video is playing, it will display a progress bar."))
-blind_round_button = create_button(second_row_frame, "👁", toggle_blind_round, True,
-                                help_title="[B]LIND ROUND (Shortcut Key = 'b')",
-                                help_text=("Enables the next video to play as a 'Blind Round'. A blind round plays normally, "
-                                            "but will cover the screen at the start to make it audio only. This is only lasts "
-                                            "for one video, and the blind can be removed with the normal BLIND toggle."))
+    search_bar_entry = tk.Entry(
+        first_row_frame,
+        bg="black",
+        fg="gray50",
+        insertbackground="white",
+        font=ROOT_FONT,
+        relief="flat",
+        highlightthickness=scl(1, "UI"),
+        highlightcolor="gray40",
+        highlightbackground="gray25",
+    )
+    search_bar_entry.insert(0, SEARCH_BAR_PLACEHOLDER)
+    search_bar_entry.pack(side="left", fill="x", expand=True, padx=(scl(4, "UI"), 0), pady=scl(0, "UI"))
 
-peek_button = create_button(second_row_frame, "PEEK[=]", toggle_peek, False,
-                                help_title="PEEK OVERLAY (Shortcut Key = '=')",
-                                help_text=("Covers the screen except for a small peek window. Picks one of three variants at random."))
-narrow_peek_button = create_button(second_row_frame, "◀", narrow_peek, False,
-                                help_title="NARROW PEEK OVERLAY (Shortcut Key = '[')",
-                                help_text=("Narrows the gap of the peek window."))
-widen_peek_button = create_button(second_row_frame, "▶", widen_peek, False,
-                                help_title="WIDEN PEEK OVERLAY (Shortcut Key = ']')",
-                                help_text=("Widens the gap of the peek window."))
-peek_round_button = create_button(second_row_frame, "👀", toggle_peek_round, True,
-                                help_title="PEEK ROUND (Shortcut Key = 'b','b')",
-                                help_text=("Enables the next video to play as a 'Peek Round'. A peek round plays normally, "
-                                            "but will cover most of the screen at the start, only showing a small moving window. "
-                                            "The peek can be removed with the normal PEEK toggle."))
+    def on_search_focus_in(event=None):
+        global popout_searching
+        popout_searching = True
+        if search_bar_entry.get() == SEARCH_BAR_PLACEHOLDER:
+            search_bar_entry.delete(0, tk.END)
+            search_bar_entry.configure(fg="white")
 
-mute_button = create_button(second_row_frame, "[M]UTE", toggle_mute, False,
-                                help_title="[M]UTE THEME AUDIO (Shortcut Key = 'm')",
-                                help_text=("Toggles muting the video audio."))
-mute_peek_round_button = create_button(second_row_frame, "🔇", toggle_mute_peek_round, True,
-                                help_title="MUTE PEEK ROUND (Shortcut Key = 'b','b','b')",
-                                help_text=("Enables the next video to play as a 'Mute Peek Round'."
-                                            "It is the same as the Peek Round, but will also mute the audio."))
+    def on_search_focus_out(event=None):
+        global popout_searching
+        popout_searching = False
+        if not search_bar_entry.get().strip():
+            search_bar_entry.delete(0, tk.END)
+            search_bar_entry.insert(0, SEARCH_BAR_PLACEHOLDER)
+            search_bar_entry.configure(fg="gray50")
 
-guess_year_button = create_button(second_row_frame, "📅", lambda: guess_extra("year"), False,
-                                help_title="[G]UESS YEAR (Shortcut Key = 'g')",
-                                help_text=("Displays a pop-up at the top informing players to guess the year. "
-                                            "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
-guess_score_button = create_button(second_row_frame, "🏆", lambda: guess_extra("score"), False,
-                                help_title="GUESS SCORE (Shortcut Key = 'g','g')",
-                                help_text=("Displays a pop-up at the top informing players to guess the score. "
-                                            "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
-guess_popularity_button = create_button(second_row_frame, "🥇", lambda: guess_extra("popularity"), False,
-                                help_title="GUESS POPULARITY (Shortcut Key = 'g','g','g')",
-                                help_text=("Displays a pop-up at the top informing players to guess the popularity. "
-                                            "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
-guess_members_button = create_button(second_row_frame, "👥", lambda: guess_extra("members"), False,
-                                help_title="GUESS MEMBERS (Shortcut Key = 'g','g','g','g')",
-                                help_text=("Displays a pop-up at the top informing players to guess the members. "
-                                            "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
-guess_tags_button = create_button(second_row_frame, "🔖", lambda: guess_extra("tags"), False,
-                                help_title="[G]UESS TAGS (Shortcut Key = 'n')",
-                                help_text=("Displays a pop-up at the top informing a player to guess the tags. "
-                                            "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
-guess_studio_button = create_button(second_row_frame, "🏢", lambda: guess_extra("studio"), False,
-                                help_title="GUESS STUDIO (Shortcut Key = 'h')",
-                                help_text=("Displays a pop-up for guessing the studio that produced the anime. "
-                                        "Multiple choice: 1 correct, 3 distractors."))
-guess_song_button = create_button(second_row_frame, "🎵", lambda: guess_extra("song"), False,
-                                help_title="GUESS SONG (Shortcut Key = 'h','h')",
-                                help_text=("Displays a pop-up for guessing the song title for this anime. Multiple choice: 1 correct, 3 distractors."))
-guess_artist_button = create_button(second_row_frame, "🎤", lambda: guess_extra("artist"), False,
-                                help_title="GUESS ARTIST (Shortcut Key = 'h','h','h')",
-                                help_text=("Displays a pop-up for guessing the artist who performed the song for this anime. "
-                                        "Multiple choice: 1 correct, 3 distractors."))
-guess_multiple_button = create_button(second_row_frame, "４", lambda: guess_extra("multiple"),
-                                help_title="GUESS MULTIPLE (Shortcut Key = 'u')",
-                                help_text=("Displays a pop-up at the top informing a player to guess the anime from a multiple choice. "
-                                            "It also lists the rules. Opening the Info Popup or toggling again will remove it."))
-guess_characters_button = create_button(second_row_frame, "👤", lambda: guess_extra("characters"), True,
-                                help_title="GUESS CHARACTERS (Shortcut Key = 'j')",
-                                help_text=("Displays a pop-up at the top informing a player to guess 2 characters from the anime from a multiple choice. "
-                                            "It also lists the rules. Opening the Info Popup or toggling again will reveal the answer, then remove it if pressed again."))
+    _search_debounce = [None]
+
+    def on_search_key_release(event=None):
+        if event and event.keysym in ("Escape", "Return", "Tab"):
+            return
+        current_text = search_bar_entry.get()
+        if current_text == SEARCH_BAR_PLACEHOLDER:
+            return
+        global search_term
+        if search_term == current_text:
+            return
+        search_term = current_text
+        if not current_text:
+            if list_loaded in ["search", "search_add"]:
+                _close_list(right_column, keep_focus=True)
+            return
+        # Debounce: cancel any pending search and schedule a new one
+        if _search_debounce[0]:
+            root.after_cancel(_search_debounce[0])
+        _search_debounce[0] = root.after(200, lambda: search(update=True, ask=False))
+
+    def on_search_return(event=None):
+        list_select()
+
+    def on_search_escape(event=None):
+        global search_term
+        search_term = ""
+        search_bar_entry.delete(0, tk.END)
+        search_bar_entry.insert(0, SEARCH_BAR_PLACEHOLDER)
+        search_bar_entry.configure(fg="gray50")
+        root.focus()
+        if list_loaded in ["search", "search_add"]:
+            _close_list(right_column)
+
+    search_bar_entry.bind("<FocusIn>", on_search_focus_in)
+    search_bar_entry.bind("<FocusOut>", on_search_focus_out)
+    search_bar_entry.bind("<KeyRelease>", on_search_key_release)
+    search_bar_entry.bind("<Return>", on_search_return)
+    search_bar_entry.bind("<Escape>", on_search_escape)
+    ToolTip(search_bar_entry,
+            "Search themes by title, filename, artist, and song name.\n\n"
+            "Click themes to queue next, right-click to add to the playlist.")
+
+    search_button = search_bar_entry
+    add_search_button = None
+
+# Hidden state-tracking buttons (lightning round) and dropdowns
 
 # Define the Lightning Round modes and their metadata
 light_mode_options = [
@@ -27004,321 +29326,17 @@ def configure_style():
         foreground=[('readonly', 'white')]
     )
 configure_style()
-# Create the combobox
-light_dropdown = ttk.Combobox(second_row_frame,
-                        values=[display for _, display in light_mode_options],
-                        textvariable=selected_mode,
-                        width=15,
-                        height=len(light_mode_options),
-                        state="readonly",
-                        style="Black.TCombobox",
-                        font=ROOT_FONT)
-light_dropdown.current(0)
-light_dropdown.pack(side="left")
-
 def unhighlight_selection(event, setting=False):
-    if popout_buttons_by_name.get(light_dropdown):
-        value = light_dropdown.get()
-        popout_buttons_by_name[light_dropdown].set(value)
+    if popout_buttons_by_name.get("LIGHTNING DROPDOWN"):
+        popout_buttons_by_name["LIGHTNING DROPDOWN"].set(selected_mode.get())
     if not setting and light_mode:
         select_lightning_mode()
-    light_dropdown.selection_clear()
-    light_dropdown.icursor(tk.END)
-
-light_dropdown.bind("<<ComboboxSelected>>", unhighlight_selection)
 
 # Start button using selected mode
 def select_lightning_mode():
     selected_display = selected_mode.get()
     mode_key = title_to_key[selected_display]
     toggle_light_mode(mode_key)
-
-start_light_mode_button = create_button(second_row_frame, "▶", select_lightning_mode, False,
-                              help_title="START LIGHTNING ROUND",
-                              help_text=("Start the selected lighting round type. Instructions will appear in the pop-up at the end of the theme."
-                                         "\nDuring many rounds, music will play in the background. This is loaded from the music/ folder. "
-                                         "I recommend something low energy, since if you use something too intense "
-                                         "it's kinda grating with the constant music switching. "
-                                         "I recommend the following tracks:\n\n"
-                                         "Fullmetal Alchemist Brotherhood [OST] - Interlude\n"
-                                         "Land of the Lustrous [OST] - Early Afternoon\n"
-                                         "Katanagatari [OST] - DUB TRIP"))
-variety_light_mode_button = create_button(second_row_frame, "🎲", lambda: toggle_light_mode("variety"), False,
-                              help_title="[V]ARIETY LIGHTNING ROUND (Shortcut Key = 'v')",
-                              help_text=("Lightning Round variant using the following rules:\n\n" + light_modes["variety"]["desc"] +
-                                         "\n\nThis mode ensures no round is repeated consecutively, and picks rounds "
-                                         "taking the show's popularity into account. So you aren't likely to get a Clues round "
-                                         "unless a quite popular show appears."))
-variety_light_mode_button.bind("<Button-2>", test_variety_distrbution)
-light_mode_settings_button = create_button(second_row_frame, "🛠", open_settings_editor, True,
-                              help_title="LIGHTNING ROUND SETTINGS",
-                              help_text=("Edit settings for lightning rounds and manage variety round settings.\n\n"
-                                         "LENGTH: Duration of round.\n\n"
-                                         "MUTED: If round has theme sound or not. Will play background tracks if true\\nn"
-                                         "VARIANTS(on some): Enable and disable variants for round.\n\n"
-                                         "CHARACTER_TYPES(on c. rounds): Enable/diable different character types form appearing. popularity_limit wil use popularity to decide if secondary or appears characters should appear.\n\n"
-                                         "VARIETY: Different settings for controlling what appears in variety rounds.\n\n"
-                                         "VARIETY/ENABLED: Allowed or not allowed to appear in variety rounds.\n\n"
-                                         "VARIETY/POPULARITY: Settings to limit popularity allowed and frequency of round.\n\n"
-                                         "VARIETY/POPULARITY/RANGE: Popularity range of shows allowed to use this round.\n\n"
-                                         "VARIETY/POPULARITY/WEIGHT: How likely it should appear. Sometimes split by OP/ED.\n\n"
-                                         "VARIETY/COOLDOWN: Settings for how often a round can/is forced to appear.\n\n"
-                                         "VARIETY/COOLDOWN/MIN_GAP: How long a round must wait to appear again.\n\n"
-                                         "VARIETY/COOLDOWN/MAX_GAP: How long before a round is forced to appear.\n\n"
-                                         "VARIETY/COOLDOWN/POPULARITY_FORCE_THRESHOLD: Minimum popularity a theme must be to be forced. Sometimes split by OP/ED.\n\n"
-                                         "VARIETY/COOLDOWN/NO_REPEAT_LIMIT: How long until this round can use the same content. This also controls how much history of this lightning round is stored in the playlist.\n\n"
-                                         "Changes will only stay between launches if saved."))
-
-show_fixed_lightning_button = create_button(second_row_frame, "[F]IXED", show_fixed_lightning_list,
-                              help_title="[F]IXED LIGHTNING ROUND PLAYLISTS (Shortcut Key = 'f')",
-                              help_text=("Lists available fixed lightning round playlists to queue up.\n\n"
-                                         "Fixed lightning round playlists are curated collections of lightning rounds "
-                                         "with specific parameters for each round."))
-manage_fixed_lightning_button = create_button(second_row_frame, "➕", open_fixed_lightning_manager, True,
-                              help_title="MANAGE FIXED LIGHTNING ROUND PLAYLISTS",
-                              help_text=("Opens an interface for managing fixed lightning round playlists.\n\n"
-                                         "Fixed lightning round playlists are curated collections of lightning rounds "
-                                         "with specific parameters for each round."))
-
-show_youtube_playlist_button = create_button(second_row_frame, "[Y]OUTUBE VIDEOS", show_youtube_playlist,
-                              help_title="[Y]OUTUBE VIDEOS (Shortcut Key = 'y')",
-                              help_text=("Lists downloaded YouTube videos to queue up.\n\nVideos are added using the '➕' button. "
-                                         "The downloads are stored in the youtube/ folder.\n\n"
-                                         "Videos are queued with a UP NEXT popup when selected, and will play after the current theme. "
-                                         "Only one video may be queued at a time, and selecting the same video will unqueue it."))
-manage_youtube_button = create_button(second_row_frame, "➕", open_youtube_editor, True,
-                              help_title="MANAGE YOUTUBE VIDEOS",
-                              help_text=("Opens an interface for managing YouTube videos. Press [ADD VIDEO FROM URL] to add one. It takes a few seconds to retrieve the video information, so please wait after clicking. Here's an explanation of each field:"
-                                         "\n\nVIDEO ID: ID of YouTube video from URL. "
-                                         "\n\nTITLE: Title that will show in the interface. Can be changed freely. Use [⟳] to reset it back to default."
-                                         "\n\nSTART/END: Start/end time of video. Use the [NOW] button to set it to the player's current time. "
-                                         "Useful if you want to cut out intros/outros. Use [⟳] to reset each back to default."
-                                         "\n\n[▶]: Play the video. Good for testing the video, and setting start/end times."
-                                         "\n\n[ARCHIVE]: Archives the video. Useful if you don't want it to show up in the interface, but don't want to delete it."
-                                         "\n\n[❌] Delete the video. Also deletes file if downloaded."
-                                         "\n\n[SAVE ALL] Save any changes. Many functions auto-save, but any title, start, or end changes need to be saved manually."
-                                         "\n\n[SHOW ARCHIVED] Show archived videos. From here, videos can be restored or deleted."))
-
-search_button = create_button(second_row_frame, "[S]EARCH THEMES", search,
-                            help_title="[S]EARCH (Shortcut Key = 's')",
-                            help_text=("Search the filenames, titles, and english titles for the entered keyword. "
-                                        "The selected theme will queue up to play next, or play if nothing "
-                                        "is currently playing.\n\nOnly one theme can be queued up at a time. "
-                                        "Selecting the same theme again will clear the queue. This does not add the "
-                                        "theme to the playlist. For that function, use the adjacent + button. This "
-                                        "function was created so a theme could be pulled up on the fly, but not "
-                                        "interrupt the current playlist.\n\n"
-                                        "The search behaves differently when hotkeys are enabled. Instead of a dialogue, "
-                                        "the search takes all keypresses and refreshes the search with each keypress. "
-                                        "You must hit ESC to exit this mode. Lists also function different with shortcuts " 
-                                        "enabled. You can read about the controls by hitting the SHORTCUT [K]EYS button."))
-add_search_button = create_button(second_row_frame, "➕ADD", search_add, True,
-                            help_title="SEARCH ADD",
-                            help_text=("The same as the SEARCH, but will add the theme to the playlist "
-                                        "instead of just queueing it.\n\nThis was more of an after thought feature "
-                                        "just in case you want to add some themes that were maybe removed, or added "
-                                        "later. It would be kinda slow with the dialogue popping up each time, but it "
-                                        "may be fast with shortcuts enabled, as described on the SEARCH button. You could "
-                                        "also use this to add tracks to an empty playlist to create your own from scratch."))
-
-global stats_button
-stats_button = create_button(second_row_frame, "📊", display_theme_stats_in_columns,
-                                help_title="THEME DIRECTORY/STATS",
-                                help_text=("Shows detailed stats of themes in directory."))
-
-third_row_frame = tk.Frame(root, bg=BACKGROUND_COLOR)
-third_row_frame.pack(pady=(0,0))
-
-info_button = create_button(third_row_frame, "[I]NFO POP-UP", toggle_info_popup,
-                              help_title="SHOW/HIDE [I]NFO POPUP (Shortcut Key = 'i')",
-                              help_text=("Show or hide the information popup at the bottom of the screen.\n\n"
-                                         "This shows most of the information from the main player in a nicer format. "
-                                         "During trivia, if someone gets the answer correct or people give up, "
-                                         "this can be toggled to let them know the answer/more information.\n\n"
-                                         "The popup will automatically close when the theme ends."))
-title_info_button = create_button(third_row_frame, "𝕋", toggle_title_info_popup,
-                              help_title="SHOW/HIDE TITLE POPUP (Shortcut Key = 'o')",
-                              help_text=("Show or hide the title popup at the bottom of the screen.\n\n"
-                                         "Additional text can be set/added to the top by middle clicking this button."))
-title_info_button.bind("<Button-2>", prompt_title_top_info_text)
-
-artist_info_button = create_button(third_row_frame, "🎤", toggle_artist_info_popup,
-                              help_title="SHOW/HIDE ARTIST POPUP (Shortcut Key = 'o'(when info-popup open))",
-                              help_text=("Show or hide the info popup with list of themes done by artist."))
-studio_info_button = create_button(third_row_frame, "🏢", toggle_studio_info_popup,
-                              help_title="SHOW/HIDE STUDIO POPUP",
-                              help_text=("Show or hide the info popup with list of anime done by studio."))
-season_info_button = create_button(third_row_frame, "📅", toggle_season_info_popup,
-                              help_title="SHOW/HIDE SEASON RANKING POPUP",
-                              help_text=("Show or hide the info popup with popularity rankings for anime from the same season."))
-year_info_button = create_button(third_row_frame, "🗓", toggle_year_info_popup,
-                              help_title="SHOW/HIDE YEAR RANKING POPUP",
-                              help_text=("Show or hide the info popup with popularity rankings for anime from the same year."))
-start_info_button = create_button(third_row_frame, "⏪", toggle_auto_info_start,
-                              help_title="TOGGLE AUTO INFO POPUP AT START",
-                              help_text=("When enabled, will show the theme's info popup at the start.\n\n"
-                                         "Useful if you aren't doing trivia, and just want th info displayed as you watch."))
-end_info_button = create_button(third_row_frame, "⏩", toggle_auto_info_end, True,
-                              help_title="TOGGLE AUTO INFO POPUP AT END",
-                              help_text=("When enabled, will show the theme's info popup during the last 8 seconds.\n\n"
-                                         "Useful if you want to go more hands off with the trivia, and just show the answer at the end."))
-
-tag_button = create_button(third_row_frame, "❌", tag, False,
-                              help_title="[T]AG THEME (Shortcut Key = 't')",
-                              help_text=("Adds the currently playing theme to a 'Tagged Themes' playlist. Clicking again "
-                                         "will remove it from the playlist.\n\nThe purpose is to tag "
-                                         "themes you may need to check out later for various reasons. "
-                                         "Like adding censors, updating the theme, or even deleting it. "
-                                         "Just a reminder.\n\nMiddle click to bulk mark/unmark entire playlist: "
-                                         "If current item is marked, all items will be unmarked. If current item is not marked, all items will be marked. "
-                                         "Requires confirmation before proceeding."))
-tag_button.bind("<Button-2>", bulk_tag_playlist)
-favorite_button = create_button(third_row_frame, "❤", favorite, False,
-                              help_title="FAVORITE THEME (Shortcut Key='*')",
-                              help_text=("Adds the currently playing theme to a 'Favorite Themes' playlist. Clicking again "
-                                         "will remove it from the playlist.\n\nJust a way to keep track of your favorite themes."
-                                         "\n\nMiddle click to bulk mark/unmark entire playlist: "
-                                         "If current item is marked, all items will be unmarked. If current item is not marked, all items will be marked. "
-                                         "Requires confirmation before proceeding."))
-favorite_button.bind("<Button-2>", bulk_favorite_playlist)
-blind_mark_button = create_button(third_row_frame, "👁", blind_mark, False,
-                              help_title="BLIND MARK THEME",
-                              help_text=("Adds the currently playing theme to a 'Blind Themes' playlist. Clicking again "
-                                         "will remove it from the playlist.\n\nThemes in this list will auto queue those types of rounds."
-                                         "\n\nMiddle click to bulk mark/unmark entire playlist: "
-                                         "If current item is marked, all items will be unmarked. If current item is not marked, all items will be marked. "
-                                         "Blind marks are mutually exclusive with Peek and Mute Peek marks - existing conflicting marks will be removed first. "
-                                         "Requires confirmation before proceeding."))
-blind_mark_button.bind("<Button-2>", bulk_blind_mark_playlist)
-peek_mark_button = create_button(third_row_frame, "👀", peek_mark, False,
-                              help_title="PEEK MARK THEME",
-                              help_text=("Adds the currently playing theme to a 'Peek Themes' playlist. Clicking again "
-                                         "will remove it from the playlist.\n\nThemes in this list will auto queue those types of rounds."
-                                         "\n\nMiddle click to bulk mark/unmark entire playlist: "
-                                         "If current item is marked, all items will be unmarked. If current item is not marked, all items will be marked. "
-                                         "Peek marks are mutually exclusive with Blind and Mute Peek marks - existing conflicting marks will be removed first. "
-                                         "Requires confirmation before proceeding."))
-peek_mark_button.bind("<Button-2>", bulk_peek_mark_playlist)
-mute_peek_mark_button = create_button(third_row_frame, "🔇", mute_peek_mark, True,
-                              help_title="MUTE PEEK MARK THEME",
-                              help_text=("Adds the currently playing theme to a 'Mute Peek Themes' playlist. Clicking again "
-                                         "will remove it from the playlist.\n\nThemes in this list will auto queue those types of rounds."
-                                         "\n\nMiddle click to bulk mark/unmark entire playlist: "
-                                         "If current item is marked, all items will be unmarked. If current item is not marked, all items will be marked. "
-                                         "Mute Peek marks are mutually exclusive with Blind and Peek marks - existing conflicting marks will be removed first. "
-                                         "Requires confirmation before proceeding."))
-mute_peek_mark_button.bind("<Button-2>", bulk_mute_peek_mark_playlist)
-
-
-refetch_metadata_button = create_button(third_row_frame, "FETCH DATA", refetch_metadata,
-                              help_title="FETCH THEME METADATA (Shortcut Key = 'f')",
-                              help_text=("Fetch the metadata for the currently playing theme.\n\n"
-                                         "You may want to do this if there's mising information that "
-                                         "may have been filled by now, or you want to update the score/ "
-                                         "members stats. For that purpose though, you can enable auto refresh "
-                                         "of jikan metadata by hitting the ♻ button."))
-fetch_missing_metadata_button = create_button(third_row_frame, "❓", fetch_all_metadata,
-                              help_title="FETCH ALL MISSING METADATA",
-                              help_text=("Use this to check if metadata exists for all files in the chosen "
-                                         "directory, and fetch metadata for any that are missing. You should do "
-                                         "this whenever you have new videos in the directory.\n\n"
-                                         "It can take quite a while depending on how many themes you have. "
-                                         "It may need to be left overnight if you have thousands."))
-refresh_all_metadata_button = create_button(third_row_frame, "⭮", refresh_all_metadata, False,
-                              help_title="REFRESH ALL JIKAN METADATA",
-                              help_text=("Refreshes the jikan metadata for files in your directory. "
-                                         "You can specify how many years back to refresh (e.g., '3' for last 3 years) "
-                                         "or leave empty to refresh all years. Only refreshes data for anime you actually have files for, "
-                                         "not everything in the metadata database.\n\n"
-                                         "You may want to do this if you feel the score and members data are outdated, "
-                                         "although you could also use the ♻ button to toggle auto refreshing the data "
-                                         "as files are playing if you don't want to have it call for all the files at once."))
-refresh_all_anilist_metadata_button = create_button(third_row_frame, "A", refresh_all_anilist_metadata, False,
-                              help_title="REFRESH ALL ANILIST METADATA",
-                              help_text=("Refreshes the AniList metadata for files in your directory. "
-                                         "You can specify how many years back to refresh (e.g., '3' for last 3 years) "
-                                         "or leave empty to refresh all years. Only refreshes data for anime you actually have files for.\n\n"
-                                         "This will re-fetch scores, popularity, rankings, tags, and characters from AniList."))
-toggle_refresh_metadata_button = create_button(third_row_frame, "♻", toggle_auto_auto_refresh, True,
-                              help_title="TOGGLE AUTO REFRESH JIKAN METADATA",
-                              help_text=("Toggle auto refreshing jikan metadata. This will refresh the "
-                                         "jikan metadata for the currently playing theme, and the next "
-                                         "theme as you play them. It will never refresh the same anime in the same session."
-                                         "\n\nThis is for the score and members data, which changes "
-                                         "over time. It's not too necessary if you don't care about it being up "
-                                         "to date, or if you've already grabbed the metadata recently.\n\n"
-                                         "It doesn't refetch everything, or call the AnimeThemes API like "
-                                         "the regular [R]EFETCH does for the current theme. If you "
-                                         "want to to do that for all files, you would need to delete the "
-                                         "anime_metadata.json file in the metadata/ folder, and fetch "
-                                         "all missing metadata again, but I wouldn't recommend that."))
-
-toggle_censor_bar_button = create_button(third_row_frame, "[C]ENSOR(0)", toggle_censor_bar, False, enabled=censors_enabled,
-                              help_title="TOGGLE [C]ENSOR BARS (Shortcut Key = 'c')",
-                              help_text=("Toggle censor bars. These are pulled from the censors.json file in the files/ "
-                                         "folder. Additonal censors are also loaded from any json files with 'censor' in the title. "
-                                         "You can add these using the [➕] button next to this one.\n\n"
-                                         "The point of this feature is to mainly block out titles that show up too early, "
-                                         "since this is a trivia program. They always assume the video is fullscreen, on "
-                                         "the main monitor, so it will be weird if you try playing in a window. I would have disabled them "
-                                         "when vlc isn't fulscreen, but checking that isn't reliable."))
-edit_censors_button = create_button(third_row_frame, "➕", open_censor_editor, True,
-                              help_title="CENSORS EDITOR",
-                              help_text=("Opens an interface for editing censors. Press [ADD NEW CENSOR] to add one. Here's an explanation of each field."
-                                         "\n\nSIZE/POSITION: The size/position of the censor box, in percent of screen. "
-                                         "Use the [🎯] button to draw a censor box, and the SIZE/POSITION will be filled. Middle-click the overlay to cancel."
-                                         "\n\nSTART/END: Start/end time censor box will appear. Use the [NOW] button to set it to the player's current time. "
-                                         "Use the [-]/[+] to adjust by 0.1 sec. The end time can usually be exact, but the start needs to be a bit before to account for the time to pop up. "
-                                        "Right-clicking the start [NOW] button will set the time to 0, and the end [NOW] button will set it to the end of the video."
-                                         "\n\nCOLOR: Color of censor box. Will automatically pick the average color of the screen. Use [PICK] to select a specific color from the screen. Middle-click the overlay to cancel."
-                                         " Use [X] to reset back to AUTO."
-                                         "\n\nNSFW: Used to mark a censor as NSFW. These censors will appear even when the Information Pop-up is up."
-                                         "\n\nUse [TEST] to play the video from a second before the censor start time to test it. Right-clicking will play from the end time. Censors will not appear until the [SAVE CENSOR(S)] button "
-                                         "is pressed. This must be pressed again after every change for it to take effect. To delete censors, use the [DELETE] button. This will also only save if the "
-                                         "[SAVE CENSOR(S)] button is pressed. Lastly, censors are all linked to the filename."))
-
-toggle_progress_bar_button = create_button(third_row_frame, "PROGRESS BAR", toggle_progress_bar, True, enabled=progress_bar_enabled,
-                              help_title="TOGGLE PROGRESS BAR OVERLAY",
-                              help_text=("This toggles a progress bar overlay for the current time for the theme.\n\n"
-                                         "It's pretty thin, and meant to be subtle as to not obstruct the theme."))
-
-desktop_black_button = create_button(
-    third_row_frame,
-    "DESKTOP BLACK",
-    toggle_desktop_black_overlay,
-    True,
-    help_title="DESKTOP BLACK SCREEN",
-    help_text="Covers the desktop with a black screen behind all windows. Useful for hiding the desktop during a session."
-)
-
-toggle_disable_shortcuts_button = create_button(third_row_frame, "ENABLE SHORTCUTS[`]", toggle_disable_shortcuts,
-                              help_title="ENABLE SHORTCUTS (Shortcut Key = '`')",
-                              help_text=("Used to toggle shortcut keys.\n\nIn my current setup, I am streaming my desktop to "
-                                         "one screen, and do not have access to a second monitor to manage the "
-                                         "application. I stream the applicaiton window to another display, but I can't interact with it. "
-                                         "So I've mapped all the functions I may want to use during a session to shortcut keys. "
-                                         "It may be hard to track them all, but most buttons have the shortcut key on them.\n\n"
-                                         "For a full reference, use the SHORTCUT [K]EYS button.\n\nAlso when this is enabled, "
-                                         "lists greater than 50 items no longer have buttons. The buttons slow down things a bit, and since they "
-                                         "aren't needed if I'm using shortcuts, I disabled them."))
-
-list_keyboard_shortcuts_button = create_button(third_row_frame, "[K]EYS", list_keyboard_shortcuts, True,
-                              help_title="LIST SHORTCUT [K]EYS (Shortcut Key = 'k')",
-                              help_text=("Lists all shortcut keys on the application.\n\nAlthough all are listed in uppercase for clarity "
-                                         "it only accepts inputs in lowercase.\n\nThe scoreboard stuff at the "
-                                         "bottom is actually a separate application that pulls scores from a google "
-                                         "sheet I update during the session, and can be ignored. The scoreboard is pretty specific to "
-                                         "the format of my google sheet. I could probably share it though if anyone asked.\n\n"
-                                         "The up/down arrows have two functions. When a list is up, they control which you are "
-                                         "highlighting to select. Otherwise, they scroll all the columns up/down."))
-
-end_button = create_button(third_row_frame, "[E]ND SCREEN", end_session,
-                              help_title="[E]ND SESSION MESSAGE (Shortcut Key = 'e')",
-                              help_text="Displays an end message 'THANKS FOR PLAYING!' slowly scrolling "
-                              "up the right side of the screen. Just a nice way for me to end my trivia sessions.\n\n"
-                              "It also lists the 'TOTAL THEMES PLAYED:', which are tracked while the application is running.\n\n" \
-                              "The end message can be set by middle clicking this button.")
-end_button.bind("<Button-2>", prompt_end_session_text)
 
 info_panel = tk.Frame(root, bg="black")
 info_panel.pack(fill="both", expand=True, padx=scl(10, "UI"), pady=scl(5, "UI"))
@@ -27344,12 +29362,52 @@ right_top = tk.Text(right_column_container, height=0, width=scl(40, "UI"), bg="b
                     selectbackground=HIGHLIGHT_COLOR, wrap="word")
 right_top.pack(fill="x")
 
-# Main Right Column
-right_column = tk.Text(right_column_container, height=scl(20, "UI"), width=scl(40, "UI"), bg="black", fg="white",
+# List title header — shown/hidden by _insert_list_title_row, fills full column width
+_header_font = font.Font(family="Consolas", size=scl(11, "UI"), weight="bold", underline=True)
+list_header_font = _header_font  # expose as global for _truncate_header_title
+right_column_header = tk.Frame(right_column_container, bg=BACKGROUND_COLOR)
+right_column_header_label = tk.Label(right_column_header, text="", bg=BACKGROUND_COLOR, fg="white",
+                                      font=_header_font, anchor="center", justify="center")
+right_column_header_label.pack(side="left", fill="x", expand=True)
+tk.Button(right_column_header, text="\u2715", bg=BACKGROUND_COLOR, fg="white",
+          font=_header_font, borderwidth=0, pady=0,
+          command=lambda: _close_list(right_column)).pack(side="right")
+right_column_header.bind("<Configure>", _truncate_header_title)
+# Not packed yet — _insert_list_title_row shows/hides it before right_column
+
+# Main Right Column (with custom canvas scrollbar)
+right_column_row = tk.Frame(right_column_container, bg="black")
+right_column_row.pack(fill="both", expand=True)
+
+# Build a fully styled scrollbar by borrowing clam elements (native tk.Scrollbar ignores colors on Windows)
+_sb_style = ttk.Style()
+_sb_style.element_create("List.trough", "from", "clam")
+_sb_style.element_create("List.thumb", "from", "clam")
+_sb_style.element_create("List.uparrow", "from", "clam")
+_sb_style.element_create("List.downarrow", "from", "clam")
+_sb_style.layout("List.Vertical.TScrollbar", [
+    ("List.trough", {"sticky": "ns", "children": [
+        ("List.uparrow",   {"side": "top",    "sticky": ""}),
+        ("List.downarrow", {"side": "bottom", "sticky": ""}),
+        ("List.thumb",     {"unit": "1",      "sticky": "nswe"}),
+    ]})
+])
+_sb_style.configure("List.Vertical.TScrollbar",
+    background="gray38", troughcolor="gray15",
+    arrowcolor="gray65", borderwidth=0,
+    gripcount=0, arrowsize=scl(13, "UI"))
+_sb_style.map("List.Vertical.TScrollbar",
+    background=[("active", "gray58"), ("pressed", "gray68")])
+
+right_column_scrollbar = ttk.Scrollbar(right_column_row, orient="vertical",
+                                        command=on_list_scrollbar_set,
+                                        style="List.Vertical.TScrollbar")
+# Not packed initially — update_list_scrollbar shows/hides it as needed
+right_column = tk.Text(right_column_row, height=scl(20, "UI"), width=scl(40, "UI"), bg="black", fg="white",
                        insertbackground="white", state=tk.DISABLED,
                        selectbackground=HIGHLIGHT_COLOR, wrap="word",
                        spacing1=0, spacing2=0, spacing3=0)
-right_column.pack(fill="both", expand=True)
+right_column.pack(side="left", fill="both", expand=True)
 
 right_column.bind("<B1-Motion>", lambda e: handle_drag_motion(e) if drag_start_index is not None else None)
 right_column.bind("<ButtonRelease-1>", lambda e: end_playlist_drag(e) if drag_start_index is not None else None)
@@ -27515,22 +29573,102 @@ right_column.tag_configure("blank", foreground="white", font=(right_font_name, s
 right_top.tag_configure("bold", font=(right_font_name, scl(12, "UI"), "bold"), foreground="white")
 right_top.tag_configure("white", foreground="white", font=(right_font_name, scl(12, "UI")))
 
-list_buttons = [
-    {"button":"show_playlist_button", "label":"playlist", "func":show_playlist},
-    {"button":None, "label":"field_list", "func":show_field_themes},
-    {"button":"remove_button", "label":"remove", "func":remove_theme},
-    {"button":"load_button", "label":"load_playlist", "func":load},
-    {"button":"merge_playlist_button", "label":"merge_playlist", "func":merge_playlist},
-    {"button":"load_system_button", "label":"load_system_playlist", "func":load_system_playlist},
-    {"button":"delete_button", "label":"delete_playlist", "func":delete},
-    {"button":"load_filters_button", "label":"load_filters", "func":load_filter},
-    {"button":"delete_filters_button", "label":"delete_filters", "func":delete_filter},
-    {"button":"sort_button", "label":"sort", "func":sort},
-    {"button":"search_button", "label":"search", "func":search},
-    {"button":"add_search_button", "label":"search_add", "func":search_add},
-    {"button":"show_fixed_lightning_button", "label":"fixed_lightning", "func":show_fixed_lightning_list},
-    {"button":"show_youtube_playlist_button", "label":"youtube", "func":show_youtube_playlist}
-]
+# ---------------------------------------------------------------------------
+# CYCLE HELPERS — extracted for registry dispatch and on_release clarity
+# ---------------------------------------------------------------------------
+
+def cycle_light_mode():
+    """Cycle through all lightning round modes in defined order."""
+    light_mode_keys = list(light_modes.keys())
+    try:
+        light_cycle_index = light_mode_keys.index(light_mode)
+        next_index = (light_cycle_index + 1) % len(light_mode_keys)
+    except ValueError:
+        next_index = 0
+    mode = light_mode_keys[next_index]
+    if mode == 'variety':
+        toggle_light_mode()
+    else:
+        toggle_light_mode(mode)
+
+def cycle_blind_peek():
+    """Cycle: off → blind round → peek round → mute peek round."""
+    if not (mute_peek_round_toggle or peek_round_toggle or blind_round_toggle):
+        toggle_blind_round()
+    elif not (peek_round_toggle or mute_peek_round_toggle):
+        toggle_peek_round()
+    else:
+        toggle_mute_peek_round()
+
+def cycle_guess_stats():
+    """Cycle bonus stat questions: year → score → popularity → members."""
+    if guessing_extra not in ["year", "score", "popularity", "members"]:
+        guess_extra("year")
+    elif guessing_extra not in ["score", "popularity", "members"]:
+        guess_extra("score")
+    elif guessing_extra not in ["popularity", "members"]:
+        guess_extra("popularity")
+    else:
+        guess_extra("members")
+
+def cycle_guess_music():
+    """Cycle bonus music questions: studio → song → artist."""
+    if guessing_extra not in ["studio", "song", "artist"]:
+        guess_extra("studio")
+    elif guessing_extra not in ["song", "artist"]:
+        guess_extra("song")
+    else:
+        guess_extra("artist")
+
+_reroll_debounce_id = None
+
+def _start_reroll_prefetch():
+    """Called 5 s after the last re-roll to download the chosen next track."""
+    global _reroll_debounce_id
+    _reroll_debounce_id = None
+    prefetch_next_themes()
+
+def is_reroll_valid():
+    """Check if re-roll is currently valid (infinite mode and on the second-to-last track)."""
+    return playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"]) - 2
+
+def reroll_next():
+    """Re-roll the next track in infinite mode immediately.
+    The re-roll (pop + pick) happens right away and is freely spammable.
+    Downloads are suppressed until 5 s after the last re-roll so that
+    rapidly skipping a string of tracks doesn't start a download for each one.
+    Only the final chosen track is downloaded.
+    """
+    global _reroll_debounce_id
+    if not is_reroll_valid():
+        return
+
+    # Cancel any active download of the about-to-be-removed next track
+    if playlist["playlist"]:
+        old_next = get_clean_filename(playlist["playlist"][-1])
+        if old_next in active_downloads:
+            cancel_download(old_next)
+
+    # Cancel any pending download timer from a previous re-roll
+    if _reroll_debounce_id is not None:
+        root.after_cancel(_reroll_debounce_id)
+        _reroll_debounce_id = None
+
+    # Re-roll immediately
+    playlist["playlist"].pop()
+    get_next_infinite_track(increment=False)
+    up_next_text()
+    root.after(1000, queue_next_lightning_mode)
+
+    # get_next_infinite_track calls prefetch_next_themes internally, which may have
+    # already started a download — cancel that too so we only download after the timer.
+    if playlist["playlist"]:
+        new_next = get_clean_filename(playlist["playlist"][-1])
+        if new_next in active_downloads:
+            cancel_download(new_next)
+
+    # Schedule download 5 s from now (reset on every re-roll)
+    _reroll_debounce_id = root.after(5000, _start_reroll_prefetch)
 
 # =========================================
 #            *KEYBOARD SHORTCUTS
@@ -27578,8 +29716,13 @@ def on_release(key):
             pass
         elif disable_shortcuts:
             try:
-                if key.char == '`':
-                    toggle_disable_shortcuts()
+                enable_key = get_shortcut("enable_shortcuts")
+                if enable_key and key.char == enable_key:
+                    cmd = _shortcut_dispatch.get(enable_key)
+                    if cmd:
+                        cmd()
+                    else:
+                        toggle_disable_shortcuts()  # fallback before dispatch is built
             except:
                 pass
         elif list_loaded in ["search", "search_add"]:
@@ -27622,22 +29765,22 @@ def on_release(key):
                 elif key == key.enter:
                     list_select()
             except AttributeError:
-                if key.char == '`':
-                    toggle_disable_shortcuts()
-                elif key.char == ' ':
-                    play_pause()
-                elif key.char == 'm':
-                    toggle_mute()
-                elif key.char == 't':
-                    tag()
-                elif key.char == '*':
-                    favorite()
-                elif key.char == 'd':
-                    dock_player()
-                elif key.char == 'p':
-                    show_playlist()
-                elif key.char == 'y':
-                    show_youtube_playlist()
+                # --- Registry-driven dispatch ---
+                # Covers all shortcuts defined in DEFAULT_SHORTCUTS (or user overrides).
+                # Context-sensitive and aliased keys are handled below.
+                cmd = _shortcut_dispatch.get(key.char)
+                if cmd:
+                    cmd()
+                # --- 'i' has context-sensitive logic: shows info OR clears title popup ---
+                elif key.char == 'i':
+                    if is_title_window_up() and (artist_info_display or studio_info_display):
+                        toggle_title_popup(True)
+                    else:
+                        toggle_info_popup()
+                # --- '+' is a secondary alias for '=' (peek toggle), not in DEFAULT_SHORTCUTS ---
+                elif key.char == '+':
+                    toggle_peek()
+                # --- Digits: context-sensitive (list select vs seek position) ---
                 elif key.char.isdigit():
                     if list_loaded and list_loaded != "playlist":
                         global list_index
@@ -27646,78 +29789,7 @@ def on_release(key):
                     else:
                         seek_value = player.get_length()-((player.get_length()/10)*(10-int(key.char)))
                         seek_to(int(seek_value))
-                elif key.char == 'r':
-                    if playlist.get("infinite", False) and playlist["current_index"] == len(playlist["playlist"])-2:
-                        refetch_next_track()
-                elif key.char == 'c':
-                    toggle_censor_bar()
-                elif key.char == 'k':
-                    list_keyboard_shortcuts()
-                elif key.char == 'l':
-                    light_mode_keys = list(light_modes.keys())
-                    try:
-                        light_cycle_index = light_mode_keys.index(light_mode)
-                        next_index = (light_cycle_index + 1) % len(light_mode_keys)
-                    except ValueError:
-                        next_index = 0  # fallback if current mode isn't found
-                    mode = light_mode_keys[next_index]
-                    if mode == 'variety':
-                        toggle_light_mode()
-                    else:
-                        toggle_light_mode(mode)
-                elif key.char == 'f':
-                    show_fixed_lightning_list()
-                elif key.char == 'n':
-                    guess_extra("tags")
-                elif key.char == 'u':
-                    guess_extra("multiple")
-                elif key.char == 'b':
-                    if not (mute_peek_round_toggle or peek_round_toggle or blind_round_toggle):
-                        toggle_blind_round()
-                    elif not (peek_round_toggle or mute_peek_round_toggle):
-                        toggle_peek_round()
-                    else:
-                        toggle_mute_peek_round()
-                elif key.char in ['=', '+']:
-                    toggle_peek()
-                elif key.char == '[':
-                    narrow_peek()
-                elif key.char == ']':
-                    widen_peek()
-                elif key.char == 'v':
-                    toggle_light_mode("variety")
-                elif key.char == 'i':
-                    if is_title_window_up() and (artist_info_display or studio_info_display):
-                        toggle_title_popup(True)
-                    else:
-                        toggle_info_popup()
-                elif key.char == 'o':
-                    if not is_title_window_up():
-                        toggle_title_info_popup()
-                    else:
-                        toggle_title_info_popup()
-                elif key.char == 'e':
-                    end_session()
-                elif key.char == 's':
-                    search(add=playlist.get("infinite", False))
-                elif key.char == 'g':
-                    if guessing_extra not in ["year", "score", "popularity", "members"]:
-                        guess_extra("year")
-                    elif guessing_extra not in ["score", "popularity", "members"]:
-                        guess_extra("score")
-                    elif guessing_extra not in ["popularity", "members"]:
-                        guess_extra("popularity")
-                    else:
-                        guess_extra("members")
-                elif key.char == 'h':
-                    if guessing_extra not in ["studio", "song", "artist"]:
-                        guess_extra("studio")
-                    elif guessing_extra not in ["song", "artist"]:
-                        guess_extra("song")
-                    else:
-                        guess_extra("artist")
-                elif key.char == 'j':
-                    guess_extra("characters")
+                # --- Infinite difficulty adjust (condition-gated, not suitable for registry) ---
                 elif playlist.get("infinite") and (key.char in ['<',',']):
                     if playlist["difficulty"] > 0:
                         playlist["difficulty"] -= 1
@@ -27728,16 +29800,6 @@ def on_release(key):
                         playlist["difficulty"] += 1
                         difficulty_dropdown.current(playlist["difficulty"])
                         select_difficulty()
-                elif key.char == 'a':
-                    send_scoreboard_command("align")
-                elif key.char == 'x':
-                    send_scoreboard_command("extend")
-                elif key.char == 'z':
-                    send_scoreboard_command("shrink")
-                elif key.char == 'w':
-                    send_scoreboard_command("grow")
-                elif key.char == 'q':
-                    send_scoreboard_command("toggle")
     except AttributeError as e:
         print(f"Error: {e}")
 
@@ -27861,6 +29923,7 @@ root.after(3000, check_for_metadata_updates)  # Check for updates after 3 second
 root.after(3000, check_for_censor_updates)  # Check for censor updates after 3 seconds
 scan_directory(True)
 create_first_row_buttons()
+rebuild_shortcut_dispatch()
 threading.Thread(target=load_default_char_images, daemon=True).start()
 
 # Clean up any leftover updater files from previous updates
@@ -27913,8 +29976,8 @@ def refresh_list_on_resize():
             # Force recreation of buttons by temporarily clearing list_loaded
             temp_loaded = list_loaded
             list_set_loaded("")
-            show_list(temp_loaded, right_column, current_list_content, current_list_name_func, 
-                      list_func, current_list_selected, update=True)
+            show_list(temp_loaded, right_column, current_list_content, current_list_name_func,
+                      list_func, current_list_selected, update=True, title=current_list_title)
 
 # Bind resize event to root window
 root.bind("<Configure>", on_window_resize)
@@ -27990,5 +30053,41 @@ root.after(1000, set_volume, volume_level)
 root.after(3000, check_for_updates_on_startup)
 root.after(1000, update_living_playlists)
 root.after(500, check_download_ui_updates)  # Start checking for download UI updates
+
+def on_app_close():
+    """Safely destroy hidden root-parented widgets before closing to avoid TclError."""
+    # Cancel any pending tooltip after() callback so it can't fire on a destroyed widget
+    if _menu_tooltip_after[0]:
+        try:
+            root.after_cancel(_menu_tooltip_after[0])
+        except Exception:
+            pass
+        _menu_tooltip_after[0] = None
+    if _menu_tooltip_win[0]:
+        try:
+            _menu_tooltip_win[0].destroy()
+        except Exception:
+            pass
+        _menu_tooltip_win[0] = None
+
+    for name in ("difficulty_dropdown",):
+        widget = globals().get(name)
+        if widget is not None:
+            try:
+                widget.unbind_all("<<ComboboxSelected>>")
+                widget.destroy()
+            except Exception:
+                pass
+    # quit() exits the mainloop cleanly before destroy() tears down the widgets
+    try:
+        root.quit()
+    except Exception:
+        pass
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+root.protocol("WM_DELETE_WINDOW", on_app_close)
 
 root.mainloop()
