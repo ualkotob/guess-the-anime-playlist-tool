@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "16.1"  # Update this when making releases
+APP_VERSION = "16.2"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -3788,7 +3788,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
                     version_num = 1
 
                 version_format = "white"
-                if theme_slug == slug and version_filename and currently_playing.get('filename') == version_filename:
+                if theme_slug == slug and version_filename and int(get_version_from_filename(currently_playing.get('filename'))) == version_num:
                     version_format = "highlight"
 
                 if version_filename:
@@ -11390,6 +11390,8 @@ def update_light_round(time):
                     set_black_screen(False)
                     update_light_round_number()
                     clean_up_light_round()
+                    if synopsis_start_index is not None and fixed_current_round and fixed_current_round.get("synopsis_during_answer"):
+                        toggle_synopsis_overlay(text=get_light_synopsis_string())
                     if top_info_data:
                         top_info(top_info_data, 20)
                     if char_answer:
@@ -11442,7 +11444,7 @@ def update_light_round(time):
                 answer_time = 8
                 if light_trivia_answer:
                     answer_time = 6
-                synopsis_words = get_light_synopsis_string().split()
+                synopsis_words = get_light_synopsis_string().split(" " if fixed_current_round else None)
                 reveal_duration = light_round_length - answer_time
                 if reveal_duration > 0:
                     elapsed = light_round_length - time_left
@@ -12049,11 +12051,13 @@ def clean_up_light_round(new_round=False):
     light_speed_modifier = 1
     light_blind_one_second_count = None
     player.set_rate(light_speed_modifier)
-    for overlay in [set_progress_overlay, toggle_clues_overlay, toggle_song_overlay, toggle_synopsis_overlay, toggle_title_overlay, toggle_scramble_overlay, toggle_swap_overlay, 
+    for overlay in [set_progress_overlay, toggle_clues_overlay, toggle_song_overlay, toggle_title_overlay, toggle_scramble_overlay, toggle_swap_overlay, 
                     toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay, toggle_character_overlay, toggle_tag_cloud_overlay, toggle_episode_overlay, toggle_tile_overlay,
                     toggle_character_pixel_overlay, toggle_character_reveal_overlay, toggle_character_profile_overlay, spawn_pulsating_music_note, toggle_outer_edge_overlay,
                     toggle_emoji_overlay, toggle_character_image_overlay, toggle_character_blur_reveal_overlay, toggle_character_zoom_reveal_overlay, toggle_slice_overlay]:
         overlay(destroy=True)
+    if new_round or not (fixed_current_round and fixed_current_round.get("synopsis_during_answer")):
+        toggle_synopsis_overlay(destroy=True)
     for info in [set_frame_number, top_info]:
         info()
     if black_overlay:
@@ -13154,7 +13158,7 @@ def pick_synopsis():
     global synopsis_start_index, synopsis_split, synopsis_end_index
     if not synopsis_start_index:
         if fixed_current_round:
-            synopsis = fixed_current_round.get("synopsis_text", "No synopsis found.")
+            synopsis = fixed_current_round.get("synopsis_text", "No synopsis found.").replace("\n", " \n")
             synopsis_split = synopsis.split(" ")
             synopsis_start_index = 0
             synopsis_end_index = len(synopsis_split)
@@ -13180,7 +13184,7 @@ TITLE_GENERIC_WORDS = {"the", "a", "an", "as", "and", "of", "in", "on", "to", "w
 def get_light_synopsis_string(words = None):
     if not words:
         words = (synopsis_end_index or len(synopsis_split)) - (synopsis_start_index or 0)
-    if synopsis_start_index > 0 and not is_end_of_sentence(synopsis_split[synopsis_start_index-1]):
+    if not fixed_current_round and synopsis_start_index > 0 and not is_end_of_sentence(synopsis_split[synopsis_start_index-1]):
         text = "..."
     else:
         text = ""
@@ -13198,7 +13202,7 @@ def get_light_synopsis_string(words = None):
                 text = text + " " + word
             else:
                 text = text + word
-        if w == 40 and not is_end_of_sentence(word):
+        if not fixed_current_round and w == 40 and not is_end_of_sentence(word):
             text = text + "..."
     return text
 
@@ -13254,7 +13258,7 @@ def toggle_synopsis_overlay(text=None, destroy=False):
         overlay_height = content_height + scl(160)  # Add space for padding/title
 
         x = (screen_width - overlay_width) // 2
-        y = (screen_height - overlay_height) // 2
+        y = (screen_height - overlay_height) // 2 - scl(30)  # Adjust for bottom spacing
 
         synopsis_overlay.geometry(f"{overlay_width}x{overlay_height}+{-screen_width}+{y}")
         synopsis_overlay.update_idletasks()
@@ -18635,7 +18639,8 @@ FIXED_LIGHTNING_ROUNDS = {
     ],
     "synopsis": [
         "synopsis_header",
-        "synopsis_text"
+        "synopsis_text",
+        "synopsis_during_answer"
     ],
     "title": [
         "title_header",
@@ -18664,9 +18669,10 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "frame4": {"type": "time", "required": True},
     "test_frame": {"type": "time", "required": False},
     "synopsis_header": {"type": "text", "required": False, "default": "Synopsis"},
-    "synopsis_text": {"type": "textarea", "required": True},
+    "synopsis_text": {"type": "textarea", "required": True, "height": 10},
+    "synopsis_during_answer": {"type": "toggle", "required": False, "default": False},
     "trivia_header": {"type": "text", "required": False, "default": "Trivia"},
-    "trivia_question": {"type": "textarea", "required": True},
+    "trivia_question": {"type": "textarea", "required": True, "height": 10},
     "trivia_answer": {"type": "text", "required": True},
     "clip_header": {"type": "text", "required": False, "default": "Random Clip"},
     "ost_header": {"type": "text", "required": False, "default": "SOUNDTRACK / OST"},
@@ -18849,7 +18855,7 @@ def show_fixed_lightning_list(update=False):
                 selected = i
                 break
     
-    show_list("fixed_lightning", right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update, title="LIGHTNING ROUNDS")
+    show_list("fixed_lightning", right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update, title="FIXED LIGHTNING ROUNDS")
 
 def queue_fixed_lightning_round(index):
     """Queue a selected fixed lightning round playlist"""
@@ -19028,21 +19034,21 @@ def open_fixed_lightning_manager():
             
             # Name
             tk.Label(dialog, text="Name:", font=("Arial", 10), bg=BACKGROUND_COLOR, fg="white").pack(pady=(10, 0), padx=10, anchor="w")
-            name_entry = tk.Entry(dialog, font=("Arial", 10), bg="black", fg="white", width=45)
+            name_entry = tk.Entry(dialog, font=("Arial", 10), bg="black", fg="white", width=45, insertbackground="white")
             name_entry.pack(pady=(0, 10), padx=10)
             if existing_data:
                 name_entry.insert(0, existing_data.get('name', ''))
             
             # Description
             tk.Label(dialog, text="Description:", font=("Arial", 10), bg=BACKGROUND_COLOR, fg="white").pack(pady=(0, 0), padx=10, anchor="w")
-            desc_text = tk.Text(dialog, font=("Arial", 10), bg="black", fg="white", width=45, height=5)
+            desc_text = tk.Text(dialog, font=("Arial", 10), bg="black", fg="white", width=45, height=5, insertbackground="white")
             desc_text.pack(pady=(0, 10), padx=10)
             if existing_data:
                 desc_text.insert("1.0", existing_data.get('description', ''))
             
             # Creator
             tk.Label(dialog, text="Creator:", font=("Arial", 10), bg=BACKGROUND_COLOR, fg="white").pack(pady=(0, 0), padx=10, anchor="w")
-            creator_entry = tk.Entry(dialog, font=("Arial", 10), bg="black", fg="white", width=45)
+            creator_entry = tk.Entry(dialog, font=("Arial", 10), bg="black", fg="white", width=45, insertbackground="white")
             creator_entry.pack(pady=(0, 10), padx=10)
             if existing_data:
                 creator_entry.insert(0, existing_data.get('creator', ''))
@@ -19096,7 +19102,7 @@ def open_fixed_lightning_manager():
             creator = metadata.get('creator', '')
             
             # Create filename (sanitize)
-            filename = re.sub(r'[^a-z0-9_]', '', filename)
+            filename = re.sub(r'[^a-z0-9_]', '', name.lower().replace(' ', '_'))
             if not filename:
                 filename = "round"
             filename = f"{filename}.json"
@@ -19846,7 +19852,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 minus_btn = tk.Button(duration_frame, text="-", font=font_entry, bg="black", fg="white", width=2)
                 minus_btn.pack(side="left")
                 
-                entry = tk.Entry(duration_frame, font=font_entry, bg="black", fg="white", width=8, justify="center")
+                entry = tk.Entry(duration_frame, font=font_entry, bg="black", fg="white", width=8, justify="center", insertbackground="white")
                 current_val = round_data.get(field_name, default_duration)
                 entry.insert(0, str(current_val))
                 entry.pack(side="left", padx=3)
@@ -19896,7 +19902,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 minus_btn = tk.Button(integer_frame, text="-", font=font_entry, bg="black", fg="white", width=2)
                 minus_btn.pack(side="left")
                 
-                entry = tk.Entry(integer_frame, font=font_entry, bg="black", fg="white", width=8, justify="center")
+                entry = tk.Entry(integer_frame, font=font_entry, bg="black", fg="white", width=8, justify="center", insertbackground="white")
                 current_val = round_data.get(field_name, default_value)
                 entry.insert(0, str(current_val))
                 entry.pack(side="left", padx=3)
@@ -19941,7 +19947,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 minus_btn = tk.Button(time_frame, text="-", font=font_entry, bg="black", fg="white", width=2)
                 minus_btn.pack(side="left")
                 
-                entry = tk.Entry(time_frame, font=font_entry, bg="black", fg="white", width=8, justify="center")
+                entry = tk.Entry(time_frame, font=font_entry, bg="black", fg="white", width=8, justify="center", insertbackground="white")
                 entry.insert(0, str(round_data.get(field_name, "")))
                 entry.pack(side="left", padx=3)
                 
@@ -20018,7 +20024,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
             
             elif field_type == "text":
                 # Single-line text field
-                entry = tk.Entry(field_frame, font=font_entry, bg="black", fg="white", width=35)
+                entry = tk.Entry(field_frame, font=font_entry, bg="black", fg="white", width=35, insertbackground="white")
                 default_value = field_info.get("default", "")
                 current_value = round_data.get(field_name, default_value)
                 if current_value:
@@ -20030,7 +20036,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 # Text entry + button that opens a visual letter-picker popup
                 los_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
                 los_frame.pack(side="left")
-                entry = tk.Entry(los_frame, font=font_entry, bg="black", fg="white", width=28)
+                entry = tk.Entry(los_frame, font=font_entry, bg="black", fg="white", width=28, insertbackground="white")
                 current_value = round_data.get(field_name, "")
                 if current_value:
                     entry.insert(0, current_value)
@@ -20052,7 +20058,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 # Text entry + button that opens the letter selector in letter-output mode
                 ls_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
                 ls_frame.pack(side="left")
-                entry = tk.Entry(ls_frame, font=font_entry, bg="black", fg="white", width=28)
+                entry = tk.Entry(ls_frame, font=font_entry, bg="black", fg="white", width=28, insertbackground="white")
                 current_value = round_data.get(field_name, "")
                 if current_value:
                     entry.insert(0, current_value)
@@ -20074,7 +20080,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 # Image URL field with VIEW IMAGE button
                 url_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
                 url_frame.pack(side="left")
-                entry = tk.Entry(url_frame, font=font_entry, bg="black", fg="white", width=35)
+                entry = tk.Entry(url_frame, font=font_entry, bg="black", fg="white", width=35, insertbackground="white")
                 default_value = field_info.get("default", "")
                 current_value = round_data.get(field_name, default_value)
                 if current_value:
@@ -20124,7 +20130,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
 
             elif field_type == "textarea":
                 text_widget = tk.Text(field_frame, font=font_entry, bg="black", fg="white", 
-                                     width=40, height=4, wrap="word")
+                                     width=40, height=field_info.get("height", 4), wrap="word", insertbackground="white")
                 text_widget.pack(side="left")
                 
                 current_value = round_data.get(field_name, "")
@@ -20296,7 +20302,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 url_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
                 url_frame.pack(side="left")
                 
-                entry = tk.Entry(url_frame, font=font_entry, bg="black", fg="white", width=35)
+                entry = tk.Entry(url_frame, font=font_entry, bg="black", fg="white", width=35, insertbackground="white")
                 current_value = round_data.get(field_name, "")
                 if current_value:
                     entry.insert(0, current_value)
@@ -22218,7 +22224,7 @@ def play_filename(playlist_entry, fullscreen=True):
             print(f"File not found: {filepath}. Skipping...")
             skip_filename()
             return False
-        elif not variety_light_mode_enabled and light_mode and not has_lightning_mode_info(data, light_mode):
+        elif not fixed_current_round and not variety_light_mode_enabled and light_mode and not has_lightning_mode_info(data, light_mode):
             print(f"Not enough info for {filename}. Skipping...")
             skip_filename()
             return False
@@ -22312,7 +22318,8 @@ def play_filename(playlist_entry, fullscreen=True):
         retry_delay = 500
         if animethemes_stream:
             retry_delay = 5000  # Longer delay for streaming to allow time for buffering
-        root.after(retry_delay, play_video_retry, 5, fullscreen)  # Retry playback
+        if autoplay_toggle != 3:
+            root.after(retry_delay, play_video_retry, 5, fullscreen)  # Retry playback
     
     if playlist.get("infinite", False):
         lightning_changed = False
@@ -22336,8 +22343,11 @@ def play_filename(playlist_entry, fullscreen=True):
     save_config()
     return True
 
-def player_play():
-    player.play()
+def player_play(override_autoplay=False):
+    if autoplay_toggle != 3 or override_autoplay:
+        player.play()
+    else:
+        player.stop()
 
 # =========================================
 #         *SESSION LOGS
@@ -22990,7 +23000,6 @@ def stop():
     global fixed_lightning_queue, fixed_lightning_round_playlist_data, fixed_current_round
     video_stopped = True
     toggle_light_mode()
-    clean_up_light_round()
     light_round_started = False
     set_countdown()
     set_light_round_number()
@@ -23006,6 +23015,7 @@ def stop():
     remove_all_censor_boxes()
     toggle_coming_up_popup(False, title=(coming_up_queue or {}).get("title", ""))
     seek_bar.set(0)
+    clean_up_light_round()
 
 last_seek_time = None
 def seek(value):
@@ -29438,6 +29448,7 @@ def _get_menu_registry():
         "toggles": (toggle_disable_shortcuts,
                     lambda: "KEYS ON" if not disable_shortcuts else "KEYS OFF"),
         "popout": (lambda: create_popout_controls(), lambda: "POPOUT OPEN"),
+        "directory": (lambda: toggle_censor_bar(), lambda: "CENSORS ON" if censors_enabled else "CENSORS OFF"),
     },
 
     }  # end _get_menu_registry()
@@ -29638,7 +29649,9 @@ def create_first_row_buttons():
     def show_directory_menu(event=None):
         _open_toolbar_menu("directory", directory_menu_button, "directory")
     directory_menu_button = create_button(first_row_frame, "DIRECTORY▾", show_directory_menu, True,
-                                help_text="Browse themes grouped by different parameters.")
+                                help_text=("Browse themes grouped by different parameters.\n\n"
+                                           "Right-Click Shortcut: Toggle Censor Bars"),
+                                right_click=_rc.get("directory"))
 
     search_bar_entry = tk.Entry(
         first_row_frame,
@@ -29934,35 +29947,84 @@ next_button = tk.Button(controls_frame, text="⏭", command=play_next, bg="black
 next_button.pack(side="left", padx=0)
 
 autoplay_toggle = 0
+def _update_autoplay_button():
+    if special_repeat_track_mode:
+        autoplay_button.configure(text="🔂", fg="green")
+    elif autoplay_toggle == 0:
+        autoplay_button.configure(text="🔁", fg="white")
+    elif autoplay_toggle == 1:
+        autoplay_button.configure(text="🔂", fg="white")
+    elif autoplay_toggle == 2:
+        autoplay_button.configure(text="🔁", fg=HIGHLIGHT_COLOR)
+    elif autoplay_toggle == 3:
+        autoplay_button.configure(text="❌", fg="red")
+
+def set_autoplay_mode(mode):
+    global autoplay_toggle, special_repeat_track_mode
+    special_repeat_track_mode = False
+    autoplay_toggle = mode
+    _update_autoplay_button()
+
 def toggle_autoplay():
     global autoplay_toggle
     if special_repeat_track_mode:
         toggle_special_repeat()
         return
     autoplay_toggle += 1
-    if autoplay_toggle == 3:
+    if autoplay_toggle == 4:
         autoplay_toggle = 0
-    if autoplay_toggle == 0:
-        autoplay_button.configure(text="🔁", fg="white")
-    elif autoplay_toggle == 1:
-        autoplay_button.configure(text="🔂", fg="white")
-    elif autoplay_toggle == 2:
-        autoplay_button.configure(text="🔁", fg=HIGHLIGHT_COLOR)
+    _update_autoplay_button()
+
+def show_autoplay_menu(event=None):
+    menu = tk.Menu(root, tearoff=0, bg="black", fg="white", activebackground=HIGHLIGHT_COLOR,
+                   activeforeground="white", font=("Arial", 11))
+    menu.add_command(
+        label="🔁 AUTOPLAY: Advance to next track when video ends.",
+        command=lambda: set_autoplay_mode(0),
+        foreground="white",
+        background=HIGHLIGHT_COLOR if autoplay_toggle == 0 and not special_repeat_track_mode else "black"
+    )
+    menu.add_command(
+        label="🔂 SINGLE REPEAT: Replay current track when it ends.",
+        command=lambda: set_autoplay_mode(1),
+        foreground="white",
+        background=HIGHLIGHT_COLOR if autoplay_toggle == 1 and not special_repeat_track_mode else "black"
+    )
+    menu.add_command(
+        label="🔁 DISABLE AUTOPLAY: Don't advance to the next track when the video ends.",
+        command=lambda: set_autoplay_mode(2),
+        foreground="white",
+        background=HIGHLIGHT_COLOR if autoplay_toggle == 2 and not special_repeat_track_mode else "black"
+    )
+    menu.add_command(
+        label="❌ MANUAL  —  Video loads but does not play automatically. Use ⏯ to play.",
+        command=lambda: set_autoplay_mode(3),
+        foreground="white",
+        background=HIGHLIGHT_COLOR if autoplay_toggle == 3 and not special_repeat_track_mode else "black"
+    )
+    menu.add_separator()
+    menu.add_command(
+        label=("✅" if special_repeat_track_mode else "  ") + "🔂 SPECIAL REPEAT: Replay indefinitely until manually skipped.",
+        command=toggle_special_repeat,
+        foreground="white",
+        background=HIGHLIGHT_COLOR if special_repeat_track_mode else "black"
+    )
+    x = autoplay_button.winfo_rootx()
+    y = autoplay_button.winfo_rooty() - menu.winfo_reqheight() - 5
+    menu.tk_popup(x, y)
 
 special_repeat_track_mode = False
 def toggle_special_repeat(event=None):
-    """Right-click handler for autoplay_button to toggle a special repeat-track mode.
-    The mode stores the current track filename and is cleared when `play_next` is called."""
+    """Toggle special repeat-track mode. Cleared when `play_next` is called."""
     global special_repeat_track_mode, autoplay_toggle
     special_repeat_track_mode = not special_repeat_track_mode
     if special_repeat_track_mode:
         autoplay_toggle = 1
-        autoplay_button.configure(text="🔂", fg="green")
     else:
         autoplay_toggle = 0
-        autoplay_button.configure(text="🔁", fg="white")
+    _update_autoplay_button()
 
-autoplay_button = tk.Button(controls_frame, text="🔁", command=toggle_autoplay, bg="black", fg="white", font=("Arial", scl(30, "UI"), "bold"), border=0, width=2, anchor="center", justify="center")
+autoplay_button = tk.Button(controls_frame, text="🔁", command=show_autoplay_menu, bg="black", fg="white", font=("Arial", scl(30, "UI"), "bold"), border=0, width=2, anchor="center", justify="center")
 autoplay_button.pack(side="left", padx=0, pady=(0,scl(15, "UI")))
 autoplay_button.bind('<Button-3>', toggle_special_repeat)
 
