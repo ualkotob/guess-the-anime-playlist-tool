@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "16.0"  # Update this when making releases
+APP_VERSION = "16.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -6388,8 +6388,6 @@ def save_config():
     if not os.path.exists(files_folder):
         os.makedirs(files_folder)
     lightning_diff = compute_settings_diff(lightning_mode_settings_default, lightning_mode_settings) or {}
-    infinite_diff = compute_settings_diff(INFINITE_SETTINGS_DEFAULT, infinite_settings) or {}
-    infinite_diff = convert_infinities_to_markers(infinite_diff)
 
     _save_settings_presets(LIGHTNING_SETTINGS_FOLDER, saved_lightning_mode_settings,
                            lightning_mode_settings_default, update_fn=update_lightning_mode_settings)
@@ -6425,12 +6423,12 @@ def save_config():
         "directory": directory,
         "lightning_mode_settings": lightning_diff,
         "selected_light_mode_settings": selected_light_mode_settings,
-        "infinite_settings": infinite_diff,
         "selected_infinite_settings": selected_infinite_settings,
         "popout_layout": popout_layout if popout_layout is not None else [],
         "metadata_last_updated": metadata_last_updated,
         "censors_last_updated": censors_last_updated,
         "popout_columns": popout_columns,
+        "shortcuts": globals().get("shortcuts_config", {}),
         "playlist": playlist,
         "directory_files": directory_files
     }
@@ -6453,7 +6451,7 @@ def load_config():
     global OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global inverted_colors, inverted_positions, half_points, volume_level, stream_volume_boost, themes_cache_size, OVERLAY_COLOR_OPTIONS, non_webm_opengl, scale_main_ui, auto_fetch_missing, special_round_warning, special_round_playlist, selected_rules_file, scoreboard_rules
     global skip_play_seconds, skip_jump_seconds, SKIP_FADE_WINDOW_MS, SKIP_FADE_IN_WINDOW_MS, background_music_volume_modifier, stream_instance, ost_stream_instance
-    global popout_layout, popout_columns
+    global popout_layout, popout_columns, shortcuts_config
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -6478,10 +6476,6 @@ def load_config():
             selected_light_mode_settings = config.get("selected_light_mode_settings", "")
             saved_lightning_mode_settings = convert_infinity_markers(_load_settings_presets(LIGHTNING_SETTINGS_FOLDER))
 
-            # Load infinite settings
-            loaded_infinite = config.get("infinite_settings", {})
-            infinite_settings.clear()
-            infinite_settings.update(sync_with_default(copy.deepcopy(loaded_infinite), INFINITE_SETTINGS_DEFAULT))
             selected_infinite_settings = config.get("selected_infinite_settings", "")
             saved_infinite_settings = convert_infinity_markers(_load_settings_presets(INFINITE_SETTINGS_FOLDER))
             
@@ -6522,9 +6516,8 @@ def load_config():
                 set_volume(volume_level)
             except Exception as e:
                 pass
-            if not selected_light_mode_settings:
-                lightning_mode_settings = update_lightning_mode_settings(copy.deepcopy(lightning_mode_settings_default))
-            elif selected_light_mode_settings in saved_lightning_mode_settings:
+            if selected_light_mode_settings and selected_light_mode_settings in saved_lightning_mode_settings:
+                # A named template is selected — load it (overrides the inline saved settings)
                 lightning_mode_settings = update_lightning_mode_settings(saved_lightning_mode_settings[selected_light_mode_settings])
             
             if selected_infinite_settings and selected_infinite_settings in saved_infinite_settings:
@@ -6555,6 +6548,7 @@ def load_config():
             _saved_layout = config.get("popout_layout", None)
             popout_layout = _saved_layout if _saved_layout else None  # empty list → None (use default)
             popout_columns = int(config.get("popout_columns", 5))
+            shortcuts_config = config.get("shortcuts", {})
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -16672,8 +16666,10 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
         wrap = box_width - scl(40)
         # Try to find the largest font size that fits within 3 lines
         background = OVERLAY_BACKGROUND_COLOR
+        foreground = OVERLAY_TEXT_COLOR
         if light_name_overlay:
             background = {"a":'#374151',"s":'#065F46',"m":'#1E3A8A'}.get(title[0], '#374151')
+            foreground = "white"
             title = title[1]
         while font_size >= scl(10):
             test_font = font.Font(family="Arial", size=font_size, weight="bold")
@@ -16685,7 +16681,7 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
             box,
             text=title,
             font=("Arial", font_size, "bold"),
-            fg=OVERLAY_TEXT_COLOR,
+            fg=foreground,
             bg=background,
             wraplength=wrap,
             justify="center"
@@ -17701,7 +17697,7 @@ def play_trailer(url=None):
     url = url or currently_playing.get("data", {}).get("trailer")
     if url:
         url = f"https://www.youtube.com/watch?v={url}"
-        return stream_url(url, "Trailer", None, light_mode == 'clip')
+        return stream_url(url, "Trailer", "Trailer", light_mode == 'clip')
     return 0
 
 def get_stream_start_time(length):
@@ -20698,7 +20694,11 @@ def now_playing_background_music(track = None):
 # =========================================
 
 def toggle_info_popup():
-    toggle_title_popup(not is_title_window_up() or title_info_only)
+    if is_title_window_up() and (title_info_only or artist_info_display or studio_info_display or season_info_display or year_info_display):
+        toggle_title_popup(True)
+    else:
+        toggle_title_popup(not is_title_window_up())
+    
 
 def toggle_title_info_popup():
     # Cycle through different info display modes
@@ -20762,7 +20762,7 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
         window.attributes("-alpha", 0)  # Start fully transparent
 
     def step(i=0):
-        if i <= steps and window:
+        if i <= steps and window and window.winfo_exists():
             bounce_strength = math.sin((i / steps) * math.pi) * 5 if bounce and i > steps * 0.7 else 0
 
             new_x = int(start_x + delta_x * i + bounce_strength)
@@ -26064,6 +26064,403 @@ def add_single_line(column, line, title, newline=True):
     else:
         column.insert(tk.END, "   ", "white")
 
+def open_shortcut_editor():
+    """Interactive keyboard shortcut viewer and editor."""
+    global shortcuts_config
+
+    _SECTION_NAMES = {
+        "playlist":   "Playlist",
+        "queue":      "Queue",
+        "popups":     "Popups",
+        "toggles":    "Toggles",
+        "theme":      "Theme",
+        "hidden":     "Hidden / Controls",
+        "scoreboard": "Scoreboard",
+        "directory":  "Directory",
+        "file":       "File",
+    }
+    _MODIFIER_KEYSYMS = {
+        "Shift_L", "Shift_R", "Control_L", "Control_R",
+        "Alt_L", "Alt_R", "Meta_L", "Meta_R",
+        "Super_L", "Super_R", "Caps_Lock", "Num_Lock", "Scroll_Lock",
+    }
+
+    def _collect_shortcuttable():
+        """Walk registry and return {section_key: [items]} for items with shortcut=True."""
+        result = {}
+        for section_key, items in _get_menu_registry().items():
+            section_items = []
+            for entry in items:
+                if entry == "---" or not isinstance(entry, dict):
+                    continue
+                if entry.get("shortcut"):
+                    section_items.append(entry)
+                for sub in entry.get("submenu", []):
+                    if isinstance(sub, dict) and sub.get("shortcut"):
+                        section_items.append(sub)
+            if section_items:
+                result[section_key] = section_items
+        return result
+
+    shortcuttable = _collect_shortcuttable()
+    flat  = get_flat_registry()
+    draft = dict(shortcuts_config)   # working copy — committed only on Save
+
+    BG         = BACKGROUND_COLOR
+    FG         = "white"
+    DIM        = "#888888"
+    CAPTURE_BG = "#1e3a6e"
+    CAPTURE_FG = "#ffdd44"
+    BTN_BG     = "#2a2a2a"
+    SAVE_BG    = "#1c5c1c"
+    CLEAR_BG   = "#5c1c1c"
+
+    win = tk.Toplevel()
+    win.title("Keyboard Shortcuts")
+    win.configure(bg=BG)
+    win.resizable(False, True)
+    get_window_position_and_setup(win)
+
+    # ── search bar ───────────────────────────────────────────────────────────
+    search_frame = tk.Frame(win, bg=BG)
+    search_frame.pack(fill="x", padx=8, pady=(8, 0))
+    tk.Label(search_frame, text="🔍", bg=BG, fg=DIM,
+             font=("Arial", scl(10))).pack(side="left")
+    search_var = tk.StringVar()
+    search_entry = tk.Entry(search_frame, textvariable=search_var, bg="#1a1a1a",
+                            fg=FG, insertbackground=FG, relief="flat",
+                            font=("Arial", scl(10)), bd=4)
+    search_entry.pack(side="left", fill="x", expand=True, padx=4)
+
+    # ── scrollable area ──────────────────────────────────────────────────────
+    scroll_frame = tk.Frame(win, bg=BG)
+    scroll_frame.pack(fill="both", expand=True, padx=8, pady=(4, 0))
+
+    canvas = tk.Canvas(scroll_frame, bg=BG, highlightthickness=0)
+    vsb    = tk.Scrollbar(scroll_frame, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    vsb.pack(side="right", fill="y")
+    canvas.pack(side="left", fill="both", expand=True)
+
+    inner = tk.Frame(canvas, bg=BG)
+    cwin  = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfig(cwin, width=e.width))
+
+    # Bind scroll wheel only while mouse is over the scroll area
+    def _scroll(e):
+        canvas.yview_scroll(-1 if e.delta > 0 else 1, "units")
+    scroll_frame.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _scroll))
+    scroll_frame.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+    # ── state ────────────────────────────────────────────────────────────────
+    capturing_id    = [None]
+    row_frames      = {}   # item_id → tk.Frame
+    key_labels      = {}   # item_id → key tk.Label
+    section_hdrs    = {}   # section_key → header tk.Frame
+    row_search_text = {}   # item_id → lower-case label text
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+    def _effective_key(item_id):
+        # draft[item_id] = ""  means explicitly cleared (no key)
+        # item_id not in draft means fall back to DEFAULT_SHORTCUTS
+        if item_id in draft:
+            return draft[item_id] or None
+        return DEFAULT_SHORTCUTS.get(item_id) or None
+
+    def _display_key(item_id):
+        k = _effective_key(item_id)
+        if not k:
+            return ""
+        return _shortcut_display_name(k) or k
+
+    def _all_shortcuttable_ids():
+        return {item["id"] for items in shortcuttable.values()
+                for item in items if item.get("id")}
+
+    def _conflict_for(new_key, exclude_id):
+        for aid in _all_shortcuttable_ids():
+            if aid == exclude_id:
+                continue
+            if _effective_key(aid) == new_key:
+                item = flat.get(aid, {})
+                return item.get("label") or aid.replace("_", " ").title()
+        return None
+
+    # ── row filter ────────────────────────────────────────────────────────────
+    def _apply_filter(*_):
+        q = search_var.get().lower().strip()
+        for section_key, hdr in section_hdrs.items():
+            section_visible = False
+            for item in shortcuttable.get(section_key, []):
+                item_id = item.get("id")
+                if not item_id:
+                    continue
+                rf = row_frames.get(item_id)
+                if not rf:
+                    continue
+                match = not q or q in row_search_text.get(item_id, "")
+                if match:
+                    rf.pack(fill="x", padx=8, pady=1)
+                    section_visible = True
+                else:
+                    rf.pack_forget()
+            if section_visible:
+                hdr.pack(fill="x", pady=(8, 1))
+            else:
+                hdr.pack_forget()
+        canvas.after(10, lambda: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    search_var.trace_add("write", _apply_filter)
+
+    # ── capture mode ─────────────────────────────────────────────────────────
+    def _set_row_colors(item_id, bg, key_fg):
+        rf = row_frames.get(item_id)
+        kl = key_labels.get(item_id)
+        if rf:
+            rf.configure(bg=bg)
+            for child in rf.winfo_children():
+                try:
+                    child.configure(bg=bg)
+                except tk.TclError:
+                    pass
+        if kl:
+            kl.configure(bg=bg, fg=key_fg)
+
+    def _exit_capture(item_id):
+        capturing_id[0] = None
+        win.unbind("<KeyPress>")
+        _set_row_colors(item_id, BG, FG)
+        if item_id in key_labels:
+            key_labels[item_id].configure(text=_display_key(item_id))
+
+    def _enter_capture(item_id):
+        prev = capturing_id[0]
+        if prev:
+            _exit_capture(prev)
+        if prev == item_id:
+            return   # clicking active row again cancels capture
+        capturing_id[0] = item_id
+        _set_row_colors(item_id, CAPTURE_BG, CAPTURE_FG)
+        key_labels[item_id].configure(text="press key…")
+        win.bind("<KeyPress>", _on_key_capture)
+        win.focus_force()
+
+    def _on_key_capture(event):
+        item_id = capturing_id[0]
+        if not item_id:
+            return
+        if event.keysym == "Escape":
+            _exit_capture(item_id)
+            return
+        if event.keysym in _MODIFIER_KEYSYMS:
+            return
+        if event.char and event.char.isprintable() and len(event.char) == 1:
+            new_key = event.char
+        elif event.keysym in ("BackSpace", "Delete", "Return", "Tab"):
+            new_key = event.keysym
+        else:
+            return
+        conflict = _conflict_for(new_key, item_id)
+        if conflict:
+            kl = key_labels[item_id]
+            kl.configure(text=f"used by: {conflict}", fg="#ff6666", bg=CAPTURE_BG)
+            win.after(1600, lambda: _exit_capture(item_id))
+            return
+        draft[item_id] = new_key
+        _exit_capture(item_id)
+
+    def _reset_one(item_id):
+        """Remove override — falls back to default (or blank if no default)."""
+        draft.pop(item_id, None)
+        if capturing_id[0] == item_id:
+            _exit_capture(item_id)
+        elif item_id in key_labels:
+            key_labels[item_id].configure(text=_display_key(item_id))
+
+    def _clear_one(item_id):
+        """Explicitly unassign — no key even if there's a default."""
+        if capturing_id[0] == item_id:
+            _exit_capture(item_id)
+        if item_id in DEFAULT_SHORTCUTS:
+            draft[item_id] = ""   # explicit override: no key
+        else:
+            draft.pop(item_id, None)
+        if item_id in key_labels:
+            key_labels[item_id].configure(text="", fg=FG, bg=BG)
+
+    # ── build rows ────────────────────────────────────────────────────────────
+    fnt_section = ("Arial", scl(9),  "bold")
+    fnt_row     = ("Arial", scl(10))
+    fnt_key     = ("Courier New", scl(10), "bold")
+    fnt_dim     = ("Arial", scl(8))
+
+    for section_key, items in shortcuttable.items():
+        section_title = _SECTION_NAMES.get(section_key,
+                                           section_key.replace("_", " ").title())
+        sh = tk.Frame(inner, bg=BG)
+        sh.pack(fill="x", pady=(8, 1))
+        section_hdrs[section_key] = sh
+        tk.Label(sh, text=section_title.upper(), font=fnt_section,
+                 bg=BG, fg=DIM).pack(side="left", padx=8)
+        tk.Frame(sh, bg=DIM, height=1).pack(side="left", fill="x", expand=True, padx=4, pady=6)
+
+        for item in items:
+            item_id    = item.get("id")
+            if not item_id:
+                continue
+            label_text = item.get("label") or item_id.replace("_", " ").title()
+            row_search_text[item_id] = label_text.lower()
+
+            is_fixed    = item_id in FIXED_SHORTCUTS
+            default_key = DEFAULT_SHORTCUTS.get(item_id)
+            if is_fixed:
+                fixed_key, _fixed_lbl, _fixed_note = FIXED_SHORTCUTS[item_id]
+                def_display = _shortcut_display_name(fixed_key) or fixed_key
+            else:
+                def_display = (_shortcut_display_name(default_key) or default_key) if default_key else ""
+
+            row = tk.Frame(inner, bg=BG)
+            row.pack(fill="x", padx=8, pady=1)
+            row_frames[item_id] = row
+
+            tk.Label(row, text=label_text, font=fnt_row, bg=BG, fg=FG,
+                     anchor="w").pack(side="left", fill="x", expand=True)
+
+            if is_fixed:
+                # Fixed row: bright key display + "hardcoded" label on the right, no edit controls
+                tk.Label(row, text="hardcoded", font=fnt_dim, bg=BG, fg=DIM,
+                         width=9, anchor="e").pack(side="left")
+                tk.Label(row, text=def_display, font=fnt_key,
+                         bg=BG, fg=FG, width=6, anchor="center",
+                         relief="groove").pack(side="left", padx=(4, 2))
+                # Spacer to align with the two buttons on editable rows
+                tk.Label(row, text="", bg=BG, width=4).pack(side="left", padx=(0, 2))
+            else:
+                tk.Label(row, text=f"({def_display})" if def_display else "",
+                         font=fnt_dim, bg=BG, fg=DIM, width=6, anchor="e").pack(side="left")
+
+                kl = tk.Label(row, text=_display_key(item_id), font=fnt_key,
+                              bg=BG, fg=FG, width=6, anchor="center",
+                              relief="groove", cursor="hand2")
+                kl.pack(side="left", padx=(4, 2))
+                key_labels[item_id] = kl
+                kl.bind("<Button-1>",  lambda e, i=item_id: _enter_capture(i))
+                row.bind("<Button-1>", lambda e, i=item_id: _enter_capture(i))
+
+                tk.Button(row, text="×", font=fnt_row, bg=BTN_BG, fg="#cc4444",
+                          relief="flat", bd=0, cursor="hand2",
+                          command=lambda i=item_id: _clear_one(i)).pack(side="left", padx=(0, 1))
+                tk.Button(row, text="↺", font=fnt_row, bg=BTN_BG, fg=DIM,
+                          relief="flat", bd=0, cursor="hand2",
+                          command=lambda i=item_id: _reset_one(i)).pack(side="left", padx=(0, 2))
+
+    # ── fixed-only section: keys with no registry entry ──────────────────────
+    registry_ids = set(row_frames.keys())
+    extra_fixed  = [(fid, fdata) for fid, fdata in FIXED_SHORTCUTS.items()
+                    if fid not in registry_ids]
+    if extra_fixed:
+        sh = tk.Frame(inner, bg=BG)
+        sh.pack(fill="x", pady=(8, 1))
+        section_hdrs["_fixed_extra"] = sh
+        tk.Label(sh, text="ALWAYS-ON KEYS", font=fnt_section,
+                 bg=BG, fg=DIM).pack(side="left", padx=8)
+        tk.Frame(sh, bg=DIM, height=1).pack(side="left", fill="x", expand=True, padx=4, pady=6)
+
+        for fid, (fkey, flabel, fnote) in extra_fixed:
+            fkey_display = _shortcut_display_name(fkey) or fkey
+            hint_text    = fnote or "hardcoded"
+            row_search_text[fid] = flabel.lower()
+            row = tk.Frame(inner, bg=BG)
+            row.pack(fill="x", padx=8, pady=1)
+            row_frames[fid] = row
+
+            tk.Label(row, text=flabel, font=fnt_row, bg=BG, fg=FG,
+                     anchor="w").pack(side="left", fill="x", expand=True)
+            tk.Label(row, text=hint_text, font=fnt_dim, bg=BG, fg=DIM,
+                     width=9, anchor="e").pack(side="left")
+            tk.Label(row, text=fkey_display, font=fnt_key,
+                     bg=BG, fg=FG, width=6, anchor="center",
+                     relief="groove").pack(side="left", padx=(4, 2))
+            tk.Label(row, text="", bg=BG, width=4).pack(side="left", padx=(0, 2))
+
+        # Register extra entries into the section filtering dict
+        shortcuttable["_fixed_extra"] = [{"id": fid} for fid, _ in extra_fixed]
+        _SECTION_NAMES["_fixed_extra"] = "Always-on Keys"
+
+    # ── bottom bar ────────────────────────────────────────────────────────────
+    bar = tk.Frame(win, bg=BG)
+    bar.pack(fill="x", padx=8, pady=8)
+
+    def _reset_all():
+        if not messagebox.askyesno("Reset All Shortcuts",
+                                   "Reset all shortcuts to their defaults?",
+                                   parent=win):
+            return
+        draft.clear()
+        if capturing_id[0]:
+            _exit_capture(capturing_id[0])
+        for iid, kl in key_labels.items():
+            kl.configure(text=_display_key(iid), fg=FG, bg=BG)
+
+    def _clear_all():
+        if not messagebox.askyesno("Clear All Shortcuts",
+                                   "Remove all shortcut assignments, including defaults?",
+                                   parent=win):
+            return
+        if capturing_id[0]:
+            _exit_capture(capturing_id[0])
+        for iid in _all_shortcuttable_ids():
+            if iid in FIXED_SHORTCUTS:
+                continue   # hardcoded — cannot clear
+            if iid in DEFAULT_SHORTCUTS:
+                draft[iid] = ""
+            else:
+                draft.pop(iid, None)
+        for iid, kl in key_labels.items():
+            kl.configure(text="", fg=FG, bg=BG)
+
+    def _save():
+        global shortcuts_config
+        if capturing_id[0]:
+            _exit_capture(capturing_id[0])
+        shortcuts_config = {k: v for k, v in draft.items()
+                            if v != DEFAULT_SHORTCUTS.get(k)}
+        rebuild_shortcut_dispatch()
+        bind_shortcuts()
+        save_config()
+
+    def _cancel():
+        if capturing_id[0]:
+            _exit_capture(capturing_id[0])
+        canvas.unbind_all("<MouseWheel>")
+        win.destroy()
+
+    win.protocol("WM_DELETE_WINDOW", _cancel)
+
+    left_bar = tk.Frame(bar, bg=BG)
+    left_bar.pack(side="left")
+    tk.Button(left_bar, text="Reset All to Defaults", font=fnt_row,
+              bg=BTN_BG, fg="white", relief="flat", bd=0,
+              padx=8, pady=4, command=_reset_all).pack(side="left", padx=(0, 4))
+    tk.Button(left_bar, text="Clear All", font=fnt_row,
+              bg=CLEAR_BG, fg="white", relief="flat", bd=0,
+              padx=8, pady=4, command=_clear_all).pack(side="left")
+
+    tk.Button(bar, text="Cancel", font=fnt_row,
+              bg=BTN_BG, fg="white", relief="flat", bd=0,
+              padx=12, pady=4, command=_cancel).pack(side="right", padx=4)
+    tk.Button(bar, text="Save", font=fnt_row,
+              bg=SAVE_BG, fg="white", relief="flat", bd=0,
+              padx=16, pady=4, command=_save).pack(side="right", padx=4)
+
+    win.update_idletasks()
+    x, y = win.winfo_x(), win.winfo_y()
+    win.geometry(f"480x640+{x}+{y}")
+    win.minsize(460, 400)
+    win.maxsize(700, 1000)
+
 # =========================================
 #                 *TOGGLES
 # =========================================
@@ -28234,15 +28631,38 @@ DEFAULT_SHORTCUTS = {
 
 # Human-readable display overrides for special key names
 _SHORTCUT_DISPLAY = {
-    "BackSpace": "bksp",
+    "BackSpace": "Bksp",
+    "space":     "Space",
+    "esc":       "Esc",
+    "right":     "Right",
+    "left":      "Left",
+    "up":        "Up",
+    "down":      "Down",
+    "tab":       "Tab",
+    "enter":     "Enter",
 }
 
 def _shortcut_display_name(key_str):
-    """Return a human-readable label for a key string (e.g. 'BackSpace' → 'bksp')."""
+    """Return a human-readable label for a key string (e.g. 'BackSpace' → 'Bksp')."""
     return _SHORTCUT_DISPLAY.get(key_str, key_str) if key_str else None
 
+# Hardcoded special-key bindings that are handled directly in on_release/on_press via keyboard.Key.*
+# These cannot be remapped through the shortcut editor — shown as locked read-only rows.
+# Format: {id: (key_string, label, note_or_None)}
+FIXED_SHORTCUTS = {
+    "play_pause":    ("space", "Play / Pause",         None),
+    "stop":          ("esc",   "Stop",                 None),
+    "next":          ("right", "Next Track",           None),
+    "previous":      ("left",  "Previous Track",       None),
+    "fullscreen":    ("tab",   "Toggle Fullscreen",    None),
+    "list_enter":    ("enter", "Select from List",     None),
+    "list_move_up":  ("up",    "Navigate List Up",     None),
+    "list_move_down":("down",  "Navigate List Down",   None),
+}
+
 # User overrides loaded from config: {id → key_char_or_name}
-shortcuts_config = {}
+# Preserve any value already populated by load_config() at startup.
+shortcuts_config = globals().get("shortcuts_config") or {}
 
 # Currently active bindings: {id → key_string} — used by shortcuts editor for display
 bound_shortcuts = {}
@@ -28507,7 +28927,7 @@ def _get_menu_registry():
          ]},
         "---",
         {"id": "view_playlist", "icon": "👁", "label": "View Playlist",
-         "button_label": "PLAYLIST", "command": show_playlist,
+         "button_label": "PLAYLIST", "shortcut": True, "command": show_playlist,
          "tooltip": ("List all themes in the playlist. Scrolls to the current index.\n"
                      "Select a theme to jump to it immediately.")},
         {"id": "remove_theme", "icon": "➖", "label": "Remove Theme",
@@ -28652,15 +29072,15 @@ def _get_menu_registry():
     # ── QUEUE ────────────────────────────────────────────────────────────────
     "queue": [
         {"id": "queue_blind_round", "icon": "👁", "label": "Blind Round",
-         "button_label": "BLIND NEXT", "command": toggle_blind_round,
+         "button_label": "BLIND NEXT", "shortcut": True, "command": toggle_blind_round,
          "toggle":  lambda: blind_round_toggle,
          "tooltip": "Queue the next theme as a Blind Round — audio only, screen covered."},
         {"id": "queue_peek_round", "icon": "👀", "label": "Peek Round",
-         "button_label": "PEEK NEXT", "command": toggle_peek_round,
+         "button_label": "PEEK NEXT", "shortcut": True, "command": toggle_peek_round,
          "toggle":  lambda: peek_round_toggle,
          "tooltip": "Queue the next theme as a Peek Round — only a small moving window is visible."},
         {"id": "queue_mute_peek_round", "icon": "🔇", "label": "Mute Peek Round",
-         "button_label": "MUTE PK NEXT", "command": toggle_mute_peek_round,
+         "button_label": "MUTE PK NEXT", "shortcut": True, "command": toggle_mute_peek_round,
          "toggle":  lambda: mute_peek_round_toggle,
          "tooltip": "Queue the next theme as a Mute Peek Round — small window visible, audio muted."},
         "---",
@@ -28675,7 +29095,7 @@ def _get_menu_registry():
              for k, v in light_modes.items()
          ]},
         {"id": "lightning_variety", "icon": "🎲", "label": "Variety Lightning Round",
-         "button_label": "VARIETY", "command": lambda: toggle_light_mode("variety"),
+         "button_label": "VARIETY", "shortcut": True, "command": lambda: toggle_light_mode("variety"),
          "toggle":  lambda: light_mode == "variety",
          "tooltip": "Start a Variety Lightning Round — randomly picks round types weighted by popularity."},
         {"id": "lightning_settings", "icon": "🛠", "label": "Lightning Settings",
@@ -28683,14 +29103,14 @@ def _get_menu_registry():
          "tooltip": "Edit length, variants, and variety settings for each lightning round type."},
         "---",
         {"id": "show_youtube", "icon": "▶", "label": "YouTube Videos",
-         "button_label": "YOUTUBE", "command": show_youtube_playlist,
+         "button_label": "YOUTUBE", "shortcut": True, "command": show_youtube_playlist,
          "tooltip": "Browse and queue a YouTube video to play after the current theme."},
         {"id": "manage_youtube", "icon": "🎥", "label": "Manage YouTube Videos",
          "button_label": "MANAGE YT", "command": open_youtube_editor,
          "tooltip": "Add, edit, and archive YouTube videos for queuing."},
         "---",
         {"id": "show_fixed_lightning", "icon": "📋", "label": "Fixed Lightning Rounds",
-         "button_label": "FIXED ROUND", "command": show_fixed_lightning_list,
+         "button_label": "FIXED ROUND", "shortcut": True, "command": show_fixed_lightning_list,
          "tooltip": "Queue up a curated fixed lightning round playlist."},
         {"id": "manage_fixed_rounds", "icon": "📋", "label": "Manage Fixed Lightning Rounds",
          "button_label": "MANAGE FIXED", "command": open_fixed_lightning_manager,
@@ -28700,56 +29120,56 @@ def _get_menu_registry():
     # ── POPUPS ───────────────────────────────────────────────────────────────
     "popups": [
         {"id": "info_popup", "icon": "ℹ", "label": "Info Popup",
-         "button_label": "INFO", "command": toggle_info_popup,
+         "button_label": "INFO", "shortcut": True, "command": toggle_info_popup,
          "toggle":  lambda: is_title_window_up() and not title_info_only,
          "tooltip": "Show or hide the information popup at the bottom of the screen."},
         {"id": "title_popup", "icon": "𝕋", "label": "Title Popup",
-         "button_label": "TITLE", "command": toggle_title_info_popup,
+         "button_label": "TITLE", "shortcut": True, "command": toggle_title_info_popup,
          "toggle":  lambda: is_title_window_up() and title_info_only,
          "tooltip": "Show or hide the title popup at the bottom of the screen."},
         {"id": "artist_info", "icon": "🎤", "label": "Artist Info",
-         "button_label": "ARTIST INFO", "command": toggle_artist_info_popup,
+         "button_label": "ARTIST INFO", "shortcut": True, "command": toggle_artist_info_popup,
          "toggle":  lambda: bool(artist_info_display),
          "tooltip": "Show or hide the info popup listing themes by this artist."},
         {"id": "studio_info", "icon": "🏢", "label": "Studio Info",
-         "button_label": "STUDIO INFO", "command": toggle_studio_info_popup,
+         "button_label": "STUDIO INFO", "shortcut": True, "command": toggle_studio_info_popup,
          "toggle":  lambda: bool(studio_info_display),
          "tooltip": "Show or hide the info popup listing anime by this studio."},
         {"id": "season_rankings", "icon": "📅", "label": "Season Rankings",
-         "button_label": "SEASON", "command": toggle_season_info_popup,
+         "button_label": "SEASON", "shortcut": True, "command": toggle_season_info_popup,
          "toggle":  lambda: bool(season_info_display),
          "tooltip": "Show or hide the info popup with season popularity rankings."},
         {"id": "year_rankings", "icon": "🗓", "label": "Year Rankings",
-         "button_label": "YEAR", "command": toggle_year_info_popup,
+         "button_label": "YEAR", "shortcut": True, "command": toggle_year_info_popup,
          "toggle":  lambda: bool(year_info_display),
          "tooltip": "Show or hide the info popup with year popularity rankings."},
         "---",
         {"id": "auto_info_start", "icon": "⏪", "label": "Auto-show at Start",
-         "button_label": "AUTO START", "command": toggle_auto_info_start,
+         "button_label": "AUTO START", "shortcut": True, "command": toggle_auto_info_start,
          "toggle":  lambda: auto_info_start,
          "tooltip": "When enabled, automatically shows the info popup at the start of each theme."},
         {"id": "auto_info_end", "icon": "⏩", "label": "Auto-show at End",
-         "button_label": "AUTO END", "command": toggle_auto_info_end,
+         "button_label": "AUTO END", "shortcut": True, "command": toggle_auto_info_end,
          "toggle":  lambda: auto_info_end,
          "tooltip": "When enabled, automatically shows the info popup during the last 8 seconds."},
         "---",
         {"label": "Bonus Questions", "icon": "?",
          "tooltip": "Start a bonus question for the currently playing theme.",
          "submenu": [
-             {"id": "bonus_multiple", "icon": "４", "label": "Multiple Choice",  "button_label": "MULTIPLE",  "command": lambda: guess_extra("multiple"),  "toggle": lambda: guessing_extra == "multiple",  "tooltip": "Multiple-choice: guess the anime from 4 options."},
-             {"id": "bonus_year",     "icon": "📅", "label": "Year",              "button_label": "YEAR",       "command": lambda: guess_extra("year"),       "toggle": lambda: guessing_extra == "year",       "tooltip": "Guess the year this anime first aired."},
-             {"id": "bonus_score",    "icon": "🏆", "label": "Score",             "button_label": "SCORE",      "command": lambda: guess_extra("score"),      "toggle": lambda: guessing_extra == "score",      "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
-             {"id": "bonus_members",  "icon": "👥", "label": "Members",           "button_label": "MEMBERS",    "command": lambda: guess_extra("members"),    "toggle": lambda: guessing_extra == "members",    "tooltip": "Guess the number of MyAnimeList members."},
-             {"id": "bonus_rank",     "icon": "🥇", "label": "Popularity Rank",   "button_label": "RANK",       "command": lambda: guess_extra("popularity"), "toggle": lambda: guessing_extra == "popularity", "tooltip": "Guess the popularity rank on MyAnimeList."},
-             {"id": "bonus_tags",     "icon": "🔖", "label": "Tags",              "button_label": "TAGS",       "command": lambda: guess_extra("tags"),       "toggle": lambda: guessing_extra == "tags",       "tooltip": "Guess the genres/themes/demographics tags."},
-             {"id": "bonus_studio",   "icon": "🏢", "label": "Studio",            "button_label": "STUDIO",     "command": lambda: guess_extra("studio"),     "toggle": lambda: guessing_extra == "studio",     "tooltip": "Guess the studio that made this anime."},
-             {"id": "bonus_artist",   "icon": "🎤", "label": "Artist",            "button_label": "ARTIST",     "command": lambda: guess_extra("artist"),     "toggle": lambda: guessing_extra == "artist",     "tooltip": "Guess the artist who performed the theme."},
-             {"id": "bonus_song",     "icon": "🎵", "label": "Song Title",        "button_label": "SONG",       "command": lambda: guess_extra("song"),       "toggle": lambda: guessing_extra == "song",       "tooltip": "Guess the name of the song."},
-             {"id": "bonus_chars",    "icon": "👤", "label": "Characters",        "button_label": "CHARACTERS", "command": lambda: guess_extra("characters"), "toggle": lambda: guessing_extra == "characters", "tooltip": "Identify 2 characters from this anime out of 6 shown."},
+             {"id": "bonus_multiple", "icon": "４", "label": "Multiple Choice",  "button_label": "MULTIPLE",  "shortcut": True, "command": lambda: guess_extra("multiple"),  "toggle": lambda: guessing_extra == "multiple",  "tooltip": "Multiple-choice: guess the anime from 4 options."},
+             {"id": "bonus_year",     "icon": "📅", "label": "Year",              "button_label": "YEAR",       "shortcut": True, "command": lambda: guess_extra("year"),       "toggle": lambda: guessing_extra == "year",       "tooltip": "Guess the year this anime first aired."},
+             {"id": "bonus_score",    "icon": "🏆", "label": "Score",             "button_label": "SCORE",      "shortcut": True, "command": lambda: guess_extra("score"),      "toggle": lambda: guessing_extra == "score",      "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
+             {"id": "bonus_members",  "icon": "👥", "label": "Members",           "button_label": "MEMBERS",    "shortcut": True, "command": lambda: guess_extra("members"),    "toggle": lambda: guessing_extra == "members",    "tooltip": "Guess the number of MyAnimeList members."},
+             {"id": "bonus_rank",     "icon": "🥇", "label": "Popularity Rank",   "button_label": "RANK",       "shortcut": True, "command": lambda: guess_extra("popularity"), "toggle": lambda: guessing_extra == "popularity", "tooltip": "Guess the popularity rank on MyAnimeList."},
+             {"id": "bonus_tags",     "icon": "🔖", "label": "Tags",              "button_label": "TAGS",       "shortcut": True, "command": lambda: guess_extra("tags"),       "toggle": lambda: guessing_extra == "tags",       "tooltip": "Guess the genres/themes/demographics tags."},
+             {"id": "bonus_studio",   "icon": "🏢", "label": "Studio",            "button_label": "STUDIO",     "shortcut": True, "command": lambda: guess_extra("studio"),     "toggle": lambda: guessing_extra == "studio",     "tooltip": "Guess the studio that made this anime."},
+             {"id": "bonus_artist",   "icon": "🎤", "label": "Artist",            "button_label": "ARTIST",     "shortcut": True, "command": lambda: guess_extra("artist"),     "toggle": lambda: guessing_extra == "artist",     "tooltip": "Guess the artist who performed the theme."},
+             {"id": "bonus_song",     "icon": "🎵", "label": "Song Title",        "button_label": "SONG",       "shortcut": True, "command": lambda: guess_extra("song"),       "toggle": lambda: guessing_extra == "song",       "tooltip": "Guess the name of the song."},
+             {"id": "bonus_chars",    "icon": "👤", "label": "Characters",        "button_label": "CHARACTERS", "shortcut": True, "command": lambda: guess_extra("characters"), "toggle": lambda: guessing_extra == "characters", "tooltip": "Identify 2 characters from this anime out of 6 shown."},
          ]},
         "---",
         {"id": "end_session", "icon": "", "label": "End Screen",
-         "button_label": "END SESSION", "command": end_session,
+         "button_label": "END SESSION", "shortcut": True, "command": end_session,
          "tooltip": "Display the end session screen with a scrolling message and themes played count."},
     ],
 
@@ -28757,32 +29177,32 @@ def _get_menu_registry():
     "toggles": [
         {"id": "blind", "icon": "👁", "label": "Blind",
          "button_label": "BLIND",
-         "command": lambda: blind(True),
+         "shortcut": True, "command": lambda: blind(True),
          "toggle":  lambda: black_overlay is not None,
          "tooltip": "Covers the screen with a color matching the average screen color. Shows a progress bar if a video is playing."},
         {"id": "peek", "icon": "👀", "label": "Peek",
          "button_label": "PEEK",
-         "command": toggle_peek,
+         "shortcut": True, "command": toggle_peek,
          "toggle":  lambda: bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes),
          "tooltip": "Covers the screen except for a small moving peek window. Picks one of three variants at random."},
         {"id": "narrow_peek", "icon": "◀", "label": "Narrow Peek",
          "button_label": "NARROW PK",
-         "command": narrow_peek,
+         "shortcut": True, "command": narrow_peek,
          "tooltip": "Narrows the gap of the peek window."},
         {"id": "widen_peek", "icon": "▶", "label": "Widen Peek",
          "button_label": "WIDEN PK",
-         "command": widen_peek,
+         "shortcut": True, "command": widen_peek,
          "tooltip": "Widens the gap of the peek window."},
         {"id": "mute", "icon": "🔇", "label": "Mute",
          "button_label": "MUTE",
-         "command": toggle_mute,
+         "shortcut": True, "command": toggle_mute,
          "toggle":  lambda: light_muted if (light_mode or light_round_started) else disable_video_audio,
          "tooltip": "Toggles muting the video/theme audio."},
         "---",
-        {"id": "censors", "label": lambda: f"Censors Toggle",
+        {"id": "censors", "label": "Censors Toggle",
          "icon": lambda: f"({len(get_file_censors(currently_playing.get('filename','')) or [])})",
-         "button_label": lambda: f"CENSORS",
-         "command": toggle_censor_bar,
+         "button_label": "CENSORS",
+         "shortcut": True, "command": toggle_censor_bar,
          "toggle":  lambda: censors_enabled,
          "tooltip": "Toggle censor bars on or off. Censor data is loaded from censors.json and any json files with 'censor' in the name."},
         {"id": "censor_editor", "icon": "➕", "label": "Censor Editor",
@@ -28797,24 +29217,24 @@ def _get_menu_registry():
          "tooltip": "Toggle auto refreshing jikan metadata (score, members) as themes play — never refreshes the same anime twice per session."},
         {"id": "progress_bar", "icon": "▬", "label": "Progress Bar",
          "button_label": "PROGRESS",
-         "command": toggle_progress_bar,
+         "shortcut": True, "command": toggle_progress_bar,
          "toggle":  lambda: progress_bar_enabled,
          "tooltip": "Toggle a subtle progress bar overlay showing the current playback position."},
         {"id": "desktop_black", "icon": "🖥", "label": "Desktop Black",
          "button_label": "DESK.BLACK",
-         "command": toggle_desktop_black_overlay,
+         "shortcut": True, "command": toggle_desktop_black_overlay,
          "toggle":  lambda: desktop_black_overlay is not None,
          "tooltip": "Covers the desktop with a black screen behind all windows. Useful for hiding the desktop during a session."},
         "---",
         {"id": "enable_shortcuts", "icon": "", "label": "Enable Shortcuts",
          "button_label": "SHORTCUTS",
-         "command": toggle_disable_shortcuts,
+         "shortcut": True, "command": toggle_disable_shortcuts,
          "toggle":  lambda: not disable_shortcuts,
          "tooltip": "Toggle shortcut keys on or off."},
-        {"id": "view_shortcuts", "icon": "", "label": "View Shortcuts",
+        {"id": "view_shortcuts", "icon": "", "label": "Edit/View Shortcuts",
          "button_label": "VIEW KEYS",
-         "command": list_keyboard_shortcuts,
-         "tooltip": "List all keyboard shortcuts used in the application."},
+         "shortcut": True, "command": open_shortcut_editor,
+         "tooltip": "View and edit keyboard shortcuts."},
     ],
 
     # ── THEME ────────────────────────────────────────────────────────────────
@@ -28823,27 +29243,27 @@ def _get_menu_registry():
          "condition": lambda: not currently_playing.get("filename"),
          "tooltip": "No theme is currently playing."},
         {"id": "tag", "icon": "❌", "label": "Tag",
-         "button_label": "TAG", "command": tag,
+         "button_label": "TAG", "shortcut": True, "command": tag,
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_tagged(currently_playing.get("filename"))),
          "tooltip": "Add or remove the current theme from the 'Tagged Themes' playlist."},
         {"id": "favorite", "icon": "❤", "label": "Favorite",
-         "button_label": "FAVORITE", "command": favorite,
+         "button_label": "FAVORITE", "shortcut": True, "command": favorite,
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_favorited(currently_playing.get("filename"))),
          "tooltip": "Add or remove the current theme from the 'Favorite Themes' playlist."},
         {"id": "blind_mark", "icon": "👁", "label": "Blind Mark",
-         "button_label": "BLIND MARK", "command": blind_mark,
+         "button_label": "BLIND MARK", "shortcut": True, "command": blind_mark,
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_blind_mark(currently_playing.get("filename"))),
          "tooltip": "Add or remove the current theme from the 'Blind Themes' auto-round playlist."},
         {"id": "peek_mark", "icon": "👀", "label": "Peek Mark",
-         "button_label": "PEEK MARK", "command": peek_mark,
+         "button_label": "PEEK MARK", "shortcut": True, "command": peek_mark,
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_peek_mark(currently_playing.get("filename"))),
          "tooltip": "Add or remove the current theme from the 'Peek Themes' auto-round playlist."},
         {"id": "mute_peek_mark", "icon": "🔇", "label": "Mute Peek Mark",
-         "button_label": "MUTE PK MRK", "command": mute_peek_mark,
+         "button_label": "MUTE PK MRK", "shortcut": True, "command": mute_peek_mark,
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_mute_peek_mark(currently_playing.get("filename"))),
          "tooltip": "Add or remove the current theme from the 'Mute Peek Themes' auto-round playlist."},
@@ -28948,38 +29368,38 @@ def _get_menu_registry():
     # ── HIDDEN (shortcuts only — no UI display) ─────────────────────────────
     "hidden": [
         {"id": "dock_player", "icon": "📌", "label": "Dock Player",
-         "button_label": "DOCK", "command": dock_player,
+         "button_label": "DOCK", "shortcut": True, "command": dock_player,
          "tooltip": "Toggle docking the player to the bottom of the screen."},
         {"id": "search_themes",     "label": "Search Themes",
-         "command": lambda: _focus_search_entry(),
+         "shortcut": True, "command": lambda: _focus_search_entry(),
          "tooltip": "Open the theme search (shortcut-key mode)."},
         {"id": "reroll_next", "icon": lambda: "🔄" if is_reroll_valid() else "", "label": "Re-roll Next Track",
-         "button_label": lambda: "RE-ROLL" if is_reroll_valid() else "", "command": reroll_next,
+         "button_label": lambda: "RE-ROLL" if is_reroll_valid() else "", "shortcut": True, "command": reroll_next,
          "tooltip": "Re-fetch the next track in infinite mode (only at the penultimate position)."},
         {"id": "cycle_light_mode",  "label": "Cycle Lightning Mode",
-         "button_label": "CYCLE LIGHT", "command": cycle_light_mode,
+         "button_label": "CYCLE LIGHT", "shortcut": True, "command": cycle_light_mode,
          "tooltip": "Cycle through all lightning round modes in order."},
         {"id": "cycle_blind_peek",  "label": "Cycle Blind / Peek",
-         "button_label": "CYCLE BLIND/PEEK", "command": cycle_blind_peek,
+         "button_label": "CYCLE BLIND/PEEK", "shortcut": True, "command": cycle_blind_peek,
          "tooltip": "Cycle: off → blind round → peek round → mute peek round."},
         {"id": "cycle_guess_stats", "label": "Cycle Stat Questions",
-         "button_label": "CYCLE STAT ?s", "command": cycle_guess_stats,
+         "button_label": "CYCLE STAT ?s", "shortcut": True, "command": cycle_guess_stats,
          "tooltip": "Cycle bonus questions: year → score → popularity → members."},
         {"id": "cycle_guess_music", "label": "Cycle Music Questions",
-         "button_label": "CYCLE MUSIC ?s", "command": cycle_guess_music,
+         "button_label": "CYCLE MUSIC ?s", "shortcut": True, "command": cycle_guess_music,
          "tooltip": "Cycle bonus questions: studio → song → artist."},
         # ── PLAYER CONTROLS (no toolbar button — popout / shortcuts only) ──
         {"id": "play_pause", "icon": "⏯",  "label": "Play/Pause",  "button_label": "PLAY/PAUSE",
-         "button_label": "PLAY/PAUSE", "command": play_pause,  "tooltip": "Toggle play or pause."},
+         "button_label": "PLAY/PAUSE", "shortcut": True, "command": play_pause,  "tooltip": "Toggle play or pause."},
         {"id": "stop", "icon": "⏹", "label": "Stop", "button_label": "STOP",
-         "command": stop, "tooltip": "Stop playback."},
+         "shortcut": True, "command": stop, "tooltip": "Stop playback."},
         {"id": "previous", "icon": "⏮", "label": "Previous","button_label": "PREVIOUS",
-         "command": play_previous, "tooltip": "Go to the previous theme."},
+         "shortcut": True, "command": play_previous, "tooltip": "Go to the previous theme."},
         {"id": "next", "icon": "⏭", "label": "Next","button_label": "NEXT",
-         "command": play_next, "tooltip": "Go to the next theme."},
+         "shortcut": True, "command": play_next, "tooltip": "Go to the next theme."},
         {"id": "lightning_start", "label": "Start/Stop Lightning",
          "button_label": lambda: "⏹ STOP" if light_mode else "▶ START",
-         "command": select_lightning_mode,
+         "shortcut": True, "command": select_lightning_mode,
          "toggle":  lambda: bool(light_mode),
          "tooltip": "Start or stop the currently selected lightning round mode."},
     ],
@@ -28987,19 +29407,19 @@ def _get_menu_registry():
     # ── SCOREBOARD (shortcuts only — no UI display) ───────────────────────────
     "scoreboard": [
         {"id": "scoreboard_align",  "label": "Align Scoreboard",
-         "command": lambda: send_scoreboard_command("align"),
+         "shortcut": True, "command": lambda: send_scoreboard_command("align"),
          "tooltip": "Toggles left or right alignment of scoreboard."},
         {"id": "scoreboard_extend", "label": "Extend Scoreboard",
-         "command": lambda: send_scoreboard_command("extend"),
+         "shortcut": True, "command": lambda: send_scoreboard_command("extend"),
          "tooltip": "Toggle showing extended stats on the scoreboard."},
         {"id": "scoreboard_shrink", "label": "Shrink Scoreboard",
-         "command": lambda: send_scoreboard_command("shrink"),
+         "shortcut": True, "command": lambda: send_scoreboard_command("shrink"),
          "tooltip": "Make the scoreboard smaller."},
         {"id": "scoreboard_grow",   "label": "Grow Scoreboard",
-         "command": lambda: send_scoreboard_command("grow"),
+         "shortcut": True, "command": lambda: send_scoreboard_command("grow"),
          "tooltip": "Make the scoreboard bigger."},
         {"id": "scoreboard_toggle", "label": "Toggle Scoreboard",
-         "command": lambda: send_scoreboard_command("toggle"),
+         "shortcut": True, "command": lambda: send_scoreboard_command("toggle"),
          "tooltip": "Show or hide the scoreboard."},
     ],
 
@@ -29745,32 +30165,32 @@ def on_release(key):
                 search_term = search_term + key.char
                 search(True, add=playlist.get("infinite", False))
         else:
-            try:
+            if isinstance(key, keyboard.Key):
                 if not (grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values())):
-                    if key == key.right:
+                    if key == keyboard.Key.right:
                         play_next()
-                    elif key == key.left:
+                    elif key == keyboard.Key.left:
                         play_previous()
-                if key == key.space:
+                if key == keyboard.Key.space:
                     play_pause()
-                elif key == key.esc:
+                elif key == keyboard.Key.esc:
                     stop()
-                elif key == key.tab:
+                elif key == keyboard.Key.tab:
                     player.toggle_fullscreen()
-                elif key == key.backspace:
+                elif key == keyboard.Key.backspace:
                     if (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
                         toggle_peek()
                     else:
                         blind(True)
-                elif key == key.enter:
+                elif key == keyboard.Key.enter:
                     list_select()
-            except AttributeError:
+            elif isinstance(key, keyboard.KeyCode) and key.char:
                 # --- Registry-driven dispatch ---
                 # Covers all shortcuts defined in DEFAULT_SHORTCUTS (or user overrides).
                 # Context-sensitive and aliased keys are handled below.
                 cmd = _shortcut_dispatch.get(key.char)
                 if cmd:
-                    cmd()
+                    root.after(0, cmd)
                 # --- 'i' has context-sensitive logic: shows info OR clears title popup ---
                 elif key.char == 'i':
                     if is_title_window_up() and (artist_info_display or studio_info_display):
@@ -29857,10 +30277,13 @@ def on_mouse_click(x, y, button, pressed):
             mouse_left_pressed = True
             if (grow_overlay_boxes and 
                 any(box.winfo_exists() for box in grow_overlay_boxes.values())):
-                mouse_dragging_grow_overlay = True
-                target_mouse_position = (x, y)
-                if animation_after_id is None:
-                    smooth_move_grow_overlay()
+                screen_w = root.winfo_screenwidth()
+                screen_h = root.winfo_screenheight()
+                if 0 <= x < screen_w and 0 <= y < screen_h:
+                    mouse_dragging_grow_overlay = True
+                    target_mouse_position = (x, y)
+                    if animation_after_id is None:
+                        smooth_move_grow_overlay()
         
         elif button == mouse.Button.right:
             widen_peek()
@@ -29889,9 +30312,12 @@ def on_mouse_move(x, y):
     
     # If left mouse is pressed and we're dragging the grow overlay
     if mouse_dragging_grow_overlay and mouse_left_pressed:
-        target_mouse_position = (x, y)
-        if animation_after_id is None:
-            smooth_move_grow_overlay()
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        if 0 <= x < screen_w and 0 <= y < screen_h:
+            target_mouse_position = (x, y)
+            if animation_after_id is None:
+                smooth_move_grow_overlay()
 
 def on_mouse_scroll(x, y, dx, dy):
     """Handle mouse scroll events."""
