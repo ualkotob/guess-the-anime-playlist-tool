@@ -75,9 +75,12 @@ _socketio = None
 _answer_queue = queue.Queue()
 _removal_queue = queue.Queue()  # names removed by host via web panel
 _emoji_queue = queue.Queue()    # (name, emoji) tuples sent by players
+_served_queue = queue.Queue()   # names of players who were served the current question
 _current_question = None   # dict pushed to newly-connecting clients
-_taken_years: set = set()   # years already submitted in the current year-round
-_host_name: str = ''            # name that grants host-view access
+_taken_years:  set = set()   # years already submitted in the current year-round
+_taken_scores: set = set()   # scores already submitted in the current drum-round
+_taken_ranks:  set = set()   # ranks already submitted in the current rank-round
+_host_password: str = ''        # password that grants host-view access
 _host_sids: set = set()         # connected socket SIDs granted host access
 _submitted_answers: list = []   # answers collected for the current question
 _current_rules: dict = {}       # rules header+body shown on the waiting screen
@@ -97,6 +100,14 @@ _SCOREBOARD_DATA = 'scoreboard_data'
 _session_lines: list = []  # latest session history text lines
 _session_filename: str = 'session_history.txt'  # download filename
 _timer_state: dict = {}    # {seconds, paused} while a timer is active; empty = no timer
+_current_metadata: dict = {}  # latest currently-playing metadata; pushed to host clients
+_info_public: bool = False    # when True, metadata button is shown to all clients
+_playback_state: dict = {}    # {current_ms, length_ms, playing} pushed to host clients
+_up_next: dict = {}           # up-next track info; pushed to host clients
+_current_marks: dict = {}     # {tagged, favorited, blind, peek, mute_peek} for current theme
+_current_toggles: dict = {}   # {blind, peek, mute, censors, shortcuts, dock, censor_count}
+_host_action_callback = None  # callable(action, data) set by main app for remote control
+_pending_selections: dict = {}  # name → answer; silently tracks current selection before submit
 
 public_url = None          # Readable from main app after start()
 
@@ -135,10 +146,9 @@ _HTML = r"""<!DOCTYPE html>
     body {
       background: #111; color: #fff;
       font-family: 'Segoe UI', sans-serif;
-      min-height: 100vh;
       display: flex; flex-direction: column;
-      align-items: center; justify-content: center;
-      padding: 20px; gap: 8px;
+      align-items: center; justify-content: flex-start;
+      padding: 60px 20px 20px; gap: 8px;
     }
     h1 {
       font-size: 0.9em; color: #5566aa; letter-spacing: 0.22em;
@@ -172,7 +182,8 @@ _HTML = r"""<!DOCTYPE html>
     #top-bar {
       position: fixed; top: 0; left: 0; right: 0;
       z-index: 300; display: flex; align-items: center;
-      padding: 8px 12px; pointer-events: none;
+      padding: 8px 12px; min-height: 44px; pointer-events: none;
+      transition: left 0.25s ease, right 0.25s ease;
     }
     /* ── History button (top-left) ── */
     #history-btn {
@@ -184,7 +195,7 @@ _HTML = r"""<!DOCTYPE html>
     /* ── History modal ── */
     #history-overlay {
       display: none; position: fixed; inset: 0;
-      background: rgba(0,0,0,0.75); z-index: 700;
+      background: rgba(0,0,0,0.75); z-index: 760;
       align-items: flex-end; justify-content: center;
     }
     #history-overlay.active { display: flex; }
@@ -287,6 +298,19 @@ _HTML = r"""<!DOCTYPE html>
     .drum-value-display {
       text-align: center; font-size: 1.1em; color: #aaa; margin-bottom: 14px;
     }
+    .drum-nav {
+      display: flex; flex-direction: column; justify-content: center; gap: 8px;
+    }
+    .drum-nav-btn {
+      width: 46px; height: 38px;
+      background: #1e1e1e; border: 1px solid #333; border-radius: 6px;
+      color: #666; font-size: 0.8em; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: color .15s, border-color .15s;
+      letter-spacing: -0.5px;
+    }
+    .drum-nav-btn:hover { color: #ccc; border-color: #556; }
+    .drum-nav-btn:active { background: #2a2a2a; }
 
     /* ── Input mode toggle ── */
     .input-toggle {
@@ -300,11 +324,18 @@ _HTML = r"""<!DOCTYPE html>
 
     /* ── Stepper (members / popularity) ── */
     .stepper-wrap { margin-bottom: 16px; }
+    .stepper-input-wrap { position: relative; margin-bottom: 10px; }
     .stepper-display {
       text-align: center; font-size: 2em; font-weight: bold;
-      padding: 14px; background: #1a1a1a; border: 1px solid #444; border-radius: 8px;
-      margin-bottom: 10px; letter-spacing: 1px;
+      padding: 14px 40px 14px 14px; background: #1a1a1a; border: 1px solid #444; border-radius: 8px;
+      letter-spacing: 1px;
       width: 100%; box-sizing: border-box; color: #fff;
+    }
+    .stepper-type-hint {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 0.65em; font-weight: bold; color: #777;
+      background: #2a2a2a; border: 1px solid #555; border-radius: 3px;
+      padding: 2px 5px; pointer-events: none; letter-spacing: 0; user-select: none;
     }
     .stepper-row {
       display: grid; gap: 6px; margin-bottom: 6px;
@@ -319,6 +350,61 @@ _HTML = r"""<!DOCTYPE html>
     .step-btn:hover { background: #2e2e2e; }
     .step-btn.neg { color: #f88; }
     .step-btn.pos { color: #8f8; }
+
+    /* ── Rank slider (popularity) ── */
+    .rank-display-wrap { position: relative; margin-bottom: 12px; }
+    .rank-display {
+      text-align: center; font-size: 2em; font-weight: bold;
+      padding: 14px 40px 14px 14px; background: #1a1a1a; border: 1px solid #444; border-radius: 8px;
+      width: 100%; box-sizing: border-box; color: #fff; letter-spacing: 1px;
+    }
+    .rank-type-hint {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 0.65em; font-weight: bold; color: #777;
+      background: #2a2a2a; border: 1px solid #555; border-radius: 3px;
+      padding: 2px 5px; pointer-events: none; letter-spacing: 0; user-select: none;
+    }
+    .rank-slider-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .rank-slider-label { font-size: 0.72em; color: #666; white-space: nowrap; }
+    .rank-slider-wrap { position: relative; flex: 1; display: flex; align-items: center; }
+    .rank-slider {
+      width: 100%; -webkit-appearance: none; appearance: none;
+      height: 8px; border-radius: 4px; outline: none; cursor: pointer;
+    }
+    .rank-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 22px; height: 22px;
+      border-radius: 50%; background: #fff; border: 2px solid #3a7abf; cursor: pointer;
+    }
+    .rank-slider::-moz-range-thumb {
+      width: 22px; height: 22px;
+      border-radius: 50%; background: #fff; border: 2px solid #3a7abf; cursor: pointer; border: none;
+    }
+    .rank-preset-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; margin-bottom: 8px; justify-content: center; }
+    .rank-preset-btn {
+      padding: 6px 10px; background: #222; border: 1px solid #444;
+      border-radius: 6px; color: #aaa; font-size: 0.8em; cursor: pointer;
+      transition: background .12s, border-color .12s;
+    }
+    .rank-preset-btn:hover { background: #2e2e2e; border-color: #666; color: #ddd; }
+    .rank-preset-btn.rank-active { border-color: #3a7abf; color: #7ab8f5; background: #1a2333; }
+    .rank-adj-row { display: grid; grid-template-columns: repeat(6, 1fr); gap: 5px; margin-top: 2px; }
+    .rank-adj-btn {
+      padding: 9px 0; background: #222; border: 1px solid #444;
+      border-radius: 6px; font-size: 0.82em; cursor: pointer; color: #aaa;
+      transition: background .12s;
+    }
+    .rank-adj-btn:hover { background: #2e2e2e; }
+    .rank-adj-btn.rank-better { color: #8f8; }
+    .rank-adj-btn.rank-worse  { color: #f88; }
+    .rank-peer-overlay {
+      position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
+      height: 8px; pointer-events: none; border-radius: 4px; overflow: visible;
+    }
+    .rank-peer-tick {
+      position: absolute; top: 50%; transform: translate(-50%, -50%);
+      width: 4px; height: 24px; border-radius: 2px;
+      background: rgba(255,200,60,0.85);
+    }
 
     /* ── Tag chips ── */
     .tag-grid {
@@ -441,8 +527,13 @@ _HTML = r"""<!DOCTYPE html>
     #player-label:hover { color: #aaa; }
 
     /* ── Player list pill ── */
-    #player-list-wrap {
+    /* ── Bottom-left button group (players + controls) ── */
+    #bottom-left-wrap {
       position: fixed; bottom: 16px; left: 12px; z-index: 200;
+      display: flex; flex-direction: row; gap: 8px; align-items: center;
+    }
+    #player-list-wrap {
+      position: relative;
     }
     #player-list-btn {
       background: #1a1a2a; border: 1px solid #334; border-radius: 20px;
@@ -462,6 +553,7 @@ _HTML = r"""<!DOCTYPE html>
     }
     .pl-check { color: #5f5; }
     .pl-dot   { color: #555; }
+    .pl-crown { color: #fc0; font-size: 0.85em; flex-shrink: 0; }
 
     /* ── Peer answers (post-submit) ── */
     #peer-answers-wrap { margin-top: 14px; }
@@ -661,7 +753,7 @@ _HTML = r"""<!DOCTYPE html>
     }
     .cp-clear-btn:hover { color: #f88; border-color: #844; }
     .cp-palette {
-      display: grid; grid-template-columns: repeat(6, 1fr);
+      display: grid; grid-template-columns: repeat(8, 1fr);
       gap: 6px; margin-bottom: 12px;
     }
     .cp-swatch {
@@ -689,21 +781,805 @@ _HTML = r"""<!DOCTYPE html>
 
     /* ── Timer pill ── */
     #timer-bar {
-      position: absolute; left: 50%; transform: translateX(-50%);
+      position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
       background: #0d0d1a; border: 1px solid #334; border-radius: 20px;
-      padding: 5px 18px; pointer-events: none; white-space: nowrap;
+      padding: 5px 18px; pointer-events: none; z-index: 301;
     }
     #timer-display {
-      font-family: monospace; font-size: 1.15em; font-weight: bold;
+      font-family: monospace; font-size: 3em; font-weight: bold;
       color: #ffffff; letter-spacing: 0.06em;
     }
     #timer-display.timer-warning { color: #ff4444; }
+    #timer-title {
+      font-size: 0.9em; color: #5566aa; letter-spacing: 0.22em;
+      text-transform: uppercase; font-weight: 700; white-space: nowrap;
+    }
+    .tt-mobile { display: none; }
+    @media (max-width: 480px) {
+      #timer-title { font-size: 0.75em; letter-spacing: 0.1em; white-space: normal; text-align: center; }
+      #timer-bar { padding: 5px 12px; }
+      .tt-desktop { display: none; }
+      .tt-mobile { display: inline; line-height: 1.1; }
+    }
+    h1 { display: none; }
+
+    /* ── Fixed floating buttons ── */
+    #controls-wrap {
+      /* positioned inside #bottom-left-wrap, no fixed positioning needed */
+    }
+    #metadata-wrap {
+      position: fixed; bottom: 16px; right: 12px; z-index: 200;
+      display: flex; gap: 6px; align-items: center;
+      transition: right 0.25s ease;
+    }
+    #controls-btn {
+      background: #1a1a2a; border: 1px solid #334; border-radius: 20px;
+      color: #aaa; font-size: 0.82em; padding: 7px 13px; cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4); white-space: nowrap;
+    }
+    #controls-btn:hover { color: #ccc; background: #22223a; }
+    #metadata-btn {
+      background: #1a1a2a; border: 1px solid #334; border-radius: 20px;
+      color: #aaa; font-size: 0.82em; padding: 7px 13px; cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4); white-space: nowrap;
+    }
+    #metadata-btn:hover { color: #ccc; background: #22223a; }
+    /* ── Controller panel close button (desktop only) ── */
+    #ctrl-close-btn { display: none; }
+    #meta-close-btn  { display: none; }
+
+    /* ── Playback controller modal ── */
+    #controller-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 750;
+      align-items: flex-end; justify-content: center;
+    }
+    #controller-overlay.active { display: flex; }
+    /* ── Ctrl list popup (lightning / youtube / fixed / search) ── */
+    #ctrl-list-popup-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 840;
+      align-items: center; justify-content: center;
+    }
+    #ctrl-list-popup-overlay.active { display: flex; }
+    #ctrl-list-popup-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 14px;
+      width: 90%; max-width: 440px; max-height: min(55vh, 480px);
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 14px 16px 18px; box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+      overflow: hidden;
+    }
+    #ctrl-list-popup-header {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    #ctrl-list-popup-title {
+      font-size: 0.8em; color: #88a; text-transform: uppercase;
+      letter-spacing: .06em; font-weight: 600;
+    }
+    #ctrl-list-popup-close {
+      background: none; border: none; color: #445; cursor: pointer;
+      font-size: 1.1em; padding: 0 2px; line-height: 1;
+    }
+    #ctrl-list-popup-close:hover { color: #aaa; }
+    #ctrl-list-popup-search-row {
+      display: none; gap: 6px;
+    }
+    #ctrl-list-popup-search-row.active { display: flex; }
+    #ctrl-list-popup-search-input {
+      flex: 1; background: #0e0e1e; border: 1px solid #334; border-radius: 6px;
+      color: #ccd; font-size: 0.82em; padding: 5px 8px; outline: none; min-width: 0;
+    }
+    #ctrl-list-popup-search-input::placeholder { color: #446; }
+    #ctrl-list-popup-search-input:focus { border-color: #557; }
+    #ctrl-list-popup-search-submit {
+      background: #1a1a30; border: 1px solid #334; border-radius: 6px;
+      color: #88a; font-size: 0.82em; padding: 5px 10px; cursor: pointer;
+    }
+    #ctrl-list-popup-search-submit:hover { background: #252540; color: #ccd; }
+    #ctrl-list-popup-list {
+      flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+      gap: 2px;
+      scrollbar-width: thin; scrollbar-color: #334 transparent;
+    }
+    .ctrl-popup-item {
+      padding: 8px 10px; cursor: pointer; border-radius: 6px;
+      color: #ccd; font-size: 0.88em; line-height: 1.4;
+      display: flex; align-items: baseline; gap: 6px;
+    }
+    .ctrl-popup-item:hover { background: #1a1a2e; color: #eef; }
+    .ctrl-popup-item.ctrl-yt-active { background: #1a2a1a; color: #afa; }
+    .ctrl-popup-item-dur { color: #556; font-size: 0.85em; flex-shrink: 0; }
+    .ctrl-popup-item-title { flex: 1; }
+    .ctrl-popup-item-add {
+      flex-shrink: 0; background: none; border: 1px solid #334; border-radius: 4px;
+      color: #557; font-size: 0.8em; padding: 1px 6px; cursor: pointer; line-height: 1.4;
+    }
+    .ctrl-popup-item-add:hover { color: #aaf; border-color: #446; }
+    .ctrl-popup-item-song { color: #778; font-size: 0.85em; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
+    #controller-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 16px 16px 0 0;
+      width: 100%; max-width: 480px; padding: 10px 20px 32px;
+      display: flex; flex-direction: column; gap: 12px;
+      max-height: 85vh; overflow-y: auto;
+    }
+    /* ── Controller info toggle bar ── */
+    .ctrl-collapse-toggle {
+      display: flex; justify-content: space-between; align-items: center;
+      cursor: pointer; padding: 5px 2px; border-bottom: 1px solid #223;
+    }
+    .ctrl-collapse-label {
+      font-size: 0.75em; color: #88a; letter-spacing: .05em; text-transform: uppercase;
+    }
+    .ctrl-collapse-chevron { font-size: 0.8em; color: #556; }
+    /* ── Scoreboard toggle button (bottom-center, host-only) ── */
+    #sc-view-wrap {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      z-index: 200; display: none;
+      max-height: calc(100vh - 40px); flex-direction: column;
+      pointer-events: none;
+    }
+    #sc-view-btn {
+      pointer-events: auto;
+    }
+    #sc-view-btn {
+      background: #1a1a2a; border: 1px solid #334; border-radius: 20px;
+      color: #aaa; font-size: 0.82em; padding: 7px 13px; cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4); white-space: nowrap;
+    }
+    #sc-view-btn:hover { color: #ccc; background: #22223a; }
+    #sc-view-btn.sc-view-active { color: #aaf; border-color: #446; background: #1a1a3a; }
+    /* ── Scoreboard main view ── */
+    #scoreboard-view {
+      width: 100%; max-width: 520px; display: none;
+      background: #1e1e1e; border-radius: 6px;
+      font-family: 'Segoe UI', sans-serif; color: #e0e0e0;
+      padding: 0; overflow: hidden;
+      flex-direction: column; max-height: calc(100vh - 150px);
+    }
+    /* toolbar */
+    #sc-toolbar {
+      display: flex; align-items: center; gap: 4px;
+      padding: 5px 6px 4px; background: #1e1e1e; border-bottom: 1px solid #2e2e2e;
+    }
+    #sc-toolbar-title {
+      flex: 1; font-size: 0.7em; color: #555; text-transform: uppercase;
+      letter-spacing: .08em; padding-left: 2px;
+    }
+    .sc-toolbar-btn {
+      font-family: 'Segoe UI', sans-serif; font-size: 0.68em; font-weight: bold;
+      border-radius: 3px; cursor: pointer; line-height: 1;
+      padding: 3px 7px; border: 1px solid #555;
+      background: #303030; color: #aaa;
+    }
+    .sc-toolbar-btn:hover { background: #404040; color: #fff; border-color: #666; }
+    .sc-toolbar-btn:active { background: #202020; }
+    #sc-submit-btn {
+      background: #1a2040; color: #88aaff; border-color: #3355aa;
+    }
+    #sc-submit-btn:hover { background: #253060; border-color: #4466cc; }
+    #sc-clear-btn {
+      background: #2a1010; color: #cc6666; border-color: #7a2222;
+    }
+    #sc-clear-btn:hover { background: #3a1515; border-color: #aa3333; }
+    /* TOGETHER / AUTO toolbar toggles */
+    .sc-toggle-btn {
+      font-family: 'Segoe UI', sans-serif; font-size: 0.65em; font-weight: bold;
+      border-radius: 3px; cursor: pointer; line-height: 1;
+      padding: 3px 6px; border: 1px solid #444;
+      background: #252525; color: #888; letter-spacing: 0.05em;
+    }
+    .sc-toggle-btn:hover { background: #333; color: #ccc; }
+    .sc-toggle-btn.sc-toggle-on { color: #66dd88; border-color: #44aa60; background: #1a3022; }
+    /* column headers */
+    #sc-col-headers {
+      display: flex; align-items: center; gap: 4px;
+      padding: 2px 6px 2px 10px; background: #1e1e1e;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    .sc-ch { font-size: 0.62em; color: #555; font-family: 'Segoe UI', sans-serif; }
+    #sc-ch-adjust { flex: 0 0 auto; }
+    #sc-ch-score  { flex: 0 0 52px; text-align: right; }
+    #sc-ch-player { flex: 1; padding-left: 8px; }
+    #sc-ch-menu   { flex: 0 0 22px; }
+    /* scroll area */
+    #sc-scroll {
+      overflow-y: auto;
+      background: #1e1e1e;
+    }
+    #sc-scroll::-webkit-scrollbar { width: 8px; background: #1e1e1e; }
+    #sc-scroll::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+    /* player rows */
+    .sc-row {
+      display: flex; align-items: center; gap: 4px;
+      margin: 1px 4px; padding: 0 4px;
+      height: 34px; border-radius: 4px;
+      border: 1px solid #2e2e2e; background: #252525;
+      box-sizing: border-box; cursor: default;
+    }
+    .sc-row:hover { border-color: #444; }
+    .sc-row.sc-ghost {
+      border-color: #2a2a2a; background: #1e1e1e;
+    }
+    .sc-ghost-sep {
+      height: 1px; background: #2a2a2a; margin: 4px 6px;
+    }
+    /* delta buttons */
+    .sc-deltas { display: flex; gap: 2px; flex: 0 0 auto; align-items: center; }
+    .sc-delta-btn {
+      font-family: 'Segoe UI', sans-serif; font-size: 0.68em; font-weight: bold;
+      width: 22px; height: 24px; border-radius: 3px; cursor: pointer;
+      border: 1px solid; padding: 0; line-height: 1;
+    }
+    .sc-delta-neg { background: #5a1f1f; color: #ff8080; border-color: #7a3030; }
+    .sc-delta-neg:hover { background: #7a2828; border-color: #cc5555; }
+    .sc-delta-neg:active { background: #3a1010; }
+    .sc-delta-pos { background: #1f4a2a; color: #66dd88; border-color: #2e6e3e; }
+    .sc-delta-pos:hover { background: #286638; border-color: #44aa60; }
+    .sc-delta-pos:active { background: #103020; }
+    /* score cell */
+    .sc-score-cell {
+      flex: 0 0 52px; text-align: right;
+      font-family: var(--sc-score-font, 'Consolas', monospace); font-size: 0.9em; font-weight: bold;
+      color: #d0d0d0; cursor: pointer; padding: 0 2px; white-space: nowrap;
+    }
+    .sc-score-input {
+      width: 52px; text-align: right;
+      font-family: var(--sc-score-font, 'Consolas', monospace); font-size: 0.9em;
+      background: #2a2a2a; border: 1px solid #777; border-radius: 3px;
+      color: #e0e0e0; padding: 1px 3px;
+      -moz-appearance: textfield;
+    }
+    .sc-score-input::-webkit-inner-spin-button,
+    .sc-score-input::-webkit-outer-spin-button { display: none; }
+    /* name cell */
+    .sc-name-cell {
+      flex: 1; font-family: var(--sc-name-font, 'Segoe UI', sans-serif); font-size: 0.85em; color: #d0d0d0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      padding-left: 6px; cursor: pointer;
+    }
+    .sc-name-cell.with-swatch { padding-left: 3px; }
+    .sc-name-input {
+      flex: 1; font-family: var(--sc-name-font, 'Segoe UI', sans-serif); font-size: 0.85em;
+      background: #2a2a2a; border: 1px solid #777; border-radius: 3px;
+      color: #e0e0e0; padding: 1px 5px; min-width: 0;
+    }
+    /* color swatch */
+    .sc-swatch {
+      flex: 0 0 6px; height: 22px; border-radius: 2px;
+      align-self: center;
+    }
+    /* menu button */
+    .sc-menu-btn {
+      flex: 0 0 22px; height: 28px; width: 28px;
+      background: transparent; border: none; cursor: pointer;
+      color: #888; font-size: 0.9em; line-height: 1;
+      border-radius: 3px; padding: 0;
+      touch-action: manipulation;
+    }
+    .sc-menu-btn:hover { color: #ccc; }
+    /* add player row */
+    #sc-sep { height: 1px; background: #333; margin: 3px 0; }
+    #sc-add-row {
+      display: flex; gap: 4px; padding: 4px 6px;
+      background: #1e1e1e;
+    }
+    #sc-add-input {
+      flex: 1; background: #2a2a2a; border: 1px solid #444; color: #e0e0e0;
+      border-radius: 3px; padding: 2px 6px;
+      font-family: 'Segoe UI', sans-serif; font-size: 0.82em;
+    }
+    #sc-add-input:focus { border-color: #777; outline: none; }
+    #sc-add-btn {
+      background: #303030; border: 1px solid #555; color: #aaa;
+      border-radius: 3px; padding: 2px 10px; cursor: pointer;
+      font-family: 'Segoe UI', sans-serif; font-size: 0.82em;
+    }
+    #sc-add-btn:hover { background: #404040; color: #fff; }
+    /* ── Panel inline re-collapse button (replaces header when expanded) ── */
+    .ctrl-panel-header { display: flex; justify-content: flex-end; padding: 2px 0 3px; margin-top: 0; }
+    .ctrl-panel-close-btn {
+      background: none; border: none; color: #445; cursor: pointer;
+      font-size: 0.72em; padding: 0 2px; line-height: 1.4;
+      text-transform: uppercase; letter-spacing: .04em;
+    }
+    .ctrl-panel-close-btn:hover { color: #88a; }
+    /* ── Controller info panel ── */
+    #ctrl-info-panel {
+      font-size: 0.8em; color: #ccc; line-height: 1.6;
+      padding: 0 2px 2px; text-align: center;
+    }
+    #ctrl-info-top {
+      font-size: 0.78em; color: #88a; margin-bottom: 2px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    #ctrl-info-main {
+      font-size: 1.05em; font-weight: bold; color: #dde;
+      white-space: normal; word-break: break-word;
+    }
+    #ctrl-info-bottom {
+      font-size: 0.78em; color: #778; margin-top: 2px;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    /* ── Up Next panel ── */
+    #ctrl-upnext-panel {
+      font-size: 0.82em; color: #ccd; line-height: 1.5;
+      padding: 0 2px 2px;
+      text-align: center;
+    }
+    #ctrl-upnext-mode { font-size: 0.8em; color: #88a; margin-bottom: 1px; }
+    #ctrl-upnext-title { font-weight: bold; color: #dde; word-break: break-word; }
+    .ctrl-upnext-label { font-size: 0.78em; color: #88a; font-weight: normal; letter-spacing: .05em; }
+    #ctrl-upnext-detail { font-size: 0.82em; color: #778; margin-top: 1px; }
+    #ctrl-upnext-actions {
+      display: flex; flex-wrap: wrap; gap: 5px; justify-content: center;
+      margin-top: 4px; margin-bottom: 10px;
+    }
+    .ctrl-upnext-queue-btn {
+      background: #12151a; border: 1px solid #3a4450; border-radius: 5px;
+      color: #5a6878; font-size: 0.85em; padding: 6px 12px 6px 8px; cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    @media (hover: hover) {
+      .ctrl-upnext-queue-btn:hover { background: #3d1010; color: #f88; border-color: #f88; }
+      #ctrl-upnext-reroll:hover { background: #102040; color: #9cf; border-color: #9cf; }
+    }
+    .ctrl-upnext-queue-btn.ctrl-toggle-active {
+      background: #3a1010; border-color: #cc5050; color: #ff8888;
+      box-shadow: 0 0 6px 0 rgba(200,60,60,0.5);
+    }
+    #ctrl-upnext-reroll {
+      background: #071825; border-color: #1a6090; color: #44aadd;
+      box-shadow: 0 0 5px 0 rgba(30,120,200,0.25);
+    }
+    @media (hover: hover) {
+      #ctrl-upnext-reroll:hover { background: #0d2a40; color: #88ccff; border-color: #3399cc; box-shadow: 0 0 8px 0 rgba(30,150,220,0.45); }
+    }
+    /* ── Controls panel sub-grid spacing ── */
+    #ctrl-controls-panel {
+      display: flex; flex-direction: row; flex-wrap: wrap; gap: 7px;
+      justify-content: center; padding: 4px 0;
+    }
+    /* ── Bonus panel ── */
+    #ctrl-bonus-panel {
+      padding: 0 2px 2px;
+    }
+    #ctrl-bonus-grid {
+      display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
+    }
+    .ctrl-bonus-btn {
+      background: #1a1a30; border: 1px solid #334; border-radius: 5px;
+      color: #aac; font-size: 0.78em; padding: 5px 10px; cursor: pointer;
+      transition: background .15s, color .15s;
+      min-width: 54px; text-align: center; line-height: 1.2;
+    }
+    .ctrl-bonus-btn:hover { background: #252540; color: #ddf; }
+    .ctrl-bonus-btn.ctrl-bonus-more {
+      background: none; border-color: #223; color: #556; font-size: 0.88em;
+      padding: 8px 10px;
+    }
+    .ctrl-bonus-btn.ctrl-bonus-more:hover { color: #88a; border-color: #334; }
+    /* ── Button section color coding ── */
+    .ctrl-sect-queue  { background: #2a0a0a; border-color: #c66; color: #c66; box-shadow: 0 0 6px 0 rgba(160,40,40,0.45); }
+    .ctrl-sect-queue:hover  { background: #3d1010; color: #f88; border-color: #f88; box-shadow: 0 0 9px 0 rgba(160,40,40,0.7); }
+    .ctrl-sect-bonus  { background: #0a1628; border-color: #6af; color: #6af; box-shadow: 0 0 6px 0 rgba(30,100,200,0.45); }
+    .ctrl-sect-bonus:hover  { background: #102040; color: #9cf; border-color: #9cf; box-shadow: 0 0 9px 0 rgba(30,100,200,0.7); }
+    .ctrl-sect-toggle { background: #12151a; border-color: #3a4450; color: #5a6878; }
+    .ctrl-sect-toggle:hover { background: #1a2028; color: #8a9bb0; border-color: #6a7a90; }
+    .ctrl-sect-reveal { background: #0a1e10; border-color: #6c6; color: #6c6; box-shadow: 0 0 6px 0 rgba(40,140,60,0.45); }
+    .ctrl-sect-reveal:hover { background: #102818; color: #9e9; border-color: #9e9; box-shadow: 0 0 9px 0 rgba(40,140,60,0.7); }
+    .ctrl-sect-mark   { background: #250a18; border-color: #c88; color: #c88; box-shadow: 0 0 6px 0 rgba(140,40,80,0.45); }
+    .ctrl-sect-mark:hover   { background: #301020; color: #eaa; border-color: #eaa; box-shadow: 0 0 9px 0 rgba(140,40,80,0.7); }
+    .ctrl-sect-session { background: #2a0a0a; border-color: #c55; color: #c55; box-shadow: 0 0 6px 0 rgba(160,30,30,0.45); }
+    .ctrl-sect-session:hover { background: #3d1010; color: #f88; border-color: #f88; box-shadow: 0 0 9px 0 rgba(160,30,30,0.7); }
+    /* ── Extras popup ── */
+    #ctrl-extras-popup-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 820;
+      align-items: center; justify-content: center;
+    }
+    #ctrl-extras-popup-overlay.active { display: flex; }
+    #ctrl-extras-popup-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 14px;
+      width: 90%; max-width: 460px; max-height: min(70vh, 560px);
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 14px 16px 18px; box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+      overflow-y: auto; scrollbar-width: thin; scrollbar-color: #334 transparent;
+    }
+    #ctrl-extras-popup-header {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    #ctrl-extras-popup-title {
+      font-size: 0.8em; color: #88a; text-transform: uppercase;
+      letter-spacing: .06em; font-weight: 600;
+    }
+    #ctrl-extras-popup-close {
+      background: none; border: none; color: #445; cursor: pointer;
+      font-size: 1.1em; padding: 0 2px; line-height: 1;
+    }
+    #ctrl-extras-popup-close:hover { color: #aaa; }
+    .ctrl-extras-sect-label {
+      font-size: 0.65em; color: #556; text-transform: uppercase;
+      letter-spacing: 0.06em; width: 100%;
+    }
+    .ctrl-extras-sect-row {
+      display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+    }
+    #ctrl-extras-edit-btn {
+      background: none; border: 1px solid #334; border-radius: 5px;
+      color: #556; font-size: 0.72em; padding: 3px 8px; cursor: pointer;
+      transition: color .15s, border-color .15s;
+    }
+    #ctrl-extras-edit-btn:hover { color: #88a; border-color: #668; }
+    #ctrl-extras-edit-btn.active { color: #adf; border-color: #adf; }
+    #ctrl-extras-edit-hint {
+      display: none; font-size: 0.68em; color: #667; text-align: center;
+      padding: 2px 0;
+    }
+    #ctrl-extras-edit-hint.active { display: block; }
+    #ctrl-extras-popup-box.edit-mode .ctrl-bonus-btn[data-extra-id] {
+      opacity: 0.35; cursor: pointer;
+    }
+    #ctrl-extras-popup-box.edit-mode .ctrl-bonus-btn[data-extra-id].ctrl-extra-pinned {
+      opacity: 1; outline: 2px solid currentColor; outline-offset: 1px;
+    }
+    #ctrl-extras-popup-box.edit-mode .ctrl-bonus-btn[data-extra-id]:hover { opacity: 0.7; }
+    #ctrl-extras-popup-box.edit-mode .ctrl-bonus-btn[data-extra-id].ctrl-extra-pinned:hover { opacity: 1; }
+    #ctrl-pinned-extras { display: contents; }
+    .ctrl-pinned-break { flex-basis: 100%; height: 0; min-width: 100%; }
+    .ctrl-pinned-space { width: 16px; flex-shrink: 0; }
+    .ctrl-layout-chip { display:inline-flex; align-items:center; gap:3px; font-size:0.72em; color:#778; background:#0a0a18; border:1px solid #223; border-radius:4px; padding:2px 5px; }
+    .ctrl-layout-chip-remove { background:none; border:none; color:#445; cursor:pointer; font-size:0.88em; padding:0 0 0 2px; line-height:1; }
+    .ctrl-layout-chip-remove:hover { color:#c88; }
+    .ctrl-sect-div {
+      width: 1px; height: 24px; background: #334;
+      align-self: center; flex-shrink: 0; margin: 0 3px;
+    }
+    .ctrl-sect-break {
+      flex-basis: 100%; height: 0; margin: 0;
+    }
+    /* ── Info reveal buttons ── */
+    #ctrl-info-reveal {
+      display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
+      padding: 4px 2px;
+    }
+    .ctrl-info-reveal-btn {
+      background: #12122a; border: 1px solid #2a2a44; border-radius: 6px;
+      color: #88a; font-size: 0.88em; padding: 8px 14px; cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .ctrl-info-reveal-btn:hover { background: #1e1e3a; color: #ccf; }
+    /* ── Mark buttons active state ── */
+    .ctrl-mark-btn.ctrl-mark-active { background: #2a1a3a; border-color: #66f; color: #ccf; }
+    .ctrl-mark-btn.ctrl-mark-active:hover { background: #331a44; color: #eef; }
+    /* ── Toggle buttons active state ── */
+    #ctrl-toggles-panel { padding: 0 2px 2px; }
+    #ctrl-toggles-grid { display: flex; flex-wrap: wrap; gap: 7px; justify-content: center; }
+    .ctrl-toggle-btn.ctrl-toggle-active { background: #0e2238; border-color: #3a88cc; color: #66bbff; box-shadow: 0 0 7px 0 rgba(50,120,200,0.55); }
+    .ctrl-toggle-btn.ctrl-toggle-active:hover { background: #142d4a; color: #99d4ff; border-color: #55aaee; }
+    /* ── Seek row ── */
+    #ctrl-seek-row {
+      display: flex; align-items: center; gap: 8px;
+    }
+    #ctrl-seek-row span {
+      font-size: 0.75em; color: #88a; min-width: 2.8em; text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    #ctrl-seek {
+      flex: 1; -webkit-appearance: none; appearance: none;
+      height: 4px; border-radius: 2px; background: #334; outline: none;
+      cursor: pointer;
+    }
+    #ctrl-seek::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 16px; height: 16px;
+      border-radius: 50%; background: #88f; cursor: pointer;
+    }
+    #ctrl-seek::-moz-range-thumb {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #88f; cursor: pointer; border: none;
+    }
+    /* ── Main row (volume | buttons | autoplay) ── */
+    #ctrl-main-row {
+      display: grid; grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+    }
+    #ctrl-vol-wrap { justify-self: start; }
+    #ctrl-buttons {
+      display: flex; justify-content: center; gap: 2px;
+    }
+    #ctrl-autoplay-wrap { justify-self: end; }
+    .ctrl-btn {
+      background: none; border: none;
+      color: #ccc; font-size: 2em;
+      cursor: pointer; padding: 4px 6px;
+      transition: color 0.15s; flex-shrink: 0; line-height: 1;
+    }
+    .ctrl-btn:hover { color: #fff; }
+    .ctrl-btn:active { color: #aaf; }
+    .ctrl-btn-sm { font-size: 1.4em; padding: 4px; }
+    .ctrl-btn-autoplay { font-size: 1.4em; padding: 4px; }
+    .ctrl-btn-autoplay.mode-0 { color: #ccc; }
+    .ctrl-btn-autoplay.mode-1 { color: #ccc; }
+    .ctrl-btn-autoplay.mode-2 { opacity: 0.35; }
+    /* ── Volume slider popup (horizontal) ── */
+    #ctrl-vol-wrap { position: relative; display: flex; align-items: center; }
+    #ctrl-vol-slider-wrap {
+      position: absolute; bottom: 52px; left: 0;
+      background: #1a1a30; border: 1px solid #334; border-radius: 10px;
+      padding: 8px 12px; display: flex; flex-direction: row;
+      align-items: center; gap: 8px; z-index: 10; white-space: nowrap;
+    }
+    #ctrl-vol-slider {
+      -webkit-appearance: none; appearance: none;
+      width: 130px; height: 4px; border-radius: 2px;
+      background: #334; outline: none; cursor: pointer;
+    }
+    #ctrl-vol-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px;
+      border-radius: 50%; background: #88f; cursor: pointer;
+    }
+    #ctrl-vol-slider::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #88f; cursor: pointer; border: none;
+    }
+    #ctrl-vol-label { font-size: 0.7em; color: #88a; min-width: 2em; text-align: right; }
+    /* ── Metadata modal ── */
+    #metadata-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 700;
+      align-items: flex-end; justify-content: center;
+    }
+    #metadata-overlay.active { display: flex; }
+    #metadata-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 16px 16px 0 0;
+      width: 100%; max-width: 480px; padding: 16px 12px 28px;
+      max-height: 85vh; display: flex; flex-direction: column; gap: 10px;
+    }
+    #meta-history-nav {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      font-size: 0.75em; color: #556; margin-top: -4px;
+    }
+    #meta-nav-title {
+      font-size: 1.1em; color: #ccd; font-weight: 600; text-align: center;
+      word-break: break-word;
+    }
+    #meta-nav-arrows {
+      display: none; align-items: center; justify-content: center; gap: 4px; width: 100%;
+    }
+    #meta-nav-arrows.visible { display: flex; }
+    #meta-nav-autofollow {
+      background: none; border: 1px solid #334; border-radius: 4px;
+      color: #556; cursor: pointer; font-size: 0.9em; padding: 2px 6px; line-height: 1.4;
+      white-space: nowrap;
+    }
+    #meta-nav-autofollow.on { color: #8f8; border-color: #4a4; }
+    @media (hover: hover) { #meta-nav-autofollow:hover { color: #aaf; border-color: #55a; } }
+    .meta-history-btn {
+      background: none; border: 1px solid #334; border-radius: 4px;
+      color: #88a; cursor: pointer; font-size: 1em; padding: 2px 8px; line-height: 1.4;
+    }
+    .meta-history-btn.meta-skip-btn { padding: 2px 5px; font-size: 0.85em; }
+    .meta-history-btn:disabled { color: #334; border-color: #223; cursor: default; }
+    @media (hover: hover) { .meta-history-btn:not(:disabled):hover { color: #bbf; border-color: #55a; } }
+    #meta-history-label { min-width: 36px; text-align: center; flex: 1; }
+    /* ── Tab bar ── */
+    .meta-tabs {
+      display: flex; gap: 0; border-bottom: 1px solid #334; margin-bottom: 4px;
+    }
+    .meta-tab-btn {
+      flex: 1; padding: 8px 4px; background: transparent;
+      border: none; border-bottom: 2px solid transparent;
+      color: #556; font-size: 0.82em; text-transform: uppercase;
+      letter-spacing: .07em; cursor: pointer;
+    }
+    .meta-tab-btn.active { color: #aaf; border-bottom-color: #446; }
+    .meta-tab-btn:hover:not(.active) { color: #88a; }
+    .meta-tab-pane { display: none; flex: 1; overflow-y: auto; min-height: 0; }
+    .meta-tab-pane.active { display: block; }
+    /* ── Playlist tab pane needs flex column so vscroll fills height ── */
+    #meta-pane-playlist { display: none; flex-direction: column; overflow: hidden; }
+    #meta-pane-playlist.active { display: flex; }
+    /* Mobile: fixed height for playlist scroll area */
+    #ctrl-playlist-panel #pl-vscroll { height: 110px; }
+    /* Playlist panel as flex column so inner vscroll can fill it */
+    #ctrl-playlist-panel { flex-direction: column; overflow: hidden; }
+    #pl-vscroll { overflow-y: auto; position: relative; }
+    #pl-spacer  { position: relative; width: 100%; }
+    .pl-row {
+      position: absolute; left: 0; right: 0; height: 22px;
+      display: flex; align-items: center; padding: 0 6px; gap: 4px;
+      font-size: 0.75em; color: #ccd; box-sizing: border-box;
+      cursor: pointer; border-bottom: 1px solid rgba(40,40,60,0.5);
+    }
+    .pl-row:hover { background: #1a1a2e; color: #eef; }
+    .pl-row.pl-current { background: #1a1a2e; color: #aaf; font-weight: bold; }
+    .pl-row-num   { color: #445; font-size: 0.78em; min-width: 32px; text-align: right; flex-shrink: 0; }
+    .pl-row-slug  { color: #556; font-size: 0.82em; flex-shrink: 0; }
+    .pl-row-lightning { font-size: 0.85em; flex-shrink: 0; line-height: 1; }
+    .pl-row-title { flex: 1; overflow: hidden; white-space: nowrap; }
+    .pl-row-song  { color: #778; font-size: 0.82em; flex-shrink: 0;
+                    max-width: 38%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* ── Info tab ── */
+    #metadata-content {
+      font-size: 0.85em; line-height: 1.8; color: #ccc;
+    }
+    .meta-row { margin-bottom: 1px; word-break: break-word; }
+    .meta-label { color: #88f; font-weight: bold; }
+    .meta-theme-row { display: flex; gap: 0.4em; align-items: baseline; }
+    .mt-theme-content { flex: 1; }
+    .mt-continuation { display: block; }
+    /* ── Themes tab ── */
+    #metadata-themes-content { font-size: 0.84em; color: #ccc; }
+    .mt-anime-header {
+      font-size: 0.8em; color: #88a; font-weight: bold;
+      text-transform: uppercase; letter-spacing: .06em;
+      margin: 8px 0 4px; border-top: 1px solid #223; padding-top: 6px;
+    }
+    .mt-anime-header:first-child { border-top: none; margin-top: 0; }
+    .mt-section-header {
+      font-size: 0.78em; color: #556; text-transform: uppercase;
+      letter-spacing: .05em; margin: 6px 0 2px;
+    }
+    .mt-theme {
+      padding: 3px 6px; border-bottom: 1px solid #1a1a2a;
+      border-radius: 4px; margin: 1px 0;
+      line-height: 1.6;
+    }
+    .mt-theme:last-child { border-bottom: none; }
+    .mt-theme.playing {
+      background: #0e1e30; border: 1px solid #2a4a6a;
+      border-bottom: 1px solid #2a4a6a;
+    }
+    .mt-slug { color: #88f; }
+    .mt-slug.playing { color: #88f; }
+    .mt-title { color: #ccc; }
+    .mt-artist { color: #777; font-size: 0.92em; }
+    .mt-ver { color: #555; font-size: 0.85em; margin-left: 10px; }
+    .mt-ver.playing { color: #8cf; }
+    .mt-flags { color: #a88; font-size: 0.82em; }
+    .mt-props { color: #555; font-size: 0.80em; }
+    /* ── More tab ── */
+    #metadata-more-content { font-size: 0.84em; color: #ccc; }
+    .more-sub-tabs { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
+    .more-sub-btn { padding: 3px 8px; background: #181825; border: 1px solid #334; border-radius: 3px; color: #556; font-size: 0.78em; text-transform: uppercase; letter-spacing: .06em; cursor: pointer; }
+    .more-sub-btn.active { color: #aaf; border-color: #446; background: #1a1a35; }
+    .more-sub-btn:hover:not(.active) { color: #88a; }
+    .more-char-tabs { display: flex; gap: 0; border-bottom: 1px solid #334; margin-bottom: 8px; }
+    .more-char-tab-btn { flex: 1; padding: 6px 4px; background: transparent; border: none; border-bottom: 2px solid transparent; color: #556; font-size: 0.82em; text-transform: uppercase; letter-spacing: .07em; cursor: pointer; }
+    .more-char-tab-btn.active { color: #aaf; border-bottom-color: #446; }
+    .more-char-tab-btn:hover:not(.active) { color: #88a; }
+    .more-synopsis { color: #ccc; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+    .more-section { margin: 6px 0 4px; }
+    .more-section-header { font-size: 0.78em; color: #88a; font-weight: bold; text-transform: uppercase; letter-spacing: .06em; margin: 8px 0 4px; border-top: 1px solid #223; padding-top: 6px; }
+    .more-section-header:first-child { border-top: none; margin-top: 0; }
+    .more-tag { display: inline-block; margin: 2px; padding: 1px 5px; background: #181825; border-radius: 3px; color: #aac; font-size: 0.82em; }
+    .more-tag.spoiler { color: #a66; }
+    .more-char { padding: 3px 0; border-bottom: 1px solid #1a1a2a; line-height: 1.5; }
+    .more-char-name { color: #fff; font-weight: bold; }
+    .more-char-role { color: #556; font-size: 0.82em; margin-left: 6px; }
+    .more-char-va { color: #778; font-size: 0.82em; }
+    .more-char-desc { color: #666; font-size: 0.82em; margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+    .more-ep { padding: 1px 0; }
+    .more-ep-num { color: #88f; font-weight: bold; margin-right: 6px; }
+    /* ── Links tab ── */
+    .meta-link-row {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 8px; border-radius: 6px; text-decoration: none;
+      border-bottom: 1px solid rgba(60,60,90,0.4); color: #ccd;
+    }
+    .meta-link-row:hover { background: #1a1a2e; color: #eef; }
+    .meta-link-icon { font-size: 1.1em; flex-shrink: 0; }
+    .meta-link-label { font-weight: bold; min-width: 110px; flex-shrink: 0; }
+    .meta-link-url { color: #557; font-size: 0.78em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* ── Close button ── */
+    #metadata-close-btn {
+      padding: 11px; background: #222; border: 1px solid #444;
+      border-radius: 8px; color: #aaa; font-size: 0.95em; cursor: pointer;
+    }
+    #metadata-close-btn:hover { background: #333; color: #fff; }
+
+    /* ── Wide-screen layout (≥900px) ── */
+    @media (min-width: 900px) {
+      body {
+        padding: 60px 20px 20px;
+        transition: padding-left 0.25s ease, padding-right 0.25s ease;
+      }
+      .box { max-width: 660px; }
+
+      /* Controller shifts content left; metadata shifts content right */
+      body.ctrl-open  { padding-left:  calc(360px + 20px); }
+      body.meta-open  { padding-right: calc(360px + 20px); }
+
+      /* Controller: LEFT-side panel — overlay is non-blocking so page stays interactive */
+      #controller-overlay {
+        background: transparent;
+        align-items: stretch;
+        justify-content: flex-start;
+        pointer-events: none;
+      }
+      #controller-overlay.active { display: flex; }
+      #controller-box {
+        border-radius: 0;
+        width: 360px;
+        max-width: 360px;
+        height: 100%;
+        max-height: none;
+        padding: 14px 14px 20px;
+        overflow-y: auto;
+        border-right: 1px solid #334;
+        border-left: none;
+        border-top: none;
+        pointer-events: auto;
+      }
+
+      /* Metadata: right-side panel — same non-blocking approach */
+      #metadata-overlay {
+        background: transparent;
+        align-items: stretch;
+        justify-content: flex-end;
+        pointer-events: none;
+      }
+      #metadata-overlay.active { display: flex; }
+      #metadata-box {
+        border-radius: 0;
+        width: 360px;
+        max-width: 360px;
+        height: 100%;
+        max-height: none;
+        padding: 14px 12px 20px;
+        border-left: 1px solid #334;
+        border-top: none;
+        pointer-events: auto;
+      }
+
+      /* Shift bottom-left group and top-bar when panels are open */
+      body.ctrl-open #top-bar           { left: 360px; }
+      body.ctrl-open #bottom-left-wrap   { left: calc(360px + 12px); }
+      body.meta-open #top-bar            { right: 360px; }
+      body.meta-open #metadata-wrap      { right: calc(360px + 12px); }
+      #bottom-left-wrap { transition: left 0.25s ease; }
+
+      /* Hide Theme Information text in controller — info panel on the right covers it */
+      /* (ctrl-info-top/main/bottom are now in the Info tab of ctrl-info-panel) */
+
+      /* Hide controller section headers on widescreen — keep Up Next and Playlist */
+      #ctrl-infotext-toggle { display: none !important; }
+
+      /* Close button inside controller panel */
+      #controller-box { position: relative; }
+      /* Playlist expands to fill remaining vertical space on desktop */
+      #ctrl-playlist-panel {
+        flex: 1;
+        min-height: 0;
+      }
+      #ctrl-playlist-panel #pl-vscroll {
+        height: auto;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      /* Spacer fills remaining height when playlist is collapsed; hidden when playlist is open */
+      #ctrl-flex-spacer { flex: 1; }
+      #ctrl-flex-spacer.hidden { flex: 0; display: none; }
+
+      #metadata-box { position: relative; }
+      #metadata-close-btn { display: none; }
+
+      /* History: wider modal on wide screens */
+      #history-box { max-width: 660px; border-radius: 12px; max-height: 70vh; }
+      #history-overlay { align-items: center; }
+      /* Shrink history box / shift overlay when side panels are open */
+      body.ctrl-open #history-overlay { left: 360px; }
+      body.meta-open #history-overlay { right: 360px; }
+      body.ctrl-open #history-box  { max-width: min(660px, calc(100vw - 360px - 80px)); }
+      body.meta-open #history-box  { max-width: min(660px, calc(100vw - 360px - 80px)); }
+      body.ctrl-open.meta-open #history-box { max-width: min(660px, calc(100vw - 720px - 80px)); }
+    }
   </style>
 </head>
 <body>
+  <div id="timer-bar"><div id="timer-display" style="display:none">0</div><div id="timer-title"><span class="tt-desktop">Guess The Anime</span><span class="tt-mobile">GUESS<br>THE<br>ANIME</span></div></div>
   <div id="top-bar">
     <button id="history-btn" onclick="_openHistory()" style="display:none">&#8635; SESSION HISTORY</button>
-    <div id="timer-bar" style="visibility:hidden"><div id="timer-display">0:00</div></div>
     <div id="player-label" title="Click to change name">
       <span id="player-label-text" onclick="changeName()"></span>
       <span id="player-label-swatch" class="pl-swatch-empty" onclick="_openColorPicker(playerName)" title="Set your highlight color"></span>
@@ -720,7 +1596,7 @@ _HTML = r"""<!DOCTYPE html>
     <div id="kick-box">
       <div id="kick-player-name"></div>
       <div class="kick-opt-btns">
-        <button id="kick-btn-shadow">Kick (Shadow)</button>
+        <button id="kick-btn-shadow">Kick</button>
         <button id="kick-btn-name">Name Ban</button>
         <button id="kick-btn-ip">IP Ban</button>
         <button id="kick-btn-cancel" onclick="_kickCancel()">Cancel</button>
@@ -753,8 +1629,45 @@ _HTML = r"""<!DOCTYPE html>
     <p style="margin-bottom:8px;color:#aaa">Enter your name to join</p>
     <p style="margin-bottom:16px;color:#666;font-size:0.85em">This will appear on the scoreboard exactly as typed.</p>
     <datalist id="player-names-list"></datalist>
+    <datalist id="anime-titles-list"></datalist>
     <input id="name-input" placeholder="Your name (no spaces)&hellip;" maxlength="30" autofocus list="player-names-list"/>
     <button id="name-btn" onclick="saveName()">Join</button>
+    <div id="host-pw-toggle" onclick="_toggleHostPwField()" style="margin-top:18px;color:#333;font-size:0.75em;cursor:pointer;user-select:none">&#128274; Host</div>
+    <div id="host-pw-wrap" style="display:none;margin-top:6px">
+      <input id="host-pw-input" type="password" placeholder="Host password&hellip;" maxlength="100"
+        style="width:100%;padding:9px;background:#111;border:1px solid #333;border-radius:8px;color:#ccc;font-size:0.9em;box-sizing:border-box"/>
+    </div>
+  </div>
+
+  <div id="scoreboard-view" class="box">
+    <!-- toolbar -->
+    <div id="sc-toolbar">
+      <span id="sc-toolbar-title">Scoreboard</span>
+      <button id="sc-tog-auto" class="sc-toggle-btn" onclick="_scToggleAuto()" title="Scores send automatically after clicking a delta. Turn off to batch manually.">AUTO</button>
+      <button id="sc-tog-together" class="sc-toggle-btn" onclick="_scToggleTogether()" title="Any delta press resets the shared timer for everyone.">BATCH</button>
+      <button id="sc-clear-btn" class="sc-toolbar-btn" onclick="_scClearAll()">CLEAR ALL</button>
+      <span style="flex:1"></span>
+      <button id="sc-submit-btn" class="sc-toolbar-btn" onclick="_scSubmitPending()">SUBMIT</button>
+    </div>
+    <!-- column headers (host only) -->
+    <div id="sc-col-headers" style="display:none">
+      <span class="sc-ch" id="sc-ch-adjust">ADJUST</span>
+      <span class="sc-ch" id="sc-ch-score">SCORE</span>
+      <span class="sc-ch" id="sc-ch-player">PLAYER</span>
+      <span class="sc-ch" id="sc-ch-menu"></span>
+    </div>
+    <!-- player rows -->
+    <div id="sc-scroll"><div id="sc-players"></div></div>
+    <!-- add player (host only) -->
+    <div id="sc-host-controls" style="display:none">
+      <div id="sc-sep"></div>
+      <div id="sc-add-row">
+        <input id="sc-add-input" type="text" placeholder="Player name" autocomplete="off"
+               list="player-names-list"
+               onkeydown="if(event.key==='Enter')_scAddPlayer()">
+        <button id="sc-add-btn" onclick="_scAddPlayer()">+ Add</button>
+      </div>
+    </div>
   </div>
 
   <div id="question-box" class="box" style="display:none">
@@ -769,6 +1682,8 @@ _HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div id="question-area" style="display:none">
+      <button id="host-toggle" onclick="_toggleHostPanel()">&#128065; Answers (0)</button>
+      <div id="host-panel"><div id="host-answers"></div></div>
       <div id="q-card">
         <div id="q-title"></div>
         <div id="q-info"></div>
@@ -780,8 +1695,6 @@ _HTML = r"""<!DOCTYPE html>
         <button id="peer-answers-toggle" onclick="_togglePeerAnswers()">&#128065; Submitted Answers (0)</button>
         <div id="peer-answers-list"></div>
       </div>
-      <button id="host-toggle" onclick="_toggleHostPanel()">&#128065; Answers (0)</button>
-      <div id="host-panel"><div id="host-answers"></div></div>
     </div>
     <div id="emoji-bar">
       <p>React</p>
@@ -828,6 +1741,8 @@ _HTML = r"""<!DOCTYPE html>
           <span class="cp-swatch" style="background:red" onclick="_colorpickPickPreset('red')" title="red"></span>
           <span class="cp-swatch" style="background:firebrick" onclick="_colorpickPickPreset('firebrick')" title="firebrick"></span>
           <span class="cp-swatch" style="background:maroon" onclick="_colorpickPickPreset('maroon')" title="maroon"></span>
+          <span class="cp-swatch" style="background:darkred" onclick="_colorpickPickPreset('darkred')" title="darkred"></span>
+          <span class="cp-swatch" style="background:brown" onclick="_colorpickPickPreset('brown')" title="brown"></span>
           <!-- Oranges -->
           <span class="cp-swatch" style="background:peachpuff;border-color:#555" onclick="_colorpickPickPreset('peachpuff')" title="peachpuff"></span>
           <span class="cp-swatch" style="background:lightsalmon;border-color:#555" onclick="_colorpickPickPreset('lightsalmon')" title="lightsalmon"></span>
@@ -836,6 +1751,7 @@ _HTML = r"""<!DOCTYPE html>
           <span class="cp-swatch" style="background:darkorange" onclick="_colorpickPickPreset('darkorange')" title="darkorange"></span>
           <span class="cp-swatch" style="background:sienna" onclick="_colorpickPickPreset('sienna')" title="sienna"></span>
           <span class="cp-swatch" style="background:chocolate" onclick="_colorpickPickPreset('chocolate')" title="chocolate"></span>
+          <span class="cp-swatch" style="background:saddlebrown" onclick="_colorpickPickPreset('saddlebrown')" title="saddlebrown"></span>
           <!-- Yellows -->
           <span class="cp-swatch" style="background:lightyellow;border-color:#555" onclick="_colorpickPickPreset('lightyellow')" title="lightyellow"></span>
           <span class="cp-swatch" style="background:yellow;border-color:#555" onclick="_colorpickPickPreset('yellow')" title="yellow"></span>
@@ -844,6 +1760,7 @@ _HTML = r"""<!DOCTYPE html>
           <span class="cp-swatch" style="background:goldenrod" onclick="_colorpickPickPreset('goldenrod')" title="goldenrod"></span>
           <span class="cp-swatch" style="background:darkgoldenrod" onclick="_colorpickPickPreset('darkgoldenrod')" title="darkgoldenrod"></span>
           <span class="cp-swatch" style="background:olive" onclick="_colorpickPickPreset('olive')" title="olive"></span>
+          <span class="cp-swatch" style="background:darkolivegreen" onclick="_colorpickPickPreset('darkolivegreen')" title="darkolivegreen"></span>
           <!-- Greens -->
           <span class="cp-swatch" style="background:lightgreen;border-color:#555" onclick="_colorpickPickPreset('lightgreen')" title="lightgreen"></span>
           <span class="cp-swatch" style="background:lime;border-color:#555" onclick="_colorpickPickPreset('lime')" title="lime"></span>
@@ -852,10 +1769,15 @@ _HTML = r"""<!DOCTYPE html>
           <span class="cp-swatch" style="background:green" onclick="_colorpickPickPreset('green')" title="green"></span>
           <span class="cp-swatch" style="background:seagreen" onclick="_colorpickPickPreset('seagreen')" title="seagreen"></span>
           <span class="cp-swatch" style="background:darkgreen" onclick="_colorpickPickPreset('darkgreen')" title="darkgreen"></span>
+          <span class="cp-swatch" style="background:darkslategray" onclick="_colorpickPickPreset('darkslategray')" title="darkslategray"></span>
           <!-- Teals -->
           <span class="cp-swatch" style="background:lightcyan;border-color:#555" onclick="_colorpickPickPreset('lightcyan')" title="lightcyan"></span>
           <span class="cp-swatch" style="background:aquamarine;border-color:#555" onclick="_colorpickPickPreset('aquamarine')" title="aquamarine"></span>
+          <span class="cp-swatch" style="background:mediumaquamarine" onclick="_colorpickPickPreset('mediumaquamarine')" title="mediumaquamarine"></span>
           <span class="cp-swatch" style="background:turquoise" onclick="_colorpickPickPreset('turquoise')" title="turquoise"></span>
+          <span class="cp-swatch" style="background:mediumturquoise" onclick="_colorpickPickPreset('mediumturquoise')" title="mediumturquoise"></span>
+          <span class="cp-swatch" style="background:darkturquoise" onclick="_colorpickPickPreset('darkturquoise')" title="darkturquoise"></span>
+          <span class="cp-swatch" style="background:lightseagreen" onclick="_colorpickPickPreset('lightseagreen')" title="lightseagreen"></span>
           <span class="cp-swatch" style="background:cadetblue" onclick="_colorpickPickPreset('cadetblue')" title="cadetblue"></span>
           <span class="cp-swatch" style="background:teal" onclick="_colorpickPickPreset('teal')" title="teal"></span>
           <span class="cp-swatch" style="background:darkcyan" onclick="_colorpickPickPreset('darkcyan')" title="darkcyan"></span>
@@ -868,6 +1790,8 @@ _HTML = r"""<!DOCTYPE html>
           <span class="cp-swatch" style="background:royalblue" onclick="_colorpickPickPreset('royalblue')" title="royalblue"></span>
           <span class="cp-swatch" style="background:blue" onclick="_colorpickPickPreset('blue')" title="blue"></span>
           <span class="cp-swatch" style="background:navy" onclick="_colorpickPickPreset('navy')" title="navy"></span>
+          <span class="cp-swatch" style="background:darkblue" onclick="_colorpickPickPreset('darkblue')" title="darkblue"></span>
+          <span class="cp-swatch" style="background:midnightblue" onclick="_colorpickPickPreset('midnightblue')" title="midnightblue"></span>
           <!-- Purples -->
           <span class="cp-swatch" style="background:plum;border-color:#555" onclick="_colorpickPickPreset('plum')" title="plum"></span>
           <span class="cp-swatch" style="background:violet;border-color:#555" onclick="_colorpickPickPreset('violet')" title="violet"></span>
@@ -876,6 +1800,9 @@ _HTML = r"""<!DOCTYPE html>
           <span class="cp-swatch" style="background:blueviolet" onclick="_colorpickPickPreset('blueviolet')" title="blueviolet"></span>
           <span class="cp-swatch" style="background:purple" onclick="_colorpickPickPreset('purple')" title="purple"></span>
           <span class="cp-swatch" style="background:indigo" onclick="_colorpickPickPreset('indigo')" title="indigo"></span>
+          <span class="cp-swatch" style="background:darkslateblue" onclick="_colorpickPickPreset('darkslateblue')" title="darkslateblue"></span>
+          <span class="cp-swatch" style="background:darkviolet" onclick="_colorpickPickPreset('darkviolet')" title="darkviolet"></span>
+          <span class="cp-swatch" style="background:darkorchid" onclick="_colorpickPickPreset('darkorchid')" title="darkorchid"></span>
           <!-- Pinks -->
           <span class="cp-swatch" style="background:pink;border-color:#555" onclick="_colorpickPickPreset('pink')" title="pink"></span>
           <span class="cp-swatch" style="background:lightpink;border-color:#555" onclick="_colorpickPickPreset('lightpink')" title="lightpink"></span>
@@ -908,7 +1835,7 @@ _HTML = r"""<!DOCTYPE html>
 
   <div id="history-overlay">
     <div id="history-box">
-      <div id="history-box-title">&#128290; Session History</div>
+      <div id="history-box-title">&#8635; Session History</div>
       <div id="history-text-area">No history yet.</div>
       <div id="history-footer">
         <a id="history-dl-btn" href="/history/download" download="session_history.txt">&#11015; Download</a>
@@ -917,10 +1844,233 @@ _HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="player-list-wrap" style="display:none">
-    <button id="player-list-btn" onclick="_togglePlayerList()">&#128101; <span id="player-count">0</span></button>
-    <div id="player-list-panel">
-      <div id="player-list-items"></div>
+  <div id="bottom-left-wrap">
+    <div id="player-list-wrap" style="display:none">
+      <button id="player-list-btn" onclick="_togglePlayerList()">&#128101; <span id="player-count">0</span></button>
+      <div id="player-list-panel">
+        <div id="player-list-items"></div>
+      </div>
+    </div>
+
+    <div id="controls-wrap" style="display:none">
+      <button id="controls-btn" onclick="_toggleController()" title="Playback Controls">&#x23EF;&#xFE0F;</button>
+    </div>
+  </div>
+  <div id="sc-view-wrap">
+    <button id="sc-view-btn" onclick="_toggleScoreboardView()" title="Scoreboard">&#x1F3C6; Scoreboard</button>
+  </div>
+  <div id="metadata-wrap">
+    <button id="metadata-btn" onclick="_toggleMetadata()">&#x2139;&#xFE0F;</button>
+  </div>
+
+  <!-- Playback controller modal (host only) -->
+  <div id="ctrl-list-popup-overlay" onclick="if(event.target===this)_ctrlListPopupClose()">
+    <div id="ctrl-list-popup-box">
+      <div id="ctrl-list-popup-header">
+        <span id="ctrl-list-popup-title"></span>
+        <button id="ctrl-list-popup-close" onclick="_ctrlListPopupClose()">&#x2715;</button>
+      </div>
+      <div id="ctrl-list-popup-search-row">
+        <input type="text" id="ctrl-list-popup-search-input" placeholder="Search themes..."
+               onkeydown="if(event.key==='Enter')_ctrlListPopupDoSearch()"
+               oninput="_ctrlListPopupSearchDebounce()">
+        <button id="ctrl-list-popup-search-submit" onclick="_ctrlListPopupDoSearch()">&#x1F50D;</button>
+      </div>
+      <div id="ctrl-list-popup-list"></div>
+    </div>
+  </div>
+  <!-- Extras popup (More… button) -->
+  <div id="ctrl-extras-popup-overlay" onclick="if(event.target===this)_ctrlCloseExtrasPopup()">
+    <div id="ctrl-extras-popup-box">
+      <div id="ctrl-extras-popup-header">
+        <span id="ctrl-extras-popup-title">More Options</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button id="ctrl-extras-edit-btn" onclick="_ctrlToggleExtrasEditMode()" title="Pin buttons to main panel">&#x1F4CC; Pin</button>
+          <button id="ctrl-extras-popup-close" onclick="_ctrlCloseExtrasPopup()">&#x2715;</button>
+        </div>
+      </div>
+      <div id="ctrl-extras-edit-hint">Click a button to pin/unpin it from the main controls</div>
+      <div id="ctrl-extras-edit-actions" style="display:none;gap:5px;justify-content:flex-end">
+        <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#c77;border-color:#422" onclick="_ctrlClearPinned()" title="Remove all pinned buttons">Clear All</button>
+        <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#778;border-color:#223" onclick="_ctrlResetPinned()" title="Reset to default layout">Reset to Defaults</button>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Queue</span>
+        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="lt" onclick="_ctrlExtraClick('lt')">Lightning</button>
+        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="lt_stop" onclick="_ctrlExtraClick('lt_stop')">&#x23F9;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_dice" onclick="_ctrlExtraClick('lt_dice')">&#x1F3B2;</button>
+        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="yt" onclick="_ctrlExtraClick('yt')">YouTube</button>
+        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
+        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Bonus</span>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="b_multiple" onclick="_ctrlExtraClick('b_multiple')">Multiple</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="b_year" onclick="_ctrlExtraClick('b_year')">Year</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="b_tags" onclick="_ctrlExtraClick('b_tags')">Tags</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="b_members" onclick="_ctrlExtraClick('b_members')">Members</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="b_score" onclick="_ctrlExtraClick('b_score')">Score</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="b_rank" onclick="_ctrlExtraClick('b_rank')">Rank</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="b_free" onclick="_ctrlExtraClick('b_free')">Free</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_studio" onclick="_ctrlExtraClick('bonus_studio')">Studio</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_artist" onclick="_ctrlExtraClick('bonus_artist')">Artist</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_song" onclick="_ctrlExtraClick('bonus_song')">Song</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_chars" onclick="_ctrlExtraClick('bonus_chars')">Characters</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="auto_bonus" onclick="_ctrlExtraClick('auto_bonus')">Auto Bonus</button>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Toggles</span>
+        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="difficulty" onclick="_ctrlExtraClick('difficulty')">Difficulty</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_blind" onclick="_ctrlExtraClick('tgl_blind')">Blind</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_peek" onclick="_ctrlExtraClick('tgl_peek')">Peek</button>
+        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="tgl_narrow" onclick="_ctrlExtraClick('tgl_narrow')">&#x25C0;</button>
+        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="tgl_widen" onclick="_ctrlExtraClick('tgl_widen')">&#x25B6;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_mute" onclick="_ctrlExtraClick('tgl_mute')">Mute</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-censors" data-extra-id="tgl_censors" onclick="_ctrlExtraClick('tgl_censors')" title="Toggle censors">Censors (<span class="ctrl-censor-count">0</span>)</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-shortcuts" data-extra-id="tgl_shortcuts" onclick="_ctrlExtraClick('tgl_shortcuts')" title="Toggle keyboard shortcuts">Keys</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')" title="Toggle dock">Dock</button>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Info Reveal</span>
+        <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="rev_info" onclick="_ctrlExtraClick('rev_info')">Show Information</button>
+        <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="rev_title" onclick="_ctrlExtraClick('rev_title')">Title</button>
+        <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_artist" onclick="_ctrlExtraClick('reveal_artist')">Artist</button>
+        <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_studio" onclick="_ctrlExtraClick('reveal_studio')">Studio</button>
+        <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_season" onclick="_ctrlExtraClick('reveal_season')">Season</button>
+        <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_year" onclick="_ctrlExtraClick('reveal_year')">Year</button>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Marks</span>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-tag" data-extra-id="mark_tag" onclick="_ctrlExtraClick('mark_tag')" title="Tag">&#x2717;</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-fav" data-extra-id="mark_fav" onclick="_ctrlExtraClick('mark_fav')" title="Favorite">♥</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-blind" data-extra-id="mark_blind" onclick="_ctrlExtraClick('mark_blind')" title="Blind Mark">&#x1F441;</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-peek" data-extra-id="mark_peek" onclick="_ctrlExtraClick('mark_peek')" title="Peek Mark">&#x1F440;</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-mute-peek" data-extra-id="mark_mute_peek" onclick="_ctrlExtraClick('mark_mute_peek')" title="Mute Peek Mark">&#x1F507;</button>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Session</span>
+        <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="end_session" onclick="_ctrlExtraClick('end_session')">End</button>
+      </div>
+      <div class="ctrl-extras-sect-row" id="ctrl-extras-layout-sect" style="display:none">
+        <span class="ctrl-extras-sect-label">Layout</span>
+        <div id="ctrl-extras-layout-chips" style="display:contents"></div>
+        <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#667;border-color:#223" onclick="_ctrlAddLayoutItem('br')" title="Insert a line break in the pinned buttons">&#x21B5; Break</button>
+        <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#667;border-color:#223" onclick="_ctrlAddLayoutItem('sp')" title="Insert a space in the pinned buttons">&#x25A1; Space</button>
+      </div>
+    </div>
+  </div>
+  <div id="controller-overlay" onclick="if(event.target===this && window.innerWidth<900)_toggleController()">
+    <div id="controller-box">
+      <button id="ctrl-close-btn" onclick="_toggleController()" title="Close controls">&#x2715;</button>
+      <!-- Collapsible up next panel -->
+      <div class="ctrl-collapse-toggle" id="ctrl-upnext-toggle" onclick="_ctrlToggleUpNext()">
+        <span class="ctrl-collapse-label">&#x203A; Up Next</span>
+        <span class="ctrl-collapse-chevron" id="ctrl-upnext-chevron">&#x25BE;</span>
+      </div>
+      <div id="ctrl-upnext-panel" style="display:none">
+        <div id="ctrl-upnext-actions">
+          <button class="ctrl-upnext-queue-btn" id="ctrl-queue-blind" onclick="socket.emit('host_action',{action:'invoke',id:'queue_blind_round'})" ontouchend="this.blur()" title="Queue Blind Round">&#x1F441; Blind</button>
+          <button class="ctrl-upnext-queue-btn" id="ctrl-queue-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_peek_round'})" ontouchend="this.blur()" title="Queue Peek Round">&#x1F440; Peek</button>
+          <button class="ctrl-upnext-queue-btn" id="ctrl-queue-mute-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_mute_peek_round'})" ontouchend="this.blur()" title="Queue Mute Peek Round">&#x1F507; Mute Peek</button>
+          <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-reroll" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'reroll_next'})" ontouchend="this.blur()" title="Re-roll next track">&#x1F504; Re-roll</button>
+        </div>
+        <div id="ctrl-upnext-mode"></div>
+        <div id="ctrl-upnext-title"><span class="ctrl-upnext-label">NEXT:</span> <span id="ctrl-upnext-title-text">No upcoming track</span></div>
+        <div id="ctrl-upnext-detail"></div>
+      </div>
+      <!-- Collapsible playlist panel -->
+      <div class="ctrl-collapse-toggle" id="ctrl-playlist-toggle" onclick="_ctrlTogglePlaylist()" style="display:none">
+        <span class="ctrl-collapse-label">&#x203A; Playlist</span>
+        <span id="ctrl-playlist-counter" style="font-size:0.75em;color:#556;margin-left:4px"></span>
+        <span class="ctrl-collapse-chevron" id="ctrl-playlist-chevron">&#x25BE;</span>
+      </div>
+      <div id="ctrl-playlist-panel" style="display:none">
+        <div id="pl-vscroll">
+          <div id="pl-spacer"></div>
+        </div>
+      </div>
+      <!-- Flex spacer: pushes Controls + seek to bottom when playlist is collapsed -->
+      <div id="ctrl-flex-spacer"></div>
+      <!-- Combined controls panel -->
+      <div class="ctrl-collapse-toggle" id="ctrl-controls-toggle" onclick="_ctrlToggleControls()">
+        <span class="ctrl-collapse-label">&#x203A; Controls</span>
+        <span class="ctrl-collapse-chevron" id="ctrl-controls-chevron">&#x25BE;</span>
+      </div>
+      <div id="ctrl-controls-panel" style="display:none">
+          <div id="ctrl-pinned-extras"></div>
+          <button class="ctrl-bonus-btn ctrl-sect-toggle" onclick="_ctrlOpenExtrasPopup()" title="More options">More…</button>
+      </div>
+      <!-- Collapsible info text panel -->
+      <div class="ctrl-collapse-toggle" id="ctrl-infotext-toggle" onclick="_ctrlToggleInfoText()">
+        <span class="ctrl-collapse-label">&#x203A; Info</span>
+        <span class="ctrl-collapse-chevron" id="ctrl-infotext-chevron">&#x25BE;</span>
+      </div>
+      <div id="ctrl-infotext-panel" style="display:none">
+          <div id="ctrl-info-top"></div>
+          <div id="ctrl-info-main"></div>
+          <div id="ctrl-info-bottom"></div>
+      </div>
+      <!-- Seek bar -->
+      <div id="ctrl-seek-row">
+        <span id="ctrl-time-cur">0:00</span>
+        <input id="ctrl-seek" type="range" min="0" max="1000" value="0"
+               oninput="_ctrlSeekPreview(this.value)"
+               onchange="_ctrlSeekCommit(this.value)">
+        <span id="ctrl-time-total">0:00</span>
+      </div>
+      <!-- Playback buttons + volume -->
+      <div id="ctrl-main-row">
+        <div id="ctrl-vol-wrap">
+          <button class="ctrl-btn ctrl-btn-sm" id="ctrl-vol-btn" onclick="_ctrlToggleVolume()" title="Volume">&#x1F50A;</button>
+          <div id="ctrl-vol-slider-wrap" style="display:none">
+            <input id="ctrl-vol-slider" type="range" min="0" max="100" value="100"
+                   oninput="_ctrlVolumeChange(this.value)">
+            <span id="ctrl-vol-label">100</span>
+          </div>
+        </div>
+        <div id="ctrl-buttons">
+          <button class="ctrl-btn" onclick="_ctrlAction('previous')" title="Previous">&#x23EE;&#xFE0F;</button>
+          <button class="ctrl-btn" id="ctrl-playpause" onclick="_ctrlAction('play_pause')" title="Play / Pause">&#x23EF;&#xFE0F;</button>
+          <button class="ctrl-btn" onclick="_ctrlAction('stop')" title="Stop">&#x23F9;&#xFE0F;</button>
+          <button class="ctrl-btn" onclick="_ctrlAction('next')" title="Next">&#x23ED;&#xFE0F;</button>
+        </div>
+        <div id="ctrl-autoplay-wrap">
+          <button class="ctrl-btn ctrl-btn-autoplay mode-0" id="ctrl-autoplay-btn"
+                  onclick="_ctrlCycleAutoplay()" title="Autoplay mode">&#x1F501;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="metadata-overlay">
+    <div id="metadata-box">
+      <button id="meta-close-btn" onclick="_closeMetadata()" title="Close info">&#x2715;</button>
+      <div id="meta-history-nav">
+        <div id="meta-nav-arrows">
+          <button class="meta-history-btn meta-skip-btn" id="meta-history-oldest" onclick="_metaHistorySkip('oldest')" title="Skip to oldest">&#x7C;&#x25C4;</button>
+          <button class="meta-history-btn" id="meta-history-prev" onclick="_metaHistoryNav(1)" title="Previous">&#x25C4;</button>
+          <span id="meta-history-label">1 / 1</span>
+          <button class="meta-history-btn" id="meta-history-next" onclick="_metaHistoryNav(-1)" title="Next">&#x25BA;</button>
+          <button class="meta-history-btn meta-skip-btn" id="meta-history-newest" onclick="_metaHistorySkip('newest')" title="Skip to current">&#x25BA;&#x7C;</button>
+          <button id="meta-nav-autofollow" onclick="_metaToggleAutoFollow()" title="Auto-follow current">&#x27F3; Live</button>
+        </div>
+        <span id="meta-nav-title"></span>
+      </div>
+      <div class="meta-tabs">
+        <button class="meta-tab-btn active" onclick="_switchMetadataTab('info')">&#x2139;&#xFE0F; Info</button>
+        <button class="meta-tab-btn" onclick="_switchMetadataTab('themes')">&#127925; Themes</button>
+        <button class="meta-tab-btn" onclick="_switchMetadataTab('more')">&#x1F4DD; More</button>
+      </div>
+      <div id="meta-pane-info" class="meta-tab-pane active">
+        <div id="metadata-content"><span style="color:#555">No metadata loaded.</span></div>
+      </div>
+      <div id="meta-pane-themes" class="meta-tab-pane">
+        <div id="metadata-themes-content"><span style="color:#555">No themes loaded.</span></div>
+      </div>
+      <div id="meta-pane-more" class="meta-tab-pane">
+        <div id="metadata-more-content"><span style="color:#555">No data loaded.</span></div>
+      </div>
+      <div id="meta-pane-playlist" class="meta-tab-pane"></div>
+      <button id="metadata-close-btn" onclick="_closeMetadata()">Close</button>
     </div>
   </div>
 
@@ -930,10 +2080,24 @@ _HTML = r"""<!DOCTYPE html>
   </div>
 
   <script>
+    (function() {
+      function _scaleUI() {
+        var scale = Math.min(window.innerWidth / 500, window.innerHeight / 780);
+        document.documentElement.style.zoom = Math.max(scale, 1.0);
+      }
+      _scaleUI();
+      window.addEventListener('resize', () => { _scaleUI(); _scFitScroll(); _plRefreshTrunc(); });
+    })();
+  </script>
+  <script>
     const socket = io();
-    socket.on('connect', () => { if (playerName) socket.emit('set_name', { name: playerName }); });
     let selectedChoice = null;   // multiple-choice selection
     let playerName = localStorage.getItem('gta_name') || '';
+    socket.on('connect', () => {
+      if (playerName) socket.emit('set_name', { name: playerName });
+      const storedPw = localStorage.getItem('gta_host_pw');
+      if (storedPw) socket.emit('claim_host', { password: storedPw });
+    });
     let _currentQid  = null;      // qid of the active question
     let _currentQuestionTitle = '';  // title of the active question
     let _myLastAnswer = null;        // player's answer for the current question
@@ -974,12 +2138,25 @@ _HTML = r"""<!DOCTYPE html>
     })();
 
     /* ── Name management ── */
+    function _toggleHostPwField() {
+      const wrap = document.getElementById('host-pw-wrap');
+      const shown = wrap.style.display !== 'none';
+      wrap.style.display = shown ? 'none' : 'block';
+      if (!shown) document.getElementById('host-pw-input').focus();
+    }
     function saveName() {
       const v = document.getElementById('name-input').value.trim().replace(/\s+/g, '_');
       if (!v) return;
       playerName = v;
       localStorage.setItem('gta_name', playerName);
       socket.emit('set_name', { name: playerName });
+      const pw = document.getElementById('host-pw-input').value.trim();
+      if (pw) {
+        localStorage.setItem('gta_host_pw', pw);
+        socket.emit('claim_host', { password: pw });
+      } else if (localStorage.getItem('gta_host_pw')) {
+        socket.emit('claim_host', { password: localStorage.getItem('gta_host_pw') });
+      }
       showQuestionBox();
     }
     function changeName() {
@@ -990,6 +2167,12 @@ _HTML = r"""<!DOCTYPE html>
     document.getElementById('name-input').addEventListener('keydown', e => {
       if (e.key === ' ') e.preventDefault();
       if (e.key === 'Enter') saveName();
+    });
+    document.getElementById('host-pw-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') saveName();
+    });
+    socket.on('host_denied', () => {
+      console.warn('[GTA] host_denied – stored password kept; re-enter to update');
     });
     function showQuestionBox() {
       document.getElementById('name-screen').style.display = 'none';
@@ -1010,6 +2193,7 @@ _HTML = r"""<!DOCTYPE html>
       const min     = cfg.min  || 1900;
       const max     = Math.min(cfg.max || curYear, curYear);
       const initVal = (cfg.initial != null && cfg.initial !== 0) ? cfg.initial : curYear;
+      let myYear    = cfg.myYear || null;
       const ITEM_H  = 60;
       const WRAP_H  = 180;
 
@@ -1018,7 +2202,7 @@ _HTML = r"""<!DOCTYPE html>
 
       const wrap = document.createElement('div');
       wrap.className = 'drum-wrap';
-      wrap.style.cssText = 'height:' + WRAP_H + 'px; margin-bottom:10px;';
+      wrap.style.cssText = 'height:' + WRAP_H + 'px; flex:1;';
 
       const hl = document.createElement('div');
       hl.className = 'drum-highlight';
@@ -1038,7 +2222,28 @@ _HTML = r"""<!DOCTYPE html>
       scroller.appendChild(Object.assign(document.createElement('div'), { className: 'drum-item' }));
 
       wrap.appendChild(scroller);
-      area.appendChild(wrap);
+
+      const _nav = document.createElement('div');
+      _nav.className = 'drum-nav';
+      [
+        { sym: '\u25b2 5', step: -5, title: '-5 years' },
+        { sym: '\u25b2 1', step: -1, title: 'Previous year' },
+        { sym: '\u25bc 1', step:  1, title: 'Next year' },
+        { sym: '\u25bc 5', step:  5, title: '+5 years' },
+      ].forEach(({ sym, step, title }) => {
+        const btn = document.createElement('button');
+        btn.className = 'drum-nav-btn';
+        btn.textContent = sym;
+        btn.title = title;
+        const fast = Math.abs(step) >= 5;
+        btn.addEventListener('click', () => scroller.scrollBy({ top: step * ITEM_H, behavior: fast ? 'instant' : 'smooth' }));
+        _nav.appendChild(btn);
+      });
+      const _outer = document.createElement('div');
+      _outer.style.cssText = 'display:flex; align-items:stretch; gap:8px; margin-bottom:10px;';
+      _outer.appendChild(wrap);
+      _outer.appendChild(_nav);
+      area.appendChild(_outer);
 
       const initIdx = Math.max(0, years.indexOf(Math.max(min, Math.min(max, initVal))));
       const takenSet = new Set();
@@ -1051,13 +2256,17 @@ _HTML = r"""<!DOCTYPE html>
         const idx = getIdx();
         scroller.querySelectorAll('.drum-item').forEach((el, i) => {
           const vi = i - 1;
-          const isTaken = el.textContent && takenSet.has(parseInt(el.textContent, 10));
-          el.style.color          = isTaken ? '#c44' : (vi === idx ? '#fff' : '');
-          el.style.fontSize       = vi === idx ? '1.7em' : '';
+          const itemYear = el.textContent ? parseInt(el.textContent, 10) : null;
+          const isMyYear = myYear != null && itemYear === myYear;
+          const isTaken  = el.textContent && takenSet.has(parseInt(el.textContent, 10)) && !isMyYear;
+          el.style.color          = isMyYear ? '#88f' : (isTaken ? '#c44' : (vi === idx ? '#fff' : ''));
+          el.style.fontSize       = (vi === idx || isMyYear) ? '1.7em' : '';
+          el.style.fontWeight     = isMyYear ? 'bold' : '';
           el.style.textDecoration = isTaken ? 'line-through' : '';
         });
       }
       function markTaken(y) { takenSet.add(y); highlight(); }
+      function setMyYear(y) { myYear = y; highlight(); }
       function applyScroll() {
         scroller.scrollTop = initIdx * ITEM_H;
         highlight();
@@ -1072,8 +2281,8 @@ _HTML = r"""<!DOCTYPE html>
         setTimeout(applyScroll, 150);
       }
 
-      scroller.addEventListener('scroll', highlight, { passive: true });
-      return { getValue, markTaken };
+      scroller.addEventListener('scroll', () => { highlight(); _emitSelect(getValue()); }, { passive: true });
+      return { getValue, markTaken, setMyYear };
     }
 
     /* ══════════════════════════════════════════
@@ -1082,10 +2291,12 @@ _HTML = r"""<!DOCTYPE html>
     ══════════════════════════════════════════ */
     function buildDrum(area, cfg) {
       const { min, max, step, initial, decimals, reverse } = cfg;
+      let myScore = cfg.myScore != null ? cfg.myScore : null;
       const vals = [];
       for (let v = min; v <= max + 1e-9; v = Math.round((v + step) * 1e6) / 1e6)
         vals.push(parseFloat(v.toFixed(decimals)));
       if (reverse) vals.reverse();
+      const scoreTakenSet = new Set();
 
       const wrap = document.createElement('div');
       wrap.className = 'drum-wrap';
@@ -1116,9 +2327,32 @@ _HTML = r"""<!DOCTYPE html>
       }
       wrap.appendChild(scroller);
 
+      const _sNav = document.createElement('div');
+      _sNav.className = 'drum-nav';
+      const _s1   = 1;                             // items per 0.1-unit jump (step=0.1)
+      const _sMid = Math.round(0.5 / step) || 1;  // items per 0.5-unit jump
+      [
+        { sym: '\u25b2 .5', steps: -_sMid, title: '-.5' },
+        { sym: '\u25b2 .1', steps: -_s1,   title: '-.1' },
+        { sym: '\u25bc .1', steps:  _s1,   title: '+.1' },
+        { sym: '\u25bc .5', steps:  _sMid, title: '+.5' },
+      ].forEach(({ sym, steps, title }) => {
+        const btn = document.createElement('button');
+        btn.className = 'drum-nav-btn';
+        btn.textContent = sym;
+        btn.title = title;
+        const fast = Math.abs(steps) >= _sMid;
+        btn.addEventListener('click', () => scroller.scrollBy({ top: steps * ITEM_H, behavior: fast ? 'instant' : 'smooth' }));
+        _sNav.appendChild(btn);
+      });
+      const _sOuter = document.createElement('div');
+      _sOuter.style.cssText = 'display:flex; align-items:stretch; gap:8px;';
+      _sOuter.appendChild(wrap);
+      _sOuter.appendChild(_sNav);
+
       const display = document.createElement('div');
       display.className = 'drum-value-display';
-      area.appendChild(wrap);
+      area.appendChild(_sOuter);
       area.appendChild(display);
 
       const ITEM_H = 60;
@@ -1132,21 +2366,27 @@ _HTML = r"""<!DOCTYPE html>
         const idx = getCentered();
         const v = vals[idx];
         display.textContent = 'Selected: ' + (decimals > 0 ? v.toFixed(decimals) : String(v));
-        // highlight centre item
         const items = scroller.querySelectorAll('.drum-item');
         items.forEach((el, i) => {
           const vi = i - 1; // offset for top padding
-          if (vi === idx) { el.style.color = '#fff'; el.style.fontSize = '1.7em'; }
-          else            { el.style.color = ''; el.style.fontSize = ''; }
+          const itemVal = el.textContent ? parseFloat(el.textContent) : null;
+          const isMyScore = myScore != null && itemVal != null && Math.abs(itemVal - myScore) < step / 2;
+          const isTaken   = itemVal != null && scoreTakenSet.has(itemVal) && !isMyScore;
+          el.style.color          = isMyScore ? '#88f' : (isTaken ? '#c44' : (vi === idx ? '#fff' : ''));
+          el.style.fontSize       = (vi === idx || isMyScore) ? '1.7em' : '';
+          el.style.fontWeight     = isMyScore ? 'bold' : '';
+          el.style.textDecoration = isTaken ? 'line-through' : '';
         });
       }
+      function markScoreTaken(s) { scoreTakenSet.add(s); updateDisplay(); }
+      function setMyScore(s)     { myScore = s; updateDisplay(); }
 
       // Scroll to initial value — deferred so the browser has laid out the scroller
       const initIdx = vals.findIndex(v => Math.abs(v - initial) < step / 2);
       setTimeout(() => { scroller.scrollTop = Math.max(0, initIdx) * ITEM_H; updateDisplay(); }, 0);
-      scroller.addEventListener('scroll', updateDisplay, { passive: true });
+      scroller.addEventListener('scroll', () => { updateDisplay(); _emitSelect(vals[getCentered()]); }, { passive: true });
 
-      return { getValue: () => vals[getCentered()] };
+      return { getValue: () => vals[getCentered()], markScoreTaken, setMyScore };
     }
 
     /* ══════════════════════════════════════════
@@ -1165,7 +2405,14 @@ _HTML = r"""<!DOCTYPE html>
 
       function fmt(n) { return n.toLocaleString(); }
       function refresh() { display.value = fmt(value); }
-      area.appendChild(display);
+      const inputWrap = document.createElement('div');
+      inputWrap.className = 'stepper-input-wrap';
+      inputWrap.appendChild(display);
+      const typeHint = document.createElement('span');
+      typeHint.className = 'stepper-type-hint';
+      typeHint.textContent = 'T';
+      inputWrap.appendChild(typeHint);
+      area.appendChild(inputWrap);
       refresh();
 
       display.addEventListener('focus', () => {
@@ -1182,12 +2429,10 @@ _HTML = r"""<!DOCTYPE html>
         const parsed = parseInt(display.value.replace(/[^0-9-]/g, ''), 10);
         if (!isNaN(parsed)) value = Math.max(min, Math.min(max, parsed));
         refresh();
+        _emitSelect(value);
       });
-
-      // Group steps into rows of 3
-      const stepDefs = cfg.steps || [];
-      for (let i = 0; i < stepDefs.length; i += 3) {
-        const chunk = stepDefs.slice(i, i + 3);
+      for (let i = 0; i < cfg.steps.length; i += 3) {
+        const chunk = cfg.steps.slice(i, i + 3);
         const row = document.createElement('div');
         row.className = 'stepper-row cols-' + (chunk.length === 2 ? '2' : '3');
         chunk.forEach(s => {
@@ -1197,6 +2442,7 @@ _HTML = r"""<!DOCTYPE html>
           btn.onclick = () => {
             value = Math.max(min, Math.min(max, value + s.delta));
             refresh();
+            _emitSelect(value);
           };
           row.appendChild(btn);
         });
@@ -1204,6 +2450,163 @@ _HTML = r"""<!DOCTYPE html>
       }
 
       return { getValue: () => value };
+    }
+
+    /* ══════════════════════════════════════════
+       RANK SLIDER  (popularity)
+       data.rank_slider = { initial, min, max }
+       Left half  [0,500]  : log   max → pivot(1000)
+       Right half [500,1000]: quad  pivot(1000) → 1
+         Quadratic spreads the top-1000 range much more evenly than log.
+         Left = worst (high #)   Right = best (#1 ★)
+    ══════════════════════════════════════════ */
+    function buildRankSlider(area, cfg) {
+      const min   = cfg.min ?? 1;
+      const max   = cfg.max ?? 9999;
+      const pivot = Math.max(min + 1, Math.min(max - 1, 1000));
+      let rank = Math.max(min, Math.min(max, cfg.initial ?? pivot));
+
+      // Left half: log scale  max→pivot  mapped to sv 0→500
+      // Right half: quadratic pivot→min  mapped to sv 500→1000
+      //   t = (rank - min) / (pivot - min)  [0 at min, 1 at pivot]
+      //   sv = 500 + (1 - sqrt(t)) * 500
+      function rankToSv(r) {
+        r = Math.max(min, Math.min(max, r));
+        if (r >= pivot) {
+          const t = Math.log(r / max) / Math.log(pivot / max);
+          return Math.round(t * 500);
+        } else {
+          const t = (r - min) / (pivot - min);
+          return Math.round(500 + (1 - Math.sqrt(t)) * 500);
+        }
+      }
+      function svToRank(sv) {
+        sv = Math.max(0, Math.min(1000, sv));
+        if (sv <= 500) {
+          const t = sv / 500;
+          return Math.round(Math.exp(Math.log(max) + t * (Math.log(pivot) - Math.log(max))));
+        } else {
+          const u = (sv - 500) / 500;   // 0→1
+          const t = (1 - u) * (1 - u);  // quadratic: t=1 at sv=500, t=0 at sv=1000
+          return Math.round(min + t * (pivot - min));
+        }
+      }
+
+      // ─ Number display (editable) ─
+      const displayWrap = document.createElement('div');
+      displayWrap.className = 'rank-display-wrap';
+      const display = document.createElement('input');
+      display.type = 'text'; display.inputMode = 'numeric';
+      display.className = 'rank-display';
+      const typeHint = document.createElement('span');
+      typeHint.className = 'rank-type-hint'; typeHint.textContent = 'T';
+      displayWrap.appendChild(display); displayWrap.appendChild(typeHint);
+      area.appendChild(displayWrap);
+
+      // ─ Slider ─
+      const sliderRow = document.createElement('div');
+      sliderRow.className = 'rank-slider-row';
+      const leftLbl  = document.createElement('span');
+      leftLbl.className = 'rank-slider-label';
+      leftLbl.textContent = '#' + max.toLocaleString();
+      const rightLbl = document.createElement('span');
+      rightLbl.className = 'rank-slider-label';
+      rightLbl.textContent = '#1 \u2605';
+      const slider = document.createElement('input');
+      slider.type = 'range'; slider.min = 0; slider.max = 1000; slider.step = 1;
+      slider.className = 'rank-slider';
+      const sliderWrap = document.createElement('div');
+      sliderWrap.className = 'rank-slider-wrap';
+      sliderWrap.appendChild(slider);
+      const peerOverlay = document.createElement('div');
+      peerOverlay.className = 'rank-peer-overlay';
+      sliderWrap.appendChild(peerOverlay);
+      sliderRow.appendChild(leftLbl); sliderRow.appendChild(sliderWrap); sliderRow.appendChild(rightLbl);
+      area.appendChild(sliderRow);
+
+      // ─ Arrow adj buttons — worse (higher #) on left, better (lower #) on right ─
+      const adjRow = document.createElement('div');
+      adjRow.className = 'rank-adj-row';
+      [[+100,'\u25c4100','worse'],[+10,'\u25c410','worse'],[+1,'\u25c41','worse'],
+       [-1,'1\u25ba','better'],[-10,'10\u25ba','better'],[-100,'100\u25ba','better']].forEach(([d,lbl,cls]) => {
+        const btn = document.createElement('button');
+        btn.className = 'rank-adj-btn rank-' + cls;
+        btn.textContent = lbl;
+        btn.onclick = () => { setRank(rank + d); _emitSelect(rank); };
+        adjRow.appendChild(btn);
+      });
+      area.appendChild(adjRow);
+
+      // ─ Preset buttons — worst on left, best (#1) on right ─
+      const rawPresets = [10000, 5000, 2500, 1000, 500, 250, 100, 50, 1];
+      const presets = rawPresets.filter(p => p >= min && p <= max);
+      if (presets.length && presets[0] !== max && max <= 20000) presets.unshift(max);
+      const presetRow = document.createElement('div');
+      presetRow.className = 'rank-preset-row';
+      const presetBtns = [];
+      presets.forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'rank-preset-btn';
+        btn.textContent = p === 1  ? '#1 \u2605'
+          : p % 1000 === 0         ? '#' + (p / 1000) + 'K'
+          :                          '#' + p.toLocaleString();
+        btn.onclick = () => { setRank(p); _emitSelect(rank); };
+        presetRow.appendChild(btn);
+        presetBtns.push({ val: p, el: btn });
+      });
+      area.appendChild(presetRow);
+
+      function updateTrack(_sv) {
+        slider.style.background = '#333';
+      }
+      function setRank(r) {
+        rank = Math.max(min, Math.min(max, Math.round(r)));
+        display.value = '#' + rank.toLocaleString();
+        const sv = rankToSv(rank);
+        slider.value = sv;
+        updateTrack(sv);
+        presetBtns.forEach(({ val, el }) =>
+          el.classList.toggle('rank-active', val === rank));
+      }
+
+      slider.addEventListener('input', () => {
+        rank = svToRank(parseInt(slider.value));
+        display.value = '#' + rank.toLocaleString();
+        updateTrack(parseInt(slider.value));
+        presetBtns.forEach(({ val, el }) =>
+          el.classList.toggle('rank-active', val === rank));
+        _emitSelect(rank);
+      });
+      display.addEventListener('focus', () => { display.value = String(rank); });
+      display.addEventListener('keydown', e => {
+        if (!/^[0-9]$/.test(e.key) &&
+            !['Backspace','Delete','ArrowLeft','ArrowRight','Tab','Enter'].includes(e.key))
+          e.preventDefault();
+        if (e.key === 'Enter') display.blur();
+      });
+      display.addEventListener('blur', () => {
+        const parsed = parseInt(display.value, 10);
+        if (!isNaN(parsed)) setRank(parsed); else setRank(rank);
+        _emitSelect(rank);
+      });
+
+      function updatePeerMarks(answers) {
+        peerOverlay.innerHTML = '';
+        (answers || []).forEach(a => {
+          const r = parseInt(a.answer, 10);
+          if (isNaN(r)) return;
+          const sv = rankToSv(r);
+          const pct = (sv / 1000) * 100;
+          const tick = document.createElement('div');
+          tick.className = 'rank-peer-tick';
+          tick.style.left = pct + '%';
+          tick.title = a.name + ': #' + r.toLocaleString();
+          peerOverlay.appendChild(tick);
+        });
+      }
+
+      setRank(rank);
+      return { getValue: () => rank, updatePeerMarks };
     }
 
     /* ══════════════════════════════════════════
@@ -1224,6 +2627,7 @@ _HTML = r"""<!DOCTYPE html>
       function updateCounter() {
         counter.textContent = selectedTags.size + ' / ' + limit + ' selected';
         document.getElementById('submit-btn').disabled = selectedTags.size === 0;
+        if (selectedTags.size > 0) _emitSelect(Array.from(selectedTags).join(','));
       }
 
       tags.forEach(tag => {
@@ -1315,10 +2719,13 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     /* ── Active input handles ── */
-    let drumHandle    = null;
-    let stepperHandle = null;
-    let tagHandle     = null;
+    let drumHandle        = null;
+    let stepperHandle     = null;
+    let rankSliderHandle  = null;
+    let tagHandle         = null;
     let _takenYears   = new Set();  // years taken this round (year questions only)
+    let _takenScores  = new Set();  // scores taken this round (drum questions only)
+    let _takenRanks   = new Set();  // ranks taken this round (rank_slider questions only)
 
     /* ── Anime title autocomplete ── */
     let _cachedTitles = null;
@@ -1364,6 +2771,7 @@ _HTML = r"""<!DOCTYPE html>
     function _acPick(value) {
       _acInput().value = value;
       _acHide();
+      _emitSelect(value);
     }
     function _escHtml(s) {
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1387,6 +2795,7 @@ _HTML = r"""<!DOCTYPE html>
         if (!_cachedTitles || q.length < 2) { _acHide(); return; }
         const matches = _cachedTitles.filter(t => t.toLowerCase().includes(q.toLowerCase())).slice(0, 50);
         _acShow(matches, q);
+        _emitSelect(inp.value.trim());
       };
       inp.onkeydown = e => {
         if (e.key === 'ArrowDown') { e.preventDefault(); _acMoveCursor(1); }
@@ -1421,6 +2830,7 @@ _HTML = r"""<!DOCTYPE html>
       sentMsg.textContent = savedAnswer != null
         ? 'Submitted: ' + savedAnswer
         : 'Answer submitted!';
+      document.getElementById('free-error').style.display = 'none';
       document.getElementById('free-input').disabled = true;
       const acInp = document.getElementById('anime-ac-input');
       if (acInp) { acInp.disabled = true; }
@@ -1442,7 +2852,10 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('sent-msg').style.display = 'none';
       // Clear host panel for new question (keep toggle visible if already host)
       document.getElementById('host-answers').innerHTML = '';
-      document.getElementById('host-panel').style.display = 'none';
+      try {
+        document.getElementById('host-panel').style.display =
+          localStorage.getItem('hostPanelOpen') === '1' ? 'block' : 'none';
+      } catch(e) { document.getElementById('host-panel').style.display = 'none'; }
       const _ht = document.getElementById('host-toggle');
       if (_ht.style.display !== 'none') _ht.textContent = '\uD83D\uDC41 Submitted Answers (0)';
       document.getElementById('peer-answers-wrap').style.display = 'none';
@@ -1453,8 +2866,10 @@ _HTML = r"""<!DOCTYPE html>
       const acInpReset = document.getElementById('anime-ac-input');
       if (acInpReset) acInpReset.disabled = false;
       selectedChoice = null;
-      drumHandle = null; stepperHandle = null; tagHandle = null;
-      _takenYears = new Set();
+      drumHandle = null; stepperHandle = null; rankSliderHandle = null; tagHandle = null;
+      _takenYears  = new Set();
+      _takenScores = new Set();
+      _takenRanks  = new Set();
 
       const area = document.getElementById('choices-area');
       area.innerHTML = '';
@@ -1471,6 +2886,7 @@ _HTML = r"""<!DOCTYPE html>
 
       const _alreadyAnswered = _currentQid && localStorage.getItem('gta_answered_' + _currentQid);
       const _savedAnswer     = _alreadyAnswered ? localStorage.getItem('gta_answer_' + _currentQid) : null;
+      if (_savedAnswer) _myLastAnswer = _savedAnswer;  // restore so taken-year guard allows own year
 
       if (data.choices && data.choices.length > 0) {
         /* ── Multiple choice ── */
@@ -1484,6 +2900,7 @@ _HTML = r"""<!DOCTYPE html>
             document.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('selected'));
             btn.classList.add('selected');
             selectedChoice = choice;
+            _emitSelect(choice);
           };
           area.appendChild(btn);
         });
@@ -1491,7 +2908,7 @@ _HTML = r"""<!DOCTYPE html>
       } else if (data.year) {
         /* ── Year picker with drum↔text toggle ── */
         buildToggleable(area, freeInput, 'year', a => buildYearPicker(a,
-            _savedAnswer ? {...data.year, initial: parseInt(_savedAnswer, 10)} : data.year),
+            _savedAnswer ? {...data.year, initial: parseInt(_savedAnswer, 10), myYear: parseInt(_savedAnswer, 10)} : data.year),
           { min: data.year.min, max: data.year.max, step: 1, decimals: 0 });
         if (_savedAnswer && freeInput.style.display !== 'none') freeInput.value = _savedAnswer;
         if (data.taken_years && data.taken_years.length) {
@@ -1503,15 +2920,29 @@ _HTML = r"""<!DOCTYPE html>
 
       } else if (data.drum) {
         /* ── Score drum with drum↔text toggle ── */
-        buildToggleable(area, freeInput, 'score', a => buildDrum(a,
-            _savedAnswer ? {...data.drum, initial: parseFloat(_savedAnswer)} : data.drum),
+        const _drumCfg = _savedAnswer ? {...data.drum, initial: parseFloat(_savedAnswer), myScore: parseFloat(_savedAnswer)} : data.drum;
+        buildToggleable(area, freeInput, 'score', a => buildDrum(a, _drumCfg),
           { min: data.drum.min, max: data.drum.max, step: data.drum.step, decimals: data.drum.decimals });
         if (_savedAnswer && freeInput.style.display !== 'none') freeInput.value = _savedAnswer;
+        if (data.taken_scores && data.taken_scores.length) {
+          data.taken_scores.forEach(s => {
+            _takenScores.add(String(s));
+            if (drumHandle && drumHandle.markScoreTaken) drumHandle.markScoreTaken(s);
+          });
+        }
 
       } else if (data.stepper) {
         /* ── Stepper ── */
         stepperHandle = buildStepper(area,
           _savedAnswer ? {...data.stepper, initial: parseFloat(_savedAnswer)} : data.stepper);
+
+      } else if (data.rank_slider) {
+        /* ── Rank slider ── */
+        rankSliderHandle = buildRankSlider(area,
+          _savedAnswer ? {...data.rank_slider, initial: parseInt(_savedAnswer, 10)} : data.rank_slider);
+        if (data.taken_ranks && data.taken_ranks.length) {
+          data.taken_ranks.forEach(r => _takenRanks.add(String(r)));
+        }
 
       } else if (data.tags) {
         /* ── Tag chips (multi-select) ── */
@@ -1522,17 +2953,28 @@ _HTML = r"""<!DOCTYPE html>
 
       } else {
         /* ── Free text (with optional anime autocomplete) ── */
+        freeInput.oninput = null;
+        clearTimeout(_selectDebounceTimer);
+        freeInput.style.display = 'block';
+        freeInput.value = _savedAnswer || '';
+        freeInput.oninput = () => _emitSelect(freeInput.value.trim());
         if (data.autocomplete === 'anime') {
-          _loadAnimeTitles(() => { _setupAnimeAc(_savedAnswer); });
+          _loadAnimeTitles(() => {
+            const dl = document.getElementById('anime-titles-list');
+            dl.innerHTML = '';
+            (_cachedTitles || []).forEach(t => {
+              const opt = document.createElement('option'); opt.value = t; dl.appendChild(opt);
+            });
+            freeInput.setAttribute('list', 'anime-titles-list');
+          });
         } else {
-          freeInput.oninput = null;
-          freeInput.style.display = 'block';
-          freeInput.value = '';
-          freeInput.focus();
+          freeInput.removeAttribute('list');
         }
+        freeInput.focus();
       }
 
       if (_alreadyAnswered) _lockSubmittedUI(_savedAnswer);
+      else if (_myLastAnswer !== null) _lockSubmittedUI(_myLastAnswer.includes(',') ? _myLastAnswer.replace(/,/g, ', ') : _myLastAnswer);
     });
 
     socket.on('rules_update', data => {
@@ -1545,15 +2987,38 @@ _HTML = r"""<!DOCTYPE html>
       if (drumHandle && drumHandle.markTaken) drumHandle.markTaken(y);
     });
 
+    socket.on('score_taken', data => {
+      const s = data.score;
+      _takenScores.add(String(s));
+      if (drumHandle && drumHandle.markScoreTaken) drumHandle.markScoreTaken(s);
+    });
+
     socket.on('host_granted', data => {
+      console.log('[GTA] host_granted received');
       _isHost = true;
       document.getElementById('host-toggle').style.display = 'block';
+      try {
+        if (localStorage.getItem('hostPanelOpen') === '1') {
+          document.getElementById('host-panel').style.display = 'block';
+        }
+      } catch(e) {}
+      document.getElementById('controls-wrap').style.display = 'block';
+      document.getElementById('metadata-wrap').style.display = 'block';
+      if (!_ctrlPlaylistVisible) document.getElementById('ctrl-playlist-toggle').style.display = '';
+      else document.getElementById('ctrl-playlist-toggle').style.display = '';
+      document.getElementById('sc-view-wrap').style.display = 'flex';
+      const _scHC = document.getElementById('sc-host-controls');
+      if (_scHC) _scHC.style.display = 'block';
+      const _scCH = document.getElementById('sc-col-headers');
+      if (_scCH) _scCH.style.display = 'flex';
+      _scRestoreView();
       _refreshHostAnswers(data.answers || []);
       _refreshPlayerList(_lastPlayerList);
       // Hide peer answers panel — host has their own answers view
       document.getElementById('peer-answers-wrap').style.display = 'none';
       document.getElementById('peer-answers-list').innerHTML = '';
       _peerAnswersOpen = false;
+      _autoOpenSidePanels(true);
     });
 
     socket.on('player_colors_update', data => {
@@ -1569,10 +3034,19 @@ _HTML = r"""<!DOCTYPE html>
     socket.on('players_update', data => {
       _lastPlayerList = data.players || [];
       _refreshPlayerList(_lastPlayerList);
+      _scRenderGhosts();
     });
 
     socket.on('peer_answers_update', data => {
       if (!_isHost) _refreshPeerAnswers(data.answers || []);
+    });
+
+    socket.on('rank_marks_update', data => {
+      if (rankSliderHandle) rankSliderHandle.updatePeerMarks(data.answers || []);
+    });
+
+    socket.on('rank_taken', data => {
+      _takenRanks.add(String(data.rank));
     });
 
     socket.on('answer_reveal', data => {
@@ -1596,6 +3070,8 @@ _HTML = r"""<!DOCTYPE html>
       _timerRunning = true;
       _timerLastTs  = null;
       document.getElementById('timer-bar').style.visibility = 'visible';
+      document.getElementById('timer-display').style.display = '';
+      document.getElementById('timer-title').style.display = 'none';
       _renderTimer();
       if (_timerRafId) { cancelAnimationFrame(_timerRafId); _timerRafId = null; }
       if (!_timerPaused && _timerSeconds > 0) _timerRafId = requestAnimationFrame(_timerRaf);
@@ -1604,7 +3080,9 @@ _HTML = r"""<!DOCTYPE html>
       _timerRunning = false;
       _timerLastTs  = null;
       if (_timerRafId) { cancelAnimationFrame(_timerRafId); _timerRafId = null; }
-      document.getElementById('timer-bar').style.visibility = 'hidden';
+      document.getElementById('timer-bar').style.visibility = 'visible';
+      document.getElementById('timer-display').style.display = 'none';
+      document.getElementById('timer-title').style.display = '';
     });
     function _timerRaf(ts) {
       if (!_timerRunning || _timerPaused) { _timerRafId = null; return; }
@@ -1618,15 +3096,15 @@ _HTML = r"""<!DOCTYPE html>
     function _renderTimer() {
       const disp  = document.getElementById('timer-display');
       const total = Math.max(0, Math.ceil(_timerSeconds));
-      const mins  = Math.floor(total / 60);
-      const secs  = total % 60;
-      disp.textContent = mins > 0 ? (mins + ':' + String(secs).padStart(2, '0')) : String(secs);
+      disp.textContent = String(total);
       disp.className   = total <= 5 ? 'timer-warning' : '';
     }
 
     /* ── History modal ── */
     let _historyText = '';
     function _openHistory() {
+      const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+      document.getElementById('history-box').style.maxHeight = Math.floor(window.innerHeight / zoom * 0.80) + 'px';
       document.getElementById('history-text-area').textContent = _historyText || 'No history yet.';
       document.getElementById('history-overlay').classList.add('active');
     }
@@ -1687,7 +3165,9 @@ _HTML = r"""<!DOCTYPE html>
 
     function _toggleHostPanel() {
       const p = document.getElementById('host-panel');
-      p.style.display = p.style.display === 'none' ? 'block' : 'none';
+      const open = p.style.display === 'none';
+      p.style.display = open ? 'block' : 'none';
+      try { localStorage.setItem('hostPanelOpen', open ? '1' : '0'); } catch(e) {}
     }
     function _refreshHostAnswers(answers) {
       const container = document.getElementById('host-answers');
@@ -1736,6 +3216,8 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('name-screen').style.display    = 'none';
       document.getElementById('question-box').style.display   = 'none';
       document.getElementById('player-list-wrap').style.display = 'none';
+      document.getElementById('metadata-wrap').style.display  = 'none';
+      document.getElementById('controls-wrap').style.display   = 'none';
       document.getElementById('banned-screen').style.display  = 'block';
     });
 
@@ -1757,12 +3239,21 @@ _HTML = r"""<!DOCTYPE html>
       '⚽','🏀','🎾','🏈','⚾','🎱','🏓','🥊','🎮','🎲','🃏','🏆','🥇','🎯','🎳',
       // Food & drink
       '🍕','🍔','🌮','🍜','🍣','🍱','🧁','🍩','🍪','🍦','🍺','☕','🧃','🥤',
-      // Nature & weather
+      '🍆','🥑','🍓','🍇','🍉','🌽','🥕','🧄','🥐','🧀','🍗','🥩','🍳','🍙','🍤','🧆','🫕','🥞',
+      // Nature, weather & places
       '🌈','⚡','🌊','💧','🌸','🍀','🌙','☀️','❄️','🌪️','⛩️',
+      '🏖️','🏝️','🌴','🌵','🏔️','🗻','🌋','🌅','🌃','⛺','🏕️','🌿','🍂','🍁',
+      // Arrows & directional
+      '⬆️','⬇️','⬅️','➡️','↗️','↘️','↙️','↖️','↕️','↔️','🔄','🔃','↩️','↪️','⏪','⏩','⏫','⏬','⏭️','⏮️','🔁','🔂',
       // Objects & symbols
       '🔥','⭐','🌟','✨','💥','💫','🎉','🎊','🎈','🚀','🛸','👑','💎','🔮','🪄','🎁','🧸',
-      '🎵','🎶','🎤','🎸','📷','📱','💻','🔑','⚙️','🧲','⏩',
-      '✅','❌','⚠️','❓','❗','💯','🔔','📢','💬','👀','🫂',
+      '🎵','🎶','🎤','🎸','📷','📱','💻','🔑','⚙️','🧲','🔍','🔎','📊','📈','📉','🗓️','⏰','⌛','⏳',
+      '✅','❌','⚠️','❓','❗','💯','🔔','📢','💬','👀','🫂','🚫','🔇','🔕','💤','🆗','🆙','🆕','🔝',
+      // Anime & manga
+      '⚔️','🗡️','🛡️','🏹','🪃','🔱','🌀','💢','💦','💨','💬','💭','‼️','⁉️',
+      '🎴','🀄','🎎','🎏','🎐','🏮','🪔','🧧','🎋','🎍','🥷','🧝','🧙','🧛','🧜','🧚','🐉','🐲','🦊','🦝',
+      '🌺','🌸','🌼','🌻','🌹','🪷','🍡','🍢','🍥','🍧','🍮','🧋','🍵','🍶','🥢',
+      '📜','🗺️','🔭','🧪','🧬','⚗️','🪬','🫧',
       // Numbers
       '0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟',
     ];
@@ -1819,6 +3310,8 @@ _HTML = r"""<!DOCTYPE html>
         grid.appendChild(btn);
       });
       document.getElementById('emoji-picker-overlay').classList.add('active');
+      const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+      document.getElementById('emoji-picker-box').style.maxHeight = Math.floor(window.innerHeight / zoom * 0.70) + 'px';
     }
     function _resetEmojiDefaults() {
       _saveSavedEmojis([..._DEFAULT_EMOJIS]);
@@ -1830,6 +3323,8 @@ _HTML = r"""<!DOCTYPE html>
     }
     document.addEventListener('DOMContentLoaded', () => {
       _rebuildEmojiBar();
+      _ctrlRenderPinnedExtras();
+      _ctrlLoadPanels();
       document.getElementById('emoji-picker-overlay').addEventListener('click', e => {
         if (e.target === document.getElementById('emoji-picker-overlay')) _closeEmojiPicker();
       });
@@ -2003,6 +3498,14 @@ _HTML = r"""<!DOCTYPE html>
         const icon = document.createElement('span');
         icon.className = p.submitted ? 'pl-check' : 'pl-dot';
         icon.textContent = p.submitted ? '\u2713' : '\u25cf';
+        div.appendChild(icon);
+        if (p.host) {
+          const crown = document.createElement('span');
+          crown.className = 'pl-crown';
+          crown.textContent = '\uD83D\uDC51';
+          crown.title = 'Host';
+          div.appendChild(crown);
+        }
         const name = document.createElement('span');
         name.textContent = p.name;
         // Color swatch — clickable for own entry or host, read-only for others
@@ -2023,7 +3526,6 @@ _HTML = r"""<!DOCTYPE html>
           sw.title = (bg ? bg : 'No color set');
           sw.style.cursor = 'default';
         }
-        div.appendChild(icon);
         div.appendChild(name);
         div.appendChild(sw);
         if (_isHost) {
@@ -2073,18 +3575,45 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     /* ── Submit ── */
+    // Debounced silent selection tracker — fires select_answer without locking UI
+    let _selectDebounceTimer = null;
+    function _emitSelect(answer) {
+      if (_myLastAnswer !== null) return;  // already submitted this question
+      if (!playerName) return;
+      if (answer === null || answer === undefined || answer === '') return;
+      clearTimeout(_selectDebounceTimer);
+      _selectDebounceTimer = setTimeout(() => {
+        socket.emit('select_answer', { name: playerName, answer: String(answer) });
+      }, 300);
+    }
+
     function submitAnswer() {
       let answer = null;
 
       if (drumHandle) {
         answer = String(drumHandle.getValue());
-        if (_takenYears.has(answer)) {
+        if (_takenYears.has(answer) && answer !== _myLastAnswer) {
           const errDiv = document.getElementById('free-error');
           errDiv.textContent = String(answer) + ' is already taken. Pick another year.';
           errDiv.style.display = 'block';
           return;
         }
+        if (_takenScores.has(answer) && answer !== _myLastAnswer) {
+          const errDiv = document.getElementById('free-error');
+          errDiv.textContent = String(answer) + ' is already taken. Pick another score.';
+          errDiv.style.display = 'block';
+          return;
+        }
       } else if (stepperHandle) answer = String(stepperHandle.getValue());
+      else if (rankSliderHandle) {
+        answer = String(rankSliderHandle.getValue());
+        if (_takenRanks.has(answer) && answer !== _myLastAnswer) {
+          const errDiv = document.getElementById('free-error');
+          errDiv.textContent = 'Rank #' + parseInt(answer).toLocaleString() + ' is already taken. Pick another rank.';
+          errDiv.style.display = 'block';
+          return;
+        }
+      }
       else if (tagHandle) {
         const v = tagHandle.getValue();
         if (!v) return;   // nothing selected
@@ -2121,7 +3650,7 @@ _HTML = r"""<!DOCTYPE html>
         }
         errDiv.style.display = 'none';
         // Taken-year check for text mode
-        if (_takenYears.size && _takenYears.has(answer)) {
+        if (_takenYears.size && _takenYears.has(answer) && answer !== _myLastAnswer) {
           errDiv.textContent = answer + ' is already taken. Pick another year.';
           errDiv.style.display = 'block'; return;
         }
@@ -2129,6 +3658,8 @@ _HTML = r"""<!DOCTYPE html>
 
       socket.emit('submit_answer', { name: playerName, answer: answer });
        _myLastAnswer = answer;
+      if (drumHandle && drumHandle.setMyYear)   drumHandle.setMyYear(parseInt(answer, 10));
+      if (drumHandle && drumHandle.setMyScore)  drumHandle.setMyScore(parseFloat(answer));
 
       if (tagHandle) {
         /* Tags now single-submit like all other types */
@@ -2151,6 +3682,2297 @@ _HTML = r"""<!DOCTYPE html>
     document.getElementById('free-input').addEventListener('keydown', e => {
       if (e.key === 'Enter') submitAnswer();
     });
+
+    socket.on('auto_submitted', data => {
+      // Server flushed our silent selection as a real submission
+      const answer = String(data.answer || '');
+      if (_myLastAnswer !== null) return;  // already formally submitted
+      _myLastAnswer = answer;
+      if (_currentQid) {
+        localStorage.setItem('gta_answered_' + _currentQid, '1');
+        localStorage.setItem('gta_answer_'   + _currentQid, answer);
+      }
+      _lockSubmittedUI(answer.includes(',') ? answer.replace(/,/g, ', ') : answer);
+      selectedChoice = null;
+    });
+
+    /* ── Metadata panel (host only) ── */
+    let _metadataOpen = false;
+    let _metadataTab = 'info';
+    const _metaHistory = [];  // oldest → newest
+    let _metaHistoryIdx = 0;  // 0 = newest
+    let _metaAutoFollow = true;
+    let _currentMetadata = null;
+    let _sidePanelInitDone = false;
+
+    function _saveSidePanels() {
+      const state = { meta: _metadataOpen, ctrl: _controllerOpen };
+      document.cookie = 'sidePanels=' + encodeURIComponent(JSON.stringify(state)) + '; path=/; max-age=31536000';
+    }
+
+    // Called once when access is first granted. Auto-opens panels on widescreen
+    // unless the user had previously explicitly closed them (saved in cookie).
+    function _autoOpenSidePanels(isHost) {
+      if (_sidePanelInitDone || window.innerWidth < 900) return;
+      _sidePanelInitDone = true;
+      const match = document.cookie.match(/(?:^|;\s*)sidePanels=([^;]*)/);
+      let saved = null;
+      if (match) { try { saved = JSON.parse(decodeURIComponent(match[1])); } catch(e) {} }
+      // Default open on widescreen; respect saved preference if it exists
+      if (!_metadataOpen && (saved ? saved.meta !== false : true)) _toggleMetadata();
+      if (isHost && !_controllerOpen && (saved ? saved.ctrl !== false : true)) _toggleController();
+    }
+
+    socket.on('info_public_update', data => {
+      if (data.show) {
+        if (data.metadata) {
+          _currentMetadata = data.metadata;
+          _metaHistoryPush(_currentMetadata);
+        }
+        document.getElementById('metadata-wrap').style.display = 'block';
+        _autoOpenSidePanels(false);
+        // Re-render if panel is already open
+        if (_metadataOpen) {
+          _renderMetadata(_currentMetadata);
+          _renderSeriesThemes(_currentMetadata);
+        }
+      } else if (!_isHost) {
+        // Keep panel open but show empty state
+        _currentMetadata = null;
+        if (_metadataOpen) {
+          _renderMetadata(null);
+          _renderSeriesThemes(null);
+        }
+      }
+    });
+
+    /* ── Playback controller ── */
+    let _controllerOpen  = false;
+    let _ctrlControlsVisible = false;
+    let _ctrlInfoTextVisible = false;
+    const _ctrlInfoHistory = [];   // oldest → newest
+    let _ctrlInfoHistoryIdx = 0;   // 0 = newest end
+    let _ctrlUpNextVisible = false;
+    let _ctrlPlaylistVisible = false;
+    let _ctrlYtListOpen = false;
+    let _ctrlYtCurrentId = null;
+    let _ctrlLtListOpen = false;
+    let _ctrlLtCurrentMode = null;
+    let _ctrlFlListOpen = false;
+    let _ctrlFlCurrentName = null;
+    let _ctrlSearchListOpen = false;
+    let _ctrlSearchQueuedFile = null;
+    let _ctrlDiffListOpen = false;
+    let _ctrlDiffCurrent = 2;
+    let _ctrlAutoBonusListOpen = false;
+    let _ctrlAutoBonusCurrent = null;
+    let _ctrlListPopupMode = null;
+
+    function _ctrlListPopupOpen(title, mode) {
+      _ctrlListPopupMode = mode;
+      const overlay = document.getElementById('ctrl-list-popup-overlay');
+      const titleEl = document.getElementById('ctrl-list-popup-title');
+      const searchRow = document.getElementById('ctrl-list-popup-search-row');
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (titleEl) titleEl.textContent = title;
+      if (searchRow) searchRow.classList.toggle('active', mode === 'search');
+      if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+      if (overlay) overlay.classList.add('active');
+    }
+
+    function _ctrlListPopupClose() {
+      _ctrlListPopupMode = null;
+      _ctrlLtListOpen = false;
+      _ctrlYtListOpen = false;
+      _ctrlFlListOpen = false;
+      _ctrlSearchListOpen = false;
+      _ctrlDiffListOpen = false;
+      _ctrlAutoBonusListOpen = false;
+      const overlay = document.getElementById('ctrl-list-popup-overlay');
+      if (overlay) overlay.classList.remove('active');
+    }
+    let _ctrlVolOpen     = false;
+    let _ctrlSeeking     = false;
+    let _ctrlCurrentMs   = 0;
+    let _ctrlLengthMs    = 0;
+    let _ctrlPlaying     = false;
+    let _ctrlAutoplayMode = 0;
+
+    const _AUTOPLAY_ICONS  = ['\u{1F501}', '\u{1F502}', '\u{1F501}', '\u274C'];
+    const _AUTOPLAY_TITLES = [
+      'Autoplay: advance to next track',
+      'Single repeat: replay current track',
+      'Disabled: stop after current track',
+      'Manual: video loads but does not play'
+    ];
+
+    function _ctrlSetAutoplayMode(mode) {
+      _ctrlAutoplayMode = mode;
+      const btn = document.getElementById('ctrl-autoplay-btn');
+      if (!btn) return;
+      btn.textContent = _AUTOPLAY_ICONS[mode];
+      btn.title = _AUTOPLAY_TITLES[mode];
+      btn.className = 'ctrl-btn ctrl-btn-autoplay mode-' + mode;
+    }
+
+    function _ctrlCycleAutoplay() {
+      const next = (_ctrlAutoplayMode + 1) % 4;
+      _ctrlSetAutoplayMode(next);
+      socket.emit('host_action', { action: 'set_autoplay', mode: next });
+    }
+
+    function _fmtMs(ms) {
+      if (!ms || ms <= 0) return '0:00';
+      const s = Math.floor(ms / 1000);
+      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    }
+
+    function _ctrlRenderInfo(d) {
+      // If d is null, use history navigation; otherwise snap to latest
+      if (d !== null) {
+        _ctrlInfoHistoryIdx = 0;
+        // Seed history from any real data source (metadata_update, info_public_update, etc.)
+        if (d.title) {
+          const last = _ctrlInfoHistory[_ctrlInfoHistory.length - 1];
+          const newSlug = d.current_theme && d.current_theme.slug;
+          const lastSlug = last && last.current_theme && last.current_theme.slug;
+          if (!last || last.title !== d.title || (newSlug && newSlug !== lastSlug)) {
+            _ctrlInfoHistory.push(d);
+            if (_ctrlInfoHistory.length > 20) _ctrlInfoHistory.shift();
+          }
+        }
+      }
+      const total = _ctrlInfoHistory.length;
+      const viewData = total > 0 ? _ctrlInfoHistory[total - 1 - _ctrlInfoHistoryIdx] : d;
+      d = viewData;
+      const top  = document.getElementById('ctrl-info-top');
+      const main = document.getElementById('ctrl-info-main');
+      const bot  = document.getElementById('ctrl-info-bottom');
+      if (!d || !d.title) {
+        if (top)  top.textContent  = '';
+        if (main) main.textContent = 'No media loaded';
+        if (bot)  bot.innerHTML    = '';
+        return;
+      }
+      // Main: English title (large)
+      const title = d.eng_title || d.title || '';
+      const jpTitle = d.title || '';
+      if (main) main.textContent = title;
+      // Top row: slug + song + season
+      const ct = d.current_theme || {};
+      const slugFmt = ct.slug ? ct.slug.replace(/([A-Z]+)(\d+)/, '$1 $2') : '';
+      const vStr    = ct.version && ct.version !== 1 ? ' v' + ct.version : '';
+      const suffix  = ct.overall_suffix || '';
+      const songParts = [];
+      if (ct.title) songParts.push(ct.title);
+      if (ct.artists && ct.artists.length) songParts.push(ct.artists_str || ct.artists.join(', '));
+      const songStr = songParts.join(' / ');
+      const aired   = d.season || d.release || '';
+      const topParts = [slugFmt + vStr + suffix, songStr, aired].filter(Boolean);
+      if (top) top.textContent = topParts.join('  \u2022  ');
+      // Bottom: multi-line like desktop popup
+      const B = '  \u2022  ';
+      const lines = [];
+      // Line 1: MAL score | JP title | members
+      const l1 = [];
+      if (d.score) l1.push('MAL ' + d.score + (d.rank ? ' (#' + d.rank + ')' : ''));
+      if (jpTitle && jpTitle !== title) l1.push(jpTitle);
+      if (d.members) l1.push(Number(d.members).toLocaleString() + ' members' + (d.popularity ? ' (#' + d.popularity + ')' : ''));
+      if (l1.length) lines.push(l1.join(B));
+      // Line 2: studio | tags | episodes | format | source
+      const l3 = [];
+      const studios = (d.studios || []).join(', ');
+      if (studios) l3.push(studios);
+      const tagArr = Array.isArray(d.tags) ? d.tags : (d.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+      if (tagArr.length) l3.push(tagArr.slice(0, 5).join(', '));
+      if (d.episodes) l3.push(d.episodes + ' ep.');
+      if (d.format)   l3.push(d.format);
+      if (d.source)   l3.push(d.source);
+      if (l3.length) lines.push(l3.join(B));
+      if (bot) bot.innerHTML = lines.map(l => `<span>${l}</span>`).join('<br>');
+    }
+
+    socket.on('playback_state', data => {
+      _ctrlCurrentMs = data.current_ms || 0;
+      _ctrlLengthMs  = data.length_ms  || 0;
+      _ctrlPlaying   = !!data.playing;
+      if (!_ctrlSeeking) {
+        const seek = document.getElementById('ctrl-seek');
+        if (seek) {
+          seek.value = _ctrlLengthMs > 0
+            ? Math.round((_ctrlCurrentMs / _ctrlLengthMs) * 1000)
+            : 0;
+        }
+      }
+      const cur = document.getElementById('ctrl-time-cur');
+      const tot = document.getElementById('ctrl-time-total');
+      const pp  = document.getElementById('ctrl-playpause');
+      if (cur) cur.textContent = _fmtMs(_ctrlCurrentMs);
+      if (tot) tot.textContent = _fmtMs(_ctrlLengthMs);
+      if (pp)  pp.textContent  = _ctrlPlaying ? '\u23F8\uFE0F' : '\u25B6\uFE0F';
+      if (data.volume !== undefined) {
+        const vs = document.getElementById('ctrl-vol-slider');
+        const vl = document.getElementById('ctrl-vol-label');
+        if (vs) vs.value = data.volume;
+        if (vl) vl.textContent = data.volume;
+      }
+      if (data.autoplay !== undefined) _ctrlSetAutoplayMode(data.autoplay);
+      _ctrlRenderInfo(_currentMetadata);
+    });
+
+    socket.on('metadata_update', data => {
+      _currentMetadata = data;
+      _metaHistoryPush(data);
+      _ctrlInfoHistoryIdx = 0; // snap back to latest
+      _ctrlRenderInfo(data); // history seeding handled inside _ctrlRenderInfo
+      if (_metadataOpen) {
+        _renderMetadata(data);
+        if (_metaAutoFollow) {
+          _renderSeriesThemes(data);
+          if (_metadataTab === 'more') _renderMore(data);
+        }
+        if (_ctrlPlaylistVisible) {
+          _plCache.clear();
+          _plPending.clear();
+          socket.emit('host_action', { action: 'get_playlist_info' });
+        }
+      }
+    });
+
+    function _toggleController() {
+      _controllerOpen = !_controllerOpen;
+      document.getElementById('controller-overlay').classList.toggle('active', _controllerOpen);
+      document.body.classList.toggle('ctrl-open', _controllerOpen);
+      if (_controllerOpen) {
+        _ctrlRenderInfo(_currentMetadata);
+        if (_ctrlLengthMs === 0)
+          socket.emit('host_action', { action: 'request_state' });
+      } else {
+        // Close any open sub-panels when dismissing controller
+        if (_ctrlVolOpen) _ctrlToggleVolume();
+      }
+      _saveSidePanels();
+    }
+
+    function _ctrlSavePanels() {
+      const state = {
+        controls:      _ctrlControlsVisible,
+        infotext:      _ctrlInfoTextVisible,
+        upnext:        _ctrlUpNextVisible,
+        playlist:      _ctrlPlaylistVisible,
+        pinnedExtras:  [..._ctrlPinnedExtras],
+      };
+      try { localStorage.setItem('ctrlPanels', JSON.stringify(state)); } catch(e) {}
+    }
+
+    function _ctrlLoadPanels() {
+      let state;
+      try { state = JSON.parse(localStorage.getItem('ctrlPanels') || ''); } catch(e) { return; }
+      if (!state) return;
+      if (state.controls) _ctrlToggleControls();
+      if (state.infotext) _ctrlToggleInfoText();
+      if (state.upnext)   _ctrlToggleUpNext();
+      if (state.playlist) _ctrlTogglePlaylist();
+      if (Array.isArray(state.pinnedExtras)) {
+        _ctrlPinnedExtras = new Set(state.pinnedExtras);
+        _ctrlRenderPinnedExtras();
+      }
+    }
+
+    function _ctrlToggleControls() {
+      _ctrlControlsVisible = !_ctrlControlsVisible;
+      const panel = document.getElementById('ctrl-controls-panel');
+      if (panel) panel.style.display = _ctrlControlsVisible ? 'flex' : 'none';
+      _ctrlSavePanels();
+    }
+    function _ctrlToggleInfoText() {
+      _ctrlInfoTextVisible = !_ctrlInfoTextVisible;
+      const panel = document.getElementById('ctrl-infotext-panel');
+      if (panel) panel.style.display = _ctrlInfoTextVisible ? 'block' : 'none';
+      _ctrlSavePanels();
+    }
+
+    // ── Scoreboard view ──────────────────────────────────────────────
+    let _scViewOpen    = false;
+    let _scDeltaBtns   = [];   // [{label, delta}, ...]
+    let _scPlayers     = [];   // [{name, score, team}, ...]
+    let _scLastData    = null; // most recent scores_update payload
+    let _scOptimisticUntil = 0;       // timestamp — ignore incoming renders until this time
+    let _scOptimisticPlayers = null;  // snapshot of _scPlayers after last optimistic op
+    let _scTeamNames   = [];   // cached team name list for autocomplete
+    let _scPending     = {};   // name → accumulated uncommitted delta
+    let _scTimers      = {};   // name → per-player setTimeout id
+    let _scTimerEnds   = {};   // name → deadline timestamp
+    let _scGlobalTimer = null; // shared setTimeout id (TOGETHER mode)
+    let _scGlobalTimerEnd = null;
+    let _scTogether    = false;
+    let _scAuto        = false;
+    let _scDelay       = 1500; // ms — mirrors delta_commit_delay config
+
+    function _scLoadPrefs(auto_send, delay_together, commit_delay, score_font, name_font) {
+      _scAuto     = !!auto_send;
+      _scTogether = !!delay_together;
+      if (commit_delay !== undefined) _scDelay = Math.max(0, parseInt(commit_delay) || 0);
+      if (score_font) document.documentElement.style.setProperty('--sc-score-font', "'" + score_font + "'");
+      if (name_font)  document.documentElement.style.setProperty('--sc-name-font',  "'" + name_font  + "'");
+      _scApplyToggleUI();
+    }
+    function _scApplyToggleUI() {
+      const tb = document.getElementById('sc-tog-together');
+      const ab = document.getElementById('sc-tog-auto');
+      if (tb) tb.classList.toggle('sc-toggle-on', _scTogether);
+      if (ab) ab.classList.toggle('sc-toggle-on', _scAuto);
+    }
+    function _scToggleTogether() {
+      _scTogether = !_scTogether;
+      _scApplyToggleUI();
+      socket.emit('host_action', { action: 'sc_set_prefs', auto_send: _scAuto, delay_together: _scTogether });
+    }
+    function _scToggleAuto() {
+      _scAuto = !_scAuto;
+      _scApplyToggleUI();
+      if (!_scAuto) {
+        // Turning auto off: cancel all timers, keep pending for manual SUBMIT
+        Object.values(_scTimers).forEach(t => clearTimeout(t));
+        _scTimers = {}; _scTimerEnds = {};
+        if (_scGlobalTimer) { clearTimeout(_scGlobalTimer); _scGlobalTimer = null; _scGlobalTimerEnd = null; }
+        _scUpdateSubmitBtn();
+      }
+      socket.emit('host_action', { action: 'sc_set_prefs', auto_send: _scAuto, delay_together: _scTogether });
+    }
+
+    /** Mirrors scoreboard.py _queue_delta exactly. */
+    function _scQueueDelta(name, delta) {
+      // Instant + auto + not-together: fire right away, no accumulation
+      if (_scDelay === 0 && _scAuto && !_scTogether) {
+        socket.emit('host_action', { action: 'score_adjust', name, delta });
+        _scOptimisticPromote(name, delta);
+        return;
+      }
+
+      // If this is a ghost player, promote them to a real row immediately (score 0)
+      // so the pending label shows on a proper scoreboard row rather than the ghost strip.
+      // _scCommit/_scFlushAll will then just add the committed delta to their existing score.
+      if (!_scPlayers.find(p => p.name === name)) {
+        _scOptimisticPromote(name, 0);
+      }
+
+      // Accumulate
+      _scPending[name] = (_scPending[name] || 0) + delta;
+      _scUpdateAllPendingLabels();
+
+      if (!_scAuto) {
+        // Manual mode: cancel any running timer, wait for SUBMIT
+        if (_scTimers[name]) { clearTimeout(_scTimers[name]); delete _scTimers[name]; delete _scTimerEnds[name]; }
+        if (_scGlobalTimer)  { clearTimeout(_scGlobalTimer);  _scGlobalTimer = null; _scGlobalTimerEnd = null; }
+        _scUpdateSubmitBtn();
+        return;
+      }
+
+      if (_scTogether) {
+        // Shared timer: any press resets it for ALL players
+        Object.values(_scTimers).forEach(t => clearTimeout(t));
+        _scTimers = {};
+        _scTimerEnds = {};
+        if (_scGlobalTimer) { clearTimeout(_scGlobalTimer); _scGlobalTimer = null; _scGlobalTimerEnd = null; }
+        if (_scDelay === 0) { _scFlushAll(); return; }
+        _scGlobalTimerEnd = Date.now() + _scDelay;
+        _scGlobalTimer = setTimeout(() => { _scGlobalTimer = null; _scGlobalTimerEnd = null; _scFlushAll(); }, _scDelay);
+        _scUpdateSubmitBtn();
+      } else {
+        // Per-player timer
+        if (_scGlobalTimer) { clearTimeout(_scGlobalTimer); _scGlobalTimer = null; }
+        if (_scTimers[name]) clearTimeout(_scTimers[name]);
+        if (_scDelay === 0) { _scCommit(name); return; }
+        _scTimerEnds[name] = Date.now() + _scDelay;
+        _scTimers[name] = setTimeout(() => { delete _scTimers[name]; delete _scTimerEnds[name]; _scCommit(name); _scUpdateSubmitBtn(); }, _scDelay);
+        _scUpdateSubmitBtn();
+      }
+    }
+
+    function _scOptimisticPromote(name, delta) {
+      const op = _scPlayers.find(p => p.name === name);
+      _scOptimisticUntil = Date.now() + 5000;
+      if (op) {
+        // Existing player: update score and patch span in-place
+        op.score = (op.score || 0) + delta;
+        if (_scLastData) _scLastData.players = _scPlayers.map(p => Object.assign({}, p));
+        _scOptimisticPlayers = _scPlayers.map(p => Object.assign({}, p));
+        const container = document.getElementById('sc-players');
+        if (container) {
+          const row = container.querySelector('.sc-row[data-name="' + CSS.escape(name) + '"]');
+          if (row) { const sc = row.querySelector('.sc-score-cell'); if (sc) sc.textContent = _scFmtScore(op.score); }
+        }
+      } else {
+        // Ghost player: build new players list WITHOUT touching _scPlayers yet
+        // so _scRender sees a length/name change and does a full DOM rebuild
+        const newPlayers = _scPlayers.map(p => Object.assign({}, p));
+        newPlayers.push({ name, score: delta });
+        _scOptimisticPlayers = newPlayers.map(p => Object.assign({}, p));
+        const renderData = Object.assign({}, _scLastData || {}, { players: newPlayers,
+          delta_buttons: (_scLastData && _scLastData.delta_buttons) || _scDeltaBtns.map(d => d.label).join(',') });
+        _scRender(renderData);
+        // _scRender sets _scPlayers = newPlayers internally
+      }
+    }
+
+    function _scCommit(name) {
+      const delta = _scPending[name] || 0;
+      delete _scPending[name];
+      delete _scTimerEnds[name];
+      _scUpdateAllPendingLabels();
+      _scUpdateSubmitBtn();
+      if (delta !== 0) {
+        socket.emit('host_action', { action: 'score_adjust', name, delta });
+        _scOptimisticPromote(name, delta);
+      }
+    }
+
+    function _scFlushAll() {
+      const entries = Object.entries(_scPending);
+      entries.forEach(([name, delta]) => {
+        if (delta !== 0) socket.emit('host_action', { action: 'score_adjust', name, delta });
+      });
+      _scPending = {};
+      Object.values(_scTimers).forEach(t => clearTimeout(t));
+      _scTimers = {};
+      _scTimerEnds = {};
+      if (_scGlobalTimer) { clearTimeout(_scGlobalTimer); _scGlobalTimer = null; _scGlobalTimerEnd = null; }
+      _scUpdateAllPendingLabels();
+      _scUpdateSubmitBtn();
+      // Optimistic: apply all flushed deltas
+      if (entries.length > 0) {
+        entries.forEach(([name, delta]) => { if (delta !== 0) _scOptimisticPromote(name, delta); });
+      }
+    }
+
+    // Countdown ticker on SUBMIT button
+    let _scCountdownTick = null;
+    function _scUpdateSubmitBtn() {
+      const sb = document.getElementById('sc-submit-btn');
+      if (!sb) return;
+      if (_scCountdownTick) { clearInterval(_scCountdownTick); _scCountdownTick = null; }
+      // Find the nearest deadline across all active timers
+      const now = Date.now();
+      let nearest = Infinity;
+      if (_scGlobalTimer !== null && _scGlobalTimerEnd) nearest = Math.min(nearest, _scGlobalTimerEnd);
+      Object.entries(_scTimerEnds).forEach(([, t]) => { if (t) nearest = Math.min(nearest, t); });
+      if (!isFinite(nearest) || nearest <= now) {
+        sb.textContent = 'SUBMIT';
+        return;
+      }
+      function _tick() {
+        const rem = Math.max(0, Math.ceil((nearest - Date.now()) / 100) / 10);
+        sb.textContent = rem > 0 ? 'SUBMIT ' + rem.toFixed(1) + 's' : 'SUBMIT';
+        if (rem <= 0 && _scCountdownTick) { clearInterval(_scCountdownTick); _scCountdownTick = null; }
+      }
+      _tick();
+      _scCountdownTick = setInterval(_tick, 100);
+    }
+
+    function _toggleScoreboardView() {
+      _scViewOpen = !_scViewOpen;
+      _scApplyViewState();
+      if (_scViewOpen) {
+        if (_scLastData) _scRender(_scLastData);
+        socket.emit('host_action', { action: 'get_scores' });
+        setTimeout(_scFitScroll, 0);
+        setTimeout(_scRenderGhosts, 0);
+      }
+      const val = encodeURIComponent(_scViewOpen ? 'scoreboard' : 'question');
+      document.cookie = 'scView=' + val + '; path=/; max-age=31536000';
+    }
+    function _scApplyViewState() {
+      document.getElementById('scoreboard-view').style.display = _scViewOpen ? 'flex' : 'none';
+      document.getElementById('question-box').style.display = _scViewOpen ? 'none' : 'block';
+      const btn = document.getElementById('sc-view-btn');
+      if (btn) {
+        btn.classList.toggle('sc-view-active', _scViewOpen);
+        btn.innerHTML = _scViewOpen ? '&#x2753; Question' : '&#x1F3C6; Scoreboard';
+        btn.title = _scViewOpen ? 'Back to question' : 'Scoreboard';
+      }
+    }
+
+    function _scParseDeltaBtns(str) {
+      if (!str) return [];
+      return str.split(',').map(s => s.trim()).filter(Boolean).map(s => ({label: s, delta: parseFloat(s)}));
+    }
+    function _scFmtScore(s) {
+      if (s === undefined || s === null) return '0';
+      return (s % 1 === 0) ? String(s) : s.toFixed(1);
+    }
+    function _scUpdateAdjustWidth() {
+      const firstDeltas = document.querySelector('.sc-deltas');
+      const adjHeader = document.getElementById('sc-ch-adjust');
+      if (firstDeltas && adjHeader) adjHeader.style.width = firstDeltas.offsetWidth + 'px';
+    }
+    function _scFitScroll() {
+      const sc = document.getElementById('sc-scroll');
+      if (!sc) return;
+      const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+      const scTop = sc.getBoundingClientRect().top / zoom;
+      const vh = window.innerHeight / zoom;
+      // Sum the height of siblings that come AFTER sc-scroll (e.g. add-player row)
+      let belowH = 0;
+      let el = sc.nextElementSibling;
+      while (el) { belowH += el.getBoundingClientRect().height / zoom; el = el.nextElementSibling; }
+      const maxH = vh - scTop - belowH - 50;
+      sc.style.maxHeight = Math.max(80, maxH) + 'px';
+    }
+
+    function _scRender(data) {
+      if (!data) return;
+      const newPlayers   = data.players || [];
+      const newDeltaBtns = _scParseDeltaBtns(data.delta_buttons);
+      const container    = document.getElementById('sc-players');
+      if (!container) return;
+
+      // Check whether only scores changed (same names, same order, same delta buttons)
+      const sameDeltaBtns = newDeltaBtns.length === _scDeltaBtns.length &&
+        newDeltaBtns.every((d, i) => d.label === _scDeltaBtns[i].label);
+      const sameNames = newPlayers.length === _scPlayers.length &&
+        newPlayers.every((p, i) => p.name === _scPlayers[i].name);
+
+      if (sameNames && sameDeltaBtns) {
+        // In-place score patch — never destroy DOM
+        _scPlayers = newPlayers;
+        newPlayers.forEach(p => {
+          const row = container.querySelector(`.sc-row[data-name="${CSS.escape(p.name)}"]`);
+          if (!row) return;
+          const scoreInput = row.querySelector('.sc-score-input');
+          // Skip rows where the user is actively editing
+          if (scoreInput && scoreInput === document.activeElement) return;
+          const scoreSpan = row.querySelector('.sc-score-cell');
+          if (scoreSpan && scoreInput && scoreInput.style.display === 'none') {
+            scoreSpan.textContent = _scFmtScore(p.score);
+          }
+        });
+        return;
+      }
+
+      // Full rebuild only when structure changed AND no input is focused inside the scoreboard
+      const focused = container.contains(document.activeElement);
+      if (focused) return; // defer — don't destroy an open input
+
+      _scPlayers = newPlayers;
+      _scDeltaBtns = newDeltaBtns;
+      container.innerHTML = '';
+
+      _scPlayers.forEach(p => {
+        const row = document.createElement('div');
+        row.className = 'sc-row';
+        row.dataset.name = p.name;
+
+        if (_isHost) {
+          // Delta buttons
+          const deltasWrap = document.createElement('div');
+          deltasWrap.className = 'sc-deltas';
+          _scDeltaBtns.forEach(d => {
+            const btn = document.createElement('button');
+            btn.className = 'sc-delta-btn ' + (d.delta < 0 ? 'sc-delta-neg' : 'sc-delta-pos');
+            btn.textContent = d.label;
+            btn.title = d.label;
+            btn.onclick = () => _scQueueDelta(p.name, d.delta);
+            deltasWrap.appendChild(btn);
+          });
+          row.appendChild(deltasWrap);
+        }
+
+        // Score display / edit
+        const scoreSpan = document.createElement('span');
+        scoreSpan.className = 'sc-score-cell';
+        scoreSpan.textContent = _scFmtScore(p.score);
+
+        if (_isHost) {
+          const scoreInput = document.createElement('input');
+          scoreInput.className = 'sc-score-input';
+          scoreInput.type = 'number';
+          scoreInput.style.display = 'none';
+
+          scoreSpan.title = 'Click to set score';
+          scoreSpan.onclick = () => {
+            // Read current score from _scPlayers, not stale closure
+            const cur = (_scPlayers.find(p2 => p2.name === p.name) || p);
+            scoreSpan.style.display = 'none';
+            scoreInput.style.display = 'block';
+            scoreInput.value = cur.score;
+            scoreInput.focus(); scoreInput.select();
+          };
+          function _commitScore() {
+            const v = parseFloat(scoreInput.value);
+            scoreInput.style.display = 'none';
+            scoreSpan.style.display = '';
+            if (!isNaN(v)) _scSetScore(p.name, v);
+          }
+          scoreInput.onkeydown = e => {
+            if (e.key === 'Enter') { e.preventDefault(); _commitScore(); }
+            if (e.key === 'Escape') { scoreInput.style.display='none'; scoreSpan.style.display=''; }
+          };
+          scoreInput.onblur = _commitScore;
+          row.appendChild(scoreSpan);
+          row.appendChild(scoreInput);
+
+          // Pending label
+          const pendingLbl = document.createElement('span');
+          pendingLbl.className = 'sc-pending-lbl';
+          pendingLbl.dataset.name = p.name;
+          pendingLbl.style.cssText = 'font-size:0.7em;font-weight:bold;min-width:28px;display:none;';
+          row.appendChild(pendingLbl);
+        } else {
+          row.appendChild(scoreSpan);
+        }
+
+        // Name display / edit
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'sc-name-cell';
+        nameSpan.textContent = p.name;
+        nameSpan.title = p.name;
+
+        if (_isHost) {
+          const nameInput = document.createElement('input');
+          nameInput.className = 'sc-name-input';
+          nameInput.style.display = 'none';
+
+          nameSpan.title = 'Click to rename';
+          nameSpan.onclick = () => {
+            nameSpan.style.display = 'none';
+            nameInput.style.display = 'block';
+            nameInput.value = p.name;
+            nameInput.focus(); nameInput.select();
+          };
+          function _commitName() {
+            const v = nameInput.value.trim();
+            if (v && v !== p.name) _scRenameInline(p.name, v);
+            nameInput.style.display = 'none';
+            nameSpan.style.display = '';
+          }
+          nameInput.onkeydown = e => {
+            if (e.key === 'Enter') { e.preventDefault(); _commitName(); }
+            if (e.key === 'Escape') { nameInput.style.display='none'; nameSpan.style.display=''; }
+          };
+          nameInput.onblur = _commitName;
+          row.appendChild(nameSpan);
+          row.appendChild(nameInput);
+
+          // Menu button
+          const menuBtn = document.createElement('button');
+          menuBtn.className = 'sc-menu-btn';
+          menuBtn.textContent = '☰';
+          menuBtn.title = 'Options';
+          menuBtn.onclick = e => { e.stopPropagation(); _scShowRowMenu(p.name, menuBtn); };
+          row.appendChild(menuBtn);
+        } else {
+          row.appendChild(nameSpan);
+        }
+
+        container.appendChild(row);
+      });
+
+      setTimeout(() => { _scUpdateAdjustWidth(); _scFitScroll(); _scRenderGhosts(); }, 0);
+    }
+
+    function _scRenderGhosts() {
+      if (!_scViewOpen || !_isHost) return;
+      const container = document.getElementById('sc-players');
+      if (!container) return;
+      container.querySelectorAll('.sc-ghost, .sc-ghost-sep').forEach(el => el.remove());
+      const scored = new Set(_scPlayers.map(p => p.name));
+      const ghosts = _lastPlayerList.filter(p => !p.kicked && !scored.has(p.name));
+      if (!ghosts.length) return;
+      const sep = document.createElement('div');
+      sep.className = 'sc-ghost-sep';
+      container.appendChild(sep);
+      ghosts.forEach(gp => {
+        const p = { name: gp.name, score: 0 };
+        const row = document.createElement('div');
+        row.className = 'sc-row sc-ghost';
+        row.dataset.name = p.name;
+        row.style.opacity = '0.45';
+        // Delta buttons
+        const deltasWrap = document.createElement('div');
+        deltasWrap.className = 'sc-deltas';
+        _scDeltaBtns.forEach(d => {
+          const btn = document.createElement('button');
+          btn.className = 'sc-delta-btn ' + (d.delta < 0 ? 'sc-delta-neg' : 'sc-delta-pos');
+          btn.textContent = d.label;
+          btn.title = d.label;
+          btn.onclick = () => _scQueueDelta(p.name, d.delta);
+          deltasWrap.appendChild(btn);
+        });
+        row.appendChild(deltasWrap);
+        // Score span
+        const scoreSpan = document.createElement('span');
+        scoreSpan.className = 'sc-score-cell';
+        scoreSpan.textContent = '0';
+        row.appendChild(scoreSpan);
+        // Pending label (same as real rows so _scUpdateAllPendingLabels works)
+        const pendingLbl = document.createElement('span');
+        pendingLbl.className = 'sc-pending-lbl';
+        pendingLbl.dataset.name = p.name;
+        pendingLbl.style.cssText = 'font-size:0.7em;font-weight:bold;min-width:28px;display:none;';
+        row.appendChild(pendingLbl);
+        // Name span (read-only)
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'sc-name-cell';
+        nameSpan.textContent = p.name;
+        nameSpan.title = p.name + ' (not on scoreboard yet)';
+        row.appendChild(nameSpan);
+        container.appendChild(row);
+      });
+    }
+
+    /**
+     * Always render when visible. Cache data when hidden so toggling shows fresh state.
+     */
+    function _scPatchOrRender(data) {
+      if (!data) return;
+      _scLastData = data;          // always cache latest data
+      if (_scViewOpen) _scRender(data);
+    }
+
+    function _scUpdateAllPendingLabels() {
+      document.querySelectorAll('.sc-pending-lbl').forEach(el => {
+        const name = el.dataset.name;
+        const pv = _scPending[name] || 0;
+        if (pv !== 0) {
+          el.textContent = (pv > 0 ? '[+' : '[') + pv + ']';
+          el.style.color = pv >= 0 ? '#66dd88' : '#ff7070';
+          el.style.display = 'inline';
+        } else {
+          el.textContent = ''; el.style.display = 'none';
+        }
+      });
+    }
+
+    // Row context menu
+    let _scMenuEl = null;
+    function _scShowRowMenu(name, anchor) {
+      if (_scMenuEl) { _scMenuEl.remove(); _scMenuEl = null; }
+      const menu = document.createElement('div');
+      menu.style.cssText = 'position:fixed;background:#252525;border:1px solid #444;border-radius:4px;z-index:9999;min-width:120px;box-shadow:0 3px 10px rgba(0,0,0,0.6);touch-action:manipulation;';
+      const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+      const rect = anchor.getBoundingClientRect();
+      // getBoundingClientRect returns zoomed coords; position:fixed uses pre-zoom CSS coords
+      const top = rect.bottom / zoom;
+      const right = rect.right / zoom;
+      const anchorTop = rect.top / zoom;
+      const menuW = 124;
+      const menuH = 36;
+      const vw = window.innerWidth / zoom;
+      const vh = window.innerHeight / zoom;
+      let mleft = right - menuW;
+      if (mleft < 4) mleft = 4;
+      if (mleft + menuW > vw - 4) mleft = vw - menuW - 4;
+      const mtop = (top + 2 + menuH > vh - 4)
+        ? (anchorTop - menuH - 2)
+        : (top + 2);
+      menu.style.top = mtop + 'px';
+      menu.style.left = mleft + 'px';
+      function menuItem(label, color, fn) {
+        const item = document.createElement('div');
+        item.style.cssText = 'padding:8px 14px;cursor:pointer;font-size:0.82em;color:' + color + ';font-family:Segoe UI,sans-serif;touch-action:manipulation;';
+        item.textContent = label;
+        item.onmouseenter = () => item.style.background = '#333';
+        item.onmouseleave = () => item.style.background = '';
+        item.onpointerdown = e => { e.stopPropagation(); menu.remove(); _scMenuEl = null; fn(); };
+        menu.appendChild(item);
+      }
+      menuItem('✕  Remove player', '#cc6666', () => _confirm('Remove ' + name + ' from the scoreboard?', 'Remove', () => _scRemove(name)));
+      menuItem('\uD83D\uDC65  Set team\u2026', '#aabbff', () => _scSetTeamPrompt(name, menu));
+      // Only show Remove team if the player currently has one
+      const curPlayer = _scPlayers.find(p => p.name === name);
+      if (curPlayer && curPlayer.team) {
+        menuItem('\u274C  Remove team', '#cc9966', () => { socket.emit('host_action', { action: 'player_set_team', name, team: '' }); if (curPlayer) curPlayer.team = ''; });
+      }
+      document.body.appendChild(menu);
+      _scMenuEl = menu;
+      setTimeout(() => {
+        function h(e) {
+          if (!menu.contains(e.target)) {
+            menu.remove(); _scMenuEl = null;
+            document.removeEventListener('pointerdown', h, true);
+          }
+        }
+        document.addEventListener('pointerdown', h, true);
+      }, 0);
+    }
+
+    function _scSetTeamPrompt(name, menuEl) {
+      // Replace the menu with an inline input+datalist for team selection
+      if (menuEl) { menuEl.remove(); _scMenuEl = null; }
+      const zoom = parseFloat(document.documentElement.style.zoom) || 1;
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'position:fixed;background:#252525;border:1px solid #446;border-radius:6px;z-index:9999;padding:8px 10px;box-shadow:0 3px 12px rgba(0,0,0,0.7);display:flex;flex-direction:column;gap:6px;min-width:180px;';
+      // Position near center-bottom of viewport
+      const vw = window.innerWidth / zoom;
+      const vh = window.innerHeight / zoom;
+      wrap.style.left = Math.max(8, (vw / 2) - 90) + 'px';
+      wrap.style.top  = Math.max(8, vh * 0.4) + 'px';
+
+      const label = document.createElement('div');
+      label.style.cssText = 'font-size:0.75em;color:#88aacc;font-family:Segoe UI,sans-serif;';
+      label.textContent = 'Team for ' + name;
+      wrap.appendChild(label);
+
+      const inputRow = document.createElement('div');
+      inputRow.style.cssText = 'display:flex;gap:5px;align-items:center;';
+
+      const dlId = 'sc-team-dl-' + Date.now();
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.setAttribute('list', dlId);
+      inp.placeholder = 'Team name';
+      inp.autocomplete = 'off';
+      const curPlayer = _scPlayers.find(p => p.name === name);
+      if (curPlayer && curPlayer.team) inp.value = curPlayer.team;
+      inp.style.cssText = 'flex:1;background:#1a1a2a;border:1px solid #446;border-radius:4px;color:#e0e0ff;padding:4px 7px;font-size:0.82em;font-family:Segoe UI,sans-serif;outline:none;';
+
+      const dl = document.createElement('datalist');
+      dl.id = dlId;
+      _scTeamNames.forEach(t => { const opt = document.createElement('option'); opt.value = t; dl.appendChild(opt); });
+
+      const okBtn = document.createElement('button');
+      okBtn.textContent = 'Set';
+      okBtn.style.cssText = 'background:#1a2840;border:1px solid #446;border-radius:4px;color:#aaccff;padding:4px 10px;font-size:0.78em;cursor:pointer;font-family:Segoe UI,sans-serif;';
+
+      inputRow.appendChild(inp);
+      inputRow.appendChild(dl);
+      inputRow.appendChild(okBtn);
+      wrap.appendChild(inputRow);
+      document.body.appendChild(wrap);
+      inp.focus();
+
+      function commit() {
+        const team = inp.value.trim();
+        wrap.remove();
+        socket.emit('host_action', { action: 'player_set_team', name, team });
+        if (curPlayer) curPlayer.team = team;
+      }
+      okBtn.onpointerdown = e => { e.stopPropagation(); commit(); };
+      inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } if (e.key === 'Escape') wrap.remove(); };
+
+      // Dismiss on outside click
+      setTimeout(() => {
+        function h(e) { if (!wrap.contains(e.target)) { wrap.remove(); document.removeEventListener('pointerdown', h, true); } }
+        document.addEventListener('pointerdown', h, true);
+      }, 0);
+
+      // Refresh team list if not loaded yet
+      if (!_scTeamNames.length) socket.emit('host_action', { action: 'get_teams' });
+    }
+
+    function _scSubmitPending() { _scFlushAll(); }
+    function _scSetScore(name, score) {
+      socket.emit('host_action', { action: 'score_set', name, score });
+      // Optimistic: update _scPlayers and DOM immediately
+      const op = _scPlayers.find(p => p.name === name);
+      if (op) {
+        op.score = score;
+        if (_scLastData) _scLastData.players = _scPlayers.map(p => Object.assign({}, p));
+        // No long lock needed — DOM is already correct; let server confirm normally
+        _scOptimisticUntil = Date.now() + 5000;
+        _scOptimisticPlayers = _scPlayers.map(p => Object.assign({}, p));
+        const container = document.getElementById('sc-players');
+        if (container) {
+          const row = container.querySelector('.sc-row[data-name="' + CSS.escape(name) + '"]');
+          if (row) {
+            const sc = row.querySelector('.sc-score-cell');
+            if (sc) sc.textContent = _scFmtScore(score);
+          }
+        }
+      }
+    }
+    function _scRenameInline(oldName, newName) {
+      socket.emit('host_action', { action: 'player_rename', old_name: oldName, new_name: newName });
+      // Optimistic: update name in DOM immediately
+      _scOptimisticUntil = Date.now() + 5000;
+      const op = _scPlayers.find(p => p.name === oldName);
+      if (op) {
+        op.name = newName;
+        if (_scLastData) _scLastData.players = _scPlayers.map(p => Object.assign({}, p));
+        _scOptimisticPlayers = _scPlayers.map(p => Object.assign({}, p));
+        const container = document.getElementById('sc-players');
+        if (container) {
+          const row = container.querySelector('.sc-row[data-name="' + CSS.escape(oldName) + '"]');
+          if (row) {
+            row.dataset.name = newName;
+            const ns = row.querySelector('.sc-name-cell');
+            if (ns) { ns.textContent = newName; ns.title = newName; }
+          }
+        }
+      }
+    }
+    function _scRemove(name) {
+      socket.emit('host_action', { action: 'player_remove', name });
+      // Optimistic: remove row immediately
+      _scOptimisticUntil = Date.now() + 5000;
+      _scPlayers = _scPlayers.filter(p => p.name !== name);
+      if (_scLastData) _scLastData.players = _scPlayers.map(p => Object.assign({}, p));
+      _scOptimisticPlayers = _scPlayers.map(p => Object.assign({}, p));
+      const container = document.getElementById('sc-players');
+      if (container) {
+        const row = container.querySelector('.sc-row[data-name="' + CSS.escape(name) + '"]');
+        if (row) row.remove();
+      }
+    }
+    function _scAddPlayer() {
+      const inp = document.getElementById('sc-add-input');
+      if (!inp) return;
+      const name = inp.value.trim();
+      if (!name) return;
+      socket.emit('host_action', { action: 'player_add', name });
+      inp.value = '';
+      // Optimistic: immediately add the row
+      if (!_scPlayers.find(p => p.name === name)) {
+        _scOptimisticUntil = Date.now() + 5000;
+        // Save old _scPlayers so _scRender's sameNames check detects a structural change
+        const prevPlayers = _scPlayers.slice();
+        _scPlayers.push({ name, score: 0 });
+        if (_scLastData) _scLastData.players = _scPlayers.map(p => Object.assign({}, p));
+        _scOptimisticPlayers = _scPlayers.map(p => Object.assign({}, p));
+        // Reset to prev so _scRender sees old length vs new length → full rebuild
+        _scPlayers = prevPlayers;
+        _scRender(_scLastData || { players: [...prevPlayers, { name, score: 0 }], delta_buttons: [] });
+        // _scRender sets _scPlayers = newPlayers during full rebuild
+      }
+    }
+    function _scClearAll() {
+      if (!confirm('Remove all players from the scoreboard?')) return;
+      socket.emit('host_action', { action: 'scores_clear_all' });
+      // Optimistic: clear immediately without waiting for server round-trip
+      _scPlayers = [];
+      if (_scLastData) _scLastData.players = [];
+      _scOptimisticUntil = Date.now() + 5000;
+      _scOptimisticPlayers = [];
+      // Directly wipe DOM — _scRender would no-op (sameNames = both empty)
+      const container = document.getElementById('sc-players');
+      if (container) container.innerHTML = '';
+      setTimeout(() => { _scFitScroll(); _scRenderGhosts(); }, 0);
+    }
+
+    socket.on('scores_update', data => {
+      if (data && data.auto_send !== undefined)
+        _scLoadPrefs(data.auto_send, data.delay_together, data.commit_delay, data.score_font, data.name_font);
+      // If an optimistic update was applied recently, hold off re-rendering until either:
+      //   a) the server data matches our optimistic snapshot (early release), or
+      //   b) the 5-second hard timeout expires.
+      if (Date.now() < _scOptimisticUntil && _scOptimisticPlayers) {
+        const sp = _scOptimisticPlayers;
+        const dp = data && data.players;
+        const matches = dp && dp.length === sp.length &&
+          sp.every((op, i) => dp[i] && dp[i].name === op.name && dp[i].score === op.score);
+        // Always cache prefs/structure fields
+        if (_scLastData && data) {
+          _scLastData.auto_send      = data.auto_send;
+          _scLastData.delay_together = data.delay_together;
+          _scLastData.commit_delay   = data.commit_delay;
+          _scLastData.score_font     = data.score_font;
+          _scLastData.name_font      = data.name_font;
+          _scLastData.delta_buttons  = data.delta_buttons;
+        } else if (!_scLastData) {
+          _scLastData = data;
+        }
+        if (!matches) return; // server hasn't caught up yet
+        // Server confirmed our change — release lock early
+        _scOptimisticUntil = 0;
+        _scOptimisticPlayers = null;
+      }
+      _scLastData = data;
+      // Render whenever the scoreboard div is actually visible, regardless of state variable
+      const sv = document.getElementById('scoreboard-view');
+      if (_scViewOpen || (sv && sv.style.display !== 'none' && sv.style.display !== '')) {
+        if (!_scViewOpen) _scViewOpen = true; // re-sync state if DOM is ahead
+        _scRender(data);
+      }
+      _scApplyViewState();
+    });
+
+    socket.on('teams_update', data => {
+      if (data && Array.isArray(data.teams)) _scTeamNames = data.teams;
+    });
+
+    // Restore scoreboard view preference when host is granted
+    function _scRestoreView() {
+      try {
+        const vm = document.cookie.match(/(?:^|;\s*)scView=([^;]*)/);
+        if (vm && decodeURIComponent(vm[1]) === 'scoreboard') _scViewOpen = true;
+      } catch(e) {}
+      _scApplyViewState();
+      if (_scViewOpen) {
+        if (_scLastData) _scRender(_scLastData);
+        socket.emit('host_action', { action: 'get_scores' });
+        socket.emit('host_action', { action: 'get_teams' });
+      }
+      // Periodic refresh: re-request scores every 2s while scoreboard is open,
+      // but skip if the user has focus inside the scoreboard (editing a field)
+      setInterval(() => {
+        if (!_scViewOpen) return;
+        const sc = document.getElementById('sc-players');
+        if (sc && sc.contains(document.activeElement)) return;
+        socket.emit('host_action', { action: 'get_scores' });
+      }, 2000);
+    }
+
+    function _ctrlToggleUpNext() {
+      _ctrlUpNextVisible = !_ctrlUpNextVisible;
+      const panel = document.getElementById('ctrl-upnext-panel');
+      if (panel) panel.style.display = _ctrlUpNextVisible ? 'block' : 'none';
+      _ctrlSavePanels();
+    }
+
+    function _ctrlToggleYouTubeList() {
+      const opening = !_ctrlYtListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlYtListOpen = true;
+        _ctrlListPopupOpen('YouTube Videos', 'yt');
+        socket.emit('request_youtube_list');
+      }
+    }
+
+    socket.on('youtube_list', data => {
+      _ctrlYtCurrentId = data.queued_id || null;
+      if (!_ctrlListPopupMode === 'yt' && !_ctrlYtListOpen) return;
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!data.videos || !data.videos.length) {
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No videos available</div>';
+        return;
+      }
+      data.videos.forEach(v => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item' + (v.id === _ctrlYtCurrentId ? ' ctrl-yt-active' : '');
+        el.title = v.full_title;
+        el.innerHTML = '<span class="ctrl-popup-item-dur">[' + v.duration + ']</span><span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(v.title) + '</span>';
+        el.onclick = () => {
+          socket.emit('host_action', {action: 'queue_youtube', video_id: v.id});
+          _ctrlYtCurrentId = (v.id === _ctrlYtCurrentId) ? null : v.id;
+          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item').forEach(e => e.classList.remove('ctrl-yt-active'));
+          if (_ctrlYtCurrentId) el.classList.add('ctrl-yt-active');
+        };
+        list.appendChild(el);
+      });
+    });
+
+    function _ctrlEscapeHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function _ctrlTogglePlaylist() {
+      _ctrlPlaylistVisible = !_ctrlPlaylistVisible;
+      const panel = document.getElementById('ctrl-playlist-panel');
+      if (panel) panel.style.display = _ctrlPlaylistVisible ? 'flex' : 'none';
+      const spacer = document.getElementById('ctrl-flex-spacer');
+      if (spacer) spacer.classList.toggle('hidden', _ctrlPlaylistVisible);
+      if (_ctrlPlaylistVisible) _plOpen();
+      _ctrlSavePanels();
+    }
+
+    const _ctrlLtTypes = [
+      {id:'lightning_regular',   mode:'regular',   label:'Regular'},
+      {id:'lightning_blind',     mode:'blind',     label:'Blind'},
+      {id:'lightning_peek',      mode:'peek',      label:'Peek'},
+      {id:'lightning_frame',     mode:'frame',     label:'Frame'},
+      {id:'lightning_cover',     mode:'cover',     label:'Cover'},
+      {id:'lightning_image',     mode:'image',     label:'Image'},
+      {id:'lightning_character', mode:'character', label:'Char'},
+      {id:'lightning_title',     mode:'title',     label:'Title'},
+      {id:'lightning_synopsis',  mode:'synopsis',  label:'Synopsis'},
+      {id:'lightning_trivia',    mode:'trivia',    label:'Trivia'},
+      {id:'lightning_emoji',     mode:'emoji',     label:'Emoji'},
+      {id:'lightning_song',      mode:'song',      label:'Song'},
+      {id:'lightning_ost',       mode:'ost',       label:'OST'},
+      {id:'lightning_clues',     mode:'clues',     label:'Clues'},
+      {id:'lightning_tags',      mode:'tags',      label:'Tags'},
+      {id:'lightning_episodes',  mode:'episodes',  label:'Episodes'},
+      {id:'lightning_clip',      mode:'clip',      label:'Clip'},
+    ];
+
+    function _ctrlCloseAllLists() {
+      _ctrlLtListOpen = false;
+      _ctrlYtListOpen = false;
+      _ctrlFlListOpen = false;
+      _ctrlSearchListOpen = false;
+      _ctrlDiffListOpen = false;
+      _ctrlAutoBonusListOpen = false;
+      _ctrlListPopupClose();
+    }
+
+    function _ctrlToggleLtList() {
+      const opening = !_ctrlLtListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlLtListOpen = true;
+        _ctrlListPopupOpen('Lightning Round Type', 'lt');
+        _ctrlRenderLtList();
+      }
+    }
+
+    function _ctrlRenderLtList() {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      _ctrlLtTypes.forEach(t => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item' + (t.mode === _ctrlLtCurrentMode ? ' ctrl-yt-active' : '');
+        el.textContent = t.label;
+        el.onclick = () => { socket.emit('host_action', {action: 'invoke', id: t.id}); _ctrlListPopupClose(); };
+        list.appendChild(el);
+      });
+    }
+
+    function _ctrlToggleFlList() {
+      const opening = !_ctrlFlListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlFlListOpen = true;
+        _ctrlListPopupOpen('Fixed Lightning Rounds', 'fl');
+        socket.emit('host_action', {action: 'get_fixed_lightning_list'});
+      }
+    }
+
+    socket.on('fixed_lightning_list', data => {
+      _ctrlFlCurrentName = data.queued_name || null;
+      if (!_ctrlFlListOpen) return;
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!data.rounds || !data.rounds.length) {
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No fixed rounds available</div>';
+        return;
+      }
+      data.rounds.forEach(r => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item' + (r.name === _ctrlFlCurrentName ? ' ctrl-yt-active' : '');
+        el.title = r.description || '';
+        el.innerHTML = '<span class="ctrl-popup-item-dur">[' + r.duration + ']</span><span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(r.name) + '</span>';
+        el.onclick = () => {
+          socket.emit('host_action', {action: 'queue_fixed_lightning', index: r.index});
+          _ctrlFlCurrentName = (r.name === _ctrlFlCurrentName) ? null : r.name;
+          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item').forEach(e => e.classList.remove('ctrl-yt-active'));
+          if (_ctrlFlCurrentName) el.classList.add('ctrl-yt-active');
+        };
+        list.appendChild(el);
+      });
+    });
+
+    function _ctrlToggleSearchRow() {
+      const opening = !_ctrlSearchListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlSearchListOpen = true;
+        _ctrlListPopupOpen('Search Themes', 'search');
+        const input = document.getElementById('ctrl-list-popup-search-input');
+        if (input) { input.value = ''; setTimeout(() => input.focus(), 50); }
+      }
+    }
+
+    function _ctrlDoSearch() {
+      const input = document.getElementById('ctrl-search-input');
+      const query = (input ? input.value : '').trim();
+      if (!query) return;
+      if (input) input.blur();
+      const list = document.getElementById('ctrl-search-list');
+      if (list) list.innerHTML = '<div style="padding:4px;color:#556;font-size:0.85em">Searching…</div>';
+      socket.emit('host_action', {action: 'search_themes', query: query});
+    }
+
+    let _ctrlSearchDebounceTimer = null;
+    function _ctrlListPopupSearchDebounce() {
+      clearTimeout(_ctrlSearchDebounceTimer);
+      const input = document.getElementById('ctrl-list-popup-search-input');
+      const query = (input ? input.value : '').trim();
+      if (!query) {
+        const list = document.getElementById('ctrl-list-popup-list');
+        if (list) list.innerHTML = '';
+        return;
+      }
+      _ctrlSearchDebounceTimer = setTimeout(() => _ctrlListPopupDoSearch(false), 300);
+    }
+
+    function _ctrlListPopupDoSearch(blurInput = true) {
+      const input = document.getElementById('ctrl-list-popup-search-input');
+      const query = (input ? input.value : '').trim();
+      if (!query) return;
+      if (blurInput && input) input.blur();
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Searching…</div>';
+      socket.emit('host_action', {action: 'search_themes', query: query});
+    }
+
+    socket.on('theme_search_results', data => {
+      if (!_ctrlSearchListOpen) return;
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!data.results || !data.results.length) {
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No results found</div>';
+        return;
+      }
+      data.results.forEach(r => {
+        const row = document.createElement('div');
+        row.className = 'ctrl-popup-item' + (r.filename === _ctrlSearchQueuedFile ? ' ctrl-yt-active' : '');
+        row.title = r.filename;
+
+        const slug = document.createElement('span');
+        slug.className = 'ctrl-popup-item-dur';
+        slug.textContent = r.slug ? '[' + r.slug + ']' : '';
+
+        const title = document.createElement('span');
+        title.className = 'ctrl-popup-item-title';
+        title.textContent = r.title;
+
+        const song = document.createElement('span');
+        song.className = 'ctrl-popup-item-song';
+        song.textContent = r.song || '';
+
+        const addBtn = document.createElement('button');
+        addBtn.className = 'ctrl-popup-item-add';
+        addBtn.textContent = '+';
+        addBtn.title = 'Add to playlist after current';
+        addBtn.onclick = e => {
+          e.stopPropagation();
+          socket.emit('host_action', {action: 'add_theme', filename: r.filename});
+        };
+
+        row.appendChild(slug);
+        row.appendChild(title);
+        if (r.song) row.appendChild(song);
+        row.appendChild(addBtn);
+
+        row.onclick = () => {
+          socket.emit('host_action', {action: 'queue_theme', filename: r.filename});
+          _ctrlSearchQueuedFile = (r.filename === _ctrlSearchQueuedFile) ? null : r.filename;
+          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item').forEach(e => e.classList.remove('ctrl-yt-active'));
+          if (_ctrlSearchQueuedFile) row.classList.add('ctrl-yt-active');
+        };
+
+        list.appendChild(row);
+      });
+    });
+
+    const _ctrlDiffOptions = [
+      {label: 'Very Easy', value: 0},
+      {label: 'Easy',      value: 1},
+      {label: 'Normal',    value: 2},
+      {label: 'Hard',      value: 3},
+      {label: 'Very Hard', value: 4},
+      {label: 'Random',    value: 5},
+    ];
+    function _ctrlToggleDiffList() {
+      const opening = !_ctrlDiffListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlDiffListOpen = true;
+        _ctrlListPopupOpen('Difficulty', 'diff');
+        _ctrlRenderDiffList();
+      }
+    }
+    function _ctrlRenderDiffList() {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      _ctrlDiffOptions.forEach(opt => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item' + (opt.value === _ctrlDiffCurrent ? ' ctrl-yt-active' : '');
+        el.textContent = opt.label;
+        el.onclick = () => {
+          _ctrlDiffCurrent = opt.value;
+          socket.emit('host_action', {action: 'set_difficulty', value: opt.value});
+          _ctrlListPopupClose();
+        };
+        list.appendChild(el);
+      });
+    }
+
+    const _ctrlAutoBonusOptions = [
+      {label: 'Off',             value: null},
+      {label: 'Random',          value: 'random'},
+      {label: 'Multiple Choice', value: 'multiple'},
+      {label: 'Year',            value: 'year'},
+      {label: 'Score',           value: 'score'},
+      {label: 'Members',         value: 'members'},
+      {label: 'Popularity',      value: 'popularity'},
+      {label: 'Tags',            value: 'tags'},
+      {label: 'Studio',          value: 'studio'},
+      {label: 'Artist',          value: 'artist'},
+      {label: 'Song',            value: 'song'},
+    ];
+    function _ctrlToggleAutoBonusList() {
+      const opening = !_ctrlAutoBonusListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlAutoBonusListOpen = true;
+        _ctrlListPopupOpen('Auto Bonus at Start', 'auto_bonus');
+        _ctrlRenderAutoBonusList();
+      }
+    }
+    function _ctrlRenderAutoBonusList() {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      _ctrlAutoBonusOptions.forEach(opt => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item' + (opt.value === _ctrlAutoBonusCurrent ? ' ctrl-yt-active' : '');
+        el.textContent = opt.label;
+        el.onclick = () => {
+          _ctrlAutoBonusCurrent = opt.value;
+          socket.emit('host_action', {action: 'set_auto_bonus', value: opt.value || ''});
+          _ctrlListPopupClose();
+        };
+        list.appendChild(el);
+      });
+    }
+
+    socket.on('toggles_update', data => {
+      const map = {
+        'ctrl-tgl-blind':     !!data.blind,
+        'ctrl-tgl-peek':      !!data.peek,
+        'ctrl-tgl-mute':      !!data.mute,
+        'ctrl-tgl-censors':   !!data.censors,
+        'ctrl-tgl-shortcuts': !!data.shortcuts,
+        'ctrl-tgl-dock':      !!data.dock,
+        'ctrl-queue-blind':    !!data.queue_blind,
+        'ctrl-queue-peek':     !!data.queue_peek,
+        'ctrl-queue-mute-peek':!!data.queue_mute_peek,
+      };
+      for (const [id, active] of Object.entries(map)) {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('ctrl-toggle-active', active);
+      }
+      // Highlight active lightning round button (dice = variety)
+      document.querySelectorAll('[data-lt-mode]').forEach(el => {
+        el.classList.toggle('ctrl-toggle-active', el.dataset.ltMode === data.light_mode);
+      });
+      // Update lightning types list active row
+      _ctrlLtCurrentMode = data.light_mode || null;
+      if (_ctrlLtListOpen) _ctrlRenderLtList();
+      // Show/hide server-controlled pinned proxies
+      document.querySelectorAll('[data-proxy-extra="lt_stop"]').forEach(el => {
+        el.style.display = (data.light_mode && data.light_mode !== 'variety') ? '' : 'none';
+      });
+      document.querySelectorAll('[data-proxy-extra="yt"]').forEach(el => {
+        el.style.display = data.has_youtube ? '' : 'none';
+      });
+      document.querySelectorAll('[data-proxy-extra="fl"]').forEach(el => {
+        el.style.display = data.has_fixed_lightning ? '' : 'none';
+      });
+      // Active state on tgl proxy buttons in main panel
+      const tglProxyIds = {
+        'tgl_blind': !!data.blind, 'tgl_peek': !!data.peek, 'tgl_mute': !!data.mute,
+        'tgl_censors': !!data.censors, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock,
+      };
+      for (const [eid, active] of Object.entries(tglProxyIds)) {
+        document.querySelectorAll(`[data-proxy-extra="${eid}"]`).forEach(el => el.classList.toggle('ctrl-toggle-active', active));
+      }
+      document.querySelectorAll('.ctrl-censor-count').forEach(el => {
+        el.textContent = data.censor_count != null ? data.censor_count : 0;
+      });
+      // Update proxy state for extra toggle buttons in pinned area
+      const tglProxyMap = { 'tgl_censors': !!data.censors, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock };
+      for (const [eid, active] of Object.entries(tglProxyMap)) {
+        document.querySelectorAll(`[data-proxy-extra="${eid}"]`).forEach(el => el.classList.toggle('ctrl-toggle-active', active));
+      }
+      // Sync difficulty and auto-bonus state
+      if (data.difficulty != null) {
+        _ctrlDiffCurrent = data.difficulty;
+        if (_ctrlDiffListOpen) _ctrlRenderDiffList();
+      }
+      if ('auto_bonus_start' in data) {
+        _ctrlAutoBonusCurrent = data.auto_bonus_start || null;
+        if (_ctrlAutoBonusListOpen) _ctrlRenderAutoBonusList();
+        document.querySelectorAll('[data-proxy-extra="auto_bonus"]').forEach(el =>
+          el.classList.toggle('ctrl-toggle-active', _ctrlAutoBonusCurrent != null));
+        document.querySelectorAll('[data-extra-id="auto_bonus"]').forEach(el =>
+          el.classList.toggle('ctrl-toggle-active', _ctrlAutoBonusCurrent != null));
+      }
+    });
+
+    const _CTRL_DEFAULT_PINNED = [
+      'b_multiple','b_year','b_tags','b_members','_br_0',
+      'tgl_blind','tgl_peek','tgl_narrow','tgl_widen','tgl_mute','_br_1',
+      'rev_info','rev_title','mark_tag','mark_fav','_br_2',
+      'tgl_censors','tgl_shortcuts','tgl_dock',
+    ];
+    let _ctrlPinnedExtras = new Set(_CTRL_DEFAULT_PINNED);
+    let _ctrlExtrasEditMode = false;
+
+    const _ctrlExtrasConfig = {
+      // Queue
+      'lt':           { classes: 'ctrl-sect-queue',                           html: 'Lightning', title: 'Lightning round types' },
+      'lt_stop':      { classes: 'ctrl-sect-queue',                           html: '&#x23F9;',  title: 'Stop lightning round', serverCtrl: true },
+      'lt_dice':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F3B2;', title: 'Variety Lightning Round', ltMode: 'variety' },
+      'yt':           { classes: 'ctrl-sect-queue',                           html: 'YouTube',   title: 'YouTube videos', serverCtrl: true },
+      'fl':           { classes: 'ctrl-sect-queue',                           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
+      'search':       { classes: 'ctrl-sect-queue',                           html: '&#x1F50D;', title: 'Search themes' },
+      // Bonus
+      'b_multiple':   { classes: 'ctrl-sect-bonus',                           html: 'Multiple',  title: '' },
+      'b_year':       { classes: 'ctrl-sect-bonus',                           html: 'Year',      title: '' },
+      'b_tags':       { classes: 'ctrl-sect-bonus',                           html: 'Tags',      title: '' },
+      'b_members':    { classes: 'ctrl-sect-bonus',                           html: 'Members',   title: '' },
+      'b_score':      { classes: 'ctrl-sect-bonus',                           html: 'Score',     title: '' },
+      'b_rank':       { classes: 'ctrl-sect-bonus',                           html: 'Rank',      title: '' },
+      'b_free':       { classes: 'ctrl-sect-bonus',                           html: 'Free',      title: '' },
+      'bonus_studio': { classes: 'ctrl-sect-bonus',                           html: 'Studio',    title: '' },
+      'bonus_artist': { classes: 'ctrl-sect-bonus',                           html: 'Artist',    title: '' },
+      'bonus_song':   { classes: 'ctrl-sect-bonus',                           html: 'Song',      title: '' },
+      'bonus_chars':  { classes: 'ctrl-sect-bonus',                           html: 'Characters', title: '' },
+      'auto_bonus':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Auto Bonus', title: 'Auto bonus type at round start' },
+      // Toggles
+      'difficulty':   { classes: 'ctrl-sect-toggle',                          html: 'Difficulty', title: 'Set playlist difficulty' },
+      'tgl_blind':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Blind',     title: 'Toggle blind' },
+      'tgl_peek':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Peek',      title: 'Toggle peek' },
+      'tgl_narrow':   { classes: 'ctrl-sect-toggle',                          html: '&#x25C0;',  title: 'Narrow peek' },
+      'tgl_widen':    { classes: 'ctrl-sect-toggle',                          html: '&#x25B6;',  title: 'Widen peek' },
+      'tgl_mute':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Mute',      title: 'Toggle mute' },
+      'tgl_censors':  { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Censors (<span class="ctrl-censor-count">0</span>)', title: 'Toggle censors' },
+      'tgl_shortcuts':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Keys',      title: 'Toggle keyboard shortcuts' },
+      'tgl_dock':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Dock',      title: 'Toggle dock' },
+      // Info Reveal
+      'rev_info':     { classes: 'ctrl-sect-reveal',                          html: 'Show Information', title: 'Show full info' },
+      'rev_title':    { classes: 'ctrl-sect-reveal',                          html: 'Title',     title: 'Show title only' },
+      'reveal_artist':{ classes: 'ctrl-sect-reveal',                          html: 'Artist',    title: 'Show artist info' },
+      'reveal_studio':{ classes: 'ctrl-sect-reveal',                          html: 'Studio',    title: 'Show studio info' },
+      'reveal_season':{ classes: 'ctrl-sect-reveal',                          html: 'Season',    title: 'Show season rankings' },
+      'reveal_year':  { classes: 'ctrl-sect-reveal',                          html: 'Year',      title: 'Show year rankings' },
+      // Marks
+      'mark_tag':     { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x2717;',  title: 'Tag' },
+      'mark_fav':     { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '♥',         title: 'Favorite' },
+      'mark_blind':   { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x1F441;', title: 'Blind Mark' },
+      'mark_peek':    { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x1F440;', title: 'Peek Mark' },
+      'mark_mute_peek':{ classes: 'ctrl-mark-btn ctrl-sect-mark',             html: '&#x1F507;', title: 'Mute Peek Mark' },
+      // Session
+      'end_session':  { classes: 'ctrl-sect-session',                         html: 'End',       title: 'End session' },
+    };
+
+    const _ctrlExtraActions = {
+      'lt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleLtList(); },
+      'lt_stop':      () => socket.emit('host_action',{action:'stop_lightning'}),
+      'lt_dice':      () => socket.emit('host_action',{action:'invoke',id:'lightning_variety'}),
+      'yt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleYouTubeList(); },
+      'fl':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleFlList(); },
+      'search':       () => { _ctrlCloseExtrasPopup(); _ctrlToggleSearchRow(); },
+      'b_multiple':   () => { socket.emit('host_action',{action:'invoke',id:'bonus_multiple'}); },
+      'b_year':       () => { socket.emit('host_action',{action:'invoke',id:'bonus_year'}); },
+      'b_tags':       () => { socket.emit('host_action',{action:'invoke',id:'bonus_tags'}); },
+      'b_members':    () => { socket.emit('host_action',{action:'invoke',id:'bonus_members'}); },
+      'b_score':      () => { socket.emit('host_action',{action:'invoke',id:'bonus_score'}); },
+      'b_rank':       () => { socket.emit('host_action',{action:'invoke',id:'bonus_rank'}); },
+      'b_free':       () => { socket.emit('host_action',{action:'invoke',id:'bonus_freeform'}); },
+      'bonus_studio': () => { socket.emit('host_action',{action:'invoke',id:'bonus_studio'}); _ctrlCloseExtrasPopup(); },
+      'bonus_artist': () => { socket.emit('host_action',{action:'invoke',id:'bonus_artist'}); _ctrlCloseExtrasPopup(); },
+      'bonus_song':   () => { socket.emit('host_action',{action:'invoke',id:'bonus_song'}); _ctrlCloseExtrasPopup(); },
+      'bonus_chars':  () => { socket.emit('host_action',{action:'invoke',id:'bonus_chars'}); _ctrlCloseExtrasPopup(); },
+      'tgl_blind':    () => socket.emit('host_action',{action:'invoke',id:'blind'}),
+      'tgl_peek':     () => socket.emit('host_action',{action:'invoke',id:'peek'}),
+      'tgl_narrow':   () => socket.emit('host_action',{action:'invoke',id:'narrow_peek'}),
+      'tgl_widen':    () => socket.emit('host_action',{action:'invoke',id:'widen_peek'}),
+      'tgl_mute':     () => socket.emit('host_action',{action:'invoke',id:'mute'}),
+      'tgl_censors':  () => socket.emit('host_action',{action:'invoke',id:'censors'}),
+      'tgl_shortcuts':() => socket.emit('host_action',{action:'invoke',id:'enable_shortcuts'}),
+      'tgl_dock':     () => socket.emit('host_action',{action:'invoke',id:'dock_player'}),
+      'rev_info':     () => { socket.emit('host_action',{action:'invoke',id:'info_popup'}); _ctrlCloseExtrasPopup(); },
+      'rev_title':    () => { socket.emit('host_action',{action:'invoke',id:'title_popup'}); _ctrlCloseExtrasPopup(); },
+      'reveal_artist':() => { socket.emit('host_action',{action:'invoke',id:'artist_info'}); _ctrlCloseExtrasPopup(); },
+      'reveal_studio':() => { socket.emit('host_action',{action:'invoke',id:'studio_info'}); _ctrlCloseExtrasPopup(); },
+      'reveal_season':() => { socket.emit('host_action',{action:'invoke',id:'season_rankings'}); _ctrlCloseExtrasPopup(); },
+      'reveal_year':  () => { socket.emit('host_action',{action:'invoke',id:'year_rankings'}); _ctrlCloseExtrasPopup(); },
+      'mark_tag':     () => socket.emit('host_action',{action:'invoke',id:'tag'}),
+      'mark_fav':     () => socket.emit('host_action',{action:'invoke',id:'favorite'}),
+      'mark_blind':   () => socket.emit('host_action',{action:'invoke',id:'blind_mark'}),
+      'mark_peek':    () => socket.emit('host_action',{action:'invoke',id:'peek_mark'}),
+      'mark_mute_peek':() => socket.emit('host_action',{action:'invoke',id:'mute_peek_mark'}),
+      'end_session':  () => { socket.emit('host_action',{action:'invoke',id:'end_session'}); _ctrlCloseExtrasPopup(); },
+      'difficulty':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleDiffList(); },
+      'auto_bonus':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleAutoBonusList(); },
+    };
+
+    function _ctrlExtraClick(eid) {
+      if (_ctrlExtrasEditMode) { _ctrlToggleExtraPin(eid); return; }
+      const action = _ctrlExtraActions[eid];
+      if (action) action();
+      const _bonusCloseIds = new Set(['b_multiple','b_year','b_tags','b_members','b_score','b_rank','b_free']);
+      if (_bonusCloseIds.has(eid)) _ctrlCloseExtrasPopup();
+    }
+
+    function _ctrlExtraAction(eid) {
+      const action = _ctrlExtraActions[eid];
+      if (action) action();
+    }
+
+    function _ctrlToggleExtraPin(eid) {
+      if (_ctrlPinnedExtras.has(eid)) {
+        _ctrlPinnedExtras.delete(eid);
+      } else {
+        _ctrlPinnedExtras.add(eid);
+      }
+      // Update popup button highlight
+      const popupBtn = document.querySelector(`[data-extra-id="${eid}"]`);
+      if (popupBtn) popupBtn.classList.toggle('ctrl-extra-pinned', _ctrlPinnedExtras.has(eid));
+      _ctrlRenderPinnedExtras();
+      _ctrlSavePanels();
+    }
+
+    function _ctrlRenderPinnedExtras() {
+      const container = document.getElementById('ctrl-pinned-extras');
+      if (!container) return;
+      container.innerHTML = '';
+      _ctrlPinnedExtras.forEach(eid => {
+        if (eid.startsWith('_br_')) {
+          const el = document.createElement('div');
+          el.className = 'ctrl-pinned-break';
+          el.setAttribute('data-layout-id', eid);
+          container.appendChild(el);
+          return;
+        }
+        if (eid.startsWith('_sp_')) {
+          const el = document.createElement('div');
+          el.className = 'ctrl-pinned-space';
+          el.setAttribute('data-layout-id', eid);
+          container.appendChild(el);
+          return;
+        }
+        const cfg = _ctrlExtrasConfig[eid];
+        if (!cfg) return;
+        const btn = document.createElement('button');
+        btn.className = 'ctrl-bonus-btn ' + cfg.classes;
+        btn.innerHTML = cfg.html;
+        if (cfg.title) btn.title = cfg.title;
+        btn.setAttribute('data-proxy-extra', eid);
+        if (cfg.ltMode) btn.setAttribute('data-lt-mode', cfg.ltMode);
+        if (cfg.serverCtrl) btn.style.display = 'none'; // hidden until server update
+        btn.onclick = () => _ctrlExtraAction(eid);
+        container.appendChild(btn);
+      });
+      _ctrlRenderLayoutChips();
+    }
+
+    function _ctrlRenderLayoutChips() {
+      const chips = document.getElementById('ctrl-extras-layout-chips');
+      if (!chips) return;
+      chips.innerHTML = '';
+      _ctrlPinnedExtras.forEach(eid => {
+        if (!eid.startsWith('_br_') && !eid.startsWith('_sp_')) return;
+        const isBreak = eid.startsWith('_br_');
+        const chip = document.createElement('span');
+        chip.className = 'ctrl-layout-chip';
+        chip.textContent = isBreak ? '↵ Break' : '□ Space';
+        const rm = document.createElement('button');
+        rm.className = 'ctrl-layout-chip-remove';
+        rm.textContent = '×';
+        rm.title = 'Remove';
+        rm.onclick = () => _ctrlRemoveLayoutItem(eid);
+        chip.appendChild(rm);
+        chips.appendChild(chip);
+      });
+    }
+
+    function _ctrlClearPinned() {
+      _ctrlPinnedExtras.clear();
+      document.querySelectorAll('[data-extra-id]').forEach(el => el.classList.remove('ctrl-extra-pinned'));
+      _ctrlRenderPinnedExtras();
+      _ctrlSavePanels();
+    }
+
+    function _ctrlResetPinned() {
+      _ctrlPinnedExtras = new Set(_CTRL_DEFAULT_PINNED);
+      // Re-mark pinned state in popup if still in edit mode
+      document.querySelectorAll('[data-extra-id]').forEach(el => {
+        el.classList.toggle('ctrl-extra-pinned', _ctrlPinnedExtras.has(el.dataset.extraId));
+      });
+      _ctrlRenderPinnedExtras();
+      _ctrlSavePanels();
+    }
+
+    function _ctrlAddLayoutItem(type) {
+      let idx = 0;
+      while (_ctrlPinnedExtras.has('_' + type + '_' + idx)) idx++;
+      _ctrlPinnedExtras.add('_' + type + '_' + idx);
+      _ctrlRenderPinnedExtras();
+      _ctrlSavePanels();
+    }
+
+    function _ctrlRemoveLayoutItem(eid) {
+      _ctrlPinnedExtras.delete(eid);
+      _ctrlRenderPinnedExtras();
+      _ctrlSavePanels();
+    }
+
+    function _ctrlToggleExtrasEditMode() {
+      _ctrlExtrasEditMode = !_ctrlExtrasEditMode;
+      const box = document.getElementById('ctrl-extras-popup-box');
+      if (box) box.classList.toggle('edit-mode', _ctrlExtrasEditMode);
+      const editBtn = document.getElementById('ctrl-extras-edit-btn');
+      if (editBtn) editBtn.classList.toggle('active', _ctrlExtrasEditMode);
+      const hint = document.getElementById('ctrl-extras-edit-hint');
+      if (hint) hint.classList.toggle('active', _ctrlExtrasEditMode);
+      const layoutSect = document.getElementById('ctrl-extras-layout-sect');
+      if (layoutSect) layoutSect.style.display = _ctrlExtrasEditMode ? '' : 'none';
+      const editActions = document.getElementById('ctrl-extras-edit-actions');
+      if (editActions) editActions.style.display = _ctrlExtrasEditMode ? 'flex' : 'none';
+      if (_ctrlExtrasEditMode) {
+        // Mark currently pinned buttons
+        _ctrlPinnedExtras.forEach(eid => {
+          const btn = document.querySelector(`[data-extra-id="${eid}"]`);
+          if (btn) btn.classList.add('ctrl-extra-pinned');
+        });
+      } else {
+        document.querySelectorAll('[data-extra-id]').forEach(el => el.classList.remove('ctrl-extra-pinned'));
+      }
+    }
+
+    function _ctrlOpenExtrasPopup() {
+      document.getElementById('ctrl-extras-popup-overlay').classList.add('active');
+    }
+    function _ctrlCloseExtrasPopup() {
+      // Exit edit mode when closing
+      if (_ctrlExtrasEditMode) _ctrlToggleExtrasEditMode();
+      document.getElementById('ctrl-extras-popup-overlay').classList.remove('active');
+    }
+
+    function _ctrlApplyMarks(marks) {
+      // Update popup buttons (by ID) and all proxies (by data-proxy-extra)
+      const markMap = {
+        'mark_tag':      !!marks.tagged,
+        'mark_fav':      !!marks.favorited,
+        'mark_blind':    !!marks.blind,
+        'mark_peek':     !!marks.peek,
+        'mark_mute_peek':!!marks.mute_peek,
+      };
+      const idMap = {
+        'mark_tag': 'ctrl-mark-tag', 'mark_fav': 'ctrl-mark-fav',
+        'mark_blind': 'ctrl-mark-blind', 'mark_peek': 'ctrl-mark-peek',
+        'mark_mute_peek': 'ctrl-mark-mute-peek',
+      };
+      for (const [eid, active] of Object.entries(markMap)) {
+        const el = document.getElementById(idMap[eid]);
+        if (el) el.classList.toggle('ctrl-mark-active', active);
+        document.querySelectorAll(`[data-proxy-extra="${eid}"]`).forEach(el => el.classList.toggle('ctrl-mark-active', active));
+      }
+    }
+
+    socket.on('marks_update', data => { _ctrlApplyMarks(data); });
+
+    function _ctrlRenderUpNext(d) {
+      const modeEl     = document.getElementById('ctrl-upnext-mode');
+      const titleText  = document.getElementById('ctrl-upnext-title-text');
+      const detailEl   = document.getElementById('ctrl-upnext-detail');
+      const rerollBtn  = document.getElementById('ctrl-upnext-reroll');
+      if (!d || !d.title) {
+        if (titleText) titleText.textContent = d && d.end_of_playlist ? 'End of playlist' : 'No upcoming track';
+        if (modeEl)    modeEl.textContent    = '';
+        if (detailEl)  detailEl.textContent  = '';
+        if (rerollBtn) rerollBtn.style.display = 'none';
+        return;
+      }
+      if (modeEl)    modeEl.textContent    = d.mode_label || '';
+      if (titleText) titleText.textContent = (d.marks || '') + (d.title || '');
+      if (detailEl)  detailEl.textContent  = d.detail || '';
+      if (rerollBtn) rerollBtn.style.display = d.reroll ? '' : 'none';
+    }
+
+    socket.on('up_next_update', data => {
+      _ctrlRenderUpNext(data);
+      if (_ctrlPlaylistVisible) {
+        socket.emit('host_action', { action: 'get_playlist_info' });
+      }
+    });
+
+    function _ctrlToggleVolume() {
+      _ctrlVolOpen = !_ctrlVolOpen;
+      const wrap = document.getElementById('ctrl-vol-slider-wrap');
+      if (wrap) wrap.style.display = _ctrlVolOpen ? 'flex' : 'none';
+      if (_ctrlVolOpen) {
+        setTimeout(() => {
+          function _volDismiss(e) {
+            const vw = document.getElementById('ctrl-vol-wrap');
+            if (vw && !vw.contains(e.target)) {
+              _ctrlVolOpen = false;
+              const w = document.getElementById('ctrl-vol-slider-wrap');
+              if (w) w.style.display = 'none';
+              document.removeEventListener('pointerdown', _volDismiss, true);
+            }
+          }
+          document.addEventListener('pointerdown', _volDismiss, true);
+        }, 0);
+      }
+    }
+
+    function _ctrlVolumeChange(val) {
+      const lbl = document.getElementById('ctrl-vol-label');
+      if (lbl) lbl.textContent = val;
+      socket.emit('host_action', { action: 'set_volume', volume: parseInt(val, 10) });
+    }
+
+    function _ctrlAction(id) {
+      socket.emit('host_action', { action: 'invoke', id });
+    }
+
+    function _ctrlSeekPreview(val) {
+      _ctrlSeeking = true;
+      if (_ctrlLengthMs > 0) {
+        const previewMs = Math.round((val / 1000) * _ctrlLengthMs);
+        const cur = document.getElementById('ctrl-time-cur');
+        if (cur) cur.textContent = _fmtMs(previewMs);
+      }
+    }
+
+    function _ctrlSeekCommit(val) {
+      _ctrlSeeking = false;
+      if (_ctrlLengthMs > 0) {
+        const seekMs = Math.round((val / 1000) * _ctrlLengthMs);
+        socket.emit('host_action', { action: 'seek', position_ms: seekMs });
+      }
+    }
+
+    function _metaViewData() {
+      return _metaHistory.length > 0 ? _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx] : _currentMetadata;
+    }
+    function _toggleMetadata() {
+      _metadataOpen = !_metadataOpen;
+      document.getElementById('metadata-overlay').classList.toggle('active', _metadataOpen);
+      document.body.classList.toggle('meta-open', _metadataOpen);
+      if (_metadataOpen) {
+        _renderMetadata(_currentMetadata);
+        _renderSeriesThemes(_currentMetadata);
+        if (_metadataTab === 'more') _renderMore(_currentMetadata);
+      }
+      _saveSidePanels();
+    }
+    function _closeMetadata() {
+      _metadataOpen = false;
+      document.getElementById('metadata-overlay').classList.remove('active');
+      document.body.classList.remove('meta-open');
+      _saveSidePanels();
+    }
+    function _switchMetadataTab(tab) {
+      _metadataTab = tab;
+      const allTabs = ['info', 'themes', 'more'];
+      document.querySelectorAll('.meta-tab-btn').forEach((b, i) =>
+        b.classList.toggle('active', allTabs[i] === tab));
+      allTabs.forEach(t => {
+        const el = document.getElementById('meta-pane-' + t);
+        if (el) el.classList.toggle('active', t === tab);
+      });
+      if (tab === 'themes') { _renderSeriesThemes(_metaViewData()); _scrollToPlayingTheme(); }
+      if (tab === 'more')   _renderMore(_metaViewData());
+    }
+    function _scrollToPlayingTheme() {
+      const pane = document.getElementById('meta-pane-themes');
+      if (!pane || !pane.classList.contains('active')) return;
+      const playingEl = pane.querySelector('.mt-theme.playing');
+      if (playingEl) playingEl.scrollIntoView({ block: 'center' });
+    }
+    document.getElementById('metadata-overlay').addEventListener('click', e => {
+      if (e.target === document.getElementById('metadata-overlay') && window.innerWidth < 900) _closeMetadata();
+    });
+
+    /* ── Playlist virtual scroll ── */
+    const _PL_ROW_H  = 22;
+    const _PL_CHUNK  = 100;
+    let _plTotal        = 0;
+    let _plCurrentIndex = -1;
+    let _plCache        = new Map();  // chunkOffset → items[]
+    let _plPending      = new Set();  // chunkOffsets in-flight
+    let _plScrollBound  = false;
+
+    function _plChunkOffset(i) {
+      return Math.floor(i / _PL_CHUNK) * _PL_CHUNK;
+    }
+
+    const _plTruncCanvas = document.createElement('canvas');
+    function _plSetMidTrunc(span) {
+      const full = span.dataset.fullTitle || '';
+      const avail = span.offsetWidth;
+      if (avail < 20) { span.textContent = full; return; }
+      const ctx = _plTruncCanvas.getContext('2d');
+      const cs = window.getComputedStyle(span);
+      ctx.font = cs.fontSize + ' ' + cs.fontFamily;
+      if (ctx.measureText(full).width <= avail) { span.textContent = full; return; }
+      const ellW = ctx.measureText('\u2026').width;
+      const half = (avail - ellW) / 2;
+      let s = 0, e = full.length - 1, head = '', tail = '';
+      // grow head from left
+      while (s < full.length && ctx.measureText(head + full[s]).width <= half) head += full[s++];
+      // grow tail from right
+      while (e >= s && ctx.measureText(full[e] + tail).width <= half) tail = full[e--] + tail;
+      span.textContent = head + '\u2026' + tail;
+    }
+    function _plRefreshTrunc() {
+      document.querySelectorAll('.pl-row-title[data-full-title]').forEach(_plSetMidTrunc);
+    }
+
+    function _plOpen() {
+      const vs = document.getElementById('pl-vscroll');
+      if (!vs) return;
+      if (!_plScrollBound) {
+        vs.addEventListener('scroll', () => { _plEnsureChunks(); _plRender(); }, { passive: true });
+        _plScrollBound = true;
+      }
+      if (_plTotal === 0) {
+        socket.emit('host_action', { action: 'get_playlist_info' });
+      } else {
+        _plScrollToCurrent();
+        _plEnsureChunks();
+        _plRender();
+      }
+    }
+
+    socket.on('playlist_info', data => {
+      _plTotal        = data.total || 0;
+      _plCurrentIndex = (data.current_index != null) ? data.current_index : -1;
+      _plCache.clear();
+      _plPending.clear();
+      const counter = document.getElementById('ctrl-playlist-counter');
+      if (counter) counter.textContent = data.counter || '';
+      const spacer = document.getElementById('pl-spacer');
+      if (spacer) spacer.style.height = (_plTotal * _PL_ROW_H) + 'px';
+      if (_ctrlPlaylistVisible) {
+        _plScrollToCurrent();
+        _plEnsureChunks();
+      }
+    });
+
+    socket.on('playlist_chunk', data => {
+      const off   = data.offset;
+      const items = data.items || [];
+      _plPending.delete(off);
+      _plCache.set(off, items);
+      // Update current index from item flags
+      for (const item of items) {
+        if (item.current) { _plCurrentIndex = item.i; break; }
+      }
+      if (_ctrlPlaylistVisible) _plRender();
+    });
+
+    function _plScrollToCurrent() {
+      if (_plCurrentIndex < 0 || _plTotal === 0) return;
+      const vs = document.getElementById('pl-vscroll');
+      if (!vs) return;
+      const target = _plCurrentIndex * _PL_ROW_H - vs.clientHeight / 2 + _PL_ROW_H / 2;
+      vs.scrollTop = Math.max(0, target);
+    }
+
+    function _plEnsureChunks() {
+      const vs = document.getElementById('pl-vscroll');
+      if (!vs || _plTotal === 0) return;
+      const first = Math.max(0, Math.floor(vs.scrollTop / _PL_ROW_H) - _PL_CHUNK);
+      const last  = Math.min(_plTotal - 1,
+                    Math.ceil((vs.scrollTop + vs.clientHeight) / _PL_ROW_H) + _PL_CHUNK);
+      for (let off = _plChunkOffset(first); off <= _plChunkOffset(last); off += _PL_CHUNK) {
+        if (!_plCache.has(off) && !_plPending.has(off)) {
+          _plPending.add(off);
+          socket.emit('host_action', { action: 'get_playlist_chunk', offset: off, count: _PL_CHUNK });
+        }
+      }
+    }
+
+    function _plRender() {
+      const vs     = document.getElementById('pl-vscroll');
+      const spacer = document.getElementById('pl-spacer');
+      if (!vs || !spacer || _plTotal === 0) return;
+      const scrollTop = vs.scrollTop;
+      const vpH       = vs.clientHeight;
+      const BUF       = 6;  // rows of buffer beyond viewport
+      const firstRow  = Math.max(0,          Math.floor(scrollTop / _PL_ROW_H) - BUF);
+      const lastRow   = Math.min(_plTotal - 1, Math.ceil((scrollTop + vpH) / _PL_ROW_H) + BUF);
+
+      // Index existing DOM rows
+      const existing = new Map();
+      for (const el of Array.from(spacer.children)) {
+        const idx = parseInt(el.dataset.plI, 10);
+        if (!isNaN(idx)) existing.set(idx, el);
+      }
+      // Remove out-of-range rows
+      for (const [idx, el] of existing) {
+        if (idx < firstRow || idx > lastRow) { spacer.removeChild(el); existing.delete(idx); }
+      }
+      // Add/update rows
+      for (let i = firstRow; i <= lastRow; i++) {
+        const off  = _plChunkOffset(i);
+        const chunk = _plCache.get(off);
+        const item  = chunk ? chunk[i - off] : null;
+        let el = existing.get(i);
+        if (!el) {
+          el = document.createElement('div');
+          el.className  = 'pl-row';
+          el.dataset.plI = i;
+          el.style.top  = (i * _PL_ROW_H) + 'px';
+          el.innerHTML =
+            '<span class="pl-row-num"></span>' +
+            '<span class="pl-row-lightning"></span>' +
+            '<span class="pl-row-slug"></span>' +
+            '<span class="pl-row-title"></span>' +
+            '<span class="pl-row-song"></span>';
+          el.addEventListener('click', () => {
+            socket.emit('host_action', { action: 'playlist_goto', index: parseInt(el.dataset.plI, 10) });
+          });
+          spacer.appendChild(el);
+        }
+        el.querySelector('.pl-row-num').textContent   = (i + 1);
+        const _rawSlug = item ? (item.slug || '') : '';
+        const _isL = _rawSlug.startsWith('[L]');
+        el.querySelector('.pl-row-lightning').textContent = _isL ? '\u26A1' : '';
+        el.querySelector('.pl-row-slug').textContent  = _isL ? _rawSlug.slice(4) : _rawSlug;
+        const _titleSpan = el.querySelector('.pl-row-title');
+        _titleSpan.dataset.fullTitle = item ? (item.title || '\u2026') : '\u2026';
+        requestAnimationFrame(() => _plSetMidTrunc(_titleSpan));
+        const _song   = item ? (item.song   || '') : '';
+        const _artist = (item && i === _plCurrentIndex) ? (item.artist || '') : '';
+        el.querySelector('.pl-row-song').textContent  = (_artist) ? (_song ? _song + ' \u00B7 ' + _artist : _artist) : _song;
+        el.classList.toggle('pl-current', i === _plCurrentIndex);
+        el.style.top = (i * _PL_ROW_H) + 'px';
+      }
+    }
+
+    function _metaHistoryPush(d) {
+      if (!d || !d.title) return;
+      const last = _metaHistory[_metaHistory.length - 1];
+      const newSlug = d.current_theme && d.current_theme.slug;
+      const lastSlug = last && last.current_theme && last.current_theme.slug;
+      if (!last || last.title !== d.title || (newSlug && newSlug !== lastSlug)) {
+        _metaHistory.push(d);
+        if (_metaHistory.length > 20) {
+          _metaHistory.shift();
+          // Oldest entry removed; keep user on same item (clamp to valid range)
+          if (!_metaAutoFollow) _metaHistoryIdx = Math.max(0, _metaHistoryIdx - 1);
+        } else if (!_metaAutoFollow) {
+          // New entry appended; bump index so user stays on the same item
+          _metaHistoryIdx++;
+        }
+      }
+    }
+    function _metaHistoryNav(dir) {
+      const total = _metaHistory.length;
+      if (total < 2) return;
+      _metaHistoryIdx = Math.max(0, Math.min(total - 1, _metaHistoryIdx + dir));
+      const viewData = _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx];
+      _renderMetadata(null);
+      _renderSeriesThemes(viewData);
+      if (_metadataTab === 'more') _renderMore(viewData);
+    }
+    function _metaHistorySkip(to) {
+      const total = _metaHistory.length;
+      if (total < 2) return;
+      _metaHistoryIdx = (to === 'newest') ? 0 : total - 1;
+      const viewData = _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx];
+      _renderMetadata(null);
+      _renderSeriesThemes(viewData);
+      if (_metadataTab === 'more') _renderMore(viewData);
+    }
+    function _metaToggleAutoFollow() {
+      _metaAutoFollow = !_metaAutoFollow;
+      const btn = document.getElementById('meta-nav-autofollow');
+      if (btn) btn.classList.toggle('on', _metaAutoFollow);
+      if (_metaAutoFollow) _metaHistorySkip('newest');
+    }
+    function _metaHistoryUpdateNav() {
+      const total = _metaHistory.length;
+      const arrows = document.getElementById('meta-nav-arrows');
+      const titleEl = document.getElementById('meta-nav-title');
+      if (total > 1) {
+        if (arrows) arrows.classList.add('visible');
+        const label = document.getElementById('meta-history-label');
+        if (label) label.textContent = (total - _metaHistoryIdx) + ' / ' + total;
+        const prev = document.getElementById('meta-history-prev');
+        const next = document.getElementById('meta-history-next');
+        const oldest = document.getElementById('meta-history-oldest');
+        const newest = document.getElementById('meta-history-newest');
+        if (prev) prev.disabled = _metaHistoryIdx >= total - 1;
+        if (next) next.disabled = _metaHistoryIdx <= 0;
+        if (oldest) oldest.disabled = _metaHistoryIdx >= total - 1;
+        if (newest) newest.disabled = _metaHistoryIdx <= 0;
+      } else {
+        if (arrows) arrows.classList.remove('visible');
+      }
+      const btn = document.getElementById('meta-nav-autofollow');
+      if (btn) btn.classList.toggle('on', _metaAutoFollow);
+      const viewData = _metaHistory.length > 0 ? _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx] : null;
+      if (titleEl) titleEl.textContent = viewData ? (viewData.eng_title || viewData.title || '') : '';
+    }
+    function _renderMetadata(d) {
+      // null = navigate history; real data = render latest (history push handled by event handlers)
+      if (d !== null) {
+        if (_metaAutoFollow) {
+          _metaHistoryIdx = 0;
+        } else {
+          // Auto-follow is off: update nav counters only, leave content untouched
+          _metaHistoryUpdateNav();
+          return;
+        }
+      }
+      _metaHistoryUpdateNav();
+      const viewData = _metaHistory.length > 0 ? _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx] : d;
+      d = viewData;
+      const box = document.getElementById('metadata-content');
+      if (!d || !d.title) {
+        box.innerHTML = '<span style="color:#555">No metadata available.</span>';
+        return;
+      }
+      const lines = [];
+      function line(label, value) {
+        if (value == null || value === '' || value === 'N/A') return;
+        lines.push('<div class="meta-row"><span class="meta-label">' + _escHtml(label) + '</span> ' + _escHtml(String(value)) + '</div>');
+      }
+      line('TITLE:', d.title);
+      line('ENGLISH:', d.eng_title);
+      if (d.synonyms && d.synonyms.length) line('SYNONYMS:', d.synonyms.join(', '));
+      if (!d.is_game && d.current_theme && d.current_theme.slug) {
+        const ct = d.current_theme;
+        const slugLabel = ct.slug + (ct.overall_suffix || '');
+        const slugCls = 'mt-slug playing';
+        const titleText = ': ' + (ct.title || '????');
+        let html = '<div class="meta-row meta-theme-row"><span class="meta-label">THEME:</span>' +
+          '<span class="mt-theme-content"><span class="' + slugCls + '">' + _escHtml(slugLabel) + '</span>' +
+          '<span class="mt-title">' + _escHtml(titleText) + '</span>';
+        if (ct.artists && ct.artists.length)
+          html += '<span class="mt-artist mt-continuation">by: ' + _escHtml(ct.artists_str || ct.artists.join(', ')) + '</span>';
+        let vText = ct.version ? 'v' + ct.version : '';
+        if (ct.episodes) vText += (vText ? ': ' : '') + '(Eps: ' + ct.episodes + ')';
+        if (ct.flags && ct.flags.length) vText += (vText ? ' ' : '') + ct.flags.join(' ');
+        const propsHtml = ct.file_props ? ' <span class="mt-props">' + _escHtml(ct.file_props) + '</span>' : '';
+        if (vText || propsHtml)
+          html += '<span class="mt-ver playing mt-continuation">' + _escHtml(vText) + propsHtml + '</span>';
+        html += '</span></div>';
+        lines.push(html);
+      }
+      if (d.is_game) {
+        line('RELEASE DATE:', d.release);
+      } else {
+        const airParts = [d.aired, d.season].filter(Boolean);
+        if (airParts.length) line('AIR:', airParts.join(', '));
+      }
+      if (d.score != null) {
+        let scoreVal = String(d.score);
+        if (d.rank) scoreVal += ' (#' + d.rank + ')';
+        if (!d.is_game && d.members != null)
+          scoreVal += '&nbsp;&nbsp;<span class="meta-label">MEMBERS:</span> ' + Number(d.members).toLocaleString() + ' (#' + (d.popularity || 'N/A') + ')';
+        lines.push('<div class="meta-row"><span class="meta-label">SCORE:</span> ' + scoreVal + '</div>');
+      } else if (!d.is_game && d.members != null) {
+        line('MEMBERS:', Number(d.members).toLocaleString() + ' (#' + (d.popularity || 'N/A') + ')');
+      }
+      if (d.is_game) {
+        if (d.reviews != null) line('REVIEWS:', Number(d.reviews || 0).toLocaleString() + ' (#' + (d.popularity || 'N/A') + ')');
+      }
+      if (d.anilist_score) line('ANILIST SCORE:', d.anilist_score);
+      if (d.anilist_popularity != null) {
+        const popStr = Number(d.anilist_popularity).toLocaleString() +
+          (d.anilist_popularity_ranks && d.anilist_popularity_ranks.length
+            ? ' (' + d.anilist_popularity_ranks.join(' / ') + ')' : '');
+        line('ANILIST MEMBERS:', popStr);
+      }
+      if (d.is_game) {
+        if (d.platforms && d.platforms.length) line('PLATFORMS:', d.platforms.join(', '));
+        line('TYPE:', d.format);
+      } else {
+        let epsVal = (d.episodes || 'Airing');
+        if (d.format) epsVal += '&nbsp;&nbsp;<span class="meta-label">TYPE:</span> ' + _escHtml(String(d.format));
+        if (d.source) epsVal += '&nbsp;&nbsp;<span class="meta-label">SOURCE:</span> ' + _escHtml(String(d.source));
+        lines.push('<div class="meta-row"><span class="meta-label">EPISODES:</span> ' + epsVal + '</div>');
+      }
+      if (d.tags && d.tags.length) line('TAGS:', d.tags.join(', '));
+      if (d.studios && d.studios.length) line('STUDIOS:', d.studios.join(', '));
+      if (d.series) {
+        const seriesStr = Array.isArray(d.series) ? d.series.join(', ') : String(d.series);
+        line('SERIES:', seriesStr);
+      }
+      if (d.file_count != null) line('TOTAL PLAYS:', d.file_count + (d.themes_ago || ''));
+      box.innerHTML = lines.join('') || '<span style="color:#555">No data.</span>';
+    }
+
+    function _renderSeriesThemes(d) {
+      const box = document.getElementById('metadata-themes-content');
+      if (!d || !d.series_themes || !d.series_themes.length) {
+        box.innerHTML = '<span style="color:#555">No theme data available.</span>';
+        return;
+      }
+      const parts = [];
+      d.series_themes.forEach(anime => {
+        if (d.series_themes.length > 1) {
+          const fmtSeason = [anime.format, anime.season].filter(Boolean).join(' / ');
+          parts.push('<div class="mt-anime-header">' + _escHtml(anime.title) +
+            (fmtSeason ? ' <span style="opacity:.6">[' + _escHtml(fmtSeason) + ']</span>' : '') + '</div>');
+        }
+        anime.sections.forEach(sec => {
+          parts.push('<div class="mt-section-header">' + _escHtml(sec.header) + '</div>');
+          sec.themes.forEach(theme => {
+            const slugCls = 'mt-slug' + (theme.is_playing ? ' playing' : '');
+            const slugText = theme.slug + (theme.overall_suffix || '');
+            const titleText = ': ' + (theme.title ? theme.title : '????');
+            let html = '<div class="mt-theme' + (theme.is_playing ? ' playing' : '') + '"><span class="' + slugCls + '">' + _escHtml(slugText) + '</span>' +
+              '<span class="mt-title">' + _escHtml(titleText) + '</span>';
+            if (theme.artists && theme.artists.length)
+              html += '<br><span class="mt-artist">by: ' + _escHtml(theme.artists_str || theme.artists.join(', ')) + '</span>';
+            if (theme.versions && theme.versions.length) {
+              theme.versions.forEach(v => {
+                const vCls = 'mt-ver' + (v.is_playing ? ' playing' : '');
+                let vText = v.version ? 'v' + v.version : '';
+                if (v.episodes) vText += (vText ? ': ' : '') + '(Eps: ' + v.episodes + ')';
+                if (v.flags && v.flags.length) vText += (vText ? ' ' : '') + v.flags.join(' ');
+                const propsHtml = v.file_props ? ' <span class="mt-props">' + _escHtml(v.file_props) + '</span>' : '';
+                if (vText || propsHtml)
+                  html += '<br><span class="' + vCls + '">' + _escHtml(vText) + propsHtml + '</span>';
+              });
+            } else {
+              let vText = '';
+              if (theme.episodes) vText += '(Eps: ' + theme.episodes + ')';
+              if (theme.flags && theme.flags.length) vText += (vText ? ' ' : '') + theme.flags.join(' ');
+              if (vText) html += '<br><span class="mt-ver">' + _escHtml(vText) + '</span>';
+            }
+            if (theme.special) html += ' <span class="mt-flags">(SPECIAL)</span>';
+            html += '</div>';
+            parts.push(html);
+          });
+        });
+      });
+      box.innerHTML = parts.join('');
+      _scrollToPlayingTheme();
+    }
+
+    let _moreSubTab = 'synopsis';
+    let _moreShowSpoilers = false;
+    let _moreCharTab = 'anidb';
+    function _renderMore(d) {
+      const box = document.getElementById('metadata-more-content');
+      if (!box) return;
+      if (!d || !d.title) {
+        box.innerHTML = '<span style="color:#555">No metadata available.</span>';
+        return;
+      }
+      const tabs = ['synopsis', 'tags', 'characters', 'episodes', 'links'];
+      const labels = {'synopsis':'SYNOPSIS','tags':'TAGS','characters':'CHARS','episodes':'EPISODES','links':'LINKS'};
+      const btns = tabs.map(t =>
+        '<button class="more-sub-btn' + (_moreSubTab === t ? ' active' : '') +
+        '" onclick="_switchMoreTab(\'' + t + '\')">' + (labels[t] || t.replace('_',' ').toUpperCase()) + '</button>'
+      ).join('');
+      box.innerHTML = '<div class="more-sub-tabs">' + btns + '</div>' +
+        '<div id="more-sub-content">' + _buildMoreContent(d) + '</div>';
+    }
+    function _switchMoreTab(tab) {
+      _moreSubTab = tab;
+      _renderMore(_metaViewData());
+    }
+    function _switchCharTab(tab) {
+      _moreCharTab = tab;
+      _renderMore(_metaViewData());
+    }
+    function _toggleCharImg(id, url) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.style.display !== 'none') {
+        el.style.display = 'none';
+      } else {
+        const img = el.querySelector('img');
+        if (img && !img.getAttribute('src')) img.src = url;
+        el.style.display = 'block';
+      }
+    }
+    function _buildMoreContent(d) {
+      if (_moreSubTab === 'synopsis') {
+        return d.synopsis
+          ? '<div class="more-synopsis">' + _escHtml(d.synopsis) + '</div>'
+          : '<span style="color:#555">No synopsis available.</span>';
+      }
+      if (_moreSubTab === 'tags') {
+        let html = '';
+        if (d.anidb_tags && d.anidb_tags.length) {
+          html += '<div class="more-section-header">AniDB Tags</div>';
+          html += d.anidb_tags.map(([name, score]) =>
+            '<span class="more-tag">' + _escHtml(name.charAt(0).toUpperCase() + name.slice(1)) +
+            (score > 0 ? ' <span style="opacity:.6">(' + score + ')</span>' : '') + '</span>'
+          ).join('');
+        }
+        if (d.anilist_tags && d.anilist_tags.length) {
+          const spoilerCount = d.anilist_tags.filter(t => t.spoiler).length;
+          html += '<div class="more-section-header">AniList Tags';
+          if (spoilerCount > 0)
+            html += ' <button class="more-sub-btn" style="font-size:0.75em;padding:1px 6px" onclick="_moreShowSpoilers=!_moreShowSpoilers;_renderMore(_metaViewData())">' +
+              (_moreShowSpoilers ? '🙈 Hide' : '👁 Show') + ' ' + spoilerCount + ' spoiler' + (spoilerCount !== 1 ? 's' : '') + '</button>';
+          html += '</div>';
+          html += d.anilist_tags.filter(t => !t.spoiler || _moreShowSpoilers).map(t =>
+            '<span class="more-tag' + (t.spoiler ? ' spoiler' : '') + '" title="' +
+            _escHtml(t.category || '') + '">' + _escHtml(t.name) +
+            ' <span style="opacity:.6">(' + t.rank + '%)</span>' +
+            (t.spoiler ? ' <span style="opacity:.5">[S]</span>' : '') + '</span>'
+          ).join('');
+        }
+        return html || '<span style="color:#555">No tag data available.</span>';
+      }
+      if (_moreSubTab === 'characters') {
+        const hasAnidb = d.anidb_characters && d.anidb_characters.length;
+        const hasAnilist = d.anilist_characters && d.anilist_characters.length;
+        if (!hasAnidb && !hasAnilist) return '<span style="color:#555">No character data available.</span>';
+        // Inner tab bar
+        let html = '<div class="more-char-tabs">';
+        if (hasAnidb)   html += '<button class="more-char-tab-btn' + (_moreCharTab === 'anidb'   ? ' active' : '') + '" onclick="_switchCharTab(\'anidb\')">AniDB</button>';
+        if (hasAnilist) html += '<button class="more-char-tab-btn' + (_moreCharTab === 'anilist' ? ' active' : '') + '" onclick="_switchCharTab(\'anilist\')">AniList</button>';
+        html += '</div>';
+        const activeTab = (hasAnidb && _moreCharTab === 'anidb') || !hasAnilist ? 'anidb' : 'anilist';
+        if (activeTab === 'anidb') {
+          [['m','Main'],['s','Supporting'],['','Appears']].forEach(([role, label]) => {
+            const chars = d.anidb_characters.filter(c => c.role === role || (role === '' && c.role !== 'm' && c.role !== 's'));
+            if (!chars.length) return;
+            html += '<div style="color:#667;font-size:.78em;text-transform:uppercase;margin:4px 0 2px">' + label + '</div>';
+            chars.sort((a,b) => a.name.localeCompare(b.name)).forEach((c, ci) => {
+              const imgId = 'mcimg-adb-' + ci + '-' + c.name.replace(/[^a-z0-9]/gi,'');
+              html += '<div class="more-char">';
+              if (c.url) html += '<button class="more-sub-btn" style="float:right;font-size:0.75em;padding:1px 6px" onclick="_toggleCharImg(\'' + imgId + '\',\'' + _escHtml(c.url) + '\')">VIEW</button>';
+              html += '<span class="more-char-name">' + _escHtml(c.name) + '</span>';
+              if (c.gender) html += '<span class="more-char-role">' + _escHtml(c.gender) + '</span>';
+              if (c.desc) html += '<div class="more-char-desc">' + _escHtml(c.desc.substring(0, 200) + (c.desc.length > 200 ? '…' : '')) + '</div>';
+              if (c.url) html += '<div id="' + imgId + '" style="display:none;margin-top:4px"><img style="max-width:100%;border-radius:4px" referrerpolicy="no-referrer"></div>';
+              html += '</div>';
+            });
+          });
+        } else {
+          [['MAIN','Main'],['SUPPORTING','Supporting'],['BACKGROUND','Background']].forEach(([role, label]) => {
+            const chars = d.anilist_characters.filter(c => c.role === role);
+            if (!chars.length) return;
+            html += '<div style="color:#667;font-size:.78em;text-transform:uppercase;margin:4px 0 2px">' + label + '</div>';
+            chars.forEach((c, ci) => {
+              const imgId = 'mcimg-al-' + ci + '-' + c.name.replace(/[^a-z0-9]/gi,'');
+              html += '<div class="more-char">';
+              if (c.url) html += '<button class="more-sub-btn" style="float:right;font-size:0.75em;padding:1px 6px" onclick="_toggleCharImg(\'' + imgId + '\',\'' + _escHtml(c.url) + '\')">VIEW</button>';
+              html += '<span class="more-char-name">' + _escHtml(c.name) + '</span>';
+              if (c.gender || c.age) html += '<span class="more-char-role">' + _escHtml([c.gender, c.age ? 'Age ' + c.age : ''].filter(Boolean).join(', ')) + '</span>';
+              if (c.vas && c.vas.length) html += '<div class="more-char-va">CV: ' + _escHtml(c.vas.join(', ')) + '</div>';
+              if (c.desc) html += '<div class="more-char-desc">' + _escHtml(c.desc.substring(0, 200) + (c.desc.length > 200 ? '…' : '')) + '</div>';
+              if (c.url) html += '<div id="' + imgId + '" style="display:none;margin-top:4px"><img style="max-width:100%;border-radius:4px" referrerpolicy="no-referrer"></div>';
+              html += '</div>';
+            });
+          });
+        }
+        return html;
+      }
+      if (_moreSubTab === 'episodes') {
+        if (!d.episode_info || !d.episode_info.length)
+          return '<span style="color:#555">No episode data available.</span>';
+        return d.episode_info.map(([num, title]) =>
+          '<div class="more-ep"><span class="more-ep-num">EP ' + _escHtml(String(num)) + '</span>' + _escHtml(title) + '</div>'
+        ).join('');
+      }
+      if (_moreSubTab === 'links') {
+        const links = [];
+        if (d.mal_id)
+          links.push({ label: 'MyAnimeList', icon: '\ud83d\udd17', url: 'https://myanimelist.net/anime/' + d.mal_id });
+        if (d.anidb_id)
+          links.push({ label: 'AniDB', icon: '\ud83d\udd17', url: 'https://anidb.net/anime/' + d.anidb_id });
+        if (d.anilist_id)
+          links.push({ label: 'AniList', icon: '\ud83d\udd17', url: 'https://anilist.co/anime/' + d.anilist_id });
+        if (d.animethemes_slug)
+          links.push({ label: 'AnimeThemes', icon: '\ud83c\udfb5', url: 'https://animethemes.moe/anime/' + d.animethemes_slug });
+        if (!links.length) return '<span style="color:#555">No links available.</span>';
+        return links.map(l =>
+          '<a class="meta-link-row" href="' + _escHtml(l.url) + '" target="_blank" rel="noopener noreferrer">' +
+          '<span class="meta-link-icon">' + l.icon + '</span>' +
+          '<span class="meta-link-label">' + _escHtml(l.label) + '</span>' +
+          '<span class="meta-link-url">' + _escHtml(l.url) + '</span>' +
+          '</a>'
+        ).join('');
+      }
+      return '';
+    }
   </script>
 </body>
 </html>"""
@@ -2172,10 +5994,63 @@ def set_player_names_provider(fn):
     _player_names_provider = fn
 
 
+def set_host_password(password: str):
+    """Set the password that grants host-view access on the web client."""
+    global _host_password
+    _host_password = (password or '').strip()
+
+
 def set_host_name(name: str):
-    """Set the player name that grants host-view access on the web client."""
-    global _host_name
-    _host_name = (name or '').strip()
+    """Deprecated: use set_host_password instead."""
+    set_host_password(name)
+
+
+def flush_pending_selections():
+    """Drain _pending_selections into _answer_queue and _submitted_answers without clearing other state.
+    Call this before scoring so silent selections are included in the results.
+    """
+    global _pending_selections, _submitted_answers, _submitted_sids
+    if not _pending_selections:
+        return
+    # Build reverse lookup: name → sid
+    name_to_sid = {pname: sid for sid, pname in _connected_players.items()}
+    already_submitted = {a['name'] for a in _submitted_answers}
+    new_entries = []
+    for name, answer in list(_pending_selections.items()):
+        if name not in already_submitted:
+            entry = {'name': name, 'answer': answer}
+            _answer_queue.put(entry)
+            _submitted_answers.append(entry)
+            new_entries.append(entry)
+            # Mark their SID as submitted and tell their client
+            player_sid = name_to_sid.get(name)
+            if player_sid and _socketio:
+                _submitted_sids.add(player_sid)
+                _socketio.emit('auto_submitted', {'answer': answer}, to=player_sid)
+    _pending_selections = {}
+    if new_entries and _socketio:
+        _broadcast_players_update()
+        for sid in list(_submitted_sids):
+            _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
+        if _host_sids:
+            for sid in list(_host_sids):
+                _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+
+
+def push_player_colors():
+    """Read scoreboard_colors.json and broadcast player_colors_update to all clients."""
+    if not FLASK_AVAILABLE or not _socketio:
+        return
+    merged = {}
+    try:
+        _sc_path = os.path.join(_SCOREBOARD_DATA, 'scoreboard_colors.json')
+        if os.path.exists(_sc_path):
+            with open(_sc_path, 'r', encoding='utf-8') as _f:
+                merged.update(json.load(_f))
+    except Exception:
+        pass
+    merged.update(_player_colors)
+    _socketio.emit('player_colors_update', {'colors': merged})
 
 
 def set_rules_text(header: str, body: str):
@@ -2186,7 +6061,7 @@ def set_rules_text(header: str, body: str):
         _socketio.emit('rules_update', _current_rules)
 
 
-def push_question(title, info='', choices=None, drum=None, stepper=None, tags=None, year=None, tags_max=None, autocomplete=None):
+def push_question(title, info='', choices=None, drum=None, stepper=None, tags=None, year=None, tags_max=None, autocomplete=None, rank_slider=None):
     """Push a question to all connected browser clients.
 
     Args:
@@ -2204,14 +6079,28 @@ def push_question(title, info='', choices=None, drum=None, stepper=None, tags=No
     if not FLASK_AVAILABLE or _socketio is None:
         return
     import time as _time
-    global _submitted_answers, _submitted_sids
+    global _submitted_answers, _submitted_sids, _pending_selections
     _submitted_answers = []
     _submitted_sids = set()
+    _pending_selections = {}
     _broadcast_players_update()
+    # Notify scoreboard of all currently-connected players being served this question
+    for _name in list(_connected_players.values()):
+        if _name not in _shadow_kicked_players and _name not in _banned_names:
+            _served_queue.put(_name)
     _current_question = {'title': title, 'info': info, 'choices': choices or [],
                          'qid': str(int(_time.time() * 1000))}
-    if drum:              _current_question['drum']        = drum
-    if stepper:           _current_question['stepper']     = stepper
+    if drum:
+        global _taken_scores
+        _taken_scores = set()
+        _current_question['drum']         = drum
+        _current_question['taken_scores'] = []
+    if stepper:           _current_question['stepper']      = stepper
+    if rank_slider:
+        global _taken_ranks
+        _taken_ranks = set()
+        _current_question['rank_slider']   = rank_slider
+        _current_question['taken_ranks']   = []
     if tags:              _current_question['tags']        = tags
     if tags_max:          _current_question['tags_max']    = tags_max
     if year:
@@ -2262,14 +6151,21 @@ def push_session_history(lines: list, filename: str = None):
 
 def clear_question():
     """Tell all clients to show the 'waiting' screen."""
-    global _current_question, _submitted_answers, _submitted_sids
+    global _current_question, _submitted_answers, _submitted_sids, _pending_selections
     if not FLASK_AVAILABLE or _socketio is None:
         return
+    # Inject unsubmitted selections as answers before clearing
+    already_submitted = {a['name'] for a in _submitted_answers}
+    for name, answer in list(_pending_selections.items()):
+        if name not in already_submitted:
+            _answer_queue.put({'name': name, 'answer': answer})
+    _pending_selections = {}
     _current_question = None
     _submitted_answers = []
     _submitted_sids = set()
     _socketio.emit('clear', {'rules_header': _current_rules.get('header',''), 'rules_body': _current_rules.get('body','')})
     _broadcast_players_update()
+    set_info_public(False)
 
 
 def get_answers():
@@ -2281,6 +6177,17 @@ def get_answers():
         except queue.Empty:
             break
     return answers
+
+
+def get_served():
+    """Drain and return player names who were just served the current question."""
+    names = []
+    while True:
+        try:
+            names.append(_served_queue.get_nowait())
+        except queue.Empty:
+            break
+    return names
 
 
 def get_removals():
@@ -2325,6 +6232,141 @@ def clear_timer():
     _timer_state = {}
     if FLASK_AVAILABLE and _socketio:
         _socketio.emit('timer_clear', {})
+
+
+def push_marks(marks: dict):
+    """Push current theme mark states to all host clients.
+
+    marks should contain boolean fields: tagged, favorited, blind, peek, mute_peek.
+    """
+    global _current_marks
+    _current_marks = marks or {}
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        for sid in list(_host_sids):
+            _socketio.emit('marks_update', _current_marks, to=sid)
+
+
+def push_toggles(toggles: dict):
+    """Push current toggle states to all host clients.
+
+    toggles should contain: blind, peek, mute, censors, shortcuts, dock (bools) + censor_count (int).
+    """
+    global _current_toggles
+    _current_toggles = toggles or {}
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        for sid in list(_host_sids):
+            _socketio.emit('toggles_update', _current_toggles, to=sid)
+
+
+def push_metadata(data_dict: dict):
+    """Push currently-playing metadata to all connected host clients.
+
+    data_dict should contain fields mirroring what update_metadata() renders in
+    the left column (title, eng_title, aired, score, members, tags, studios, etc.).
+    Pass an empty dict to clear the metadata panel.
+    """
+    global _current_metadata
+    _current_metadata = data_dict or {}
+    if FLASK_AVAILABLE and _socketio:
+        for sid in list(_host_sids):
+            _socketio.emit('metadata_update', _current_metadata, to=sid)
+        if _info_public:
+            _socketio.emit('info_public_update', {'show': True, 'metadata': _current_metadata})
+
+
+def set_info_public(show: bool):
+    """Show or hide the metadata button for all non-host clients."""
+    global _info_public
+    _info_public = show
+    if not FLASK_AVAILABLE or _socketio is None:
+        return
+    if show:
+        _socketio.emit('info_public_update', {'show': True, 'metadata': _current_metadata})
+    else:
+        _socketio.emit('info_public_update', {'show': False})
+
+
+def push_youtube_list(videos: list, queued_id: str = None):
+    """Push YouTube video list to all host clients."""
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        payload = {'videos': videos, 'queued_id': queued_id}
+        for sid in list(_host_sids):
+            _socketio.emit('youtube_list', payload, to=sid)
+
+
+def push_fixed_lightning_list(rounds: list, queued_name: str = None):
+    """Push fixed lightning round list to all host clients."""
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        payload = {'rounds': rounds, 'queued_name': queued_name}
+        for sid in list(_host_sids):
+            _socketio.emit('fixed_lightning_list', payload, to=sid)
+
+
+def push_theme_search_results(results: list):
+    """Push theme search results to all host clients."""
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        for sid in list(_host_sids):
+            _socketio.emit('theme_search_results', {'results': results}, to=sid)
+
+
+def push_playlist_info(total: int, current_index: int, to_sid: str = None, counter: str = None):
+    """Push playlist length + current position to requesting host client."""
+    if FLASK_AVAILABLE and _socketio:
+        payload = {'total': total, 'current_index': current_index}
+        if counter is not None:
+            payload['counter'] = counter
+        sids = [to_sid] if to_sid else list(_host_sids)
+        for sid in sids:
+            _socketio.emit('playlist_info', payload, to=sid)
+
+
+def push_playlist_chunk(offset: int, items: list, to_sid: str = None):
+    """Push a chunk of playlist items to requesting host client."""
+    if FLASK_AVAILABLE and _socketio:
+        payload = {'offset': offset, 'items': items}
+        sids = [to_sid] if to_sid else list(_host_sids)
+        for sid in sids:
+            _socketio.emit('playlist_chunk', payload, to=sid)
+
+
+def push_up_next(data_dict: dict):
+    """Push up-next track info to all host clients."""
+    global _up_next
+    _up_next = data_dict or {}
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        for sid in list(_host_sids):
+            _socketio.emit('up_next_update', _up_next, to=sid)
+
+
+def push_playback_state(current_ms: int, length_ms: int, playing: bool, volume: int = None, autoplay: int = None):
+    """Push current playback position to all host clients (called ~1/sec from main app)."""
+    global _playback_state
+    _playback_state = {'current_ms': int(current_ms), 'length_ms': int(length_ms), 'playing': bool(playing)}
+    if volume is not None:
+        _playback_state['volume'] = int(volume)
+    if autoplay is not None:
+        _playback_state['autoplay'] = int(autoplay)
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        for sid in list(_host_sids):
+            _socketio.emit('playback_state', _playback_state, to=sid)
+
+
+def push_scores(data: dict):
+    """Push scoreboard player data to all connected clients."""
+    if FLASK_AVAILABLE and _socketio:
+        _socketio.emit('scores_update', data)
+
+
+def push_teams(names: list):
+    """Push team name list to all connected clients (for autocomplete)."""
+    if FLASK_AVAILABLE and _socketio:
+        _socketio.emit('teams_update', {'teams': names})
+
+
+def set_host_action_callback(fn):
+    """Register a callable(action: str, data: dict) invoked when the host sends a remote control command."""
+    global _host_action_callback
+    _host_action_callback = fn
 
 
 def start(port=8080, ngrok_domain=None):
@@ -2386,6 +6428,9 @@ def _build_app():
             _app, cors_allowed_origins='*',
             logger=False, engineio_logger=False
         )
+    # Silence engineio's "post request handler error" traceback that fires when
+    # stale browser tabs (old Socket.IO clients) send malformed payloads on reconnect.
+    logging.getLogger('engineio.server').setLevel(logging.CRITICAL)
 
     @_app.route('/')
     def index():
@@ -2422,7 +6467,7 @@ def _build_app():
   #dl-btn:hover {{ background: #1f3a1f; }}
 </style>
 </head><body>
-<h1 style="text-align:center">&#128290; SESSION HISTORY</h1>
+<h1 style="text-align:center">&#8635; SESSION HISTORY</h1>
 {body}
 <a id="dl-btn" href="/history/download">&#11015; Download .txt</a>
 </body></html>"""
@@ -2502,6 +6547,9 @@ def _build_app():
             emit('session_history', {'text': '\n'.join(_session_lines), 'filename': _session_filename})
         if _timer_state:
             emit('timer_update', _timer_state)
+        if _info_public and _current_metadata:
+            emit('info_public_update', {'show': True, 'metadata': _current_metadata})
+        # Send playback state to newly-connected hosts after they authenticate via claim_host
 
     @_socketio.on('disconnect')
     def on_disconnect():
@@ -2522,9 +6570,43 @@ def _build_app():
         if any(a['name'] == name for a in _submitted_answers):
             _submitted_sids.add(_req.sid)
             emit('peer_answers_update', {'answers': list(_submitted_answers)})
-        if _host_name and name == _host_name:
+        # If a question is active, this player is now served
+        if _current_question and name not in _shadow_kicked_players and name not in _banned_names:
+            _served_queue.put(name)
+        # Password-based host grant is handled by the claim_host event
+
+    @_socketio.on('claim_host')
+    def handle_claim_host(data):
+        from flask import request as _req
+        password = str(data.get('password', '')).strip()
+        if _host_password and password == _host_password:
             _host_sids.add(_req.sid)
             emit('host_granted', {'answers': list(_submitted_answers)})
+            if _current_metadata:
+                emit('metadata_update', _current_metadata)
+            if _playback_state:
+                emit('playback_state', _playback_state)
+            if _up_next:
+                emit('up_next_update', _up_next)
+            if _current_marks:
+                emit('marks_update', _current_marks)
+            if _current_toggles:
+                emit('toggles_update', _current_toggles)
+        else:
+            emit('host_denied', {})
+
+    @_socketio.on('select_answer')
+    def handle_select(data):
+        from flask import request as _req
+        if _req.remote_addr in _shadow_kicked_ips:
+            return
+        name = str(data.get('name', 'Anonymous')).strip()[:50] or 'Anonymous'
+        if name in _banned_names:
+            return
+        if not _current_question:
+            return
+        answer = str(data.get('answer', '')).strip()[:200]
+        _pending_selections[name] = answer
 
     @_socketio.on('submit_answer')
     def handle_answer(data):
@@ -2535,6 +6617,7 @@ def _build_app():
         if name in _banned_names:
             return  # silently discard (name ban)
         answer = str(data.get('answer', '')).strip()[:200]
+        _pending_selections.pop(name, None)  # no longer pending once submitted
         _answer_queue.put({'name': name, 'answer': answer})
         _submitted_answers.append({'name': name, 'answer': answer})
         _submitted_sids.add(_req.sid)
@@ -2544,12 +6627,29 @@ def _build_app():
         if _host_sids:
             for sid in list(_host_sids):
                 _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+        if _current_question and 'rank_slider' in _current_question:
+            try:
+                rk = int(answer)
+                _taken_ranks.add(rk)
+                _current_question['taken_ranks'] = list(_taken_ranks)
+                _socketio.emit('rank_taken', {'rank': rk})
+            except (ValueError, TypeError):
+                pass
+            _socketio.emit('rank_marks_update', {'answers': list(_submitted_answers)})
         if _current_question and 'year' in _current_question:
             try:
                 yr = int(answer)
                 _taken_years.add(yr)
                 _current_question['taken_years'] = list(_taken_years)
                 _socketio.emit('year_taken', {'year': yr})
+            except (ValueError, TypeError):
+                pass
+        if _current_question and 'drum' in _current_question:
+            try:
+                sc = float(answer)
+                _taken_scores.add(sc)
+                _current_question['taken_scores'] = list(_taken_scores)
+                _socketio.emit('score_taken', {'score': sc})
             except (ValueError, TypeError):
                 pass
 
@@ -2679,22 +6779,48 @@ def _build_app():
             return
         _emoji_queue.put((name, emoji))
 
+    @_socketio.on('host_action')
+    def handle_host_action(data):
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        action = str(data.get('action', '')).strip()
+        if not action or _host_action_callback is None:
+            return
+        data['_sid'] = _req.sid
+        try:
+            _host_action_callback(action, data)
+        except Exception:
+            pass
+
+    @_socketio.on('request_youtube_list')
+    def handle_request_youtube_list():
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        if _host_action_callback is not None:
+            try:
+                _host_action_callback('get_youtube_list', {'_sid': _req.sid})
+            except Exception:
+                pass
+
 
 def _broadcast_players_update():
     """Emit current player list (with submitted state) to all connected clients."""
     if not _socketio:
         return
     submitted_names = {a['name'] for a in _submitted_answers}
+    host_names = {name for sid, name in _connected_players.items() if sid in _host_sids}
     seen = set()
     players = []
     for name in _connected_players.values():
         if name not in seen:
             seen.add(name)
-            players.append({'name': name, 'submitted': name in submitted_names, 'kicked': False})
+            players.append({'name': name, 'submitted': name in submitted_names, 'kicked': False, 'host': name in host_names})
     for name in _shadow_kicked_players:
         if name not in seen:
             seen.add(name)
-            players.append({'name': name, 'submitted': name in submitted_names, 'kicked': True})
+            players.append({'name': name, 'submitted': name in submitted_names, 'kicked': True, 'host': False})
     _socketio.emit('players_update', {'players': players})
 
 

@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "17.0"  # Update this when making releases
+APP_VERSION = "17.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -404,10 +404,7 @@ def enable_drag_and_drop(widget, callback):
         def show_context_menu(event):
             menu = Menu(widget, tearoff=0)
             menu.add_command(label="📁 Add Files to Playlist...", command=show_file_dialog)
-            try:
-                menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                menu.grab_release()
+            popup_menu(menu, event.x_root, event.y_root)
         
         widget.bind("<Button-3>", show_context_menu)
         widget.bind("<Double-Button-1>", show_file_dialog)
@@ -703,12 +700,6 @@ title_top_info_txt = ""
 end_session_txt = ""
 inverted_colors = False
 inverted_positions = False
-bonus_pt_numeric_close = 1.0
-bonus_pt_numeric_exact = 2.0
-bonus_pt_choice = 1.0
-bonus_pt_multiple = 2.0
-bonus_pt_multiple_light = 1.0
-bonus_pt_tag = 1.0
 non_webm_opengl = False
 scale_main_ui = False
 auto_fetch_missing = False
@@ -722,7 +713,7 @@ OPENAI_API_KEY = ""
 SERPAPI_KEY = ""
 WEB_SERVER_ENABLED = False
 NGROK_DOMAIN = ""
-HOST_NAME = ""
+HOST_PASSWORD = ""
 NGROK_AVAILABLE = web_server.NGROK_AVAILABLE
 SCOREBOARD_AVAILABLE = os.path.isfile("scoreboard.exe") or os.path.isfile("scoreboard.py")
 LAUNCH_SCOREBOARD_ON_STARTUP = False
@@ -733,6 +724,7 @@ CENSORS_FOLDER = "censors"
 RULES_FOLDER = "rules"
 LIGHTNING_SETTINGS_FOLDER = "lightning_settings"
 INFINITE_SETTINGS_FOLDER = "infinite_settings"
+BONUS_SETTINGS_FOLDER = "bonus_settings"
 POPOUT_LAYOUTS_FOLDER = "popout_layouts"
 YOUTUBE_FOLDER = "youtube"
 PLAYLISTS_FOLDER = "playlists/"
@@ -778,14 +770,6 @@ SETTINGS_SCHEMA = [
     {"key": "OVERLAY_TEXT_COLOR",        "config_key": "text_color",  "label": "Text Color:",       "type": "color", "default": "white", "tooltip": "Text color displayed in overlay windows."},
     # Booleans
     {"key": "inverted_positions",    "config_key": "inverted_positions",    "label": "Inverted Positions:",      "type": "bool", "default": False, "tooltip": "Swaps alignment of some elements to adjust for scoreboard position. Enable if scoreboard is aligned right."},
-    # Bonus points group — 4 entries rendered as one row
-    {"key": "bonus_pt_numeric_close", "config_key": "bonus_pt_numeric_close", "label": "Bonus Points:", "type": "float", "default": 1.0, "width": 4, "min": 0, "group": "bonus_points_group", "tooltip": "Num Close: Points for closest guess in numeric rounds (year, score, rank, members)"},
-    {"key": "bonus_pt_numeric_exact", "config_key": "bonus_pt_numeric_exact", "label": None,            "type": "float", "default": 2.0, "width": 4, "min": 0, "group": "bonus_points_group", "tooltip": "Num Exact: Points for an exact match in numeric rounds"},
-    {"key": "bonus_pt_choice",        "config_key": "bonus_pt_choice",        "label": None,            "type": "float", "default": 1.0, "width": 4, "min": 0, "group": "bonus_points_group", "tooltip": "Choice: Points for a correct answer in studio, artist, or song rounds"},
-    {"key": "bonus_pt_multiple",      "config_key": "bonus_pt_multiple",      "label": None,            "type": "float", "default": 2.0, "width": 4, "min": 0, "group": "bonus_points_group", "tooltip": "Anime: Points for guessing the correct anime title in the anime multiple-choice round"},
-    {"key": "bonus_pt_multiple_light", "config_key": "bonus_pt_multiple_light", "label": None,            "type": "float", "default": 1.0, "width": 4, "min": 0, "group": "bonus_points_group", "tooltip": "Anime (Lightning): Points for anime multiple-choice during a lightning round"},
-    {"key": "bonus_pt_tag",           "config_key": "bonus_pt_tag",           "label": None,            "type": "float", "default": 1.0, "width": 4, "min": 0, "group": "bonus_points_group", "tooltip": "Tag: Points per correct tag selected in the tags round (penalty per wrong tag)"},
-
     {"key": "non_webm_opengl",       "config_key": "non_webm_opengl",       "label": "Non-WebM OpenGL:",          "type": "bool", "default": False, "tooltip": "Uses OpenGL for non-WebM video playback (may improve performance)."},
     {"key": "scale_main_ui",         "config_key": "scale_main_ui",         "label": "Scale Main UI:",            "type": "bool", "default": False, "tooltip": "Scales the main UI based on screen resolution. Requires restart.", "after_save": "restart_warning"},
     {"key": "auto_fetch_missing",    "config_key": "auto_fetch_missing",    "label": "Auto Fetch Missing:",       "type": "bool", "default": False, "tooltip": "Automatically fetches metadata if it's not found while playing themes."},
@@ -806,7 +790,7 @@ SETTINGS_SCHEMA = [
     # Web server
     {"key": "WEB_SERVER_ENABLED", "config_key": "web_server_enabled", "label": "Auto-start Web Server:", "type": "bool", "default": False, "requires_ngrok": True, "tooltip": "Automatically start the web answer server when the app launches. Can also be started/stopped manually from the Bonus Questions menu."},
     {"key": "NGROK_DOMAIN",       "config_key": "ngrok_domain",       "label": "Ngrok Domain:",        "type": "str",  "default": "",    "width": 30, "requires_ngrok": True, "tooltip": "Your ngrok static domain (e.g. your-name.ngrok-free.app). Exposes the web server publicly. Requires ngrok.exe on PATH."},
-    {"key": "HOST_NAME",          "config_key": "host_name",          "label": "Host Name:",          "type": "str",  "default": "",    "width": 30, "requires_ngrok": True, "tooltip": "If set, a player joining with this exact name will see a live answer panel showing all submissions. Leave blank to disable."},
+    {"key": "HOST_PASSWORD",      "config_key": "host_password",      "label": "Host Password:",      "type": "password",  "default": "",    "width": 30, "requires_ngrok": True, "tooltip": "If set, entering this password on the join screen grants host view (live answer panel + metadata). Leave blank to disable."},
 ]
 
 DISPLAY_SCREEN_WIDTH, DISPLAY_SCREEN_HEIGHT = pyautogui.size()
@@ -2516,6 +2500,117 @@ def reset_metadata(filename = None):
             left_column.window_create(tk.END, window=tk.Button(left_column, text="[YT]", borderwidth=0, pady=0, command=lambda: webbrowser.open(currently_playing.get("data").get("url")), bg="black", fg="white"))
     left_column.insert(tk.END, "\n\n", "blank")
  
+def _build_web_series_themes(data, playing_filename):
+    """Serialize series theme information for the web server metadata push."""
+    if not data:
+        return []
+    playing_slug = data.get("slug")
+
+    def _serialize_anime(anime_dict, anime_id, is_playing_anime):
+        import re as _re
+        mal_key = str(anime_id)
+        theme_list = list(anime_dict.get("songs", []))
+
+        def _slug_sort_key(s):
+            m = _re.match(r"([A-Z]+)(\d+)(.*)", s.get("slug") or "")
+            if m:
+                pre, num, var = m.groups()
+                return (pre, int(num), bool(var))
+            return ("ZZZ", 999999, True)
+
+        # Include local-only slugs that aren't in the fetched songs list
+        known_slugs = {t.get("slug") for t in theme_list}
+        fm_entry = file_metadata.get(mal_key, {})
+        for slug_key in fm_entry.get("themes", {}):
+            if slug_key not in known_slugs:
+                s = slug_key[:2].upper()
+                t_type = "OP" if s == "OP" else ("ED" if s == "ED" else "OTHER")
+                theme_list.append({"type": t_type, "slug": slug_key, "title": None,
+                                   "artist": [], "episodes": None, "versions": []})
+
+        theme_list.sort(key=_slug_sort_key)
+
+        sections_map = {}
+        for theme in theme_list:
+            t = theme.get("type", "OTHER")
+            sections_map.setdefault(t, []).append(theme)
+
+        sections_out = []
+        for type_str, type_themes in sections_map.items():
+            header = "OPENINGS" if type_str == "OP" else ("ENDINGS" if type_str == "ED" else f"{type_str}S")
+            themes_out = []
+            for theme in type_themes:
+                theme_slug = theme.get("slug")
+                is_playing_theme = is_playing_anime and (theme_slug == playing_slug)
+
+                fn = get_theme_filename(mal_key, theme_slug)
+                overall_suffix = overall_theme_num_display(fn) if fn else ""
+
+                versions = theme.get("versions", [])
+                serialized_versions = []
+                if versions:
+                    for v in versions:
+                        v_num = v.get("version")
+                        if len(versions) == 1:
+                            v_fn = get_theme_filename(mal_key, theme_slug, v_num)
+                        else:
+                            v_fn = get_theme_filename(mal_key, theme_slug, v_num, need_version=True)
+                            if v_num == 1 and not v_fn:
+                                v_fn = get_theme_filename(mal_key, theme_slug, None, need_version=True)
+
+                        is_playing_ver = False
+                        if is_playing_theme and v_fn:
+                            try:
+                                actual_v_num = v_num if v_num is not None else 1
+                                is_playing_ver = (int(get_version_from_filename(playing_filename)) == actual_v_num)
+                            except (TypeError, ValueError):
+                                is_playing_ver = (v_fn == playing_filename)
+
+                        serialized_versions.append({
+                            "version": v_num,
+                            "episodes": v.get("episodes"),
+                            "flags": _get_version_flags(v),
+                            "file_props": get_file_props_label(v_fn) if v_fn else "",
+                            "is_playing": bool(is_playing_ver),
+                        })
+
+                _th_artists = theme.get("artist") or []
+                themes_out.append({
+                    "slug": theme_slug,
+                    "overall_suffix": overall_suffix,
+                    "title": theme.get("title"),
+                    "artists": _th_artists,
+                    "artists_str": get_artists_string(_th_artists, total=True),
+                    "is_playing": bool(is_playing_theme),
+                    "special": bool(theme.get("special")),
+                    "versions": serialized_versions,
+                    "flags": _get_version_flags(theme) if not versions else [],
+                    "episodes": theme.get("episodes") if not versions else None,
+                })
+            sections_out.append({"type": type_str, "header": header, "themes": themes_out})
+
+        _section_order = {"OP": 0, "ED": 1}
+        sections_out.sort(key=lambda s: _section_order.get(s["type"], 2))
+
+        return {
+            "anime_id": mal_key,
+            "title": get_display_title(anime_dict),
+            "format": get_format(anime_dict),
+            "season": anime_dict.get("season"),
+            "is_playing_anime": bool(is_playing_anime),
+            "sections": sections_out,
+        }
+
+    playing_mal = str(data.get("mal"))
+    if not data.get("series"):
+        return [_serialize_anime(data, playing_mal, True)]
+    all_series = get_all_theme_from_series(data)
+    if len(all_series) <= 1:
+        return [_serialize_anime(data, playing_mal, True)]
+    return [_serialize_anime(anime, str(aid), str(aid) == playing_mal)
+            for aid, anime in all_series]
+
+
 def update_metadata_queue(index):
     """Function to update metadata display asynchronously"""
     global updating_metadata
@@ -2651,6 +2746,127 @@ def update_metadata():
 
             if popout_currently_playing:
                 update_popout_currently_playling(data)
+            if web_server.is_running():
+                _is_game = is_game(data) if data else False
+                _tags = (data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])) if data else []
+                _anilist_score_str = None
+                _anilist_popularity_val = None
+                _anilist_popularity_ranks = []
+                _anilist_tags = []
+                _anilist_characters = []
+                if data:
+                    _anilist_id = data.get("anilist")
+                    if _anilist_id and str(_anilist_id) in anilist_metadata:
+                        _al = anilist_metadata[str(_anilist_id)]
+                        _al_score = _al.get("score")
+                        if _al_score:
+                            _rank_parts = []
+                            if _al.get("score_rank_season"): _rank_parts.append(f"#{_al['score_rank_season']} Season")
+                            if _al.get("score_rank_year"): _rank_parts.append(f"#{_al['score_rank_year']} Year")
+                            if _al.get("score_rank_all"): _rank_parts.append(f"#{_al['score_rank_all']} All-Time")
+                            _anilist_score_str = f"{_al_score}%" + (f" ({' / '.join(_rank_parts)})" if _rank_parts else "")
+                        _al_pop = _al.get("popularity")
+                        if _al_pop:
+                            _anilist_popularity_val = _al_pop
+                            if _al.get("popularity_rank_season"): _anilist_popularity_ranks.append(f"#{_al['popularity_rank_season']} Season")
+                            if _al.get("popularity_rank_year"): _anilist_popularity_ranks.append(f"#{_al['popularity_rank_year']} Year")
+                            if _al.get("popularity_rank_all"): _anilist_popularity_ranks.append(f"#{_al['popularity_rank_all']} All-Time")
+                        _anilist_tags = _al.get("tags") or []
+                        _anilist_characters = [
+                            {
+                                "name": c.get("name", ""),
+                                "role": c.get("role", ""),
+                                "gender": c.get("gender", "") or "",
+                                "age": c.get("age", "") or "",
+                                "vas": c.get("voice_actors", []),
+                                "url": c.get("image", "") or "",
+                                "desc": re.sub(r'<[^>]+>', '', c.get("description", "") or "").replace('&quot;', '"').replace('&amp;', '&').strip(),
+                            }
+                            for c in (_al.get("characters") or [])
+                        ]
+                _web_meta = {}
+                if data:
+                    _web_meta = {
+                        "title": data.get("title"),
+                        "eng_title": data.get("eng_title"),
+                        "synonyms": data.get("synonyms") or [],
+                        "is_game": bool(_is_game),
+                        "aired": data.get("aired"),
+                        "season": data.get("season"),
+                        "release": data.get("release"),
+                        "score": data.get("score"),
+                        "rank": data.get("rank"),
+                        "members": data.get("members"),
+                        "popularity": data.get("popularity"),
+                        "reviews": data.get("reviews"),
+                        "platforms": data.get("platforms") or [],
+                        "episodes": data.get("episodes"),
+                        "format": get_format(data),
+                        "source": data.get("source"),
+                        "tags": _tags,
+                        "studios": data.get("studios") or [],
+                        "series": data.get("series"),
+                        "anilist_score": _anilist_score_str,
+                        "anilist_popularity": _anilist_popularity_val,
+                        "anilist_popularity_ranks": _anilist_popularity_ranks,
+                        "synopsis": data.get("synopsis"),
+                        "episode_info": [[e[0], e[1]] for e in (data.get("episode_info") or [])],
+                        "anidb_tags": [[t[0], t[1]] for t in sorted((data.get("tags") or []), key=lambda x: (-x[1], x[0].lower()))],
+                        "anidb_characters": [{"role": c[0], "name": c[1], "url": ("https://cdn-eu.anidb.net/images/main/" + c[2]) if len(c) > 2 and c[2] else "", "gender": c[3] if len(c) > 3 else "", "desc": c[4] if len(c) > 4 else ""} for c in (data.get("characters") or [])],
+                        "anilist_tags": _anilist_tags,
+                        "anilist_characters": _anilist_characters,
+                        "mal_id": data.get("mal"),
+                        "anidb_id": data.get("anidb"),
+                        "anilist_id": data.get("anilist"),
+                        "animethemes_slug": data.get("animethemes_slug"),
+                    }
+                if playlist.get("infinite"):
+                    _file_count = sum(1 for item in playlist.get("playlist", []) if item == filename)
+                    _themes_ago = ""
+                    if _file_count > 1:
+                        _prev_indices = [i for i, item in enumerate(playlist.get("playlist", [])) if item == filename and i < playlist.get("current_index", 0)]
+                        if _prev_indices:
+                            _file_last_index = max(_prev_indices)
+                            _themes_ago = f" ({playlist.get('current_index', 0) - _file_last_index} Themes Ago)"
+                    _web_meta["file_count"] = _file_count
+                    _web_meta["themes_ago"] = _themes_ago
+                if data and not _is_game:
+                    _slug = data.get("slug")
+                    _songs = data.get("songs") or []
+                    _song = next((s for s in _songs if s.get("slug") == _slug), None)
+                    _overall_suffix = overall_theme_num_display(filename) if filename else ""
+                    _v_num_str = get_version_from_filename(filename) if filename else None
+                    _v_num = int(_v_num_str) if _v_num_str and str(_v_num_str).isdigit() else None
+                    _v_episodes = None
+                    _v_flags = []
+                    if _song:
+                        _versions = _song.get("versions") or []
+                        if _versions:
+                            _ver = next((v for v in _versions if v.get("version") == _v_num), None)
+                            if _ver is None and _v_num in (None, 1) and len(_versions) == 1:
+                                _ver = _versions[0]
+                            if _ver:
+                                _v_episodes = _ver.get("episodes")
+                                _v_flags = _get_version_flags(_ver)
+                        if not _v_episodes:
+                            _v_episodes = _song.get("episodes")
+                        if not _v_flags:
+                            _v_flags = _get_version_flags(_song)
+                    _ct_artists = (_song.get("artist") or []) if _song else []
+                    _web_meta["current_theme"] = {
+                        "slug": _slug,
+                        "overall_suffix": _overall_suffix,
+                        "title": _song.get("title") if _song else None,
+                        "artists": _ct_artists,
+                        "artists_str": get_artists_string(_ct_artists, total=True),
+                        "version": _v_num,
+                        "episodes": _v_episodes,
+                        "flags": _v_flags,
+                        "file_props": get_file_props_label(filename) if filename else "",
+                    }
+                _web_meta["series_themes"] = _build_web_series_themes(data, filename)
+                web_server.push_metadata(_web_meta)
+                _push_web_marks(filename)
     updating_metadata = False
 
 def update_popout_currently_playling(data, clear=False):
@@ -3374,6 +3590,74 @@ def up_next_text():
     if list_loaded:
         # Small delay to ensure text widget is fully updated
         root.after(10, refresh_current_list)
+    if web_server.is_running():
+        try:
+            _push_web_up_next()
+        except Exception:
+            pass
+
+
+def _push_web_up_next():
+    """Compute up-next data and push to web host clients."""
+    fixed_data = fixed_lightning_round_playlist_data or fixed_lightning_queue
+    fixed_rounds = fixed_data.get("rounds", []) if fixed_data else []
+    fixed_current_index = fixed_data.get("current_index", -1) if fixed_data else -1
+    fixed_coming_up = fixed_data and (fixed_current_index + 1) < len(fixed_rounds)
+
+    has_next = youtube_queue or search_queue or fixed_coming_up or playlist["current_index"] + 1 < len(playlist["playlist"])
+    if not has_next:
+        web_server.push_up_next({"end_of_playlist": True})
+        return
+
+    mode_label = ""
+    try:
+        if youtube_queue:
+            playlist_entry = youtube_queue.get("filename")
+        elif search_queue:
+            playlist_entry = search_queue
+        elif fixed_coming_up:
+            next_round = fixed_rounds[fixed_current_index + 1]
+            playlist_entry = next_round.get("theme")
+            mode_label = f"[{next_round.get('type', '').upper()}]"
+        else:
+            playlist_entry = playlist["playlist"][playlist["current_index"] + 1]
+
+        next_filename = get_clean_filename(playlist_entry)
+
+        if youtube_queue or is_youtube_file(next_filename):
+            yt_data = youtube_queue or get_youtube_metadata_by_filename(next_filename) or {}
+            yt_title = get_youtube_display_title(yt_data) or next_filename
+            yt_duration = format_seconds(get_youtube_duration(yt_data)) if yt_data else ""
+            detail = f"Duration: {yt_duration}" if yt_duration else ""
+            web_server.push_up_next({"title": yt_title, "detail": detail, "mode_label": mode_label})
+        else:
+            d = get_metadata(next_filename)
+            title = get_display_title(d)
+            slug = format_slug(d.get("slug", ""))
+            version_num = d.get("version")
+            if version_num and version_num not in ["1", "null"]:
+                version_num = f"v{version_num}"
+            else:
+                version_num = ""
+            if lightning_queue and lightning_queue[0] == next_filename and variety_light_mode_enabled:
+                mode_label = mode_label or f"[{lightning_queue[1].upper()}]"
+            members = f"{d.get('members') or 0:,}"
+            popularity = f"#{d.get('popularity')}" if d.get('popularity') else ""
+            season = d.get("season", "")
+            detail_parts = [f"{slug}{version_num}"]
+            if members or popularity:
+                detail_parts.append(f"{members} ({popularity})" if popularity else members)
+            if season:
+                detail_parts.append(season)
+            web_server.push_up_next({
+                "title": title,
+                "marks": get_file_marks(next_filename),
+                "detail": " | ".join(detail_parts),
+                "mode_label": mode_label,
+                "reroll": is_reroll_valid(),
+            })
+    except Exception:
+        web_server.push_up_next({})
 
 reroll_button = None
 def update_up_next_display(widget, clear=False):
@@ -6507,6 +6791,7 @@ def save_config():
                            lightning_mode_settings_default, update_fn=update_lightning_mode_settings)
     _save_settings_presets(INFINITE_SETTINGS_FOLDER, saved_infinite_settings,
                            INFINITE_SETTINGS_DEFAULT, convert_inf=True)
+    _save_settings_presets(BONUS_SETTINGS_FOLDER, saved_bonus_settings, BONUS_SETTINGS_DEFAULT)
 
     config = {
         "host": host,
@@ -6516,6 +6801,8 @@ def save_config():
         "lightning_mode_settings": lightning_diff,
         "selected_light_mode_settings": selected_light_mode_settings,
         "selected_infinite_settings": selected_infinite_settings,
+        "bonus_settings": compute_settings_diff(BONUS_SETTINGS_DEFAULT, bonus_settings) or {},
+        "selected_bonus_settings": selected_bonus_settings,
         "popout_layout": popout_layout if popout_layout is not None else [],
         "metadata_last_updated": metadata_last_updated,
         "censors_last_updated": censors_last_updated,
@@ -6540,11 +6827,12 @@ def load_config():
     global metadata_last_updated, censors_last_updated, OVERLAY_COLOR_OPTIONS
     global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
+    global bonus_settings, saved_bonus_settings, selected_bonus_settings
     global INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global stream_instance, ost_stream_instance
     global popout_layout, popout_columns, shortcuts_config
     # Schema settings (non_webm_opengl, OPENAI_API_KEY, etc.) used in post-processing below
-    global non_webm_opengl, OPENAI_API_KEY, selected_rules_file, bonus_pt_numeric_close, bonus_pt_numeric_exact, bonus_pt_choice, bonus_pt_multiple, bonus_pt_multiple_light, bonus_pt_tag, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, volume_level
+    global non_webm_opengl, OPENAI_API_KEY, selected_rules_file, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, volume_level
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -6571,6 +6859,16 @@ def load_config():
 
             selected_infinite_settings = config.get("selected_infinite_settings", "")
             saved_infinite_settings = convert_infinity_markers(_load_settings_presets(INFINITE_SETTINGS_FOLDER))
+
+            saved_bonus_settings = _load_settings_presets(BONUS_SETTINGS_FOLDER)
+            for _bn, _bd in saved_bonus_settings.items():
+                saved_bonus_settings[_bn] = sync_with_default(copy.deepcopy(_bd), BONUS_SETTINGS_DEFAULT)
+            bonus_settings = sync_with_default(
+                copy.deepcopy(config.get("bonus_settings", {})), BONUS_SETTINGS_DEFAULT
+            )
+            selected_bonus_settings = config.get("selected_bonus_settings", "")
+            if selected_bonus_settings and selected_bonus_settings in saved_bonus_settings:
+                bonus_settings = copy.deepcopy(saved_bonus_settings[selected_bonus_settings])
             
             inverted_colors = config.get("inverted_colors", False)
             stream_params = [
@@ -6919,26 +7217,6 @@ def show_settings_popup():
                 ToolTip(entry, sg["tooltip"])
             _setting_vars[sg["key"]] = var
 
-    def _render_bonus_points_group():
-        """Render the two bonus point settings as a single consolidated row."""
-        group = [s for s in SETTINGS_SCHEMA if s.get("group") == "bonus_points_group"]
-        frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
-        frame.pack(fill="x", pady=5)
-        lbl = tk.Label(frame, text=group[0]["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-        lbl.pack(side="left")
-        ToolTip(lbl, "Bonus round point values. Hover each field for details.")
-        inputs = tk.Frame(frame, bg=BACKGROUND_COLOR)
-        inputs.pack(side="left", padx=(5, 0))
-        for sg in group:
-            var = tk.StringVar(value=str(globals()[sg["key"]]))
-            entry = tk.Entry(inputs, textvariable=var, bg="black", fg="white",
-                             insertbackground="white",
-                             width=sg.get("width", 5), justify="center")
-            entry.pack(side="left", padx=(0, 3))
-            if sg.get("tooltip"):
-                ToolTip(entry, sg["tooltip"])
-            _setting_vars[sg["key"]] = var
-
     def _render_color_row(s):
         """Render a color dropdown row with add/delete buttons."""
         frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)
@@ -6976,7 +7254,6 @@ def show_settings_popup():
 
     # Render all rows from schema
     _skip_group_done = False
-    _bonus_points_group_done = False
     for s in SETTINGS_SCHEMA:
         if s.get("requires_ngrok") and not NGROK_AVAILABLE:
             continue
@@ -6986,11 +7263,6 @@ def show_settings_popup():
             if not _skip_group_done:
                 _render_skip_group()
                 _skip_group_done = True
-            continue
-        if s.get("group") == "bonus_points_group":
-            if not _bonus_points_group_done:
-                _render_bonus_points_group()
-                _bonus_points_group_done = True
             continue
         t = s["type"]
         if t == "color":
@@ -10721,6 +10993,9 @@ saved_lightning_mode_settings = {}
 selected_settings = ""
 saved_infinite_settings = {}
 selected_infinite_settings = ""
+bonus_settings = {}
+saved_bonus_settings = {}
+selected_bonus_settings = ""
 generic_settings_editor_window = None
 
 def open_generic_settings_editor(
@@ -11095,6 +11370,29 @@ def open_infinite_settings_editor():
         default_settings_dict=INFINITE_SETTINGS_DEFAULT,
         saved_settings_dict=saved_infinite_settings,
         selected_setting_name=selected_infinite_settings,
+        on_apply_callback=on_apply,
+        on_save_config_callback=save_config
+    )
+
+def open_bonus_settings_editor():
+    """Open bonus round settings editor."""
+    global selected_bonus_settings, bonus_settings
+
+    if not bonus_settings:
+        bonus_settings = copy.deepcopy(BONUS_SETTINGS_DEFAULT)
+    bonus_settings = sync_with_default(copy.deepcopy(bonus_settings), BONUS_SETTINGS_DEFAULT)
+
+    def on_apply(new_settings, selected_name):
+        global selected_bonus_settings, bonus_settings
+        selected_bonus_settings = selected_name
+        bonus_settings = sync_with_default(copy.deepcopy(new_settings), BONUS_SETTINGS_DEFAULT)
+
+    open_generic_settings_editor(
+        title="Bonus Round Settings Editor",
+        current_settings_dict=bonus_settings,
+        default_settings_dict=BONUS_SETTINGS_DEFAULT,
+        saved_settings_dict=saved_bonus_settings,
+        selected_setting_name=selected_bonus_settings,
         on_apply_callback=on_apply,
         on_save_config_callback=save_config
     )
@@ -20762,43 +21060,40 @@ def toggle_title_popup(show, info_type=None):
     """Creates or destroys the title popup at the bottom middle of the screen."""
     global title_window, title_row_label, top_row_label, bottom_row_label, info_button
     global light_mode, title_info_only, pre_censor, artist_info_display, studio_info_display, season_info_display, year_info_display
-    title_info_only = info_type == "title_only"
-    artist_info_display = info_type == "artist"
-    studio_info_display = info_type == "studio"
-    season_info_display = info_type == "season"
-    year_info_display = info_type == "year"
-    if not is_title_window_up() and not show:
+    
+    if show:
+        title_info_only = info_type == "title_only"
+        artist_info_display = info_type == "artist"
+        studio_info_display = info_type == "studio"
+        season_info_display = info_type == "season"
+        year_info_display = info_type == "year"
+        update_popout_title_button_text(show)
+        if not title_info_only:
+            web_server.set_info_public(True)
+    else:
         title_info_only = False
         artist_info_display = False
         studio_info_display = False
         season_info_display = False
         year_info_display = False
-        return
-    if title_window:
-        screen_width = title_window.winfo_screenwidth()
-        screen_height = title_window.winfo_screenheight()
-        window_width = title_window.winfo_reqwidth()
-        window_height = title_window.winfo_reqheight()
-        if not show:
-            title_info_only = False
-            artist_info_display = False
-            studio_info_display = False
-            season_info_display = False
-            year_info_display = False
+        update_popout_title_button_text(show)
+        web_server.set_info_public(False)
+        if title_window:
+            screen_width = title_window.winfo_screenwidth()
+            screen_height = title_window.winfo_screenheight()
+            window_width = title_window.winfo_reqwidth()
+            window_height = title_window.winfo_reqheight()
             animate_window(title_window, (screen_width - window_width) // 2, screen_height, fade="out")
-    
-    # Update popout button text
-    update_popout_title_button_text(show)
-
-    if not show:
         return
 
     if guessing_extra:
         guess_extra(guessing_extra)
-
+    
     if black_overlay:
         blind()
+    
     pre_censor = False
+    
     if (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
         toggle_peek()
 
@@ -21196,6 +21491,21 @@ def prompt_title_top_info_text(event=None):
 #         *BONUS QUESTIONS
 # =========================================
 
+BONUS_SETTINGS_DEFAULT = {
+    "year":       {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
+    "members":    {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
+    "popularity": {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
+    "score":      {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
+    "multiple":   {"points": 2.0, "lightning_points": 1.0, "included_in_random": True},
+    "studio":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
+    "artist":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
+    "song":       {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
+    "tags":       {"points_per_tag": 1.0, "lightning_points_per_tag": 1.0, "included_in_random": True},
+    "characters": {"included_in_random": False},
+    "freeform":   {"points": 1.0, "lightning_points": 1.0, "included_in_random": False},
+    "random":     {"no_repeat": True, "cycle_all": True},
+}
+
 guessing_extra = None
 showing_bonus_answer = False
 def _fmt_pt(v):
@@ -21208,6 +21518,15 @@ def guess_extra(extra = None):
     ROUND_PREFIX = "BONUS?: "
     def reset_bonus():
         global guessing_extra, showing_bonus_answer
+        # Flush any silent (not formally submitted) selections into the answer queue
+        # and _pending_bonus_answers BEFORE scoring, so they count.
+        web_server.flush_pending_selections()
+        for _entry in web_server.get_answers():
+            print(f"[WEB ANSWER] {_entry['name']}: {_entry['answer']}")
+            _already = {e['name'] for e in _pending_bonus_answers}
+            if guessing_extra and _entry['name'] not in _already:
+                _pending_bonus_answers.append(_entry)
+                send_scoreboard_command(f"[SUBMITTED]{_entry['name']}")
         _evaluate_and_submit_bonus_answers()
         guessing_extra = None
         showing_bonus_answer = False
@@ -21233,11 +21552,14 @@ def guess_extra(extra = None):
             guessing_extra = extra
             _pending_bonus_answers.clear()
         if guessing_extra == "year":
+            _bs_year = bonus_settings.get("year", BONUS_SETTINGS_DEFAULT["year"])
+            _bs_pt_close = _bs_year["lightning_points_close" if light_round_started else "points_close"]
+            _bs_pt_exact = _bs_year["lightning_points_exact" if light_round_started else "points_exact"]
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Year This Anime Aired", 
                                 ("Only 1 guess per person, no repeats.\n"
-                                f"+{_fmt_pt(bonus_pt_numeric_close)} for closest guess. "
-                                f"+{_fmt_pt(bonus_pt_numeric_exact)} if exact year."),
+                                f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
+                                f"+{_fmt_pt(_bs_pt_exact)} if exact year."),
                                 up_next=False)
             web_server.push_question("Guess The Year This Anime Aired",
                                      "Only 1 guess per person, no repeats.",
@@ -21257,56 +21579,58 @@ def guess_extra(extra = None):
                         _year = int(_tail)
             _bonus_correct_answer = _year
         elif guessing_extra == "members":
+            _bs_members = bonus_settings.get("members", BONUS_SETTINGS_DEFAULT["members"])
+            _bs_pt_close = _bs_members["lightning_points_close" if light_round_started else "points_close"]
+            _bs_pt_exact = _bs_members["lightning_points_exact" if light_round_started else "points_exact"]
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The # Of Members This Anime Has", 
                                 ("Members are users who added the anime to their list on MyAnimeList.\n"
                                  "EG: Death Note has over 4 million. Only 1 guess per person, no repeats.\n"
-                                f"+{_fmt_pt(bonus_pt_numeric_close)} for closest guess. "
-                                f"+{_fmt_pt(bonus_pt_numeric_exact)} if your guess matches the first 2 digits (e.g. 115k counts for 110k)."),
+                                f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
+                                f"+{_fmt_pt(_bs_pt_exact)} if your guess matches the first 2 digits (e.g. 115k counts for 110k)."),
                                 up_next=False)
             web_server.push_question("Guess The # Of Members",
                                      "How many users added this anime to their list on MyAnimeList?",
-                                     stepper={"initial": 500000, "min": 0, "max": 10000000,
+                                     stepper={"initial": 0, "min": 0, "max": 10000000,
                                               "steps": [
-                                                  {"label": "-1 000 000", "delta": -1000000},
-                                                  {"label": "-100 000",   "delta": -100000},
-                                                  {"label": "-10 000",    "delta": -10000},
-                                                  {"label": "+10 000",    "delta": 10000},
+                                                  {"label": "CLEAR", "delta": -100000000},
+                                                  {"label": "+5 000",   "delta": 5000},
+                                                  {"label": "+10 000",    "delta": +10000},
+                                                  {"label": "+50 000",    "delta": 50000},
                                                   {"label": "+100 000",   "delta": 100000},
-                                                  {"label": "+1 000 000", "delta": 1000000},
+                                                  {"label": "+500 000", "delta": 500000},
                                               ]})
             _bonus_correct_answer = (currently_playing.get("data") or {}).get("members")
         elif guessing_extra == "popularity":
+            _bs_pop = bonus_settings.get("popularity", BONUS_SETTINGS_DEFAULT["popularity"])
+            _bs_pt_close = _bs_pop["lightning_points_close" if light_round_started else "points_close"]
+            _bs_pt_exact = _bs_pop["lightning_points_exact" if light_round_started else "points_exact"]
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Popularity Rank This Anime Has", 
                                 ("The rank is based on users who added the anime to their list on MyAnimeList.\n"
-                                 f"Ranks range from {get_lowest_parameter('popularity')} to {get_highest_parameter('popularity')}.\n"
-                                f"+{_fmt_pt(bonus_pt_numeric_close)} for closest guess. "
-                                f"+{_fmt_pt(bonus_pt_numeric_exact)} if exact rank."),
+                                 f"Ranks range from {get_lowest_parameter('popularity')} to {get_highest_parameter('popularity')}. "
+                                 "Only 1 guess per person, no repeats.\n"
+                                f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
+                                f"+{_fmt_pt(_bs_pt_exact)} if exact rank."),
                                 up_next=False)
             web_server.push_question("Guess The Popularity Rank",
-                                     f"Ranks range from {get_lowest_parameter('popularity')} to {get_highest_parameter('popularity')}.",
-                                     stepper={"initial": 1000,
-                                              "min": 1, "max": get_highest_parameter('popularity') or 9999,
-                                              "steps": [
-                                                  {"label": "-1000", "delta": -1000},
-                                                  {"label": "-100",  "delta": -100},
-                                                  {"label": "-10",   "delta": -10},
-                                                  {"label": "+10",   "delta": 10},
-                                                  {"label": "+100",  "delta": 100},
-                                                  {"label": "+1000", "delta": 1000},
-                                              ]})
+                                     f"Only 1 guess per person, no repeats.",
+                                     rank_slider={"initial": 1000,
+                                              "min": 1, "max": get_highest_parameter('popularity') or 9999})
             _bonus_correct_answer = (currently_playing.get("data") or {}).get("popularity")
         elif guessing_extra == "score":
+            _bs_score = bonus_settings.get("score", BONUS_SETTINGS_DEFAULT["score"])
+            _bs_pt_close = _bs_score["lightning_points_close" if light_round_started else "points_close"]
+            _bs_pt_exact = _bs_score["lightning_points_exact" if light_round_started else "points_exact"]
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Score This Anime Has", 
                                 ("Scores taken from MyAnimeList and range from 0.0 to 10.0.\n"
                                  "Only 1 guess per person, no repeats.\n"
-                                f"+{_fmt_pt(bonus_pt_numeric_close)} for closest guess. "
-                                f"+{_fmt_pt(bonus_pt_numeric_exact)} if exact score."),
+                                f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
+                                f"+{_fmt_pt(_bs_pt_exact)} if exact score."),
                                 up_next=False)
-            web_server.push_question("Guess The Score (0.0 - 10.0)",
-                                     "What is this anime's score on MyAnimeList?",
+            web_server.push_question("Guess The MyAnimeList Score",
+                                     "Only 1 guess per person, no repeats.",
                                      drum={"min": 0.0, "max": 10.0, "step": 0.1, "decimals": 1, "initial": 7.0, "reverse": True})
             _bonus_correct_answer = (currently_playing.get("data") or {}).get("score")
         elif guessing_extra == "tags":
@@ -21319,21 +21643,24 @@ def guess_extra(extra = None):
                 tags_label = str(num_correct) + " Tag"
             random_tags = get_random_tags()
             tags_array = split_array(random_tags)
+            _bs_tags = bonus_settings.get("tags", BONUS_SETTINGS_DEFAULT["tags"])
+            _bs_pt_tag = _bs_tags["lightning_points_per_tag" if light_round_started else "points_per_tag"]
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The " + tags_label + " This Anime Has", 
-                                (f"Pick up to {num_correct} tags. +{_fmt_pt(bonus_pt_tag)} per correct, -{_fmt_pt(bonus_pt_tag)} per wrong.\n\n"
+                                (f"Pick up to {num_correct} tags. +{_fmt_pt(_bs_pt_tag)} per correct, -{_fmt_pt(_bs_pt_tag)} per wrong.\n\n"
                                 "[" + "] [".join(tags_array[0]) + "]\n[" + "] [".join(tags_array[1])) + "]",
                                 up_next=False)
             web_server.push_question(
                 f"Guess The {tags_label} This Anime Has",
-                f"Pick up to {num_correct} tags. +{_fmt_pt(bonus_pt_tag)} per correct, -{_fmt_pt(bonus_pt_tag)} per wrong.",
+                f"Pick up to {num_correct} tags. +{_fmt_pt(_bs_pt_tag)} per correct, -{_fmt_pt(_bs_pt_tag)} per wrong.",
                 tags=random_tags,
                 tags_max=num_correct)
             _bonus_correct_answer = correct_tags
         elif guessing_extra == "multiple":
             data = currently_playing.get("data")
             titles = get_random_titles()
-            _multiple_pt = bonus_pt_multiple_light if light_round_started else bonus_pt_multiple
+            _bs_multiple = bonus_settings.get("multiple", BONUS_SETTINGS_DEFAULT["multiple"])
+            _multiple_pt = _bs_multiple["lightning_points" if light_round_started else "points"]
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The Anime", 
                                 (f"Only one guess. +{_fmt_pt(_multiple_pt)} if correct.\n\n"
@@ -21344,10 +21671,10 @@ def guess_extra(extra = None):
                                      choices=titles)
             _bonus_correct_answer = get_display_title(currently_playing.get("data") or {})
         elif guessing_extra == "characters":
+            _bs_chars = bonus_settings.get("characters", BONUS_SETTINGS_DEFAULT["characters"])
             toggle_coming_up_popup(True, 
                                 ROUND_PREFIX + "Guess The 2 Characters From This Anime", 
-                                ("2 out of 6 characters are from this anime.\n"
-                                f"+{_fmt_pt(bonus_pt_choice)} per correct guess."),
+                                "2 out of 6 characters are from this anime.",
                                 up_next=False)
             bonus_chars, bonus_correct_indices = pick_bonus_characters()
             
@@ -21379,10 +21706,12 @@ def guess_extra(extra = None):
             choices = [correct_studio] + distractors
             random.shuffle(choices)
 
+            _bs_studio = bonus_settings.get("studio", BONUS_SETTINGS_DEFAULT["studio"])
+            _bs_pt_studio = _bs_studio["lightning_points" if light_round_started else "points"]
             toggle_coming_up_popup(True,
                 ROUND_PREFIX + "Guess The Studio That Made This Anime",
                 (f"Which studio made this anime?\n"
-                f"Only one guess. +{_fmt_pt(bonus_pt_choice)} if correct.\n\n"
+                f"Only one guess. +{_fmt_pt(_bs_pt_studio)} if correct.\n\n"
                 f"[A] {choices[0]}\n[B] {choices[1]}\n[C] {choices[2]}\n[D] {choices[3]}"),
                 up_next=False)
             web_server.push_question("Guess The Studio", "Which studio made this anime?",
@@ -21432,10 +21761,12 @@ def guess_extra(extra = None):
             choices = [correct_artist] + distractors
             random.shuffle(choices)
 
+            _bs_artist = bonus_settings.get("artist", BONUS_SETTINGS_DEFAULT["artist"])
+            _bs_pt_artist = _bs_artist["lightning_points" if light_round_started else "points"]
             toggle_coming_up_popup(True,
                 ROUND_PREFIX + "Guess The Artist Who Performed This Song",
                 (f"Which artist performed the song for this anime?\n"
-                f"Only one guess. +{_fmt_pt(bonus_pt_choice)} if correct.\n\n"
+                f"Only one guess. +{_fmt_pt(_bs_pt_artist)} if correct.\n\n"
                 f"[A] {choices[0]}\n[B] {choices[1]}\n[C] {choices[2]}\n[D] {choices[3]}"),
                 up_next=False)
             web_server.push_question("Guess The Artist", "Which artist performed this song?",
@@ -21496,10 +21827,12 @@ def guess_extra(extra = None):
             choices = [correct_title] + distractors
             random.shuffle(choices)
 
+            _bs_song = bonus_settings.get("song", BONUS_SETTINGS_DEFAULT["song"])
+            _bs_pt_song = _bs_song["lightning_points" if light_round_started else "points"]
             toggle_coming_up_popup(True,
                 ROUND_PREFIX + "Guess The Song Title",
                 (f"Which song is played for this anime?\n"
-                f"Only one guess. +{_fmt_pt(bonus_pt_choice)} if correct.\n\n"
+                f"Only one guess. +{_fmt_pt(_bs_pt_song)} if correct.\n\n"
                 f"[A] {choices[0]}\n[B] {choices[1]}\n[C] {choices[2]}\n[D] {choices[3]}"),
                 up_next=False)
             web_server.push_question("Guess The Song Title", "Which song is played for this anime?",
@@ -22276,7 +22609,7 @@ def play_filename(playlist_entry, fullscreen=True):
     if auto_info_start:
         toggle_title_popup(True)
     if auto_bonus_start:
-        pick = random.choice(_BONUS_TYPES) if auto_bonus_start == "random" else auto_bonus_start
+        pick = _pick_random_bonus() if auto_bonus_start == "random" else auto_bonus_start
         guess_extra(pick)
     # Update metadata display asynchronously
     update_metadata_queue(playlist["current_index"])
@@ -22939,6 +23272,14 @@ def update_current_index(value = None, save = True):
             
         if save:
             save_config()
+        if web_server.is_running():
+            if playlist.get('infinite', False):
+                out_of = total_infinite_files - len(cached_skipped_themes)
+                web_server.push_playlist_info(-1, -1, counter=f'\u221e/{out_of}')
+            else:
+                out_of = len(playlist['playlist'])
+                cur = playlist['current_index']
+                web_server.push_playlist_info(out_of, cur, counter=f'{cur+1}/{out_of}')
     except NameError:
         pass  # root isn't defined yet — possibly too early in startup
 
@@ -23122,6 +23463,7 @@ SEEK_POLLING = 50
 last_error = None
 last_error_count = 0
 playing_next_error = False
+_web_playback_counter = 0   # throttle web playback state pushes to ~1/sec
 def update_seek_bar():
     """Function to update the seek bar"""
     global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms, skip_fade_in_elapsed_ms
@@ -23144,6 +23486,9 @@ def update_seek_bar():
             skip_play_ms = int(max(0, float(skip_play_seconds)) * 1000)
             skip_jump_ms = int(max(0, float(skip_jump_seconds)) * 1000)
             skip_triggered = False
+            if not light_round_started and guessing_extra and web_server.is_running():
+                _time_left = ((player.get_length() - projected_vlc_time) // 1000) - (8 if auto_info_end else 0)
+                web_server.push_timer(_time_left, paused=True)
             if currently_playing.get("type") != "youtube" and not light_round_started and skip_play_ms > 0 and skip_jump_ms > 0:
                 if last_skip_anchor_ms is None or last_seek_time or projected_vlc_time < last_skip_anchor_ms:
                     last_skip_anchor_ms = projected_vlc_time
@@ -23227,6 +23572,22 @@ def update_seek_bar():
                     playing_next_error = True
                     play_next()
                 print(f"\nError: {error_str} x 1", flush=True)
+    # Push playback state to web host clients ~every 1 second
+    global _web_playback_counter
+    _web_playback_counter += 1
+    if _web_playback_counter >= 20 and web_server.is_running():
+        _web_playback_counter = 0
+        try:
+            web_server.push_playback_state(
+                projected_vlc_time,
+                player.get_length(),
+                player.is_playing(),
+                volume_level,
+                autoplay_toggle
+            )
+            _push_web_toggles()
+        except Exception:
+            pass
     root.after(SEEK_POLLING, update_seek_bar)
 
 def format_seconds(seconds):
@@ -24574,6 +24935,46 @@ def get_playlist(playlist_name):
         new_playlist["name"] = playlist_name
         return new_playlist
 
+def _push_web_marks(filename=None):
+    """Push the current theme's mark states to all web host clients."""
+    if not web_server.is_running():
+        return
+    fn = filename or currently_playing.get("filename") or ""
+    web_server.push_marks({
+        "tagged":    bool(check_theme(fn, "Tagged Themes")),
+        "favorited": bool(check_theme(fn, "Favorite Themes")),
+        "blind":     bool(check_theme(fn, "Blind Themes")),
+        "peek":      bool(check_theme(fn, "Peek Themes")),
+        "mute_peek": bool(check_theme(fn, "Mute Peek Themes")),
+    })
+
+def _push_web_toggles():
+    """Push current toggle states to all web host clients."""
+    if not web_server.is_running():
+        return
+    if not fixed_lightning_rounds_list:
+        load_fixed_lightning_rounds(filter_missing_themes=True)
+    fn = currently_playing.get("filename", "")
+    censor_count = len(get_file_censors(fn) or []) if fn else 0
+    mute_state = light_muted if (light_mode or light_round_started) else disable_video_audio
+    web_server.push_toggles({
+        "blind":        black_overlay is not None,
+        "peek":         bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes),
+        "mute":         bool(mute_state),
+        "censors":      censors_enabled,
+        "shortcuts":    not disable_shortcuts,
+        "dock":         bool(is_docked()),
+        "censor_count": censor_count,
+        "queue_blind":   bool(blind_round_toggle),
+        "queue_peek":    bool(peek_round_toggle),
+        "queue_mute_peek": bool(mute_peek_round_toggle),
+        "light_mode":    light_mode or "",
+        "has_fixed_lightning": bool(fixed_lightning_rounds_list),
+        "has_youtube":   bool(youtube_metadata.get("videos")),
+        "difficulty":    playlist.get("difficulty", 2),
+        "auto_bonus_start": auto_bonus_start,
+    })
+
 def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
     """Toggles a theme in a specified playlist (e.g., Tagged Themes, Favorite Themes)."""
     if not filename:
@@ -24629,6 +25030,9 @@ def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
                     update_current_index()
 
     check_theme(playlist_name=playlist_name, recache=True)
+
+    if currently_playing.get('filename') == filename and web_server.is_running():
+        _push_web_marks(filename)
 
     if currently_playing.get("data") and currently_playing.get('filename') == filename:
         update_series_song_information(currently_playing.get("data"), currently_playing.get("data").get("mal"))
@@ -24738,9 +25142,9 @@ def add_to_saved_playlist(filename=None):
             toggle_theme(n, filename=filename)
         m.add_command(label=label, command=_add)
     try:
-        m.tk_popup(root.winfo_pointerx(), root.winfo_pointery())
+        popup_menu(m, root.winfo_pointerx(), root.winfo_pointery())
     finally:
-        m.grab_release()
+        pass
 
 def handle_bulk_marking(playlist_name, check_func, mutually_exclusive_playlists=None):
     """Handle bulk marking/unmarking of entire playlist based on current item's state."""
@@ -24845,6 +25249,7 @@ def check_missing_artists():
 # =========================================
 
 undock_position = []
+dock_was_minimized = False
 player_collapsed = False
 original_window_height = None
 original_min_height = None
@@ -24900,7 +25305,7 @@ def toggle_player_collapse():
 def dock_player():
     """Toggles the Tkinter window between front and back, moves it to bottom left,
     adjusts transparency, and removes the title bar when brought forward."""
-    global undock_position
+    global undock_position, dock_was_minimized
     button_seleted(dock_button, not is_docked())
     if is_docked():
         # Send to back, restore transparency, and re-enable title bar
@@ -24911,7 +25316,15 @@ def dock_player():
             move_root_to_bottom(False)
         elif undock_position[1] < root.winfo_y():
             root.after(10, lambda: root.geometry(f"+{undock_position[0]}+{undock_position[1]}"))
+        # Re-minimize if the window was minimized before docking
+        if dock_was_minimized:
+            dock_was_minimized = False
+            root.iconify()
     else:
+        # Remember if the window was minimized, then restore it so we can move it
+        dock_was_minimized = root.state() == 'iconic'
+        if dock_was_minimized:
+            root.deiconify()
         # Bring to front, move to bottom-left, set full transparency, and remove title bar
         right_top.delete(1.0, tk.END)
         undock_position = (root.winfo_x(), root.winfo_y())
@@ -24950,6 +25363,23 @@ def move_root_to_bottom(toggle=True):
 
 def is_docked():
     return root.attributes("-topmost")
+
+def popup_menu(menu, x, y):
+    """Show a tk.Menu at (x, y), ensuring it appears on top when the player is docked.
+
+    When docked the root has -topmost True, which causes native Win32 menu windows
+    (#32768) to appear behind it.  We temporarily drop topmost before tk_popup
+    (which blocks until the menu is dismissed) and restore it immediately after.
+    """
+    docked = is_docked()
+    if docked:
+        root.attributes("-topmost", False)
+    try:
+        menu.tk_popup(x, y)
+    finally:
+        menu.grab_release()
+        if docked:
+            root.attributes("-topmost", True)
 
 def get_window_position_and_setup(window=None, set_topmost_if_docked=True, offset_x=0, offset_y=0):
     """
@@ -25063,9 +25493,9 @@ def _theme_context_menu(filename, refresh_func, play_func=None, remove_func=None
         m.add_command(label="     Remove from Playlist", command=remove_func)
 
     try:
-        m.tk_popup(root.winfo_pointerx(), root.winfo_pointery())
+        popup_menu(m, root.winfo_pointerx(), root.winfo_pointery())
     finally:
-        m.grab_release()
+        pass
 
 last_themes_listed = {}
 def show_field_themes(update = False, group=[], title=None):
@@ -26698,11 +27128,58 @@ def toggle_auto_info_start():
 
 auto_bonus_start = None  # None = disabled; 'random' or a bonus type key = enabled
 _BONUS_TYPES = ["multiple", "year", "score", "members", "popularity", "tags", "studio", "artist", "song"]
+_bonus_random_last  = None  # last-picked type (for no_repeat)
+_bonus_random_cycle = []    # remaining types in current cycle (for cycle_all)
 def set_auto_bonus_start(value):
     """value: None to disable, 'random' or a bonus type key to enable."""
     global auto_bonus_start
     auto_bonus_start = None if auto_bonus_start == value else value
     print("Auto Bonus Question at start: " + str(auto_bonus_start))
+
+def _pick_random_bonus():
+    """Pick a random bonus type, respecting no_repeat and cycle_all settings."""
+    global _bonus_random_last, _bonus_random_cycle
+    rset     = bonus_settings.get("random", BONUS_SETTINGS_DEFAULT.get("random", {}))
+    no_repeat = rset.get("no_repeat", False)
+    cycle_all = rset.get("cycle_all", False)
+    eligible  = [t for t in _BONUS_TYPES if bonus_settings.get(t, {}).get("included_in_random", True)]
+    if not eligible:
+        eligible = list(_BONUS_TYPES)
+
+    def _safe_pool():
+        """Eligible pool minus the last-picked type (if no_repeat is on and >1 eligible)."""
+        if no_repeat and len(eligible) > 1:
+            p = [t for t in eligible if t != _bonus_random_last]
+            return p if p else list(eligible)
+        return list(eligible)
+
+    if cycle_all:
+        # Replenish the cycle when exhausted
+        if not _bonus_random_cycle:
+            pool = _safe_pool()
+            random.shuffle(pool)
+            _bonus_random_cycle[:] = pool
+        # If no_repeat: ensure the first item in the new cycle isn't the same as the last pick
+        # (this only matters at the seam between two cycles)
+        if no_repeat and len(eligible) > 1 and _bonus_random_cycle[0] == _bonus_random_last:
+            attempts = 0
+            while _bonus_random_cycle[0] == _bonus_random_last and attempts < 20:
+                random.shuffle(_bonus_random_cycle)
+                attempts += 1
+        pick = _bonus_random_cycle.pop(0)
+    else:
+        pick = random.choice(_safe_pool())
+
+    _bonus_random_last = pick
+    return pick
+
+def _toggle_bonus_random_opt(key):
+    """Toggle a no_repeat / cycle_all setting and reset the running cycle."""
+    global bonus_settings, _bonus_random_cycle
+    if "random" not in bonus_settings:
+        bonus_settings["random"] = dict(BONUS_SETTINGS_DEFAULT.get("random", {}))
+    bonus_settings["random"][key] = not bonus_settings["random"].get(key, False)
+    _bonus_random_cycle = []   # reset cycle whenever settings change
 
 auto_info_end = False
 def toggle_auto_info_end():
@@ -29088,6 +29565,13 @@ def _get_menu_registry():
          "button_label": "REFRESH ANILIST", "command": refresh_all_anilist_metadata,
          "tooltip": "Refresh AniList metadata — scores, rankings, tags, characters — for files in your directory."},
         "---",
+        {"icon": "🌐",
+            "label": lambda: "Stop Web Server" if web_server.is_running() else "Start Web Server",
+            "command": toggle_web_server,
+            "toggle": lambda: web_server.is_running(),
+            "condition": lambda: NGROK_AVAILABLE,
+            "tooltip": "Start or stop the web answer server that lets players submit bonus answers from their browser."
+        },
         {"id": "open_scoreboard",  "icon": "▶", "label": "Open Scoreboard",
         "command": open_scoreboard,
         "condition": lambda: SCOREBOARD_AVAILABLE and not is_scoreboard_running(),
@@ -29399,19 +29883,6 @@ def _get_menu_registry():
 
     # ── BONUS ─────────────────────────────────────────────────────────────────
     "bonus": [
-        {"id": "bonus_multiple", "icon": "４", "label": "Multiple Choice",  "button_label": "MULTIPLE",  "shortcut": True, "command": lambda: guess_extra("multiple"),  "toggle": lambda: guessing_extra == "multiple",  "tooltip": "Multiple-choice: guess the anime from 4 options."},
-        {"id": "bonus_year",     "icon": "📅", "label": "Year",              "button_label": "YEAR",       "shortcut": True, "command": lambda: guess_extra("year"),       "toggle": lambda: guessing_extra == "year",       "cycle_pos": ("cycle_guess_stats", 1), "tooltip": "Guess the year this anime first aired."},
-        {"id": "bonus_score",    "icon": "🏆", "label": "Score",             "button_label": "SCORE",      "shortcut": True, "command": lambda: guess_extra("score"),      "toggle": lambda: guessing_extra == "score",      "cycle_pos": ("cycle_guess_stats", 2), "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
-        {"id": "bonus_members",  "icon": "👥", "label": "Members",           "button_label": "MEMBERS",    "shortcut": True, "command": lambda: guess_extra("members"),    "toggle": lambda: guessing_extra == "members",    "cycle_pos": ("cycle_guess_stats", 4), "tooltip": "Guess the number of MyAnimeList members."},
-        {"id": "bonus_rank",     "icon": "🥇", "label": "Popularity Rank",   "button_label": "RANK",       "shortcut": True, "command": lambda: guess_extra("popularity"), "toggle": lambda: guessing_extra == "popularity", "cycle_pos": ("cycle_guess_stats", 3), "tooltip": "Guess the popularity rank on MyAnimeList."},
-        {"id": "bonus_tags",     "icon": "🔖", "label": "Tags",              "button_label": "TAGS",       "shortcut": True, "command": lambda: guess_extra("tags"),       "toggle": lambda: guessing_extra == "tags",       "tooltip": "Guess the genres/themes/demographics tags."},
-        {"id": "bonus_studio",   "icon": "🏢", "label": "Studio",            "button_label": "STUDIO",     "shortcut": True, "command": lambda: guess_extra("studio"),     "toggle": lambda: guessing_extra == "studio",     "cycle_pos": ("cycle_guess_other", 2), "tooltip": "Guess the studio that made this anime."},
-        {"id": "bonus_artist",   "icon": "🎤", "label": "Artist",            "button_label": "ARTIST",     "shortcut": True, "command": lambda: guess_extra("artist"),     "toggle": lambda: guessing_extra == "artist",     "cycle_pos": ("cycle_guess_other", 4), "tooltip": "Guess the artist who performed the theme."},
-        {"id": "bonus_song",     "icon": "🎵", "label": "Song Title",        "button_label": "SONG",       "shortcut": True, "command": lambda: guess_extra("song"),       "toggle": lambda: guessing_extra == "song",       "cycle_pos": ("cycle_guess_other", 3), "tooltip": "Guess the name of the song."},
-        {"id": "bonus_chars",    "icon": "👤", "label": "Characters",        "button_label": "CHARACTERS", "shortcut": True, "command": lambda: guess_extra("characters"), "toggle": lambda: guessing_extra == "characters", "tooltip": "Identify 2 characters from this anime out of 6 shown."},
-        "---",
-        {"id": "bonus_freeform",  "icon": "💬", "label": "Free Form",          "button_label": "FREE FORM",  "shortcut": True, "command": lambda: guess_extra("freeform"),   "toggle": lambda: guessing_extra == "freeform",   "cycle_pos": ("cycle_guess_other", 1), "tooltip": "Open a free-answer prompt."},
-        "---",
         {"label": "Auto Bonus at Start", "icon": "🎲",
          "toggle": lambda: auto_bonus_start is not None,
          "tooltip": "Automatically start a bonus question at the beginning of each theme.",
@@ -29431,13 +29902,20 @@ def _get_menu_registry():
              {"icon": "💬", "label": "Free Form",        "command": lambda: set_auto_bonus_start("freeform"),   "toggle": lambda: auto_bonus_start == "freeform",   "tooltip": "Open a free-answer prompt."},
          ]},
         "---",
-        {"icon": "🌐",
-            "label": lambda: "Stop Web Server" if web_server.is_running() else "Start Web Server",
-            "command": toggle_web_server,
-            "toggle": lambda: web_server.is_running(),
-            "condition": lambda: NGROK_AVAILABLE,
-            "tooltip": "Start or stop the web answer server that lets players submit bonus answers from their browser."
-        },
+        {"id": "bonus_freeform",  "icon": "💬", "label": "Free Form",          "button_label": "FREE FORM",  "shortcut": True, "command": lambda: guess_extra("freeform"),   "toggle": lambda: guessing_extra == "freeform",   "cycle_pos": ("cycle_guess_other", 1), "tooltip": "Open a free-answer prompt."},
+        "---",
+        {"id": "bonus_multiple", "icon": "４", "label": "Multiple Choice",  "button_label": "MULTIPLE",  "shortcut": True, "command": lambda: guess_extra("multiple"),  "toggle": lambda: guessing_extra == "multiple",  "tooltip": "Multiple-choice: guess the anime from 4 options."},
+        {"id": "bonus_year",     "icon": "📅", "label": "Year",              "button_label": "YEAR",       "shortcut": True, "command": lambda: guess_extra("year"),       "toggle": lambda: guessing_extra == "year",       "cycle_pos": ("cycle_guess_stats", 1), "tooltip": "Guess the year this anime first aired."},
+        {"id": "bonus_score",    "icon": "🏆", "label": "Score",             "button_label": "SCORE",      "shortcut": True, "command": lambda: guess_extra("score"),      "toggle": lambda: guessing_extra == "score",      "cycle_pos": ("cycle_guess_stats", 2), "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
+        {"id": "bonus_members",  "icon": "👥", "label": "Members",           "button_label": "MEMBERS",    "shortcut": True, "command": lambda: guess_extra("members"),    "toggle": lambda: guessing_extra == "members",    "cycle_pos": ("cycle_guess_stats", 4), "tooltip": "Guess the number of MyAnimeList members."},
+        {"id": "bonus_rank",     "icon": "🥇", "label": "Popularity Rank",   "button_label": "RANK",       "shortcut": True, "command": lambda: guess_extra("popularity"), "toggle": lambda: guessing_extra == "popularity", "cycle_pos": ("cycle_guess_stats", 3), "tooltip": "Guess the popularity rank on MyAnimeList."},
+        {"id": "bonus_tags",     "icon": "🔖", "label": "Tags",              "button_label": "TAGS",       "shortcut": True, "command": lambda: guess_extra("tags"),       "toggle": lambda: guessing_extra == "tags",       "tooltip": "Guess the genres/themes/demographics tags."},
+        {"id": "bonus_studio",   "icon": "🏢", "label": "Studio",            "button_label": "STUDIO",     "shortcut": True, "command": lambda: guess_extra("studio"),     "toggle": lambda: guessing_extra == "studio",     "cycle_pos": ("cycle_guess_other", 2), "tooltip": "Guess the studio that made this anime."},
+        {"id": "bonus_artist",   "icon": "🎤", "label": "Artist",            "button_label": "ARTIST",     "shortcut": True, "command": lambda: guess_extra("artist"),     "toggle": lambda: guessing_extra == "artist",     "cycle_pos": ("cycle_guess_other", 4), "tooltip": "Guess the artist who performed the theme."},
+        {"id": "bonus_song",     "icon": "🎵", "label": "Song Title",        "button_label": "SONG",       "shortcut": True, "command": lambda: guess_extra("song"),       "toggle": lambda: guessing_extra == "song",       "cycle_pos": ("cycle_guess_other", 3), "tooltip": "Guess the name of the song."},
+        {"id": "bonus_chars",    "icon": "👤", "label": "Characters",        "button_label": "CHARACTERS", "shortcut": True, "command": lambda: guess_extra("characters"), "toggle": lambda: guessing_extra == "characters", "tooltip": "Identify 2 characters from this anime out of 6 shown."},
+        "---",
+        {"label": "Bonus Settings", "icon": "⚙️", "button_label": "BONUS SETTINGS", "command": open_bonus_settings_editor, "tooltip": "Configure points, lightning points, and random eligibility for each bonus type."},
     ],
 
     # ── INFORMATION ───────────────────────────────────────────────────────────
@@ -29683,7 +30161,7 @@ def _get_menu_registry():
          "button_label": "DOCK", "shortcut": True, "command": dock_player,
          "tooltip": "Toggle docking the player to the bottom of the screen."},
         {"id": "search_themes",     "label": "Search Themes",
-         "shortcut": True, "command": lambda: _focus_search_entry(),
+         "shortcut": True, "command": lambda: search(add=playlist.get("infinite", False)),
          "tooltip": "Open the theme search (shortcut-key mode)."},
         {"id": "reroll_next", "icon": lambda: "🔄" if is_reroll_valid() else "", "label": "Re-roll Next Track",
          "button_label": lambda: "RE-ROLL" if is_reroll_valid() else "", "shortcut": True, "command": reroll_next,
@@ -29757,7 +30235,7 @@ def _open_toolbar_menu(name: str, button: tk.Button, section_key: str):
     m = tk.Menu(root, tearoff=0, bg="black", fg="white",
                 activebackground=HIGHLIGHT_COLOR, activeforeground="white", font=MENU_FONT)
     build_menu(m, registry[section_key])
-    m.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+    popup_menu(m, button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
 
     # Menu just closed.  If the pointer is still over this button, the button
     # click dismissed it — suppress the pending command= so we don't reopen.
@@ -29801,7 +30279,7 @@ def create_first_row_buttons():
                     activebackground=HIGHLIGHT_COLOR, activeforeground="white", font=MENU_FONT)
         m.add_command(label="🗖  Open Popout", command=create_popout_controls)
         m.add_command(label="⚙  Configure Layout", command=open_popout_layout_editor)
-        m.tk_popup(popout_controls_button.winfo_rootx(),
+        popup_menu(m, popout_controls_button.winfo_rootx(),
                    popout_controls_button.winfo_rooty() + popout_controls_button.winfo_height())
         try:
             px, py = root.winfo_pointerxy()
@@ -29984,7 +30462,7 @@ def create_first_row_buttons():
         # Debounce: cancel any pending search and schedule a new one
         if _search_debounce[0]:
             root.after_cancel(_search_debounce[0])
-        _search_debounce[0] = root.after(200, lambda: search(update=True, ask=False))
+        _search_debounce[0] = root.after(200, lambda: search(update=True, ask=False, add=playlist.get("infinite", False)))
 
     def on_search_return(event=None):
         list_select()
@@ -30294,7 +30772,7 @@ def show_autoplay_menu(event=None):
     )
     x = autoplay_button.winfo_rootx()
     y = autoplay_button.winfo_rooty() - menu.winfo_reqheight() - 5
-    menu.tk_popup(x, y)
+    popup_menu(menu, x, y)
 
 special_repeat_track_mode = False
 def toggle_special_repeat(event=None):
@@ -30442,133 +30920,159 @@ def reroll_next():
 # =========================================
 
 disable_shortcuts = True
-def on_press(key):
-    global disable_shortcuts, modal_dialog_open
+
+def _is_blocked_text_entry():
+    """Return True if any Entry widget currently has keyboard focus.
+    Pynput should be blocked whenever an Entry is focused — the toolbar search
+    bar handles its own keys via Tkinter <KeyRelease>, and pynput-based search
+    mode (list_loaded == 'search') is only active when no Entry is focused.
+    Must be called from the main Tkinter thread."""
     try:
-        if modal_dialog_open:
-            return
-        if disable_shortcuts:
-            pass
-        elif grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values()):
-            move_amount = 10  # pixels per key press
-            if key == key.up:
-                move_grow_position(0, -move_amount)
-            elif key == key.down:
-                move_grow_position(0, move_amount)
-            elif key == key.left:
-                move_grow_position(-move_amount, 0)
-            elif key == key.right:
-                move_grow_position(move_amount, 0)
-        elif key == key.up:
-            list_move(-1)
-        elif key == key.down:
-            list_move(1)
-    except AttributeError:
+        focused = root.focus_get()
+        return focused is not None and isinstance(focused, tk.Entry)
+    except Exception:
+        return False
+
+def on_press(key):
+    def _handle(key=key):
+        global disable_shortcuts, modal_dialog_open
         try:
-            if list_loaded == "search":
+            if modal_dialog_open:
+                return
+            if _is_blocked_text_entry():
+                return
+            if disable_shortcuts:
                 pass
-            elif not playlist.get("infinite", False) and (key.char == '-'):
-                player.set_time(player.get_time()-1000)
-            elif not playlist.get("infinite", False) and (key.char == '+'):
-                player.set_time(player.get_time()+1000)
-        except AttributeError as e:
-            print(f"Error: {e}")
+            elif grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values()):
+                move_amount = 10  # pixels per key press
+                if key == key.up:
+                    move_grow_position(0, -move_amount)
+                elif key == key.down:
+                    move_grow_position(0, move_amount)
+                elif key == key.left:
+                    move_grow_position(-move_amount, 0)
+                elif key == key.right:
+                    move_grow_position(move_amount, 0)
+            elif key == key.up:
+                list_move(-1)
+            elif key == key.down:
+                list_move(1)
+        except AttributeError:
+            try:
+                if list_loaded == "search":
+                    pass
+                elif not playlist.get("infinite", False) and (key.char == '-'):
+                    player.set_time(player.get_time()-1000)
+                elif not playlist.get("infinite", False) and (key.char == '+'):
+                    player.set_time(player.get_time()+1000)
+            except AttributeError as e:
+                print(f"Error: {e}")
+    try:
+        root.after(0, _handle)
+    except RuntimeError:
+        pass
 
 def on_release(key):
-    global disable_shortcuts, modal_dialog_open
-    try:
-        if modal_dialog_open:
-            return
-        if popout_searching:
-            pass
-        elif disable_shortcuts:
-            try:
-                enable_key = get_shortcut("enable_shortcuts")
-                if enable_key and key.char == enable_key:
-                    cmd = _shortcut_dispatch.get(enable_key)
-                    if cmd:
-                        cmd()
-                    else:
-                        toggle_disable_shortcuts()  # fallback before dispatch is built
-            except:
+    def _handle(key=key):
+        global disable_shortcuts, modal_dialog_open
+        try:
+            if modal_dialog_open:
+                return
+            if _is_blocked_text_entry():
+                return
+            if popout_searching:
                 pass
-        elif list_loaded in ["search", "search_add"]:
-            global search_term
-            try:
-                if key == key.esc:
-                    search(add = playlist.get("infinite", False))
-                elif key == key.backspace:
+            elif disable_shortcuts:
+                try:
+                    enable_key = get_shortcut("enable_shortcuts")
+                    if enable_key and key.char == enable_key:
+                        cmd = _shortcut_dispatch.get(enable_key)
+                        if cmd:
+                            cmd()
+                        else:
+                            toggle_disable_shortcuts()  # fallback before dispatch is built
+                except:
+                    pass
+            elif list_loaded in ["search", "search_add"]:
+                global search_term
+                if key == keyboard.Key.esc:
+                    search(add=playlist.get("infinite", False))
+                elif key == keyboard.Key.backspace:
                     if search_term != "":
                         search_term = search_term[:-1]
                     search(True, add=playlist.get("infinite", False))
-                elif key == key.space:
+                elif key == keyboard.Key.space:
                     search_term = search_term + " "
                     search(True, add=playlist.get("infinite", False))
-                elif key == key.enter:
+                elif key == keyboard.Key.enter:
                     list_select()
                     search_term = ""
                     list_unload(right_column)
-            except AttributeError:
-                search_term = search_term + key.char
-                search(True, add=playlist.get("infinite", False))
-        else:
-            if isinstance(key, keyboard.Key):
-                if not (grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values())):
-                    if key == keyboard.Key.right:
-                        play_next()
-                    elif key == keyboard.Key.left:
-                        play_previous()
-                if key == keyboard.Key.space:
-                    play_pause()
-                elif key == keyboard.Key.esc:
-                    stop()
-                elif key == keyboard.Key.tab:
-                    player.toggle_fullscreen()
-                elif key == keyboard.Key.backspace:
-                    if (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
-                        toggle_peek()
-                    else:
-                        blind(True)
-                elif key == keyboard.Key.enter:
-                    list_select()
-            elif isinstance(key, keyboard.KeyCode) and key.char:
-                # --- Registry-driven dispatch ---
-                # Covers all shortcuts defined in DEFAULT_SHORTCUTS (or user overrides).
-                # Context-sensitive and aliased keys are handled below.
-                cmd = _shortcut_dispatch.get(key.char)
-                if cmd:
-                    root.after(0, cmd)
-                # --- 'i' has context-sensitive logic: shows info OR clears title popup ---
-                elif key.char == 'i':
-                    if is_title_window_up() and (artist_info_display or studio_info_display):
-                        toggle_title_popup(True)
-                    else:
-                        toggle_info_popup()
-                # --- '+' is a secondary alias for '=' (peek toggle), not in DEFAULT_SHORTCUTS ---
-                elif key.char == '+':
-                    toggle_peek()
-                # --- Digits: context-sensitive (list select vs seek position) ---
-                elif key.char.isdigit():
-                    if list_loaded and list_loaded != "playlist":
-                        global list_index
-                        list_index = int(key.char)-1
+                elif isinstance(key, keyboard.KeyCode) and key.char:
+                    search_term = search_term + key.char
+                    search(True, add=playlist.get("infinite", False))
+            else:
+                if isinstance(key, keyboard.Key):
+                    if not (grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values())):
+                        if key == keyboard.Key.right:
+                            play_next()
+                        elif key == keyboard.Key.left:
+                            play_previous()
+                    if key == keyboard.Key.space:
+                        play_pause()
+                    elif key == keyboard.Key.esc:
+                        stop()
+                    elif key == keyboard.Key.tab:
+                        player.toggle_fullscreen()
+                    elif key == keyboard.Key.backspace:
+                        if (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
+                            toggle_peek()
+                        else:
+                            blind(True)
+                    elif key == keyboard.Key.enter:
                         list_select()
-                    else:
-                        seek_value = player.get_length()-((player.get_length()/10)*(10-int(key.char)))
-                        seek_to(int(seek_value))
-                # --- Infinite difficulty adjust (condition-gated, not suitable for registry) ---
-                elif playlist.get("infinite") and (key.char in ['<',',']):
-                    if playlist["difficulty"] > 0:
-                        playlist["difficulty"] -= 1
-                        difficulty_dropdown.current(playlist["difficulty"])
-                        select_difficulty()
-                elif playlist.get("infinite") and (key.char in ['>','.']):
-                    if playlist["difficulty"] < len(difficulty_options)-1:
-                        playlist["difficulty"] += 1
-                        difficulty_dropdown.current(playlist["difficulty"])
-                        select_difficulty()
-    except AttributeError as e:
-        print(f"Error: {e}")
+                elif isinstance(key, keyboard.KeyCode) and key.char:
+                    # --- Registry-driven dispatch ---
+                    # Covers all shortcuts defined in DEFAULT_SHORTCUTS (or user overrides).
+                    # Context-sensitive and aliased keys are handled below.
+                    cmd = _shortcut_dispatch.get(key.char)
+                    if cmd:
+                        root.after(0, cmd)
+                    # --- 'i' has context-sensitive logic: shows info OR clears title popup ---
+                    elif key.char == 'i':
+                        if is_title_window_up() and (artist_info_display or studio_info_display):
+                            toggle_title_popup(True)
+                        else:
+                            toggle_info_popup()
+                    # --- '+' is a secondary alias for '=' (peek toggle), not in DEFAULT_SHORTCUTS ---
+                    elif key.char == '+':
+                        toggle_peek()
+                    # --- Digits: context-sensitive (list select vs seek position) ---
+                    elif key.char.isdigit():
+                        if list_loaded and list_loaded != "playlist":
+                            global list_index
+                            list_index = int(key.char)-1
+                            list_select()
+                        else:
+                            seek_value = player.get_length()-((player.get_length()/10)*(10-int(key.char)))
+                            seek_to(int(seek_value))
+                    # --- Infinite difficulty adjust (condition-gated, not suitable for registry) ---
+                    elif playlist.get("infinite") and (key.char in ['<',',']):
+                        if playlist["difficulty"] > 0:
+                            playlist["difficulty"] -= 1
+                            difficulty_dropdown.current(playlist["difficulty"])
+                            select_difficulty()
+                    elif playlist.get("infinite") and (key.char in ['>','.']):
+                        if playlist["difficulty"] < len(difficulty_options)-1:
+                            playlist["difficulty"] += 1
+                            difficulty_dropdown.current(playlist["difficulty"])
+                            select_difficulty()
+        except AttributeError as e:
+            print(f"Error: {e}")
+    try:
+        root.after(0, _handle)
+    except RuntimeError:
+        pass
 
 # Mouse state tracking
 mouse_left_pressed = False
@@ -30709,6 +31213,14 @@ def _score_bonus_answers(answers, q_type, correct):
         return result
 
     if q_type in ("year", "members", "popularity", "score"):
+        _s = bonus_settings.get(q_type, {})
+        _def = BONUS_SETTINGS_DEFAULT[q_type]
+        if light_round_started:
+            _pt_close = float(_s.get("lightning_points_close", _s.get("points_close", _def["points_close"])))
+            _pt_exact = float(_s.get("lightning_points_exact", _s.get("points_exact", _def["points_exact"])))
+        else:
+            _pt_close = float(_s.get("points_close", _def["points_close"]))
+            _pt_exact = float(_s.get("points_exact", _def["points_exact"]))
         try:
             correct_val = float(correct)
         except (TypeError, ValueError):
@@ -30733,17 +31245,21 @@ def _score_bonus_answers(answers, q_type, correct):
                     exact = _first_two_digits(guess) == _first_two_digits(correct_val)
                 else:
                     exact = guess == correct_val
-                result[name] = bonus_pt_numeric_exact if exact else bonus_pt_numeric_close
+                result[name] = _pt_exact if exact else _pt_close
             else:
                 result[name] = 0.0
 
     elif q_type == "multiple":
+        _s = bonus_settings.get("multiple", {})
+        _def_multiple = BONUS_SETTINGS_DEFAULT["multiple"]
+        _pts = float(_s.get("lightning_points" if light_round_started else "points",
+                             _def_multiple["lightning_points"] if light_round_started else _def_multiple["points"]))
         seen = set()
         for entry in answers:
             name = entry["name"].strip()
             if name and name not in seen:
                 seen.add(name)
-                result[name] = (bonus_pt_multiple_light if light_round_started else bonus_pt_multiple) if entry["answer"].strip().lower() == str(correct).strip().lower() else 0.0
+                result[name] = _pts if entry["answer"].strip().lower() == str(correct).strip().lower() else 0.0
 
     elif q_type in ("studio", "artist", "song"):
         seen = set()
@@ -30751,9 +31267,18 @@ def _score_bonus_answers(answers, q_type, correct):
             name = entry["name"].strip()
             if name and name not in seen:
                 seen.add(name)
-                result[name] = bonus_pt_choice if entry["answer"].strip().lower() == str(correct).strip().lower() else 0.0
+                _s = bonus_settings.get(q_type, {})
+                _def_choice = BONUS_SETTINGS_DEFAULT[q_type]
+                _pts = float(_s.get("lightning_points" if light_round_started else "points", _def_choice["lightning_points"] if light_round_started else _def_choice["points"]))
+                result[name] = _pts if entry["answer"].strip().lower() == str(correct).strip().lower() else 0.0
 
     elif q_type == "tags":
+        _s = bonus_settings.get("tags", {})
+        _def_tags = BONUS_SETTINGS_DEFAULT["tags"]
+        if light_round_started:
+            _pt_tag = float(_s.get("lightning_points_per_tag", _s.get("points_per_tag", _def_tags["points_per_tag"])))
+        else:
+            _pt_tag = float(_s.get("points_per_tag", _def_tags["points_per_tag"]))
         correct_tags = {t.strip().lower() for t in correct} if isinstance(correct, (list, set)) else set()
         seen = set()
         for entry in answers:
@@ -30764,7 +31289,7 @@ def _score_bonus_answers(answers, q_type, correct):
                 if picked:
                     right = sum(1 for t in picked if t in correct_tags)
                     wrong = len(picked) - right
-                    result[name] = max(0.0, bonus_pt_tag * right - bonus_pt_tag * wrong)
+                    result[name] = max(0.0, _pt_tag * right - _pt_tag * wrong)
 
     return result
 
@@ -30897,9 +31422,37 @@ def _refresh_bonus_answer_list():
               _do_remove_bonus_answer, -1, update=True, title="BONUS QUESTION ANSWERS", show_numbers=False)
 
 
+_scoreboard_colors_mtime = 0.0
+_scoreboard_scores_mtime = 0.0
+
+def _push_web_scores():
+    """Read current scores from shared file and push to web host clients."""
+    try:
+        path = os.path.join('scoreboard_data', 'scoreboard_scores.json')
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                scores_data = json.load(f)
+            # Enrich with control-panel toggle state from config
+            cfg_path = os.path.join('scoreboard_data', 'scoreboard_config.json')
+            if os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, 'r', encoding='utf-8') as cf:
+                        sb_cfg = json.load(cf)
+                    style = sb_cfg.get('style', {})
+                    scores_data['auto_send']      = bool(style.get('delta_auto_send',     {}).get('selected', True))
+                    scores_data['delay_together'] = bool(style.get('delta_delay_together', {}).get('selected', False))
+                    scores_data['commit_delay']   = int(style.get('delta_commit_delay',   {}).get('selected', 1500))
+                    scores_data['score_font']     = str(style.get('score_font', {}).get('selected', 'Consolas'))
+                    scores_data['name_font']      = str(style.get('score_font', {}).get('selected', 'Consolas'))
+                except Exception:
+                    pass
+            web_server.push_scores(scores_data)
+    except Exception as e:
+        print(f"Error pushing scores: {e}")
+
 def _poll_web_answers():
     """Accumulate web answers while a bonus question is active; print all submissions."""
-    global _pending_bonus_answers
+    global _pending_bonus_answers, _scoreboard_colors_mtime
     new_answers = False
     for entry in web_server.get_answers():
         print(f"[WEB ANSWER] {entry['name']}: {entry['answer']}")
@@ -30907,6 +31460,8 @@ def _poll_web_answers():
             _pending_bonus_answers.append(entry)
             new_answers = True
             send_scoreboard_command(f"[SUBMITTED]{entry['name']}")
+    for served_name in web_server.get_served():
+        send_scoreboard_command(f"[SERVED]{served_name}")
     for removed_name in web_server.get_removals():
         before = len(_pending_bonus_answers)
         _pending_bonus_answers[:] = [e for e in _pending_bonus_answers if e["name"].strip() != removed_name]
@@ -30917,6 +31472,26 @@ def _poll_web_answers():
         root.after(delay, lambda n=emoji_name, e=emoji_char: send_scoreboard_command(f"[EMOJI]{n}:{e}"))
     if new_answers or list_loaded == "bonus_answers":
         _refresh_bonus_answer_list()
+    # Broadcast updated player colors when scoreboard_colors.json changes
+    try:
+        _sc_colors_path = os.path.join('scoreboard_data', 'scoreboard_colors.json')
+        if os.path.exists(_sc_colors_path):
+            mtime = os.path.getmtime(_sc_colors_path)
+            if mtime != _scoreboard_colors_mtime:
+                _scoreboard_colors_mtime = mtime
+                web_server.push_player_colors()
+    except Exception:
+        pass
+    # Broadcast updated scores when scoreboard_scores.json changes
+    try:
+        _sc_scores_path = os.path.join('scoreboard_data', 'scoreboard_scores.json')
+        if os.path.exists(_sc_scores_path):
+            mtime = os.path.getmtime(_sc_scores_path)
+            if mtime != _scoreboard_scores_mtime:
+                _scoreboard_scores_mtime = mtime
+                _push_web_scores()
+    except Exception:
+        pass
     root.after(1000, _poll_web_answers)
 
 def _start_web_server():
@@ -30963,7 +31538,283 @@ web_server.set_player_names_provider(lambda: (
     if __import__('os').path.exists(
         __import__('os').path.join('scoreboard_data', 'scoreboard_leaderboard.json')) else []
 ))
-web_server.set_host_name(HOST_NAME)
+web_server.set_host_password(HOST_PASSWORD)
+
+def _invoke_registry_by_id(item_id: str):
+    """Look up a menu registry item by id and call its command (searches submenus recursively)."""
+    def _search(items):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("id") == item_id:
+                cmd = item.get("command")
+                if callable(cmd):
+                    cmd()
+                return True
+            if _search(item.get("submenu") or []):
+                return True
+        return False
+    registry = _get_menu_registry()
+    for section in registry.values():
+        if isinstance(section, list):
+            if _search(section):
+                return
+
+def _handle_host_action(action: str, data: dict):
+    """Dispatch remote control commands from the web host controller."""
+    def _dispatch():
+        global youtube_queue, fixed_lightning_queue, search_queue
+        if action == 'invoke':
+            item_id = str(data.get('id', '')).strip()
+            if item_id:
+                _invoke_registry_by_id(item_id)
+                _push_web_toggles()
+                _push_web_marks()
+        elif action == 'stop_lightning':
+            unselect_light_modes()
+            _push_web_toggles()
+        elif action == 'seek':
+            ms = int(data.get('position_ms', 0))
+            seek_to(ms)
+        elif action == 'set_volume':
+            global volume_level
+            vol = max(0, min(100, int(data.get('volume', 100))))
+            volume_level = vol
+            player.audio_set_volume(vol)
+        elif action == 'set_autoplay':
+            set_autoplay_mode(max(0, min(3, int(data.get('mode', 0)))))
+        elif action == 'request_state':
+            web_server.push_playback_state(
+                projected_vlc_time, player.get_length(), player.is_playing(), volume_level, autoplay_toggle
+            )
+        elif action == 'get_youtube_list':
+            def _fmt(seconds):
+                m, s = divmod(int(seconds), 60)
+                return f"{m}:{s:02}"
+            def _vid_date(vid):
+                da = vid.get("date_added")
+                if da:
+                    try: return datetime.fromisoformat(da)
+                    except (ValueError, TypeError): pass
+                ud = vid.get("upload_date", "")
+                if ud:
+                    try: return datetime.strptime(ud, "%Y%m%d")
+                    except (ValueError, TypeError): pass
+                return datetime(1900, 1, 1)
+            videos = []
+            for vid_id, vid in youtube_metadata.get("videos", {}).items():
+                if vid.get("archived", False):
+                    continue
+                full_title = (vid.get("custom_title") or vid.get("title") or "")
+                short_title = re.sub(
+                    r'(can you guess the|guess the|how well do you know|can you|guess|their|from the|from|by|with|its|just)\s*',
+                    '', full_title, flags=re.IGNORECASE
+                ).strip()
+                start = vid.get("start") or 0
+                end = vid.get("end") or vid.get("duration") or 0
+                dur = _fmt(round(end - start)) if end else _fmt(vid.get("duration") or 0)
+                videos.append({"id": vid_id, "title": short_title or full_title, "full_title": full_title, "duration": dur, "_date": _vid_date(vid)})
+            videos.sort(key=lambda v: v.pop("_date"), reverse=True)
+            queued_id = (youtube_queue or {}).get("url")
+            web_server.push_youtube_list(videos, queued_id)
+        elif action == 'queue_youtube':
+            video_id = str(data.get('video_id', '')).strip()
+            if video_id:
+                video = get_youtube_metadata_from_index(key_id=video_id)
+                if video and youtube_queue != video:
+                    unload_youtube_video()
+                    youtube_queue = video
+                    title = get_youtube_display_title(youtube_queue)
+                    try:
+                        image = load_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
+                    except Exception:
+                        image = None
+                    details = (
+                        f"Created by: {youtube_queue.get('name')} "
+                        f"({youtube_queue.get('subscriber_count', 0):,} subscribers)\n"
+                        f"Duration: {format_seconds(get_youtube_duration(youtube_queue))} mins\n\n"
+                        "1 PT for the first correct answer."
+                    )
+                    if player.is_playing():
+                        toggle_coming_up_popup(True, title, details, image, queue=True)
+                    else:
+                        play_video()
+                else:
+                    unload_youtube_video()
+                up_next_text()
+        elif action == 'get_fixed_lightning_list':
+            def _fmt_dur(seconds):
+                m, s = divmod(int(seconds), 60)
+                return f"{m}:{s:02}"
+            load_fixed_lightning_rounds(filter_missing_themes=True)
+            rounds = []
+            for i, r in enumerate(fixed_lightning_rounds_list):
+                rounds.append({
+                    "index": i,
+                    "name": r.get("name", ""),
+                    "duration": _fmt_dur(r.get("total_duration", 0)),
+                    "description": r.get("description", ""),
+                })
+            queued_name = (fixed_lightning_queue or {}).get("name")
+            web_server.push_fixed_lightning_list(rounds, queued_name)
+        elif action == 'queue_fixed_lightning':
+            idx = data.get('index')
+            if idx is not None:
+                queue_fixed_lightning_round(int(idx))
+                up_next_text()
+        elif action == 'search_themes':
+            query = str(data.get('query', '')).strip()
+            if query:
+                def _run_search(q=query):
+                    raw = search_playlist(q)[:60]
+                    results = []
+                    for fn in raw:
+                        meta = get_metadata(fn)
+                        title = meta.get('eng_title') or meta.get('title') or fn
+                        slug = meta.get('slug') or ''
+                        song_title = ''
+                        for s in (meta.get('songs') or []):
+                            if s.get('slug') == slug:
+                                song_title = s.get('title') or ''
+                                break
+                        results.append({'filename': fn, 'title': title, 'slug': slug, 'song': song_title})
+                    web_server.push_theme_search_results(results)
+                threading.Thread(target=_run_search, daemon=True).start()
+        elif action == 'queue_theme':
+            fn = str(data.get('filename', '')).strip()
+            if fn:
+                if search_queue == fn:
+                    search_queue = None
+                    up_next_text()
+                else:
+                    play_video_from_filename(fn)
+                    up_next_text()
+        elif action == 'add_theme':
+            fn = str(data.get('filename', '')).strip()
+            if fn:
+                playlist["playlist"].insert(playlist["current_index"] + 1, fn)
+                save_config()
+                up_next_text()
+        elif action == 'get_playlist_info':
+            items = playlist.get('playlist', [])
+            cur   = playlist.get('current_index', -1)
+            if playlist.get('infinite', False):
+                out_of = total_infinite_files - len(cached_skipped_themes)
+                _counter = f'\u221e/{out_of}'
+            else:
+                out_of = len(items)
+                _counter = f'{cur+1}/{out_of}'
+            web_server.push_playlist_info(len(items), cur, to_sid=data.get('_sid'), counter=_counter)
+        elif action == 'playlist_goto':
+            idx = int(data.get('index', -1))
+            if 0 <= idx < len(playlist.get('playlist', [])):
+                root.after(0, play_video, idx)
+        elif action == 'get_playlist_chunk':
+            offset = int(data.get('offset', 0))
+            count  = min(int(data.get('count', 100)), 200)
+            items  = playlist.get('playlist', [])
+            cur    = playlist.get('current_index', -1)
+            chunk  = items[offset: offset + count]
+            results = []
+            for rel_i, fn in enumerate(chunk):
+                abs_i = offset + rel_i
+                is_lightning = fn.startswith('[L]')
+                clean_fn = fn[3:] if is_lightning else fn
+                file_data = get_file_metadata_by_name(clean_fn)
+                if file_data:
+                    mal_key = file_data.get('mal')
+                    anime_d = anime_metadata.get(mal_key, {}) if mal_key else {}
+                    title = get_display_title({**file_data, **anime_d}) if anime_d else (file_data.get('name') or clean_fn)
+                    slug  = ('[L] ' if is_lightning else '') + file_data.get('slug', '')
+                    song_title  = ''
+                    song_artist = ''
+                    for s in (file_data.get('songs') or []):
+                        if s.get('slug') == file_data.get('slug', ''):
+                            song_title = s.get('title') or ''
+                            if abs_i == cur:
+                                song_artist = get_artists_string(s.get('artist') or [], total=True)
+                            break
+                else:
+                    title       = clean_fn
+                    slug        = '[L]' if is_lightning else ''
+                    song_title  = ''
+                    song_artist = ''
+                results.append({
+                    'i':       abs_i,
+                    'title':   title,
+                    'slug':    slug,
+                    'song':    song_title,
+                    'artist':  song_artist,
+                    'current': abs_i == cur,
+                })
+            web_server.push_playlist_chunk(offset, results, to_sid=data.get('_sid'))
+        elif action == 'set_difficulty':
+            val = data.get('value')
+            if val is not None:
+                _set_difficulty_from_menu(max(0, min(5, int(val))))
+                _push_web_toggles()
+        elif action == 'set_auto_bonus':
+            val = str(data.get('value', '')).strip() or None
+            set_auto_bonus_start(val)
+            _push_web_toggles()
+        elif action == 'score_adjust':
+            name = str(data.get('name', '')).strip()
+            try:
+                delta = float(data.get('delta', 0))
+            except (ValueError, TypeError):
+                delta = 0.0
+            if name and delta != 0:
+                send_scoreboard_score(name, delta)
+        elif action == 'score_set':
+            name = str(data.get('name', '')).strip()
+            try:
+                score = float(data.get('score', 0))
+            except (ValueError, TypeError):
+                score = 0.0
+            if name:
+                send_scoreboard_command(f"[SCORE_SET][PLAYER]{name}[SCORE]{score}")
+        elif action == 'player_add':
+            name = str(data.get('name', '')).strip()
+            if name:
+                send_scoreboard_command(f"[PLAYER_ADD][NAME]{name}")
+        elif action == 'player_remove':
+            name = str(data.get('name', '')).strip()
+            if name:
+                send_scoreboard_command(f"[PLAYER_REMOVE][NAME]{name}")
+        elif action == 'player_rename':
+            old_name = str(data.get('old_name', '')).strip()
+            new_name = str(data.get('new_name', '')).strip()
+            if old_name and new_name:
+                send_scoreboard_command(f"[PLAYER_RENAME][OLD]{old_name}[NEW]{new_name}")
+        elif action == 'sc_set_prefs':
+            cfg_path = os.path.join('scoreboard_data', 'scoreboard_config.json')
+            if os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, 'r', encoding='utf-8') as cf:
+                        sb_cfg = json.load(cf)
+                    sb_cfg.setdefault('style', {})
+                    sb_cfg['style'].setdefault('delta_auto_send',     {'selected': True})
+                    sb_cfg['style'].setdefault('delta_delay_together', {'selected': False})
+                    sb_cfg['style']['delta_auto_send']['selected']     = bool(data.get('auto_send', True))
+                    sb_cfg['style']['delta_delay_together']['selected'] = bool(data.get('delay_together', False))
+                    with open(cfg_path, 'w', encoding='utf-8') as cf:
+                        json.dump(sb_cfg, cf, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    print(f"Error saving sc_set_prefs: {e}")
+        elif action == 'scores_clear_all':
+            send_scoreboard_command("[CLEAR_ALL]")
+        elif action == 'get_scores':
+            _push_web_scores()
+        elif action == 'player_set_team':
+            name      = str(data.get('name', '')).strip()
+            team_name = str(data.get('team', '')).strip()
+            if name:
+                send_scoreboard_command(f"[PLAYER_SET_TEAM][NAME]{name}[TEAM]{team_name}")
+        elif action == 'get_teams':
+            send_scoreboard_command("[GET_TEAM_NAMES]")
+    root.after(0, _dispatch)
+
+web_server.set_host_action_callback(_handle_host_action)
 scan_directory(True)
 create_first_row_buttons()
 rebuild_shortcut_dispatch()
