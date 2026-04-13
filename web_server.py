@@ -16,6 +16,8 @@ import queue
 import subprocess
 import sys
 import threading
+import time
+from collections import deque
 
 logging.getLogger('werkzeug').setLevel(logging.ERROR)
 logging.getLogger('flask.app').setLevel(logging.ERROR)
@@ -83,14 +85,37 @@ _taken_ranks:  set = set()   # ranks already submitted in the current rank-round
 _host_password: str = ''        # password that grants host-view access
 _host_sids: set = set()         # connected socket SIDs granted host access
 _submitted_answers: list = []   # answers collected for the current question
+_host_messages: list = []       # player->host inbox entries: {name, text, ts}
 _current_rules: dict = {}       # rules header+body shown on the waiting screen
 _connected_players: dict = {}   # sid → player name
 _submitted_sids: set = set()    # SIDs that submitted in the current question
 _shadow_kicked_ips: set = set()  # IPs whose answers are silently discarded (kick)
 _shadow_kicked_players: dict = {}  # name → IP for host unban display
 _banned_names: set = set()    # names whose answers are silently discarded (name ban)
+_emoji_disabled_names: set = set()  # names whose emoji reactions are silently discarded
 _hard_banned_ips: set = set() # IPs that are disconnected on connect (IP ban)
+_emoji_events_by_name: dict = {}   # name -> deque[timestamp]
+_emoji_timeout_until: dict = {}    # name -> epoch seconds when timeout ends
+_emoji_offense_level: dict = {}    # name -> escalating timeout level
+_emoji_last_offense: dict = {}     # name -> epoch seconds of last offense
+
+# Emoji anti-spam settings
+_EMOJI_WINDOW_SECONDS = 10.0
+_EMOJI_TIMEOUT_THRESHOLD = 50       # >50 in window triggers timeout
+_EMOJI_WARN_THRESHOLD = 24          # optional warning threshold
+_EMOJI_BURST_WINDOW_SECONDS = 1.0
+_EMOJI_BURST_THRESHOLD = 10         # >=10 in 1s triggers short timeout
+_EMOJI_BASE_TIMEOUT_SECONDS = 5.0
+_EMOJI_REPEAT_MULTIPLIER = 1.1
+_EMOJI_MAX_TIMEOUT_SECONDS = 180.0
+_EMOJI_REPEAT_DECAY_SECONDS = 600.0
+
+# Buzzer state
+_buzzer_open: bool = False
+_buzzer_locked: bool = False
+_buzzer_opened_at_ms: int | None = None
 _ngrok_process = None
+_server_thread = None      # Thread running _socketio.run(); kept alive across stop()/start() cycles
 _server_started = False    # True once start() completes successfully
 _titles_provider = None         # callable() → list[str]; set by main app
 _player_names_provider = None   # callable() → list[str]; set by main app
@@ -110,6 +135,161 @@ _host_action_callback = None  # callable(action, data) set by main app for remot
 _pending_selections: dict = {}  # name → answer; silently tracks current selection before submit
 
 public_url = None          # Readable from main app after start()
+
+
+def _get_emoji_status(name: str) -> dict:
+  """Return emoji moderation status for a player name."""
+  now = time.time()
+  until = float(_emoji_timeout_until.get(name, 0.0) or 0.0)
+  remaining = max(0.0, until - now)
+  return {
+    'name': name,
+    'muted': bool(name in _emoji_disabled_names),
+    'timed_out': remaining > 0.0,
+    'timeout_until': until,
+    'remaining_ms': int(remaining * 1000),
+  }
+
+
+def _emit_emoji_status_for_name(name: str):
+  """Emit current emoji moderation status to all connected clients with this player name."""
+  if not FLASK_AVAILABLE or _socketio is None or not name:
+    return
+  payload = _get_emoji_status(name)
+  for sid, pname in list(_connected_players.items()):
+    if pname == name:
+      try:
+        _socketio.emit('emoji_status', payload, to=sid)
+      except Exception:
+        pass
+
+
+def _apply_emoji_timeout(name: str, short: bool = False) -> float:
+  """Apply progressive timeout for a player and return duration seconds."""
+  now = time.time()
+  lvl = int(_emoji_offense_level.get(name, 0) or 0)
+  last = float(_emoji_last_offense.get(name, 0.0) or 0.0)
+  # Decay offense after a long quiet period.
+  if lvl > 0 and last > 0 and (now - last) > _EMOJI_REPEAT_DECAY_SECONDS:
+    lvl = max(0, lvl - 1)
+  lvl += 1
+  _emoji_offense_level[name] = lvl
+  _emoji_last_offense[name] = now
+
+  if short:
+    duration = min(_EMOJI_MAX_TIMEOUT_SECONDS, 8.0)
+  else:
+    duration = min(_EMOJI_MAX_TIMEOUT_SECONDS, _EMOJI_BASE_TIMEOUT_SECONDS * (_EMOJI_REPEAT_MULTIPLIER ** (lvl - 1)))
+  _emoji_timeout_until[name] = now + duration
+  return duration
+
+
+def _emit_buzzer_state(to_sid: str = None):
+  """Emit current buzzer state to clients (optionally one sid)."""
+  if not FLASK_AVAILABLE or _socketio is None:
+    return
+  order = []
+  if _current_question and _current_question.get('buzzer_only'):
+    order = [{'name': str(a.get('name', ''))} for a in list(_submitted_answers)]
+  payload = {
+    'open': bool(_buzzer_open),
+    'locked': bool(_buzzer_locked),
+    'order': order,
+  }
+  if to_sid:
+    _socketio.emit('buzzer_state', payload, to=to_sid)
+  else:
+    _socketio.emit('buzzer_state', payload)
+
+
+def _emit_host_messages(to_sid: str = None):
+  """Emit host inbox entries to host clients."""
+  if not FLASK_AVAILABLE or _socketio is None:
+    return
+  payload = {'messages': list(_host_messages)}
+  if to_sid:
+    _socketio.emit('host_messages_update', payload, to=to_sid)
+  else:
+    for sid in list(_host_sids):
+      _socketio.emit('host_messages_update', payload, to=sid)
+
+
+def _emit_host_message_toast(entry: dict):
+  """Emit a live toast event to host clients for a new inbox message."""
+  if not FLASK_AVAILABLE or _socketio is None:
+    return
+  for sid in list(_host_sids):
+    _socketio.emit('host_message_toast', dict(entry or {}), to=sid)
+
+
+def _emit_peer_answers_update():
+  """Emit peer answer list.
+
+  Normal rounds: only to players who already submitted.
+  Buzzer rounds: to everyone (host excluded; host has answer_update panel).
+  """
+  if not FLASK_AVAILABLE or _socketio is None:
+    return
+  payload = {'answers': list(_submitted_answers)}
+  if _current_question and _current_question.get('buzzer_only'):
+    for sid in list(_connected_players.keys()):
+      if sid not in _host_sids:
+        _socketio.emit('peer_answers_update', payload, to=sid)
+  else:
+    for sid in list(_submitted_sids):
+      _socketio.emit('peer_answers_update', payload, to=sid)
+
+
+def _reset_buzzer(open_after_reset: bool = False):
+  """Reset buzzer order and state; optionally open immediately."""
+  global _buzzer_open, _buzzer_locked, _buzzer_opened_at_ms
+  _buzzer_open = bool(open_after_reset)
+  _buzzer_locked = False
+  _buzzer_opened_at_ms = int(time.time() * 1000) if _buzzer_open else None
+
+
+def control_buzzer(cmd: str) -> bool:
+  """Apply a buzzer command and broadcast updated state.
+
+  Supported commands: lock (toggle), reset.
+  Returns True if a command was applied.
+  """
+  global _buzzer_open, _buzzer_locked, _buzzer_opened_at_ms
+  global _submitted_answers, _submitted_sids, _pending_selections
+  c = str(cmd or '').strip().lower()
+  is_buzzer_round = bool(_current_question and _current_question.get('buzzer_only'))
+
+  if c in ('lock', 'toggle_lock'):
+    if not is_buzzer_round:
+      return False
+    _buzzer_open = True
+    _buzzer_locked = not _buzzer_locked
+    _buzzer_opened_at_ms = None if _buzzer_locked else int(time.time() * 1000)
+  elif c == 'reset':
+    if not is_buzzer_round:
+      return False
+    _submitted_answers = []
+    _submitted_sids = set()
+    _pending_selections = {}
+    if _buzzer_open and not _buzzer_locked:
+      _buzzer_opened_at_ms = int(time.time() * 1000)
+    _broadcast_players_update()
+    _emit_peer_answers_update()
+    if _host_sids:
+      for sid in list(_host_sids):
+        _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+  else:
+    return False
+  _emit_buzzer_state()
+  return True
+
+
+def buzzer_is_open() -> bool:
+  return bool(_buzzer_open)
+
+
+def buzzer_is_locked() -> bool:
+  return bool(_buzzer_locked)
 
 
 def _write_color_command(name: str, bg: str, text: str):
@@ -148,7 +328,7 @@ _HTML = r"""<!DOCTYPE html>
       font-family: 'Segoe UI', sans-serif;
       display: flex; flex-direction: column;
       align-items: center; justify-content: flex-start;
-      padding: 60px 20px 20px; gap: 8px;
+      padding: 60px 20px 92px; gap: 8px;
     }
     h1 {
       font-size: 0.9em; color: #5566aa; letter-spacing: 0.22em;
@@ -295,22 +475,39 @@ _HTML = r"""<!DOCTYPE html>
       border-top: 1px solid #3a7abf; border-bottom: 1px solid #3a7abf;
       pointer-events: none; z-index: 1;
     }
-    .drum-value-display {
-      text-align: center; font-size: 1.1em; color: #aaa; margin-bottom: 14px;
-    }
     .drum-nav {
       display: flex; flex-direction: column; justify-content: center; gap: 8px;
     }
     .drum-nav-btn {
-      width: 46px; height: 38px;
-      background: #1e1e1e; border: 1px solid #333; border-radius: 6px;
-      color: #666; font-size: 0.8em; cursor: pointer;
+      min-width: 78px; width: auto; height: 46px; padding: 0 6px;
+      background: #1e1e1e; border: 1px solid #445; border-radius: 6px;
+      color: #aab; font-size: 1.2em; font-weight: 700; cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       transition: color .15s, border-color .15s;
-      letter-spacing: -0.5px;
+      letter-spacing: 0;
     }
-    .drum-nav-btn:hover { color: #ccc; border-color: #556; }
+    .drum-nav-btn:hover { color: #fff; border-color: #66a; background: #252535; }
     .drum-nav-btn:active { background: #2a2a2a; }
+    .drum-shortcuts {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 8px;
+      margin-bottom: 10px;
+    }
+    .drum-shortcut-btn {
+      padding: 5px 8px;
+      min-width: 50px;
+      background: #171726;
+      border: 1px solid #334;
+      border-radius: 6px;
+      color: #9ab;
+      font-size: 0.9em;
+      cursor: pointer;
+      line-height: 1.1;
+    }
+    .drum-shortcut-btn:hover { color: #def; border-color: #557; background: #202035; }
 
     /* ── Input mode toggle ── */
     .input-toggle {
@@ -448,6 +645,139 @@ _HTML = r"""<!DOCTYPE html>
       font-size: 0.78em; color: #556; margin: 0 0 8px;
       text-transform: uppercase; letter-spacing: .05em;
     }
+    #emoji-status {
+      display: none;
+      margin: 8px 0 0;
+      font-size: 0.82em;
+      color: #d99;
+      letter-spacing: .02em;
+    }
+    #host-msg-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+      align-items: center;
+    }
+    #host-msg-input {
+      flex: 1;
+      min-width: 0;
+      padding: 8px 10px;
+      background: #1a1a2a;
+      border: 1px solid #334;
+      border-radius: 8px;
+      color: #dde;
+      font-size: 0.86em;
+    }
+    #host-msg-send {
+      padding: 8px 10px;
+      background: #202040;
+      border: 1px solid #446;
+      border-radius: 8px;
+      color: #bcd;
+      font-size: 0.82em;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    #host-msg-send:hover { background: #2a2a55; color: #def; }
+
+    #host-messages-wrap {
+      margin-top: 10px;
+      margin-bottom: 8px;
+      border: 1px solid #2f3550;
+      border-radius: 10px;
+      background: #101326;
+      padding: 8px;
+      text-align: left;
+    }
+    #host-messages-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+      font-size: 0.78em;
+      color: #88a;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    #host-messages-clear {
+      background: transparent;
+      border: 1px solid #334;
+      border-radius: 6px;
+      color: #778;
+      font-size: 0.75em;
+      padding: 3px 7px;
+      cursor: pointer;
+    }
+    #host-messages-clear:hover { color: #ccd; border-color: #556; }
+    #host-messages-list {
+      max-height: 170px;
+      overflow-y: auto;
+      border: 1px solid #202034;
+      border-radius: 8px;
+      background: #0b0b16;
+      padding: 5px 7px;
+    }
+    .hm-item {
+      padding: 5px 0;
+      border-bottom: 1px solid #171727;
+      font-size: 0.84em;
+      color: #c7cce0;
+      word-break: break-word;
+      line-height: 1.35;
+    }
+    .hm-item:last-child { border-bottom: none; }
+    .hm-name { color: #9fc4ff; font-weight: bold; }
+    .hm-ts {
+      color: #667;
+      font-size: 0.82em;
+      margin-left: 6px;
+      white-space: nowrap;
+      display: inline-block;
+    }
+
+    #host-msg-toast {
+      display: none;
+      position: fixed;
+      left: 50%;
+      top: 18px;
+      transform: translateX(-50%);
+      z-index: 950;
+      width: min(94vw, 560px);
+      background: rgba(16,16,32,0.95);
+      border: 1px solid #446;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      padding: 13px 15px;
+      color: #dde7ff;
+      font-size: 1em;
+      line-height: 1.35;
+    }
+    #host-msg-toast.active { display: block; }
+    #host-msg-toast .from { color: #9fc4ff; font-weight: bold; font-size: 1.03em; margin-bottom: 2px; }
+    #host-msg-toast .body {
+      color: #dfe5ff;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    #gta-toast {
+      display: none;
+      position: fixed;
+      left: 50%;
+      top: 72px;
+      transform: translateX(-50%);
+      z-index: 951;
+      width: min(90vw, 420px);
+      background: rgba(20,20,30,0.95);
+      border: 1px solid #663;
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: #ffd;
+      font-size: 0.95em;
+      text-align: center;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    }
+    #gta-toast.active { display: block; }
     .emoji-btn {
       background: transparent; border: 1px solid #2a2a3a;
       border-radius: 8px; padding: 6px 8px;
@@ -506,6 +836,53 @@ _HTML = r"""<!DOCTYPE html>
     }
     #emoji-picker-reset:hover { background: #22223a; color: #aaf; }
     #emoji-picker-footer { display: flex; gap: 8px; }
+
+    /* ── Buzzer panel ── */
+    #buzzer-panel {
+      display: none;
+      margin-top: 10px;
+      padding: 10px;
+      background: #141425;
+      border: 1px solid #2f2f4a;
+      border-radius: 10px;
+      text-align: center;
+    }
+    #buzzer-status {
+      font-size: 0.84em;
+      color: #99a;
+      margin-bottom: 8px;
+      letter-spacing: .02em;
+    }
+    #buzz-btn {
+      width: 100%;
+      padding: 30px 13px;
+      height: 120px;
+      border: 2px solid #228;
+      border-radius: 10px;
+      background: #2a4a78;
+      color: #ffffff;
+      font-size: 2.2em;
+      font-weight: bold;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #buzz-btn:hover:not(:disabled) { background: #3a6ab8; border-color: #44f; }
+    #buzz-btn:disabled { background: #555; color: #999; border-color: #666; cursor: default; opacity: 1; }
+    #buzzer-order {
+      margin-top: 8px;
+      max-height: 130px;
+      overflow-y: auto;
+      text-align: left;
+      font-size: 0.82em;
+      color: #b8bfd3;
+      border-top: 1px solid #24243a;
+      padding-top: 6px;
+      display: none;
+    }
+    .bz-row { padding: 2px 4px; border-radius: 4px; }
+    .bz-row.bz-me { background: #1f2f4a; color: #d9ebff; }
 
     /* ── Name screen ── */
     #name-screen { text-align: center; }
@@ -651,10 +1028,14 @@ _HTML = r"""<!DOCTYPE html>
     }
     #kick-btn-shadow { background: #3a2a1a; color: #fa8; }
     #kick-btn-shadow:hover { background: #5a3a1a; color: #fcc; }
+    #kick-btn-rename { background: #1a2f1a; color: #9fd48c; }
+    #kick-btn-rename:hover { background: #214021; color: #d4ffb8; }
     #kick-btn-name { background: #2a1a3a; color: #a8f; }
     #kick-btn-name:hover { background: #3a1a5a; color: #ccf; }
     #kick-btn-ip { background: #1a2a3a; color: #48f; }
     #kick-btn-ip:hover { background: #1a3a5a; color: #8cf; }
+    #kick-btn-emoji { background: #1f2a16; color: #9fd48c; }
+    #kick-btn-emoji:hover { background: #2b3a1d; color: #c9efb8; }
     #kick-btn-cancel { background: #222; color: #aaa; }
     #kick-btn-cancel:hover { background: #333; color: #fff; }
 
@@ -784,15 +1165,19 @@ _HTML = r"""<!DOCTYPE html>
       position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
       background: #0d0d1a; border: 1px solid #334; border-radius: 20px;
       padding: 5px 18px; pointer-events: none; z-index: 301;
+      transition: transform 0.25s ease;
+      display: inline-flex; align-items: center; gap: 10px; white-space: nowrap; overflow: visible;
     }
     #timer-display {
       font-family: monospace; font-size: 3em; font-weight: bold;
       color: #ffffff; letter-spacing: 0.06em;
+      white-space: nowrap;
+      flex: 0 0 auto; margin-right: 6px;
     }
     #timer-display.timer-warning { color: #ff4444; }
     #timer-title {
       font-size: 0.9em; color: #5566aa; letter-spacing: 0.22em;
-      text-transform: uppercase; font-weight: 700; white-space: nowrap;
+      text-transform: uppercase; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32vw;
     }
     .tt-mobile { display: none; }
     @media (max-width: 480px) {
@@ -809,9 +1194,25 @@ _HTML = r"""<!DOCTYPE html>
     }
     #metadata-wrap {
       position: fixed; bottom: 16px; right: 12px; z-index: 200;
-      display: flex; gap: 6px; align-items: center;
+      display: flex; flex-direction: row; flex-wrap: nowrap; gap: 6px; align-items: center;
       transition: right 0.25s ease;
     }
+    #current-time {
+      background: #1a1a2a; border: 1px solid #334; border-radius: 20px;
+      color: #aaa; font-size: 0.82em; padding: 7px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      white-space: nowrap; pointer-events: none;
+      min-width: 84px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      overflow: hidden;
+    }
+    #current-time { order: 1; margin-right: 6px; }
+    #metadata-btn { order: 2; }
     #controls-btn {
       background: #1a1a2a; border: 1px solid #334; border-radius: 20px;
       color: #aaa; font-size: 0.82em; padding: 7px 13px; cursor: pointer;
@@ -849,6 +1250,7 @@ _HTML = r"""<!DOCTYPE html>
       padding: 14px 16px 18px; box-shadow: 0 8px 32px rgba(0,0,0,0.7);
       overflow: hidden;
     }
+    #ctrl-list-popup-box.search-mode { max-width: 760px; width: 96%; }
     #ctrl-list-popup-header {
       display: flex; align-items: center; justify-content: space-between;
     }
@@ -888,6 +1290,13 @@ _HTML = r"""<!DOCTYPE html>
     }
     .ctrl-popup-item:hover { background: #1a1a2e; color: #eef; }
     .ctrl-popup-item.ctrl-yt-active { background: #1a2a1a; color: #afa; }
+    .ctrl-popup-divider {
+      height: 1px;
+      margin: 6px 8px;
+      background: #2a2a3f;
+      border-radius: 1px;
+      opacity: 0.85;
+    }
     .ctrl-popup-item-dur { color: #556; font-size: 0.85em; flex-shrink: 0; }
     .ctrl-popup-item-title { flex: 1; }
     .ctrl-popup-item-add {
@@ -896,6 +1305,50 @@ _HTML = r"""<!DOCTYPE html>
     }
     .ctrl-popup-item-add:hover { color: #aaf; border-color: #446; }
     .ctrl-popup-item-song { color: #778; font-size: 0.85em; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
+    .ctrl-popup-item-search {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr);
+      align-items: stretch;
+      gap: 8px;
+      min-height: 64px;
+    }
+    .ctrl-popup-search-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      align-items: stretch;
+      justify-content: center;
+    }
+    .ctrl-popup-search-actions .ctrl-popup-item-add {
+      width: 100%;
+      min-width: 0;
+      padding: 1px 0;
+      text-align: center;
+      line-height: 1.2;
+      font-size: 0.74em;
+    }
+    .ctrl-popup-search-text {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto auto auto;
+      gap: 2px;
+      align-content: center;
+    }
+    .ctrl-popup-search-line {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .ctrl-popup-search-line.song { color: #ccd; font-size: 0.88em; }
+    .ctrl-popup-search-line.artist { color: #9aa7c6; font-size: 0.82em; }
+    .ctrl-popup-search-line.meta { color: #778; font-size: 0.78em; }
+    .ctrl-search-hit {
+      color: #ffe8a6;
+      background: rgba(180, 130, 30, 0.28);
+      border-radius: 3px;
+      padding: 0 2px;
+    }
     #controller-box {
       background: #0d0d1a; border: 1px solid #334; border-radius: 16px 16px 0 0;
       width: 100%; max-width: 480px; padding: 10px 20px 32px;
@@ -917,6 +1370,7 @@ _HTML = r"""<!DOCTYPE html>
       z-index: 200; display: none;
       max-height: calc(100vh - 40px); flex-direction: column;
       pointer-events: none;
+      transition: transform 0.25s ease;
     }
     #sc-view-btn {
       pointer-events: auto;
@@ -1159,18 +1613,21 @@ _HTML = r"""<!DOCTYPE html>
     }
     .ctrl-bonus-btn.ctrl-bonus-more:hover { color: #88a; border-color: #334; }
     /* ── Button section color coding ── */
-    .ctrl-sect-queue  { background: #2a0a0a; border-color: #c66; color: #c66; box-shadow: 0 0 6px 0 rgba(160,40,40,0.45); }
-    .ctrl-sect-queue:hover  { background: #3d1010; color: #f88; border-color: #f88; box-shadow: 0 0 9px 0 rgba(160,40,40,0.7); }
-    .ctrl-sect-bonus  { background: #0a1628; border-color: #6af; color: #6af; box-shadow: 0 0 6px 0 rgba(30,100,200,0.45); }
-    .ctrl-sect-bonus:hover  { background: #102040; color: #9cf; border-color: #9cf; box-shadow: 0 0 9px 0 rgba(30,100,200,0.7); }
-    .ctrl-sect-toggle { background: #12151a; border-color: #3a4450; color: #5a6878; }
-    .ctrl-sect-toggle:hover { background: #1a2028; color: #8a9bb0; border-color: #6a7a90; }
-    .ctrl-sect-reveal { background: #0a1e10; border-color: #6c6; color: #6c6; box-shadow: 0 0 6px 0 rgba(40,140,60,0.45); }
-    .ctrl-sect-reveal:hover { background: #102818; color: #9e9; border-color: #9e9; box-shadow: 0 0 9px 0 rgba(40,140,60,0.7); }
-    .ctrl-sect-mark   { background: #250a18; border-color: #c88; color: #c88; box-shadow: 0 0 6px 0 rgba(140,40,80,0.45); }
-    .ctrl-sect-mark:hover   { background: #301020; color: #eaa; border-color: #eaa; box-shadow: 0 0 9px 0 rgba(140,40,80,0.7); }
-    .ctrl-sect-session { background: #2a0a0a; border-color: #c55; color: #c55; box-shadow: 0 0 6px 0 rgba(160,30,30,0.45); }
-    .ctrl-sect-session:hover { background: #3d1010; color: #f88; border-color: #f88; box-shadow: 0 0 9px 0 rgba(160,30,30,0.7); }
+    .ctrl-sect-queue  { background: #1e0c0c; border-color: #334; color: #c66; box-shadow: none; }
+    .ctrl-sect-queue:hover  { background: #2e1010; color: #f88; border-color: #f88; box-shadow: 0 0 5px 0 rgba(160,40,40,0.40); }
+    .ctrl-sect-bonus  { background: #0c1220; border-color: #334; color: #6af; box-shadow: none; }
+    .ctrl-sect-bonus:hover  { background: #102040; color: #9cf; border-color: #9cf; box-shadow: 0 0 5px 0 rgba(30,100,200,0.40); }
+    .ctrl-sect-toggle { background: #12151a; border-color: #334; color: #7a8898; }
+    .ctrl-sect-toggle:hover { background: #1a2028; color: #aabbd0; border-color: #6a7a90; }
+    .ctrl-sect-reveal { background: #0c1810; border-color: #334; color: #6c6; box-shadow: none; }
+    .ctrl-sect-reveal:hover { background: #102818; color: #9e9; border-color: #9e9; box-shadow: 0 0 5px 0 rgba(40,140,60,0.40); }
+    .ctrl-sect-mark   { background: #1a0c14; border-color: #334; color: #c88; box-shadow: none; }
+    .ctrl-sect-mark:hover   { background: #2a1020; color: #eaa; border-color: #eaa; box-shadow: 0 0 5px 0 rgba(140,40,80,0.40); }
+    .ctrl-sect-session { background: #1e0c0c; border-color: #334; color: #c55; box-shadow: none; }
+    .ctrl-sect-session:hover { background: #2e1010; color: #f88; border-color: #f88; box-shadow: 0 0 5px 0 rgba(160,30,30,0.40); }
+    /* Scoreboard-specific color (distinct) */
+    .ctrl-sect-scoreboard { background: #2a083a; border-color: #334; color: #f6a; box-shadow: none; }
+    .ctrl-sect-scoreboard:hover { background: #3a0f50; color: #ffd; border-color: #e6a; box-shadow: 0 0 5px 0 rgba(200,80,160,0.40); }
     /* ── Extras popup ── */
     #ctrl-extras-popup-overlay {
       display: none; position: fixed; inset: 0;
@@ -1180,7 +1637,7 @@ _HTML = r"""<!DOCTYPE html>
     #ctrl-extras-popup-overlay.active { display: flex; }
     #ctrl-extras-popup-box {
       background: #0d0d1a; border: 1px solid #334; border-radius: 14px;
-      width: 90%; max-width: 460px; max-height: min(70vh, 560px);
+      width: 95%; max-width: 680px; max-height: min(70vh, 560px);
       display: flex; flex-direction: column; gap: 10px;
       padding: 14px 16px 18px; box-shadow: 0 8px 32px rgba(0,0,0,0.7);
       overflow-y: auto; scrollbar-width: thin; scrollbar-color: #334 transparent;
@@ -1249,13 +1706,38 @@ _HTML = r"""<!DOCTYPE html>
     }
     .ctrl-info-reveal-btn:hover { background: #1e1e3a; color: #ccf; }
     /* ── Mark buttons active state ── */
-    .ctrl-mark-btn.ctrl-mark-active { background: #2a1a3a; border-color: #66f; color: #ccf; }
-    .ctrl-mark-btn.ctrl-mark-active:hover { background: #331a44; color: #eef; }
+    .ctrl-mark-btn.ctrl-mark-active { background: #2a1020; border-color: #ee88aa; color: #ffbbcc; box-shadow: 0 0 7px 0 rgba(200,80,120,0.50); }
+    .ctrl-mark-btn.ctrl-mark-active:hover { background: #3a1428; border-color: #ffaac0; color: #ffd0dd; }
     /* ── Toggle buttons active state ── */
     #ctrl-toggles-panel { padding: 0 2px 2px; }
     #ctrl-toggles-grid { display: flex; flex-wrap: wrap; gap: 7px; justify-content: center; }
-    .ctrl-toggle-btn.ctrl-toggle-active { background: #0e2238; border-color: #3a88cc; color: #66bbff; box-shadow: 0 0 7px 0 rgba(50,120,200,0.55); }
-    .ctrl-toggle-btn.ctrl-toggle-active:hover { background: #142d4a; color: #99d4ff; border-color: #55aaee; }
+    .ctrl-toggle-btn.ctrl-toggle-active { background: #0d1e2c; border-color: #99bbdd; color: #cce0f5; box-shadow: 0 0 7px 0 rgba(130,180,230,0.50); }
+    .ctrl-toggle-btn.ctrl-toggle-active:hover { background: #122438; color: #ddf0ff; border-color: #bbddee; }
+    .ctrl-toggle-btn.ctrl-sect-queue.ctrl-toggle-active { background: #2e1010; border-color: #ff7755; color: #ffccaa; box-shadow: 0 0 7px 0 rgba(220,90,50,0.55); }
+    .ctrl-toggle-btn.ctrl-sect-queue.ctrl-toggle-active:hover { background: #3a1414; border-color: #ffaa88; color: #ffddc8; }
+    .ctrl-sect-session.ctrl-toggle-active { background: #2e1010; border-color: #ff7777; color: #ffcccc; box-shadow: 0 0 7px 0 rgba(220,80,80,0.50); }
+    .ctrl-sect-session.ctrl-toggle-active:hover { background: #3a1414; border-color: #ff9999; color: #ffe0e0; }
+    .ctrl-sect-scoreboard.ctrl-toggle-active { background: #3a0f50; border-color: #ff88cc; color: #ffd6ee; box-shadow: 0 0 9px 0 rgba(210,95,180,0.60); }
+    .ctrl-sect-scoreboard.ctrl-toggle-active:hover { background: #4a1464; border-color: #ffb3dd; color: #ffe6f5; }
+    /* Info reveal buttons: highlight while the matching popup is showing */
+    .ctrl-sect-reveal.ctrl-reveal-active { background: #0e2814; border-color: #44ee77; color: #88ffaa; box-shadow: 0 0 8px 1px rgba(50,230,90,0.55); }
+    .ctrl-sect-reveal.ctrl-reveal-active:hover { background: #143820; border-color: #77ffaa; color: #bbffcc; }
+    .ctrl-bonus-btn.ctrl-bonus-active { background: #0a2050; border-color: #55aaff; color: #aaddff; box-shadow: 0 0 7px 0 rgba(50,140,255,0.50); }
+    .ctrl-bonus-btn.ctrl-bonus-active:hover { background: #0e2a66; border-color: #88ccff; color: #cceeff; }
+    /* Make Buzz Lock state much more obvious when enabled */
+    [data-extra-id="buzz_lock"].ctrl-toggle-active,
+    [data-proxy-extra="buzz_lock"].ctrl-toggle-active {
+      background: #4a1717;
+      border-color: #ff6a6a;
+      color: #ffd4d4;
+      box-shadow: 0 0 7px 0 rgba(255, 80, 80, 0.40);
+    }
+    [data-extra-id="buzz_lock"].ctrl-toggle-active:hover,
+    [data-proxy-extra="buzz_lock"].ctrl-toggle-active:hover {
+      background: #5c1c1c;
+      border-color: #ff8a8a;
+      color: #ffe4e4;
+    }
     /* ── Seek row ── */
     #ctrl-seek-row {
       display: flex; align-items: center; gap: 8px;
@@ -1433,10 +1915,77 @@ _HTML = r"""<!DOCTYPE html>
     .mt-slug.playing { color: #88f; }
     .mt-title { color: #ccc; }
     .mt-artist { color: #777; font-size: 0.92em; }
+    .mt-artist-item { display: inline-block; }
+    .artist-themes-btn { background: #181825; border: 1px solid #334; color: #88f; padding: 2px 6px; margin-left: 4px; cursor: pointer; border-radius: 2px; font-size: 0.85em; font-weight: bold; }
+    .artist-themes-btn:hover { background: #1f1f35; border-color: #446; color: #aaf; }
+    .studio-themes-btn { background: #17201c; border: 1px solid #2f4a3b; color: #8fd5b1; padding: 2px 6px; margin-left: 4px; cursor: pointer; border-radius: 2px; font-size: 0.85em; font-weight: bold; }
+    .studio-themes-btn:hover { background: #1b2a23; border-color: #3d6350; color: #b7f3d5; }
     .mt-ver { color: #555; font-size: 0.85em; margin-left: 10px; }
     .mt-ver.playing { color: #8cf; }
     .mt-flags { color: #a88; font-size: 0.82em; }
     .mt-props { color: #555; font-size: 0.80em; }
+    #artist-themes-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 860;
+      align-items: center; justify-content: center;
+      padding: 14px;
+    }
+    #artist-themes-overlay.active { display: flex; }
+    #artist-themes-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 12px;
+      width: min(90vw, 620px); max-height: 80vh;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    #artist-themes-title {
+      padding: 12px 14px; color: #aaf; font-size: 0.9em;
+      letter-spacing: .04em; text-transform: uppercase;
+      border-bottom: 1px solid #223;
+    }
+    #artist-themes-content {
+      padding: 12px 14px; overflow: auto;
+      color: #bbb; line-height: 1.45; font-size: 0.86em;
+      background: #111;
+      max-height: min(62vh, 620px);
+    }
+    .artist-themes-summary {
+      color: #8aa; font-size: 0.8em; margin-bottom: 10px;
+      letter-spacing: .03em; text-transform: uppercase;
+    }
+    .artist-themes-list { display: flex; flex-direction: column; gap: 8px; }
+    .artist-theme-row {
+      background: #151525; border: 1px solid #2b2b45; border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .artist-theme-title {
+      color: #d9dcff; font-weight: 700;
+      line-height: 1.3;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    }
+    .artist-theme-chip {
+      display: inline-block;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: #1d2840;
+      border: 1px solid #35527a;
+      color: #9cc5ff;
+      font-size: 0.78em;
+      line-height: 1.55;
+    }
+    .studio-series-group {
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .studio-series-title {
+      color: #8893b8; font-size: 0.73em; text-transform: uppercase;
+      letter-spacing: .06em; margin: 2px 2px 0;
+    }
+    .artist-themes-empty {
+      color: #666; text-align: center; padding: 10px 0;
+    }
+    #artist-themes-close {
+      margin: 10px; padding: 10px; background: #222; border: 1px solid #444;
+      border-radius: 8px; color: #aaa; cursor: pointer; font-size: 0.92em;
+    }
+    #artist-themes-close:hover { background: #333; color: #fff; }
     /* ── More tab ── */
     #metadata-more-content { font-size: 0.84em; color: #ccc; }
     .more-sub-tabs { display: flex; gap: 4px; margin-bottom: 6px; flex-wrap: wrap; }
@@ -1480,7 +2029,7 @@ _HTML = r"""<!DOCTYPE html>
     /* ── Wide-screen layout (≥900px) ── */
     @media (min-width: 900px) {
       body {
-        padding: 60px 20px 20px;
+        padding: 60px 20px 92px;
         transition: padding-left 0.25s ease, padding-right 0.25s ease;
       }
       .box { max-width: 660px; }
@@ -1536,13 +2085,26 @@ _HTML = r"""<!DOCTYPE html>
       body.ctrl-open #bottom-left-wrap   { left: calc(360px + 12px); }
       body.meta-open #top-bar            { right: 360px; }
       body.meta-open #metadata-wrap      { right: calc(360px + 12px); }
+      /* Shift centered elements (timer / bottom-center buttons) so they stay centered with content */
+      body.meta-open #timer-bar, body.meta-open #sc-view-wrap {
+        transform: translateX(calc(-50% - 180px));
+      }
+      body.ctrl-open #timer-bar, body.ctrl-open #sc-view-wrap {
+        transform: translateX(calc(-50% + 180px));
+      }
+      /* Both panels open: keep centered elements centered between panels */
+      body.ctrl-open.meta-open #timer-bar,
+      body.ctrl-open.meta-open #sc-view-wrap {
+        transform: translateX(-50%);
+      }
       #bottom-left-wrap { transition: left 0.25s ease; }
 
       /* Hide Theme Information text in controller — info panel on the right covers it */
       /* (ctrl-info-top/main/bottom are now in the Info tab of ctrl-info-panel) */
 
-      /* Hide controller section headers on widescreen — keep Up Next and Playlist */
+      /* Hide controller Info section on widescreen — metadata panel already shows info */
       #ctrl-infotext-toggle { display: none !important; }
+      #ctrl-infotext-panel { display: none !important; }
 
       /* Close button inside controller panel */
       #controller-box { position: relative; }
@@ -1597,8 +2159,10 @@ _HTML = r"""<!DOCTYPE html>
       <div id="kick-player-name"></div>
       <div class="kick-opt-btns">
         <button id="kick-btn-shadow">Kick</button>
+        <button id="kick-btn-rename">Rename</button>
         <button id="kick-btn-name">Name Ban</button>
         <button id="kick-btn-ip">IP Ban</button>
+        <button id="kick-btn-emoji">Disable Emojis</button>
         <button id="kick-btn-cancel" onclick="_kickCancel()">Cancel</button>
       </div>
     </div>
@@ -1662,13 +2226,24 @@ _HTML = r"""<!DOCTYPE html>
     <div id="sc-host-controls" style="display:none">
       <div id="sc-sep"></div>
       <div id="sc-add-row">
-        <input id="sc-add-input" type="text" placeholder="Player name" autocomplete="off"
-               list="player-names-list"
-               onkeydown="if(event.key==='Enter')_scAddPlayer()">
-        <button id="sc-add-btn" onclick="_scAddPlayer()">+ Add</button>
+        <!-- hidden dummy fields to prevent password managers from pairing this input -->
+        <form id="sc-add-form" autocomplete="off" onsubmit="event.preventDefault(); _scAddPlayer();" style="display:flex; gap:4px; width:100%;">
+          <input type="text" name="fake_user" autocomplete="off" tabindex="-1"
+                 style="position:absolute; left:-9999px; width:1px; height:1px; opacity:0;" />
+          <input type="password" name="fake_pass" autocomplete="new-password" tabindex="-1"
+                 style="position:absolute; left:-9999px; width:1px; height:1px; opacity:0;" />
+             <input id="sc-add-input" name="player_name" type="search" placeholder="Player name" autocomplete="nickname"
+               inputmode="text" autocorrect="off" autocapitalize="none" spellcheck="false" readonly
+               enterkeyhint="search" list="player-names-list"
+               aria-label="Player name" onfocus="this.removeAttribute('readonly');" onkeydown="if(event.key==='Enter')_scAddPlayer()">
+          <button id="sc-add-btn" onclick="_scAddPlayer()">+ Add</button>
+        </form>
       </div>
     </div>
   </div>
+
+  <div id="host-answers-anchor-score" class="box"></div>
+  <div id="host-messages-anchor-score" class="box"></div>
 
   <div id="question-box" class="box" style="display:none">
     <div id="waiting">
@@ -1682,8 +2257,12 @@ _HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div id="question-area" style="display:none">
-      <button id="host-toggle" onclick="_toggleHostPanel()">&#128065; Answers (0)</button>
-      <div id="host-panel"><div id="host-answers"></div></div>
+      <div id="host-answers-anchor-question">
+        <button id="host-toggle" onclick="_toggleHostPanel()">&#128065; Submitted Answers (0)</button>
+        <div id="host-panel">
+          <div id="host-answers"></div>
+        </div>
+      </div>
       <div id="q-card">
         <div id="q-title"></div>
         <div id="q-info"></div>
@@ -1695,14 +2274,36 @@ _HTML = r"""<!DOCTYPE html>
         <button id="peer-answers-toggle" onclick="_togglePeerAnswers()">&#128065; Submitted Answers (0)</button>
         <div id="peer-answers-list"></div>
       </div>
+      <div id="buzzer-panel">
+        <div id="buzzer-status">Buzzer idle.</div>
+        <button id="buzz-btn" onclick="_pressBuzz()">BUZZ</button>
+        <div id="buzzer-order"></div>
+      </div>
+    </div>
+    <div id="host-messages-anchor-question">
+      <div id="host-messages-wrap" style="display:none">
+        <div id="host-messages-head">
+          <span>Host Inbox (<span id="host-messages-count">0</span>)</span>
+          <button id="host-messages-clear" onclick="_clearHostMessages()">Clear</button>
+        </div>
+        <div id="host-messages-list"></div>
+      </div>
     </div>
     <div id="emoji-bar">
+      <div id="host-msg-row">
+        <input id="host-msg-input" maxlength="280" placeholder="Message host…" autocomplete="off" />
+        <button id="host-msg-send" onclick="_sendHostMessage()">Send to Host</button>
+      </div>
       <p>React</p>
       <div id="emoji-btns">
         <button id="emoji-add-btn" title="Edit reactions" onclick="_openEmojiPicker()">&#9998; Edit</button>
       </div>
+      <div id="emoji-status"></div>
     </div>
   </div>
+
+  <div id="host-msg-toast"></div>
+  <div id="gta-toast"></div>
 
   <div id="colorpick-overlay">
     <div id="colorpick-box">
@@ -1844,6 +2445,14 @@ _HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="artist-themes-overlay" onclick="if(event.target===this)_closeArtistThemesDialog()">
+    <div id="artist-themes-box">
+      <div id="artist-themes-title">Other themes</div>
+      <div id="artist-themes-content">No data.</div>
+      <button id="artist-themes-close" onclick="_closeArtistThemesDialog()">Close</button>
+    </div>
+  </div>
+
   <div id="bottom-left-wrap">
     <div id="player-list-wrap" style="display:none">
       <button id="player-list-btn" onclick="_togglePlayerList()">&#128101; <span id="player-count">0</span></button>
@@ -1860,11 +2469,28 @@ _HTML = r"""<!DOCTYPE html>
     <button id="sc-view-btn" onclick="_toggleScoreboardView()" title="Scoreboard">&#x1F3C6; Scoreboard</button>
   </div>
   <div id="metadata-wrap">
+    <div id="current-time" title="Local time">--:--</div>
     <button id="metadata-btn" onclick="_toggleMetadata()">&#x2139;&#xFE0F;</button>
   </div>
 
+  <script>
+    (function _initLocalTime() {
+      function _fmt() {
+        try {
+          const el = document.getElementById('current-time');
+          if (!el) return;
+          const now = new Date();
+          const t = now.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+          el.textContent = t.replace(' ', '\u00A0');
+        } catch (e) {}
+      }
+      _fmt();
+      setInterval(_fmt, 1000);
+    })();
+  </script>
+
   <!-- Playback controller modal (host only) -->
-  <div id="ctrl-list-popup-overlay" onclick="if(event.target===this)_ctrlListPopupClose()">
+  <div id="ctrl-list-popup-overlay" onmousedown="_ctrlListPopupOverlayMouseDown(event)" onclick="_ctrlListPopupOverlayClick(event)">
     <div id="ctrl-list-popup-box">
       <div id="ctrl-list-popup-header">
         <span id="ctrl-list-popup-title"></span>
@@ -1896,12 +2522,12 @@ _HTML = r"""<!DOCTYPE html>
       </div>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Queue</span>
-        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="lt" onclick="_ctrlExtraClick('lt')">Lightning</button>
-        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="lt_stop" onclick="_ctrlExtraClick('lt_stop')">&#x23F9;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt" onclick="_ctrlExtraClick('lt')">Lightning</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_stop" onclick="_ctrlExtraClick('lt_stop')">&#x23F9;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_dice" onclick="_ctrlExtraClick('lt_dice')">&#x1F3B2;</button>
-        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="yt" onclick="_ctrlExtraClick('yt')">YouTube</button>
-        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
-        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="yt" onclick="_ctrlExtraClick('yt')">YouTube</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
       </div>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Bonus</span>
@@ -1916,31 +2542,35 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_artist" onclick="_ctrlExtraClick('bonus_artist')">Artist</button>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_song" onclick="_ctrlExtraClick('bonus_song')">Song</button>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_chars" onclick="_ctrlExtraClick('bonus_chars')">Characters</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_buzzer" onclick="_ctrlExtraClick('bonus_buzzer')">Buzzer</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_lock" onclick="_ctrlExtraClick('buzz_lock')">Buzz Lock</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_reset" onclick="_ctrlExtraClick('buzz_reset')">Buzz Reset</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="auto_bonus" onclick="_ctrlExtraClick('auto_bonus')">Auto Bonus</button>
       </div>
       <div class="ctrl-extras-sect-row">
-        <span class="ctrl-extras-sect-label">Toggles</span>
-        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="difficulty" onclick="_ctrlExtraClick('difficulty')">Difficulty</button>
+        <span class="ctrl-extras-sect-label">Toggles &amp; End</span>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_blind" onclick="_ctrlExtraClick('tgl_blind')">Blind</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_peek" onclick="_ctrlExtraClick('tgl_peek')">Peek</button>
-        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="tgl_narrow" onclick="_ctrlExtraClick('tgl_narrow')">&#x25C0;</button>
-        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="tgl_widen" onclick="_ctrlExtraClick('tgl_widen')">&#x25B6;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_narrow" onclick="_ctrlExtraClick('tgl_narrow')">&#x25C0;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_widen" onclick="_ctrlExtraClick('tgl_widen')">&#x25B6;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_mute" onclick="_ctrlExtraClick('tgl_mute')">Mute</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-censors" data-extra-id="tgl_censors" onclick="_ctrlExtraClick('tgl_censors')" title="Toggle censors">Censors (<span class="ctrl-censor-count">0</span>)</button>
+        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="tgl_fullscreen" onclick="_ctrlExtraClick('tgl_fullscreen')">Fullscreen</button>
+        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="difficulty" onclick="_ctrlExtraClick('difficulty')">Difficulty</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-shortcuts" data-extra-id="tgl_shortcuts" onclick="_ctrlExtraClick('tgl_shortcuts')" title="Toggle keyboard shortcuts">Keys</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')" title="Toggle dock">Dock</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-start" data-extra-id="tgl_info_start" onclick="_ctrlExtraClick('tgl_info_start')" title="Toggle auto-show info at start">Info Start</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-end" data-extra-id="tgl_info_end" onclick="_ctrlExtraClick('tgl_info_end')" title="Toggle auto-show info at end">Info End</button>
+        <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="end_session" onclick="_ctrlExtraClick('end_session')">End</button>
       </div>
       <div class="ctrl-extras-sect-row">
-        <span class="ctrl-extras-sect-label">Info Reveal</span>
+        <span class="ctrl-extras-sect-label">Info Reveal &amp; Marks</span>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="rev_info" onclick="_ctrlExtraClick('rev_info')">Show Information</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="rev_title" onclick="_ctrlExtraClick('rev_title')">Title</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_artist" onclick="_ctrlExtraClick('reveal_artist')">Artist</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_studio" onclick="_ctrlExtraClick('reveal_studio')">Studio</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_season" onclick="_ctrlExtraClick('reveal_season')">Season</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_year" onclick="_ctrlExtraClick('reveal_year')">Year</button>
-      </div>
-      <div class="ctrl-extras-sect-row">
-        <span class="ctrl-extras-sect-label">Marks</span>
         <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-tag" data-extra-id="mark_tag" onclick="_ctrlExtraClick('mark_tag')" title="Tag">&#x2717;</button>
         <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-fav" data-extra-id="mark_fav" onclick="_ctrlExtraClick('mark_fav')" title="Favorite">♥</button>
         <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-blind" data-extra-id="mark_blind" onclick="_ctrlExtraClick('mark_blind')" title="Blind Mark">&#x1F441;</button>
@@ -1948,8 +2578,13 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-mute-peek" data-extra-id="mark_mute_peek" onclick="_ctrlExtraClick('mark_mute_peek')" title="Mute Peek Mark">&#x1F507;</button>
       </div>
       <div class="ctrl-extras-sect-row">
-        <span class="ctrl-extras-sect-label">Session</span>
-        <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="end_session" onclick="_ctrlExtraClick('end_session')">End</button>
+        <span class="ctrl-extras-sect-label">Scoreboard</span>
+        <button class="ctrl-bonus-btn ctrl-sect-scoreboard" data-extra-id="scoreboard_open_close" onclick="_ctrlExtraClick('scoreboard_open_close')">Open/Close</button>
+        <button class="ctrl-bonus-btn ctrl-sect-scoreboard" data-extra-id="scoreboard_toggle" onclick="_ctrlExtraClick('scoreboard_toggle')">Toggle</button>
+        <button class="ctrl-bonus-btn ctrl-sect-scoreboard" data-extra-id="scoreboard_align" onclick="_ctrlExtraClick('scoreboard_align')">Align</button>
+        <button class="ctrl-bonus-btn ctrl-sect-scoreboard" data-extra-id="scoreboard_extend" onclick="_ctrlExtraClick('scoreboard_extend')">Extend</button>
+        <button class="ctrl-bonus-btn ctrl-sect-scoreboard" data-extra-id="scoreboard_grow" onclick="_ctrlExtraClick('scoreboard_grow')">Grow</button>
+        <button class="ctrl-bonus-btn ctrl-sect-scoreboard" data-extra-id="scoreboard_shrink" onclick="_ctrlExtraClick('scoreboard_shrink')">Shrink</button>
       </div>
       <div class="ctrl-extras-sect-row" id="ctrl-extras-layout-sect" style="display:none">
         <span class="ctrl-extras-sect-label">Layout</span>
@@ -2088,6 +2723,20 @@ _HTML = r"""<!DOCTYPE html>
       _scaleUI();
       window.addEventListener('resize', () => { _scaleUI(); _scFitScroll(); _plRefreshTrunc(); });
     })();
+
+    /* Prevent password managers from pairing autofill with the add-player input by
+       randomizing its `name` and forcing autocomplete off at page load. */
+    (function preventPlayerAutofill() {
+      try {
+        const inp = document.getElementById('sc-add-input');
+        if (!inp) return;
+        // generate a short random name each load
+        inp.name = 'pn_' + Math.random().toString(36).slice(2,10);
+        inp.setAttribute('autocomplete', 'off');
+        const form = document.getElementById('sc-add-form');
+        if (form) form.setAttribute('autocomplete', 'off');
+      } catch (e) { /* ignore */ }
+    })();
   </script>
   <script>
     const socket = io();
@@ -2096,7 +2745,7 @@ _HTML = r"""<!DOCTYPE html>
     socket.on('connect', () => {
       if (playerName) socket.emit('set_name', { name: playerName });
       const storedPw = localStorage.getItem('gta_host_pw');
-      if (storedPw) socket.emit('claim_host', { password: storedPw });
+      if (storedPw) { _lastClaimPw = storedPw; socket.emit('claim_host', { password: storedPw }); }
     });
     let _currentQid  = null;      // qid of the active question
     let _currentQuestionTitle = '';  // title of the active question
@@ -2105,8 +2754,10 @@ _HTML = r"""<!DOCTYPE html>
     let _prevQCorrect = null;        // previous question's correct answer (display string)
     let _prevQType = '';             // question type of previous question
     let _prevQCorrectTags = [];      // correct tag list for 'tags' type questions
+    let _answersRevealed = false;    // whether answers have been revealed for the previous question
     let _toggleBtnRef = null;     // reference to active toggle button (year/score)
     let _isHost = false;
+    let _lastClaimPw = null;
     let _playerListOpen = false;
     let _peerAnswersOpen = false;
     let _playerColors = {};    // name → {bg, text}
@@ -2115,6 +2766,10 @@ _HTML = r"""<!DOCTYPE html>
     let _colorpickBgValue = '';
     let _colorpickTextValue = '';
     let _colorpickActiveField = null;
+    let _isBuzzerQuestion = false;
+    let _buzzerState = { open: false, locked: false, order: [] };
+    let _hostMessages = [];
+    let _hostMsgToastTimer = null;
     /* ── Timer state ── */
     let _timerSeconds  = 0;
     let _timerPaused   = false;
@@ -2153,9 +2808,12 @@ _HTML = r"""<!DOCTYPE html>
       const pw = document.getElementById('host-pw-input').value.trim();
       if (pw) {
         localStorage.setItem('gta_host_pw', pw);
+        _lastClaimPw = pw;
         socket.emit('claim_host', { password: pw });
       } else if (localStorage.getItem('gta_host_pw')) {
-        socket.emit('claim_host', { password: localStorage.getItem('gta_host_pw') });
+        const sp = localStorage.getItem('gta_host_pw');
+        _lastClaimPw = sp;
+        socket.emit('claim_host', { password: sp });
       }
       showQuestionBox();
     }
@@ -2172,7 +2830,54 @@ _HTML = r"""<!DOCTYPE html>
       if (e.key === 'Enter') saveName();
     });
     socket.on('host_denied', () => {
-      console.warn('[GTA] host_denied – stored password kept; re-enter to update');
+      console.warn('[GTA] host_denied');
+      try {
+        // If the denied attempt matches our last claim attempt, clear stored pw
+        const stored = localStorage.getItem('gta_host_pw');
+        if (_lastClaimPw && stored && _lastClaimPw === stored) {
+          localStorage.removeItem('gta_host_pw');
+        }
+      } catch (e) {}
+      // Show visible toast to inform user
+      _showToast('Host access denied');
+      // Ensure host-only UI is closed and state reset
+      _isHost = false;
+      try {
+        // Hide host-specific controls/panels but keep metadata/info visible
+        const ht = document.getElementById('host-toggle'); if (ht) ht.style.display = 'none';
+        const hp = document.getElementById('host-panel'); if (hp) hp.style.display = 'none';
+        try { localStorage.setItem('hostPanelOpen', '0'); } catch (e) {}
+        const cw = document.getElementById('controls-wrap'); if (cw) cw.style.display = 'none';
+        // Keep metadata-wrap (info button) visible for all users
+        const _scHC = document.getElementById('sc-host-controls'); if (_scHC) _scHC.style.display = 'none';
+        const _scCH = document.getElementById('sc-col-headers'); if (_scCH) _scCH.style.display = 'none';
+        // Ensure scoreboard view is closed and panels moved back to question area
+        if (typeof _scViewOpen !== 'undefined') {
+          _scViewOpen = false;
+          try { _scApplyViewState(); } catch (e) {}
+        }
+        // Ensure the controller overlay is closed and body classes reset
+        try {
+          if (typeof _controllerOpen !== 'undefined') _controllerOpen = false;
+          const overlay = document.getElementById('controller-overlay'); if (overlay) overlay.classList.remove('active');
+          document.body.classList.remove('ctrl-open');
+          // Hide the scoreboard toggle button for non-host users
+          const scBtn = document.getElementById('sc-view-btn'); if (scBtn) scBtn.style.display = 'none';
+        } catch(e) {}
+        document.getElementById('peer-answers-wrap').style.display = 'block';
+      } catch (e) {}
+    });
+    socket.on('name_forced', data => {
+      const newName = String((data && data.name) || '').trim();
+      if (!newName) return;
+      playerName = newName;
+      localStorage.setItem('gta_name', playerName);
+      document.getElementById('player-label-text').textContent = '\u{1F464} ' + playerName;
+      const ni = document.getElementById('name-input');
+      if (ni) ni.value = playerName;
+      _updateLabelSwatch();
+      // Re-assert name on the socket for consistency after reconnect races.
+      socket.emit('set_name', { name: playerName });
     });
     function showQuestionBox() {
       document.getElementById('name-screen').style.display = 'none';
@@ -2199,6 +2904,7 @@ _HTML = r"""<!DOCTYPE html>
 
       const years = [];
       for (let y = min; y <= max; y++) years.push(y);
+      years.reverse(); // top = highest year, bottom = lowest
 
       const wrap = document.createElement('div');
       wrap.className = 'drum-wrap';
@@ -2226,17 +2932,20 @@ _HTML = r"""<!DOCTYPE html>
       const _nav = document.createElement('div');
       _nav.className = 'drum-nav';
       [
-        { sym: '\u25b2 5', step: -5, title: '-5 years' },
-        { sym: '\u25b2 1', step: -1, title: 'Previous year' },
-        { sym: '\u25bc 1', step:  1, title: 'Next year' },
-        { sym: '\u25bc 5', step:  5, title: '+5 years' },
+        { sym: '\u25b2 5', step: -5, title: '+5 years' },
+        { sym: '\u25b2 1', step: -1, title: '+1 year' },
+        { sym: '\u25bc 1', step:  1, title: '-1 year' },
+        { sym: '\u25bc 5', step:  5, title: '-5 years' },
       ].forEach(({ sym, step, title }) => {
         const btn = document.createElement('button');
         btn.className = 'drum-nav-btn';
         btn.textContent = sym;
         btn.title = title;
         const fast = Math.abs(step) >= 5;
-        btn.addEventListener('click', () => scroller.scrollBy({ top: step * ITEM_H, behavior: fast ? 'instant' : 'smooth' }));
+        btn.addEventListener('click', () => {
+          userInteracted = true;
+          scroller.scrollBy({ top: step * ITEM_H, behavior: fast ? 'instant' : 'smooth' });
+        });
         _nav.appendChild(btn);
       });
       const _outer = document.createElement('div');
@@ -2245,13 +2954,39 @@ _HTML = r"""<!DOCTYPE html>
       _outer.appendChild(_nav);
       area.appendChild(_outer);
 
+      const yShortcuts = document.createElement('div');
+      yShortcuts.className = 'drum-shortcuts';
+      const yCandidates = [1960, 1970, 1980, 1990, 2000, 2005, 2010, 2015, 2020, 2025]
+        .filter(y => y >= min && y <= max);
+      const yUnique = [...new Set(yCandidates)].sort((a, b) => a - b);
+      yUnique.forEach(y => {
+        const b = document.createElement('button');
+        b.className = 'drum-shortcut-btn';
+        b.textContent = String(y);
+        b.onclick = () => {
+          userInteracted = true;
+          setYear(y, true);
+        };
+        yShortcuts.appendChild(b);
+      });
+      if (yUnique.length) area.appendChild(yShortcuts);
+
       const initIdx = Math.max(0, years.indexOf(Math.max(min, Math.min(max, initVal))));
       const takenSet = new Set();
+      let userInteracted = false;
 
       function getIdx() {
         return Math.max(0, Math.min(Math.round(scroller.scrollTop / ITEM_H), years.length - 1));
       }
       function getValue() { return years[getIdx()]; }
+      function setYear(y, emit = false) {
+        const clamped = Math.max(min, Math.min(max, parseInt(y, 10)));
+        const idx = years.indexOf(clamped);
+        if (idx < 0) return;
+        scroller.scrollTop = idx * ITEM_H;
+        highlight();
+        if (emit) _emitSelect(clamped, true);
+      }
       function highlight() {
         const idx = getIdx();
         scroller.querySelectorAll('.drum-item').forEach((el, i) => {
@@ -2281,7 +3016,10 @@ _HTML = r"""<!DOCTYPE html>
         setTimeout(applyScroll, 150);
       }
 
-      scroller.addEventListener('scroll', () => { highlight(); _emitSelect(getValue()); }, { passive: true });
+      scroller.addEventListener('wheel', () => { userInteracted = true; }, { passive: true });
+      scroller.addEventListener('touchstart', () => { userInteracted = true; }, { passive: true });
+      scroller.addEventListener('pointerdown', () => { userInteracted = true; }, { passive: true });
+      scroller.addEventListener('scroll', () => { highlight(); _emitSelect(getValue(), userInteracted); }, { passive: true });
       return { getValue, markTaken, setMyYear };
     }
 
@@ -2295,8 +3033,9 @@ _HTML = r"""<!DOCTYPE html>
       const vals = [];
       for (let v = min; v <= max + 1e-9; v = Math.round((v + step) * 1e6) / 1e6)
         vals.push(parseFloat(v.toFixed(decimals)));
-      if (reverse) vals.reverse();
+      vals.reverse(); // top = highest score, bottom = lowest
       const scoreTakenSet = new Set();
+      let userInteracted = false;
 
       const wrap = document.createElement('div');
       wrap.className = 'drum-wrap';
@@ -2332,17 +3071,20 @@ _HTML = r"""<!DOCTYPE html>
       const _s1   = 1;                             // items per 0.1-unit jump (step=0.1)
       const _sMid = Math.round(0.5 / step) || 1;  // items per 0.5-unit jump
       [
-        { sym: '\u25b2 .5', steps: -_sMid, title: '-.5' },
-        { sym: '\u25b2 .1', steps: -_s1,   title: '-.1' },
-        { sym: '\u25bc .1', steps:  _s1,   title: '+.1' },
-        { sym: '\u25bc .5', steps:  _sMid, title: '+.5' },
+        { sym: '\u25b2 .5', steps: -_sMid, title: '+.5' },
+        { sym: '\u25b2 .1', steps: -_s1,   title: '+.1' },
+        { sym: '\u25bc .1', steps:  _s1,   title: '-.1' },
+        { sym: '\u25bc .5', steps:  _sMid, title: '-.5' },
       ].forEach(({ sym, steps, title }) => {
         const btn = document.createElement('button');
         btn.className = 'drum-nav-btn';
         btn.textContent = sym;
         btn.title = title;
         const fast = Math.abs(steps) >= _sMid;
-        btn.addEventListener('click', () => scroller.scrollBy({ top: steps * ITEM_H, behavior: fast ? 'instant' : 'smooth' }));
+        btn.addEventListener('click', () => {
+          userInteracted = true;
+          scroller.scrollBy({ top: steps * ITEM_H, behavior: fast ? 'instant' : 'smooth' });
+        });
         _sNav.appendChild(btn);
       });
       const _sOuter = document.createElement('div');
@@ -2350,10 +3092,27 @@ _HTML = r"""<!DOCTYPE html>
       _sOuter.appendChild(wrap);
       _sOuter.appendChild(_sNav);
 
-      const display = document.createElement('div');
-      display.className = 'drum-value-display';
       area.appendChild(_sOuter);
-      area.appendChild(display);
+
+      const sShortcuts = document.createElement('div');
+      sShortcuts.className = 'drum-shortcuts';
+      const quant = (v) => parseFloat((Math.round(v / step) * step).toFixed(decimals));
+      const common = decimals > 0
+        ? [2.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9]
+        : [50, 60, 70, 80, 90];
+      const sCandidates = common.map(quant).filter(v => v >= min && v <= max);
+      const sUnique = [...new Set(sCandidates)].sort((a, b) => a - b);
+      sUnique.forEach(v => {
+        const b = document.createElement('button');
+        b.className = 'drum-shortcut-btn';
+        b.textContent = decimals > 0 ? v.toFixed(decimals) : String(v);
+        b.onclick = () => {
+          userInteracted = true;
+          setScore(v, true);
+        };
+        sShortcuts.appendChild(b);
+      });
+      if (sUnique.length) area.appendChild(sShortcuts);
 
       const ITEM_H = 60;
 
@@ -2361,11 +3120,21 @@ _HTML = r"""<!DOCTYPE html>
         const idx = Math.round(scroller.scrollTop / ITEM_H);
         return Math.max(0, Math.min(idx, vals.length - 1));
       }
+      function setScore(target, emit = false) {
+        if (!vals.length) return;
+        let bestIdx = 0;
+        let bestDiff = Math.abs(vals[0] - target);
+        for (let i = 1; i < vals.length; i++) {
+          const d = Math.abs(vals[i] - target);
+          if (d < bestDiff) { bestDiff = d; bestIdx = i; }
+        }
+        scroller.scrollTop = bestIdx * ITEM_H;
+        updateDisplay();
+        if (emit) _emitSelect(vals[bestIdx], true);
+      }
 
       function updateDisplay() {
         const idx = getCentered();
-        const v = vals[idx];
-        display.textContent = 'Selected: ' + (decimals > 0 ? v.toFixed(decimals) : String(v));
         const items = scroller.querySelectorAll('.drum-item');
         items.forEach((el, i) => {
           const vi = i - 1; // offset for top padding
@@ -2384,7 +3153,10 @@ _HTML = r"""<!DOCTYPE html>
       // Scroll to initial value — deferred so the browser has laid out the scroller
       const initIdx = vals.findIndex(v => Math.abs(v - initial) < step / 2);
       setTimeout(() => { scroller.scrollTop = Math.max(0, initIdx) * ITEM_H; updateDisplay(); }, 0);
-      scroller.addEventListener('scroll', () => { updateDisplay(); _emitSelect(vals[getCentered()]); }, { passive: true });
+      scroller.addEventListener('wheel', () => { userInteracted = true; }, { passive: true });
+      scroller.addEventListener('touchstart', () => { userInteracted = true; }, { passive: true });
+      scroller.addEventListener('pointerdown', () => { userInteracted = true; }, { passive: true });
+      scroller.addEventListener('scroll', () => { updateDisplay(); _emitSelect(vals[getCentered()], userInteracted); }, { passive: true });
 
       return { getValue: () => vals[getCentered()], markScoreTaken, setMyScore };
     }
@@ -2429,7 +3201,7 @@ _HTML = r"""<!DOCTYPE html>
         const parsed = parseInt(display.value.replace(/[^0-9-]/g, ''), 10);
         if (!isNaN(parsed)) value = Math.max(min, Math.min(max, parsed));
         refresh();
-        _emitSelect(value);
+        _emitSelect(value, true);
       });
       for (let i = 0; i < cfg.steps.length; i += 3) {
         const chunk = cfg.steps.slice(i, i + 3);
@@ -2442,7 +3214,7 @@ _HTML = r"""<!DOCTYPE html>
           btn.onclick = () => {
             value = Math.max(min, Math.min(max, value + s.delta));
             refresh();
-            _emitSelect(value);
+            _emitSelect(value, true);
           };
           row.appendChild(btn);
         });
@@ -2532,7 +3304,7 @@ _HTML = r"""<!DOCTYPE html>
         const btn = document.createElement('button');
         btn.className = 'rank-adj-btn rank-' + cls;
         btn.textContent = lbl;
-        btn.onclick = () => { setRank(rank + d); _emitSelect(rank); };
+        btn.onclick = () => { setRank(rank + d); _emitSelect(rank, true); };
         adjRow.appendChild(btn);
       });
       area.appendChild(adjRow);
@@ -2550,7 +3322,7 @@ _HTML = r"""<!DOCTYPE html>
         btn.textContent = p === 1  ? '#1 \u2605'
           : p % 1000 === 0         ? '#' + (p / 1000) + 'K'
           :                          '#' + p.toLocaleString();
-        btn.onclick = () => { setRank(p); _emitSelect(rank); };
+        btn.onclick = () => { setRank(p); _emitSelect(rank, true); };
         presetRow.appendChild(btn);
         presetBtns.push({ val: p, el: btn });
       });
@@ -2575,7 +3347,7 @@ _HTML = r"""<!DOCTYPE html>
         updateTrack(parseInt(slider.value));
         presetBtns.forEach(({ val, el }) =>
           el.classList.toggle('rank-active', val === rank));
-        _emitSelect(rank);
+        _emitSelect(rank, true);
       });
       display.addEventListener('focus', () => { display.value = String(rank); });
       display.addEventListener('keydown', e => {
@@ -2587,7 +3359,7 @@ _HTML = r"""<!DOCTYPE html>
       display.addEventListener('blur', () => {
         const parsed = parseInt(display.value, 10);
         if (!isNaN(parsed)) setRank(parsed); else setRank(rank);
-        _emitSelect(rank);
+        _emitSelect(rank, true);
       });
 
       function updatePeerMarks(answers) {
@@ -2627,7 +3399,7 @@ _HTML = r"""<!DOCTYPE html>
       function updateCounter() {
         counter.textContent = selectedTags.size + ' / ' + limit + ' selected';
         document.getElementById('submit-btn').disabled = selectedTags.size === 0;
-        if (selectedTags.size > 0) _emitSelect(Array.from(selectedTags).join(','));
+        if (selectedTags.size > 0) _emitSelect(Array.from(selectedTags).join(','), true);
       }
 
       tags.forEach(tag => {
@@ -2671,6 +3443,27 @@ _HTML = r"""<!DOCTYPE html>
     /* ── Drum ↔ text toggle wrapper ── */
     const _textModeKeys = { year: 'gta_text_year', score: 'gta_text_score' };
 
+    function _buildTextShortcuts(typeKey, constraints) {
+      if (!constraints) return [];
+      const min = Number(constraints.min);
+      const max = Number(constraints.max);
+      const step = Number(constraints.step || 1);
+      const decimals = Number(constraints.decimals || 0);
+      const quant = (v) => {
+        const q = Math.round(Number(v) / step) * step;
+        return Number(q.toFixed(decimals));
+      };
+      let arr = [];
+      if (typeKey === 'year') {
+        arr = [1960, 1970, 1980, 1990, 2000, 2005, 2010, 2015, 2020, 2025];
+      } else if (typeKey === 'score') {
+        arr = decimals > 0
+          ? [2.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9]
+          : [50, 60, 70, 80, 90];
+      }
+      return [...new Set(arr.map(quant).filter(v => v >= min && v <= max))].sort((a, b) => a - b);
+    }
+
     // constraints: { min, max, step, decimals }  (optional — only for numeric types)
     function buildToggleable(area, freeInput, typeKey, buildFn, constraints) {
       const toggleBtn = document.createElement('button');
@@ -2680,6 +3473,8 @@ _HTML = r"""<!DOCTYPE html>
       function setup() {
         area.innerHTML = '';
         area.appendChild(toggleBtn);
+        const oldTextShortcuts = document.getElementById('text-shortcuts-row');
+        if (oldTextShortcuts) oldTextShortcuts.remove();
         const textMode = localStorage.getItem(_textModeKeys[typeKey]) === '1';
         if (textMode) {
           toggleBtn.textContent = '\uD83E\uDD41 Switch to drum';
@@ -2695,6 +3490,25 @@ _HTML = r"""<!DOCTYPE html>
           freeInput.value = '';
           freeInput.focus();
           drumHandle = null;
+          const picks = _buildTextShortcuts(typeKey, constraints);
+          if (picks.length) {
+            const row = document.createElement('div');
+            row.id = 'text-shortcuts-row';
+            row.className = 'drum-shortcuts';
+            picks.forEach(v => {
+              const b = document.createElement('button');
+              b.className = 'drum-shortcut-btn';
+              b.textContent = Number(constraints.decimals || 0) > 0 ? Number(v).toFixed(Number(constraints.decimals || 0)) : String(v);
+              b.onclick = () => {
+                freeInput.value = b.textContent;
+                _emitSelect(b.textContent, true);
+                freeInput.focus();
+              };
+              row.appendChild(b);
+            });
+            const parent = freeInput.parentNode;
+            if (parent) parent.insertBefore(row, freeInput.nextSibling);
+          }
         } else {
           toggleBtn.textContent = '\u2328\uFE0F Type instead';
           freeInput.style.display = 'none';
@@ -2771,7 +3585,7 @@ _HTML = r"""<!DOCTYPE html>
     function _acPick(value) {
       _acInput().value = value;
       _acHide();
-      _emitSelect(value);
+      _emitSelect(value, true);
     }
     function _escHtml(s) {
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -2795,7 +3609,7 @@ _HTML = r"""<!DOCTYPE html>
         if (!_cachedTitles || q.length < 2) { _acHide(); return; }
         const matches = _cachedTitles.filter(t => t.toLowerCase().includes(q.toLowerCase())).slice(0, 50);
         _acShow(matches, q);
-        _emitSelect(inp.value.trim());
+        _emitSelect(inp.value.trim(), true);
       };
       inp.onkeydown = e => {
         if (e.key === 'ArrowDown') { e.preventDefault(); _acMoveCursor(1); }
@@ -2841,26 +3655,49 @@ _HTML = r"""<!DOCTYPE html>
 
     /* ── Socket events ── */
     socket.on('question', data => {
+      try {
+
+      } catch(e) {}
+      _answersRevealed = false;
+      _isBuzzerQuestion = !!(data && data.buzzer_only);
       _currentQuestionTitle = data.title || '';
       _myLastAnswer = null;
       _currentQid   = data.qid || null;
       _toggleBtnRef = null;
       document.getElementById('waiting').style.display = 'none';
       document.getElementById('question-area').style.display = 'block';
+      // Ensure per-question UI is visible again (may have been hidden during a clear)
+      const qCardShow = document.getElementById('q-card'); if (qCardShow) qCardShow.style.display = '';
+      const choicesAreaShow = document.getElementById('choices-area'); if (choicesAreaShow) { choicesAreaShow.style.display = ''; choicesAreaShow.innerHTML = ''; }
+      const freeInputShow = document.getElementById('free-input'); if (freeInputShow) { freeInputShow.style.display = 'none'; freeInputShow.value = ''; }
+      const submitBtnShow = document.getElementById('submit-btn'); if (submitBtnShow) { submitBtnShow.style.display = ''; submitBtnShow.disabled = false; }
+      document.getElementById('prev-question').style.display = 'none';
+      // Reset host toggle label to Submitted Answers for the new question
+      try { const ht = document.getElementById('host-toggle'); if (ht && ht.style.display !== 'none') ht.textContent = '\uD83D\uDC41 Submitted Answers (0)'; } catch(e) {}
       document.getElementById('q-title').textContent = data.title;
       document.getElementById('q-info').textContent = data.info || '';
       document.getElementById('sent-msg').style.display = 'none';
-      // Clear host panel for new question (keep toggle visible if already host)
+      // Clear host answers for any new question (they should be reset when a new
+      // question arrives). Show the host panel for hosts if they previously left it open.
+      const _hostPanelEl = document.getElementById('host-panel');
       document.getElementById('host-answers').innerHTML = '';
       try {
-        document.getElementById('host-panel').style.display =
-          localStorage.getItem('hostPanelOpen') === '1' ? 'block' : 'none';
-      } catch(e) { document.getElementById('host-panel').style.display = 'none'; }
+        if (_isHost) {
+          _hostPanelEl.style.display = localStorage.getItem('hostPanelOpen') === '1' ? 'block' : 'none';
+        } else {
+          _hostPanelEl.style.display = 'none';
+        }
+      } catch(e) { _hostPanelEl.style.display = 'none'; }
       const _ht = document.getElementById('host-toggle');
-      if (_ht.style.display !== 'none') _ht.textContent = '\uD83D\uDC41 Submitted Answers (0)';
+      // Don't reset the host answers count for hosts; only reset for non-hosts.
+      if (!_isHost) {
+        if (_ht.style.display !== 'none') _ht.textContent = '\uD83D\uDC41 Submitted Answers (0)';
+      }
       document.getElementById('peer-answers-wrap').style.display = 'none';
       document.getElementById('peer-answers-list').innerHTML = '';
       _peerAnswersOpen = false;
+      const _peerToggle = document.getElementById('peer-answers-toggle');
+      if (_peerToggle) _peerToggle.textContent = '\uD83D\uDC41 Submitted Answers (0)';
       document.getElementById('submit-btn').disabled = false;
       document.getElementById('free-input').disabled = false;
       const acInpReset = document.getElementById('anime-ac-input');
@@ -2900,7 +3737,7 @@ _HTML = r"""<!DOCTYPE html>
             document.querySelectorAll('.choice-btn').forEach(b => b.classList.remove('selected'));
             btn.classList.add('selected');
             selectedChoice = choice;
-            _emitSelect(choice);
+            _emitSelect(choice, true);
           };
           area.appendChild(btn);
         });
@@ -2957,7 +3794,7 @@ _HTML = r"""<!DOCTYPE html>
         clearTimeout(_selectDebounceTimer);
         freeInput.style.display = 'block';
         freeInput.value = _savedAnswer || '';
-        freeInput.oninput = () => _emitSelect(freeInput.value.trim());
+        freeInput.oninput = () => _emitSelect(freeInput.value.trim(), true);
         if (data.autocomplete === 'anime') {
           _loadAnimeTitles(() => {
             const dl = document.getElementById('anime-titles-list');
@@ -2973,8 +3810,20 @@ _HTML = r"""<!DOCTYPE html>
         freeInput.focus();
       }
 
+      if (data.buzzer_only) {
+        const choicesAreaOnly = document.getElementById('choices-area');
+        if (choicesAreaOnly) { choicesAreaOnly.innerHTML = ''; choicesAreaOnly.style.display = 'none'; }
+        const freeOnly = document.getElementById('free-input');
+        if (freeOnly) freeOnly.style.display = 'none';
+        const submitOnly = document.getElementById('submit-btn');
+        if (submitOnly) submitOnly.style.display = 'none';
+        document.getElementById('sent-msg').style.display = 'none';
+      }
+
       if (_alreadyAnswered) _lockSubmittedUI(_savedAnswer);
       else if (_myLastAnswer !== null) _lockSubmittedUI(_myLastAnswer.includes(',') ? _myLastAnswer.replace(/,/g, ', ') : _myLastAnswer);
+
+      _updateBuzzerUI();
     });
 
     socket.on('rules_update', data => {
@@ -3013,7 +3862,11 @@ _HTML = r"""<!DOCTYPE html>
       if (_scCH) _scCH.style.display = 'flex';
       _scRestoreView();
       _refreshHostAnswers(data.answers || []);
+      _placeHostAnswers();
+      _renderHostMessages(_hostMessages);
       _refreshPlayerList(_lastPlayerList);
+      const msgRow = document.getElementById('host-msg-row');
+      if (msgRow) msgRow.style.display = 'none';
       // Hide peer answers panel — host has their own answers view
       document.getElementById('peer-answers-wrap').style.display = 'none';
       document.getElementById('peer-answers-list').innerHTML = '';
@@ -3029,6 +3882,14 @@ _HTML = r"""<!DOCTYPE html>
 
     socket.on('answer_update', data => {
       _refreshHostAnswers(data.answers || []);
+    });
+
+    socket.on('host_messages_update', data => {
+      _renderHostMessages((data && data.messages) || []);
+    });
+
+    socket.on('host_message_toast', data => {
+      _showHostMessageToast(data || {});
     });
 
     socket.on('players_update', data => {
@@ -3054,13 +3915,52 @@ _HTML = r"""<!DOCTYPE html>
       _prevQCorrect      = data.correct       || '';
       _prevQType         = data.q_type        || '';
       _prevQCorrectTags  = data.correct_tags  || [];
+      _answersRevealed = true;
+      // When answers are revealed, remove the ability to remove answers
+      // from the host view (the 'x' button no longer does anything).
+      try {
+        const hostList = document.getElementById('host-answers');
+        if (hostList) {
+          hostList.querySelectorAll('.ha-remove').forEach(b => b.remove());
+        }
+      } catch(e) {}
     });
 
     socket.on('clear', data => {
+      _currentQid = null;
+      _isBuzzerQuestion = false;
+      // Show waiting message but keep the question-area visible so host answers
+      // panel isn't hidden. Hide per-question UI elements instead.
       document.getElementById('waiting').style.display = 'block';
-      document.getElementById('question-area').style.display = 'none';
+      document.getElementById('question-area').style.display = 'block';
+      // Hide question-specific elements but leave host panel visible
+      const qCard = document.getElementById('q-card'); if (qCard) qCard.style.display = 'none';
+      const choicesArea = document.getElementById('choices-area'); if (choicesArea) { choicesArea.innerHTML = ''; choicesArea.style.display = 'none'; }
+      const freeInput = document.getElementById('free-input'); if (freeInput) freeInput.style.display = 'none';
+      const submitBtn = document.getElementById('submit-btn'); if (submitBtn) submitBtn.style.display = 'none';
       _applyRules((data && data.rules_header) || '', (data && data.rules_body) || '');
       _showPrevQuestion();
+      // Update host toggle to indicate these are previous answers
+      try {
+        const ht = document.getElementById('host-toggle');
+        const hostList = document.getElementById('host-answers');
+        const cnt = hostList ? hostList.children.length : 0;
+        if (ht && ht.style.display !== 'none') ht.textContent = '\uD83D\uDC41 Previous Submitted Answers (' + cnt + ')';
+      } catch(e) {}
+      // Mirror the same previous-answer state for non-host peer answers
+      try {
+        const peerWrap = document.getElementById('peer-answers-wrap');
+        const peerList = document.getElementById('peer-answers-list');
+        const peerToggle = document.getElementById('peer-answers-toggle');
+        const cnt = peerList ? peerList.children.length : 0;
+        if (peerToggle) peerToggle.textContent = '\uD83D\uDC41 Previous Submitted Answers (' + cnt + ')';
+        if (peerWrap && cnt > 0) {
+          peerWrap.style.display = 'block';
+          peerList.style.display = _peerAnswersOpen ? 'block' : 'none';
+        }
+      } catch(e) {}
+
+      _updateBuzzerUI();
     });
 
     /* ── Timer ── */
@@ -3107,6 +4007,13 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('history-box').style.maxHeight = Math.floor(window.innerHeight / zoom * 0.80) + 'px';
       document.getElementById('history-text-area').textContent = _historyText || 'No history yet.';
       document.getElementById('history-overlay').classList.add('active');
+      // ensure the text area scrolls to the bottom after it's rendered
+      requestAnimationFrame(() => {
+        try {
+          const el = document.getElementById('history-text-area');
+          if (el) el.scrollTop = el.scrollHeight;
+        } catch (e) {}
+      });
     }
     function _closeHistory() {
       document.getElementById('history-overlay').classList.remove('active');
@@ -3169,6 +4076,17 @@ _HTML = r"""<!DOCTYPE html>
       p.style.display = open ? 'block' : 'none';
       try { localStorage.setItem('hostPanelOpen', open ? '1' : '0'); } catch(e) {}
     }
+    function _placeHostAnswers() {
+      const toggle = document.getElementById('host-toggle');
+      const panel = document.getElementById('host-panel');
+      if (!toggle || !panel) return;
+      const qAnchor = document.getElementById('host-answers-anchor-question');
+      const sAnchor = document.getElementById('host-answers-anchor-score');
+      const target = (_isHost && _scViewOpen) ? sAnchor : qAnchor;
+      if (!target) return;
+      if (toggle.parentElement !== target) target.appendChild(toggle);
+      if (panel.parentElement !== target) target.appendChild(panel);
+    }
     function _refreshHostAnswers(answers) {
       const container = document.getElementById('host-answers');
       container.innerHTML = '';
@@ -3178,34 +4096,60 @@ _HTML = r"""<!DOCTYPE html>
         const text = document.createElement('span');
         text.className = 'ha-text';
         text.innerHTML = '<span class="ha-name">' + _escHtml(a.name) + '</span>: ' + _escHtml(a.answer);
-        const rm = document.createElement('button');
-        rm.className = 'ha-remove';
-        rm.title = 'Remove this answer';
-        rm.textContent = '\u00d7';
-        rm.onclick = () => _confirm(
-          'Remove answer from ' + a.name + '?', 'Remove',
-          () => socket.emit('remove_answer', { index: idx })
-        );
         div.appendChild(text);
-        div.appendChild(rm);
-        // Right-click also removes
-        div.addEventListener('contextmenu', e => {
-          e.preventDefault();
-          _confirm('Remove answer from ' + a.name + '?', 'Remove',
-            () => socket.emit('remove_answer', { index: idx }));
-        });
+        if (!_answersRevealed) {
+          const rm = document.createElement('button');
+          rm.className = 'ha-remove';
+          rm.title = 'Remove this answer';
+          rm.textContent = '\u00d7';
+          rm.onclick = () => _confirm(
+            'Remove answer from ' + a.name + '?', 'Remove',
+            () => socket.emit('remove_answer', { index: idx })
+          );
+          div.appendChild(rm);
+          // Right-click also removes
+          div.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            _confirm('Remove answer from ' + a.name + '?', 'Remove',
+              () => socket.emit('remove_answer', { index: idx }));
+          });
+        }
         container.appendChild(div);
       });
       const ht = document.getElementById('host-toggle');
-      ht.textContent = '\uD83D\uDC41 Answers (' + answers.length + ')';
+      ht.textContent = '\uD83D\uDC41 Submitted Answers (' + answers.length + ')';
     }
 
     /* ── Kick options modal ── */
-    function _kickOptions(name) {
+    function _kickOptions(player) {
+      const name = (player && player.name) ? player.name : String(player || '');
+      if (player && player.host) {
+        alert('Host cannot be renamed from this menu.');
+        return;
+      }
+      const emojiMuted = !!(player && player.emoji_muted);
       document.getElementById('kick-player-name').textContent = 'Action for: ' + name;
       document.getElementById('kick-btn-shadow').onclick = () => { _kickCancel(); socket.emit('remove_player', { name }); };
+      document.getElementById('kick-btn-rename').onclick = () => {
+        const next = prompt('Rename "' + name + '" to:', name);
+        if (next === null) return;
+        const newName = String(next || '').trim();
+        if (!newName || newName === name) return;
+        if (/\s/.test(newName)) { alert('Name cannot contain spaces.'); return; }
+        if (newName.length > 30) { alert('Name is too long (max 30).'); return; }
+        _kickCancel();
+        socket.emit('rename_player', { old_name: name, new_name: newName });
+      };
       document.getElementById('kick-btn-name').onclick   = () => { _kickCancel(); socket.emit('name_ban',      { name }); };
       document.getElementById('kick-btn-ip').onclick     = () => { _kickCancel(); socket.emit('ip_ban',        { name }); };
+      const eb = document.getElementById('kick-btn-emoji');
+      if (eb) {
+        eb.textContent = emojiMuted ? 'Enable Emojis' : 'Disable Emojis';
+        eb.onclick = () => {
+          _kickCancel();
+          socket.emit(emojiMuted ? 'emoji_enable' : 'emoji_disable', { name });
+        };
+      }
       document.getElementById('kick-overlay').classList.add('active');
     }
     function _kickCancel() {
@@ -3239,7 +4183,7 @@ _HTML = r"""<!DOCTYPE html>
       '⚽','🏀','🎾','🏈','⚾','🎱','🏓','🥊','🎮','🎲','🃏','🏆','🥇','🎯','🎳',
       // Food & drink
       '🍕','🍔','🌮','🍜','🍣','🍱','🧁','🍩','🍪','🍦','🍺','☕','🧃','🥤',
-      '🍆','🥑','🍓','🍇','🍉','🌽','🥕','🧄','🥐','🧀','🍗','🥩','🍳','🍙','🍤','🧆','🫕','🥞',
+      '🍆','🥑','🍓','🍇','🍉','🍑','🌽','🥕','🧄','🥐','🧀','🍗','🥩','🍳','🍙','🍤','🧆','🫕','🥞',
       // Nature, weather & places
       '🌈','⚡','🌊','💧','🌸','🍀','🌙','☀️','❄️','🌪️','⛩️',
       '🏖️','🏝️','🌴','🌵','🏔️','🗻','🌋','🌅','🌃','⛺','🏕️','🌿','🍂','🍁',
@@ -3247,7 +4191,7 @@ _HTML = r"""<!DOCTYPE html>
       '⬆️','⬇️','⬅️','➡️','↗️','↘️','↙️','↖️','↕️','↔️','🔄','🔃','↩️','↪️','⏪','⏩','⏫','⏬','⏭️','⏮️','🔁','🔂',
       // Objects & symbols
       '🔥','⭐','🌟','✨','💥','💫','🎉','🎊','🎈','🚀','🛸','👑','💎','🔮','🪄','🎁','🧸',
-      '🎵','🎶','🎤','🎸','📷','📱','💻','🔑','⚙️','🧲','🔍','🔎','📊','📈','📉','🗓️','⏰','⌛','⏳',
+      '🎵','🎶','🎤','🎸','📷','📱','💻','🔑','⚙️','🧲','🔍','🔎','📊','📈','📉','🗓️','⏰','⌛','⏳','🔫',
       '✅','❌','⚠️','❓','❗','💯','🔔','📢','💬','👀','🫂','🚫','🔇','🔕','💤','🆗','🆙','🆕','🔝',
       // Anime & manga
       '⚔️','🗡️','🛡️','🏹','🪃','🔱','🌀','💢','💦','💨','💬','💭','‼️','⁉️',
@@ -3256,6 +4200,8 @@ _HTML = r"""<!DOCTYPE html>
       '📜','🗺️','🔭','🧪','🧬','⚗️','🪬','🫧',
       // Numbers
       '0️⃣','1️⃣','2️⃣','3️⃣','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟',
+      // Letters — use the reliable negative-squared letter emojis
+      '🅰️','🅱️','🅾️','🅿️','🆎',
     ];
 
     function _loadSavedEmojis() {
@@ -3270,6 +4216,44 @@ _HTML = r"""<!DOCTYPE html>
     function _saveSavedEmojis(list) {
       localStorage.setItem(_CUSTOM_EMOJI_KEY, JSON.stringify(list));
     }
+    let _emojiHostMuted = false;
+    let _emojiTimeoutUntilMs = 0;
+    let _emojiStatusTimer = null;
+    function _setEmojiControlsDisabled(disabled) {
+      const bar = document.getElementById('emoji-btns');
+      if (!bar) return;
+      bar.querySelectorAll('button').forEach(btn => { btn.disabled = !!disabled; });
+    }
+    function _updateEmojiStatusUI() {
+      const el = document.getElementById('emoji-status');
+      if (!el) return;
+      const now = Date.now();
+      const remainingMs = Math.max(0, _emojiTimeoutUntilMs - now);
+      if (_emojiHostMuted) {
+        el.textContent = 'Emoji reactions disabled by host.';
+        el.style.display = 'block';
+        _setEmojiControlsDisabled(true);
+      } else if (remainingMs > 0) {
+        const s = Math.ceil(remainingMs / 1000);
+        el.textContent = 'Emoji timeout: ' + s + 's';
+        el.style.display = 'block';
+        _setEmojiControlsDisabled(true);
+      } else {
+        el.textContent = '';
+        el.style.display = 'none';
+        _setEmojiControlsDisabled(false);
+      }
+    }
+    function _applyEmojiStatus(data) {
+      const payload = data || {};
+      _emojiHostMuted = !!payload.muted;
+      const untilSec = Number(payload.timeout_until || 0);
+      _emojiTimeoutUntilMs = untilSec > 0 ? Math.floor(untilSec * 1000) : 0;
+      _updateEmojiStatusUI();
+      if (_emojiStatusTimer == null) {
+        _emojiStatusTimer = setInterval(_updateEmojiStatusUI, 250);
+      }
+    }
     function _rebuildEmojiBar() {
       const container = document.getElementById('emoji-btns');
       const editBtn = document.getElementById('emoji-add-btn');
@@ -3281,10 +4265,61 @@ _HTML = r"""<!DOCTYPE html>
         btn.onclick = () => _sendEmoji(emoji);
         container.insertBefore(btn, editBtn);
       });
+      _updateEmojiStatusUI();
     }
     function _sendEmoji(emoji) {
+      const now = Date.now();
+      if (_emojiHostMuted || _emojiTimeoutUntilMs > now) {
+        _updateEmojiStatusUI();
+        return;
+      }
       socket.emit('send_emoji', { emoji });
     }
+
+    function _pressBuzz() {
+      if (!_buzzerState.open || _buzzerState.locked) return;
+      try {
+
+      } catch(e) {}
+      socket.emit('buzz_press', {});
+    }
+
+    function _updateBuzzerUI() {
+      const panel = document.getElementById('buzzer-panel');
+      const status = document.getElementById('buzzer-status');
+      const btn = document.getElementById('buzz-btn');
+      const list = document.getElementById('buzzer-order');
+      if (!panel || !status || !btn || !list) return;
+
+      const inQuestion = !!_currentQid;
+      const order = Array.isArray(_buzzerState.order) ? _buzzerState.order : [];
+      const myIdx = order.findIndex(x => x && x.name === playerName);
+      const isOpen = !!_buzzerState.open;
+      const isLocked = !!_buzzerState.locked;
+      const shouldShow = !!_isBuzzerQuestion;
+
+      panel.style.display = shouldShow ? 'block' : 'none';
+      if (!shouldShow) return;
+
+      if (isLocked) status.textContent = 'Buzzer locked.';
+      else if (isOpen) status.textContent = myIdx >= 0 ? ('Buzz received #' + (myIdx + 1)) : 'Buzzer open — press BUZZ';
+      else status.textContent = 'Buzzer idle.';
+
+      btn.disabled = !inQuestion || !isOpen || isLocked || myIdx >= 0 || !playerName;
+
+      // Submission order/timing now lives in Submitted Answers UI.
+      list.style.display = 'none';
+      list.innerHTML = '';
+    }
+
+    function _applyBuzzerState(data) {
+      _buzzerState = Object.assign({ open: false, locked: false, order: [] }, data || {});
+      // host button states
+      const lockActive = !!_buzzerState.locked;
+      document.querySelectorAll('[data-proxy-extra="buzz_lock"],[data-extra-id="buzz_lock"]').forEach(el => el.classList.toggle('ctrl-toggle-active', lockActive));
+      _updateBuzzerUI();
+    }
+
     function _openEmojiPicker() {
       const saved = _loadSavedEmojis();
       const grid = document.getElementById('emoji-picker-grid');
@@ -3321,10 +4356,28 @@ _HTML = r"""<!DOCTYPE html>
     function _closeEmojiPicker() {
       document.getElementById('emoji-picker-overlay').classList.remove('active');
     }
+    socket.on('emoji_status', data => {
+      _applyEmojiStatus(data || {});
+    });
+    socket.on('buzzer_state', data => {
+      try {
+        const d = data || {};
+
+      } catch(e) {}
+      _applyBuzzerState(data || {});
+    });
     document.addEventListener('DOMContentLoaded', () => {
       _rebuildEmojiBar();
+      _updateEmojiStatusUI();
+      _updateBuzzerUI();
       _ctrlRenderPinnedExtras();
       _ctrlLoadPanels();
+      const msgInput = document.getElementById('host-msg-input');
+      if (msgInput) {
+        msgInput.addEventListener('keydown', e => {
+          if (e.key === 'Enter') _sendHostMessage();
+        });
+      }
       document.getElementById('emoji-picker-overlay').addEventListener('click', e => {
         if (e.target === document.getElementById('emoji-picker-overlay')) _closeEmojiPicker();
       });
@@ -3537,16 +4590,86 @@ _HTML = r"""<!DOCTYPE html>
             btn.textContent = '\u21a9';
             btn.onclick = () => socket.emit('unban_player', { name: p.name });
             div.appendChild(btn);
-          } else if (p.name !== playerName) {
+          } else if (!p.host && p.name !== playerName) {
             btn.className = 'pl-remove';
             btn.title = 'Manage player';
-            btn.textContent = '\u00d7';
-            btn.onclick = () => _kickOptions(p.name);
+            btn.textContent = '\u2630';
+            btn.onclick = () => _kickOptions(p);
             div.appendChild(btn);
           }
         }
         items.appendChild(div);
       });
+    }
+    function _fmtHostMsgTime(ts) {
+      const d = new Date(Number(ts) || Date.now());
+      return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+    function _placeHostMessages() {
+      const wrap = document.getElementById('host-messages-wrap');
+      if (!wrap) return;
+      const qAnchor = document.getElementById('host-messages-anchor-question');
+      const sAnchor = document.getElementById('host-messages-anchor-score');
+      const target = (_isHost && _scViewOpen) ? sAnchor : qAnchor;
+      if (target && wrap.parentElement !== target) target.appendChild(wrap);
+    }
+    function _renderHostMessages(messages) {
+      _hostMessages = Array.isArray(messages) ? messages : [];
+      _placeHostMessages();
+      const rows = [..._hostMessages].reverse().map(m => {
+        const name = _escHtml((m && m.name) ? m.name : 'Player');
+        const text = _escHtml((m && m.text) ? m.text : '');
+        const ts = _fmtHostMsgTime(m && m.ts);
+        return '<div class="hm-item"><span class="hm-name">' + name + '</span><span class="hm-ts">' + ts + '</span><div>' + text + '</div></div>';
+      });
+      const wrap = document.getElementById('host-messages-wrap');
+      const list = document.getElementById('host-messages-list');
+      const cnt = document.getElementById('host-messages-count');
+      if (!wrap || !list || !cnt) return;
+      if (!_isHost) {
+        wrap.style.display = 'none';
+        return;
+      }
+      wrap.style.display = 'block';
+      cnt.textContent = String(_hostMessages.length);
+      list.innerHTML = rows.join('') || '<div class="hm-item" style="color:#667">No messages yet.</div>';
+    }
+    function _showHostMessageToast(entry) {
+      if (!_isHost) return;
+      const toast = document.getElementById('host-msg-toast');
+      if (!toast) return;
+      const name = _escHtml((entry && entry.name) ? entry.name : 'Player');
+      const text = _escHtml((entry && entry.text) ? entry.text : '');
+      toast.innerHTML = '<div class="from">\u2709 ' + name + '</div><div class="body">' + text + '</div>';
+      toast.classList.add('active');
+      if (_hostMsgToastTimer) clearTimeout(_hostMsgToastTimer);
+      _hostMsgToastTimer = setTimeout(() => {
+        toast.classList.remove('active');
+        _hostMsgToastTimer = null;
+      }, 4200);
+    }
+
+    function _showToast(msg, ms = 3000) {
+      try {
+        const t = document.getElementById('gta-toast');
+        if (!t) return;
+        t.textContent = String(msg || '');
+        t.classList.add('active');
+        setTimeout(() => { try { t.classList.remove('active'); } catch (e) {} }, ms);
+      } catch (e) {}
+    }
+    function _sendHostMessage() {
+      if (!playerName || _isHost) return;
+      const inp = document.getElementById('host-msg-input');
+      if (!inp) return;
+      const text = (inp.value || '').trim();
+      if (!text) return;
+      socket.emit('host_message_send', { text });
+      inp.value = '';
+    }
+    function _clearHostMessages() {
+      if (!_isHost) return;
+      socket.emit('host_messages_clear', {});
     }
     function _togglePeerAnswers() {
       _peerAnswersOpen = !_peerAnswersOpen;
@@ -3557,7 +4680,7 @@ _HTML = r"""<!DOCTYPE html>
       const list = document.getElementById('peer-answers-list');
       const toggle = document.getElementById('peer-answers-toggle');
       if (!wrap || !list || !toggle) return;
-      toggle.textContent = '\uD83D\uDC41 Others\u2019 answers (' + answers.length + ')';
+      toggle.textContent = '\uD83D\uDC41 Submitted Answers (' + answers.length + ')';
       list.innerHTML = '';
       answers.forEach(a => {
         const div = document.createElement('div');
@@ -3577,13 +4700,14 @@ _HTML = r"""<!DOCTYPE html>
     /* ── Submit ── */
     // Debounced silent selection tracker — fires select_answer without locking UI
     let _selectDebounceTimer = null;
-    function _emitSelect(answer) {
+    function _emitSelect(answer, explicit = false) {
       if (_myLastAnswer !== null) return;  // already submitted this question
       if (!playerName) return;
+      if (!explicit) return;
       if (answer === null || answer === undefined || answer === '') return;
       clearTimeout(_selectDebounceTimer);
       _selectDebounceTimer = setTimeout(() => {
-        socket.emit('select_answer', { name: playerName, answer: String(answer) });
+        socket.emit('select_answer', { name: playerName, answer: String(answer), explicit: true });
       }, 300);
     }
 
@@ -3748,12 +4872,13 @@ _HTML = r"""<!DOCTYPE html>
 
     /* ── Playback controller ── */
     let _controllerOpen  = false;
-    let _ctrlControlsVisible = false;
-    let _ctrlInfoTextVisible = false;
+    // Default sub-panels open for fresh browsers (saved prefs still override)
+    let _ctrlControlsVisible = true;
+    let _ctrlInfoTextVisible = true;
     const _ctrlInfoHistory = [];   // oldest → newest
     let _ctrlInfoHistoryIdx = 0;   // 0 = newest end
-    let _ctrlUpNextVisible = false;
-    let _ctrlPlaylistVisible = false;
+    let _ctrlUpNextVisible = true;
+    let _ctrlPlaylistVisible = true;
     let _ctrlYtListOpen = false;
     let _ctrlYtCurrentId = null;
     let _ctrlLtListOpen = false;
@@ -3762,26 +4887,51 @@ _HTML = r"""<!DOCTYPE html>
     let _ctrlFlCurrentName = null;
     let _ctrlSearchListOpen = false;
     let _ctrlSearchQueuedFile = null;
+    let _ctrlSearchResultsAll = [];
+    let _ctrlSearchRenderCount = 0;
+    let _ctrlSearchIsInfinite = false;
+    let _ctrlSearchQuery = '';
+    const _CTRL_SEARCH_PAGE_SIZE = 50;
     let _ctrlDiffListOpen = false;
     let _ctrlDiffCurrent = 2;
     let _ctrlAutoBonusListOpen = false;
     let _ctrlAutoBonusCurrent = null;
     let _ctrlListPopupMode = null;
+    let _ctrlListPopupDownInsideBox = false;
+
+    function _ctrlListPopupOverlayMouseDown(ev) {
+      const box = document.getElementById('ctrl-list-popup-box');
+      _ctrlListPopupDownInsideBox = !!(box && ev && box.contains(ev.target));
+    }
+
+    function _ctrlListPopupOverlayClick(ev) {
+      const isOverlay = !!(ev && ev.target && ev.currentTarget && ev.target === ev.currentTarget);
+      if (!isOverlay) return;
+      // If drag started inside popup (e.g. text selection) and ended outside, do not close.
+      if (_ctrlListPopupDownInsideBox) {
+        _ctrlListPopupDownInsideBox = false;
+        return;
+      }
+      _ctrlListPopupClose();
+    }
 
     function _ctrlListPopupOpen(title, mode) {
       _ctrlListPopupMode = mode;
       const overlay = document.getElementById('ctrl-list-popup-overlay');
       const titleEl = document.getElementById('ctrl-list-popup-title');
       const searchRow = document.getElementById('ctrl-list-popup-search-row');
+      const box = document.getElementById('ctrl-list-popup-box');
       const list = document.getElementById('ctrl-list-popup-list');
       if (titleEl) titleEl.textContent = title;
       if (searchRow) searchRow.classList.toggle('active', mode === 'search');
+      if (box) box.classList.toggle('search-mode', mode === 'search');
       if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
       if (overlay) overlay.classList.add('active');
     }
 
     function _ctrlListPopupClose() {
       _ctrlListPopupMode = null;
+      _ctrlListPopupDownInsideBox = false;
       _ctrlLtListOpen = false;
       _ctrlYtListOpen = false;
       _ctrlFlListOpen = false;
@@ -3789,7 +4939,9 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlDiffListOpen = false;
       _ctrlAutoBonusListOpen = false;
       const overlay = document.getElementById('ctrl-list-popup-overlay');
+      const box = document.getElementById('ctrl-list-popup-box');
       if (overlay) overlay.classList.remove('active');
+      if (box) box.classList.remove('search-mode');
     }
     let _ctrlVolOpen     = false;
     let _ctrlSeeking     = false;
@@ -3965,30 +5117,90 @@ _HTML = r"""<!DOCTYPE html>
       try { localStorage.setItem('ctrlPanels', JSON.stringify(state)); } catch(e) {}
     }
 
+    function _ctrlApplyPanelVisibility() {
+      const controlsPanel = document.getElementById('ctrl-controls-panel');
+      if (controlsPanel) controlsPanel.style.display = _ctrlControlsVisible ? 'flex' : 'none';
+
+      const infoPanel = document.getElementById('ctrl-infotext-panel');
+      if (infoPanel) infoPanel.style.display = _ctrlInfoTextVisible ? 'block' : 'none';
+
+      const upNextPanel = document.getElementById('ctrl-upnext-panel');
+      if (upNextPanel) upNextPanel.style.display = _ctrlUpNextVisible ? 'block' : 'none';
+
+      const playlistPanel = document.getElementById('ctrl-playlist-panel');
+      if (playlistPanel) playlistPanel.style.display = _ctrlPlaylistVisible ? 'flex' : 'none';
+
+      const spacer = document.getElementById('ctrl-flex-spacer');
+      if (spacer) spacer.classList.toggle('hidden', _ctrlPlaylistVisible);
+
+      if (_ctrlPlaylistVisible) _plOpen();
+      _ctrlSyncSectionArrows();
+    }
+
     function _ctrlLoadPanels() {
       let state;
-      try { state = JSON.parse(localStorage.getItem('ctrlPanels') || ''); } catch(e) { return; }
-      if (!state) return;
-      if (state.controls) _ctrlToggleControls();
-      if (state.infotext) _ctrlToggleInfoText();
-      if (state.upnext)   _ctrlToggleUpNext();
-      if (state.playlist) _ctrlTogglePlaylist();
-      if (Array.isArray(state.pinnedExtras)) {
-        _ctrlPinnedExtras = new Set(state.pinnedExtras);
-        _ctrlRenderPinnedExtras();
+      try { state = JSON.parse(localStorage.getItem('ctrlPanels') || ''); } catch(e) { state = null; }
+      if (!state || typeof state !== 'object') {
+        _ctrlApplyPanelVisibility();
+      } else {
+        if (typeof state.controls === 'boolean') _ctrlControlsVisible = state.controls;
+        if (typeof state.infotext === 'boolean') _ctrlInfoTextVisible = state.infotext;
+        if (typeof state.upnext === 'boolean') _ctrlUpNextVisible = state.upnext;
+        if (typeof state.playlist === 'boolean') _ctrlPlaylistVisible = state.playlist;
+        _ctrlApplyPanelVisibility();
       }
+      if (state && Array.isArray(state.pinnedExtras)) {
+        const cleaned = [];
+        const seen = new Set();
+        state.pinnedExtras.forEach(raw => {
+          if (typeof raw !== 'string') return;
+          let id = raw;
+          // Migration: Buzz Open was removed; map to Buzz Lock.
+          if (id === 'buzz_open') id = 'buzz_lock';
+          const isLayout = id.startsWith('_br_') || id.startsWith('_sp_');
+          const isKnown = !!_ctrlExtrasConfig[id];
+          if (!isLayout && !isKnown) return;
+          if (seen.has(id)) return;
+          seen.add(id);
+          cleaned.push(id);
+        });
+        _ctrlPinnedExtras = new Set(cleaned);
+        _ctrlRenderPinnedExtras();
+        // Persist migrated/cleaned preferences immediately.
+        _ctrlSavePanels();
+      }
+      _ctrlSyncSectionArrows();
+    }
+
+    function _ctrlSetSectionArrow(toggleId, chevronId, isOpen) {
+      const toggle = document.getElementById(toggleId);
+      if (toggle) {
+        toggle.classList.toggle('is-open', !!isOpen);
+        toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+      }
+      const chev = document.getElementById(chevronId);
+      if (chev) chev.textContent = isOpen ? '\u25BE' : '\u25B8';
+    }
+
+    function _ctrlSyncSectionArrows() {
+      _ctrlSetSectionArrow('ctrl-controls-toggle', 'ctrl-controls-chevron', _ctrlControlsVisible);
+      _ctrlSetSectionArrow('ctrl-infotext-toggle', 'ctrl-infotext-chevron', _ctrlInfoTextVisible);
+      _ctrlSetSectionArrow('ctrl-upnext-toggle', 'ctrl-upnext-chevron', _ctrlUpNextVisible);
+      _ctrlSetSectionArrow('ctrl-playlist-toggle', 'ctrl-playlist-chevron', _ctrlPlaylistVisible);
     }
 
     function _ctrlToggleControls() {
       _ctrlControlsVisible = !_ctrlControlsVisible;
       const panel = document.getElementById('ctrl-controls-panel');
       if (panel) panel.style.display = _ctrlControlsVisible ? 'flex' : 'none';
+      _ctrlSyncSectionArrows();
       _ctrlSavePanels();
     }
     function _ctrlToggleInfoText() {
       _ctrlInfoTextVisible = !_ctrlInfoTextVisible;
       const panel = document.getElementById('ctrl-infotext-panel');
       if (panel) panel.style.display = _ctrlInfoTextVisible ? 'block' : 'none';
+      _ctrlSyncSectionArrows();
       _ctrlSavePanels();
     }
 
@@ -4185,6 +5397,8 @@ _HTML = r"""<!DOCTYPE html>
     function _scApplyViewState() {
       document.getElementById('scoreboard-view').style.display = _scViewOpen ? 'flex' : 'none';
       document.getElementById('question-box').style.display = _scViewOpen ? 'none' : 'block';
+      _placeHostAnswers();
+      _placeHostMessages();
       const btn = document.getElementById('sc-view-btn');
       if (btn) {
         btn.classList.toggle('sc-view-active', _scViewOpen);
@@ -4400,23 +5614,93 @@ _HTML = r"""<!DOCTYPE html>
           deltasWrap.appendChild(btn);
         });
         row.appendChild(deltasWrap);
-        // Score span
+        // Score span (clickable like normal rows)
         const scoreSpan = document.createElement('span');
         scoreSpan.className = 'sc-score-cell';
         scoreSpan.textContent = '0';
-        row.appendChild(scoreSpan);
+        if (_isHost) {
+          const scoreInput = document.createElement('input');
+          scoreInput.className = 'sc-score-input';
+          scoreInput.type = 'number';
+          scoreInput.style.display = 'none';
+
+          scoreSpan.title = 'Click to set score';
+          scoreSpan.onclick = () => {
+            scoreSpan.style.display = 'none';
+            scoreInput.style.display = 'block';
+            scoreInput.value = '0';
+            scoreInput.focus(); scoreInput.select();
+          };
+          function _commitGhostScore() {
+            const v = parseFloat(scoreInput.value);
+            scoreInput.style.display = 'none';
+            scoreSpan.style.display = '';
+            if (isNaN(v)) return;
+            // If player exists in real rows, use normal setter; otherwise optimistic promote
+            if (_scPlayers.find(p2 => p2.name === p.name)) {
+              _scSetScore(p.name, v);
+            } else {
+              socket.emit('host_action', { action: 'score_set', name: p.name, score: v });
+              _scOptimisticPromote(p.name, v);
+            }
+          }
+          scoreInput.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); _commitGhostScore(); } if (e.key === 'Escape') { scoreInput.style.display='none'; scoreSpan.style.display=''; } };
+          scoreInput.onblur = _commitGhostScore;
+          row.appendChild(scoreSpan);
+          row.appendChild(scoreInput);
+        } else {
+          row.appendChild(scoreSpan);
+        }
         // Pending label (same as real rows so _scUpdateAllPendingLabels works)
         const pendingLbl = document.createElement('span');
         pendingLbl.className = 'sc-pending-lbl';
         pendingLbl.dataset.name = p.name;
         pendingLbl.style.cssText = 'font-size:0.7em;font-weight:bold;min-width:28px;display:none;';
         row.appendChild(pendingLbl);
-        // Name span (read-only)
+        // Name span (editable for host)
         const nameSpan = document.createElement('span');
         nameSpan.className = 'sc-name-cell';
         nameSpan.textContent = p.name;
         nameSpan.title = p.name + ' (not on scoreboard yet)';
-        row.appendChild(nameSpan);
+
+        if (_isHost) {
+          const nameInput = document.createElement('input');
+          nameInput.className = 'sc-name-input';
+          nameInput.style.display = 'none';
+
+          nameSpan.title = 'Click to rename (ghost)';
+          nameSpan.onclick = () => {
+            nameSpan.style.display = 'none';
+            nameInput.style.display = 'block';
+            nameInput.value = p.name;
+            nameInput.focus(); nameInput.select();
+          };
+          function _commitGhostName() {
+            const v = nameInput.value.trim();
+            if (v && v !== p.name) {
+              // Ask server to rename the player in the web player list (not the scoreboard sheet)
+              socket.emit('rename_player', { old_name: p.name, new_name: v });
+              // Optimistic local update for the ghost row only
+              try {
+                row.dataset.name = v;
+                nameSpan.textContent = v;
+                nameSpan.title = v + ' (not on scoreboard yet)';
+                p.name = v;
+              } catch (e) {}
+            }
+            nameInput.style.display = 'none';
+            nameSpan.style.display = '';
+          }
+          nameInput.onkeydown = e => {
+            if (e.key === 'Enter') { e.preventDefault(); _commitGhostName(); }
+            if (e.key === 'Escape') { nameInput.style.display='none'; nameSpan.style.display=''; }
+          };
+          nameInput.onblur = _commitGhostName;
+          row.appendChild(nameSpan);
+          row.appendChild(nameInput);
+        } else {
+          row.appendChild(nameSpan);
+        }
         container.appendChild(row);
       });
     }
@@ -4448,6 +5732,14 @@ _HTML = r"""<!DOCTYPE html>
     let _scMenuEl = null;
     function _scShowRowMenu(name, anchor) {
       if (_scMenuEl) { _scMenuEl.remove(); _scMenuEl = null; }
+      // Resolve latest name from DOM anchor if available (prevents stale prompts)
+      let displayName = name;
+      try {
+        if (anchor && anchor.closest) {
+          const rowEl = anchor.closest('.sc-row');
+          if (rowEl && rowEl.dataset && rowEl.dataset.name) displayName = rowEl.dataset.name;
+        }
+      } catch (e) {}
       const menu = document.createElement('div');
       menu.style.cssText = 'position:fixed;background:#252525;border:1px solid #444;border-radius:4px;z-index:9999;min-width:120px;box-shadow:0 3px 10px rgba(0,0,0,0.6);touch-action:manipulation;';
       const zoom = parseFloat(document.documentElement.style.zoom) || 1;
@@ -4477,12 +5769,12 @@ _HTML = r"""<!DOCTYPE html>
         item.onpointerdown = e => { e.stopPropagation(); menu.remove(); _scMenuEl = null; fn(); };
         menu.appendChild(item);
       }
-      menuItem('✕  Remove player', '#cc6666', () => _confirm('Remove ' + name + ' from the scoreboard?', 'Remove', () => _scRemove(name)));
-      menuItem('\uD83D\uDC65  Set team\u2026', '#aabbff', () => _scSetTeamPrompt(name, menu));
+      menuItem('✕  Remove player', '#cc6666', () => _confirm('Remove ' + displayName + ' from the scoreboard?', 'Remove', () => _scRemove(displayName)));
+      menuItem('\uD83D\uDC65  Set team\u2026', '#aabbff', () => _scSetTeamPrompt(displayName, menu));
       // Only show Remove team if the player currently has one
-      const curPlayer = _scPlayers.find(p => p.name === name);
+      const curPlayer = _scPlayers.find(p => p.name === displayName);
       if (curPlayer && curPlayer.team) {
-        menuItem('\u274C  Remove team', '#cc9966', () => { socket.emit('host_action', { action: 'player_set_team', name, team: '' }); if (curPlayer) curPlayer.team = ''; });
+        menuItem('\u274C  Remove team', '#cc9966', () => { socket.emit('host_action', { action: 'player_set_team', name: displayName, team: '' }); if (curPlayer) curPlayer.team = ''; });
       }
       document.body.appendChild(menu);
       _scMenuEl = menu;
@@ -4717,6 +6009,7 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlUpNextVisible = !_ctrlUpNextVisible;
       const panel = document.getElementById('ctrl-upnext-panel');
       if (panel) panel.style.display = _ctrlUpNextVisible ? 'block' : 'none';
+      _ctrlSyncSectionArrows();
       _ctrlSavePanels();
     }
 
@@ -4747,9 +6040,7 @@ _HTML = r"""<!DOCTYPE html>
         el.innerHTML = '<span class="ctrl-popup-item-dur">[' + v.duration + ']</span><span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(v.title) + '</span>';
         el.onclick = () => {
           socket.emit('host_action', {action: 'queue_youtube', video_id: v.id});
-          _ctrlYtCurrentId = (v.id === _ctrlYtCurrentId) ? null : v.id;
-          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item').forEach(e => e.classList.remove('ctrl-yt-active'));
-          if (_ctrlYtCurrentId) el.classList.add('ctrl-yt-active');
+          _ctrlListPopupClose();
         };
         list.appendChild(el);
       });
@@ -4766,6 +6057,7 @@ _HTML = r"""<!DOCTYPE html>
       const spacer = document.getElementById('ctrl-flex-spacer');
       if (spacer) spacer.classList.toggle('hidden', _ctrlPlaylistVisible);
       if (_ctrlPlaylistVisible) _plOpen();
+      _ctrlSyncSectionArrows();
       _ctrlSavePanels();
     }
 
@@ -4849,9 +6141,7 @@ _HTML = r"""<!DOCTYPE html>
         el.innerHTML = '<span class="ctrl-popup-item-dur">[' + r.duration + ']</span><span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(r.name) + '</span>';
         el.onclick = () => {
           socket.emit('host_action', {action: 'queue_fixed_lightning', index: r.index});
-          _ctrlFlCurrentName = (r.name === _ctrlFlCurrentName) ? null : r.name;
-          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item').forEach(e => e.classList.remove('ctrl-yt-active'));
-          if (_ctrlFlCurrentName) el.classList.add('ctrl-yt-active');
+          _ctrlListPopupClose();
         };
         list.appendChild(el);
       });
@@ -4888,6 +6178,11 @@ _HTML = r"""<!DOCTYPE html>
         if (list) list.innerHTML = '';
         return;
       }
+      if (query.length < 3) {
+        const list = document.getElementById('ctrl-list-popup-list');
+        if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Type at least 3 characters…</div>';
+        return;
+      }
       _ctrlSearchDebounceTimer = setTimeout(() => _ctrlListPopupDoSearch(false), 300);
     }
 
@@ -4901,55 +6196,168 @@ _HTML = r"""<!DOCTYPE html>
       socket.emit('host_action', {action: 'search_themes', query: query});
     }
 
-    socket.on('theme_search_results', data => {
-      if (!_ctrlSearchListOpen) return;
+    function _ctrlHighlightSearchText(text, query) {
+      const src = String(text || '');
+      const needle = String(query || '').trim();
+      if (!needle) return _ctrlEscapeHtml(src);
+      const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(esc, 'ig');
+      let out = '';
+      let last = 0;
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        out += _ctrlEscapeHtml(src.slice(last, m.index));
+        out += '<span class="ctrl-search-hit">' + _ctrlEscapeHtml(m[0]) + '</span>';
+        last = m.index + m[0].length;
+        if (!m[0].length) re.lastIndex += 1;
+      }
+      out += _ctrlEscapeHtml(src.slice(last));
+      return out;
+    }
+
+    function _ctrlBuildSearchRow(r, index) {
+      const row = document.createElement('div');
+      row.className = 'ctrl-popup-item ctrl-popup-item-search' + (r.filename === _ctrlSearchQueuedFile ? ' ctrl-yt-active' : '');
+      row.title = r.filename;
+      row.dataset.filename = r.filename || '';
+
+      const titleEn = String(r.title_en || '').trim();
+      const titleJp = String(r.title_jp || '').trim();
+      const titleFallback = String(r.title || '').trim();
+      const qLower = _ctrlSearchQuery.toLowerCase();
+      const enMatch = !!(qLower && titleEn && titleEn.toLowerCase().includes(qLower));
+      const jpMatch = !!(qLower && titleJp && titleJp.toLowerCase().includes(qLower));
+      let titleText = titleEn || titleJp || titleFallback || 'Unknown Title';
+      if (titleEn && titleJp && jpMatch && !enMatch) {
+        titleText = titleEn + ' (' + titleJp + ')';
+      }
+      const slugText = String(r.slug || '').trim();
+      const labelText = slugText ? (titleText + ' ' + slugText) : titleText;
+      const topText = (Number(index) + 1) + '. ' + labelText;
+      const songText = String(r.song || '').trim();
+      const artistText = String(r.artist || '').trim();
+      const songByText = (songText && artistText)
+        ? (songText + ' by ' + artistText)
+        : (songText || artistText || 'Unknown Song');
+      const seasonText = String(r.season || '').trim();
+      const formatText = String(r.format || '').trim();
+      const studioText = String(r.studio || '').trim();
+      const metaParts = [seasonText, formatText, studioText].filter(Boolean);
+      const metaText = metaParts.join(' | ');
+
+      const addBtn = document.createElement('button');
+      addBtn.className = 'ctrl-popup-item-add';
+      addBtn.textContent = '+';
+      addBtn.title = 'Add to playlist after current';
+      addBtn.onclick = e => {
+        e.stopPropagation();
+        socket.emit('host_action', {action: 'add_theme', filename: r.filename});
+      };
+
+      const queueBtn = document.createElement('button');
+      queueBtn.className = 'ctrl-popup-item-add';
+      queueBtn.textContent = 'Q';
+      queueBtn.title = 'Queue next (standard queue logic)';
+      queueBtn.onclick = e => {
+        e.stopPropagation();
+        socket.emit('host_action', {action: 'queue_theme_only', filename: r.filename});
+        _ctrlSearchQueuedFile = (r.filename === _ctrlSearchQueuedFile) ? null : r.filename;
+        document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item-search').forEach(el => el.classList.remove('ctrl-yt-active'));
+        if (_ctrlSearchQueuedFile && !_ctrlSearchIsInfinite) row.classList.add('ctrl-yt-active');
+      };
+
+      const playBtn = document.createElement('button');
+      playBtn.className = 'ctrl-popup-item-add';
+      playBtn.textContent = '▶';
+      playBtn.title = 'Play immediately';
+      playBtn.onclick = e => {
+        e.stopPropagation();
+        socket.emit('host_action', {action: 'play_theme_now', filename: r.filename});
+      };
+
+      const actionsCol = document.createElement('div');
+      actionsCol.className = 'ctrl-popup-search-actions';
+      actionsCol.appendChild(playBtn);
+      actionsCol.appendChild(queueBtn);
+      actionsCol.appendChild(addBtn);
+
+      const textCol = document.createElement('div');
+      textCol.className = 'ctrl-popup-search-text';
+      const lineSong = document.createElement('div');
+      lineSong.className = 'ctrl-popup-search-line song';
+      lineSong.innerHTML = _ctrlHighlightSearchText(topText, _ctrlSearchQuery);
+      const lineArtist = document.createElement('div');
+      lineArtist.className = 'ctrl-popup-search-line artist';
+      lineArtist.innerHTML = _ctrlHighlightSearchText(songByText, _ctrlSearchQuery);
+      const lineMeta = document.createElement('div');
+      lineMeta.className = 'ctrl-popup-search-line meta';
+      lineMeta.innerHTML = _ctrlHighlightSearchText(metaText, _ctrlSearchQuery);
+      textCol.appendChild(lineSong);
+      textCol.appendChild(lineArtist);
+      textCol.appendChild(lineMeta);
+
+      row.appendChild(actionsCol);
+      row.appendChild(textCol);
+
+      row.onclick = () => {
+        socket.emit('host_action', {action: 'queue_theme', filename: r.filename});
+        if (!_ctrlSearchIsInfinite) {
+          _ctrlSearchQueuedFile = (r.filename === _ctrlSearchQueuedFile) ? null : r.filename;
+          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item-search').forEach(e => e.classList.remove('ctrl-yt-active'));
+          if (_ctrlSearchQueuedFile) row.classList.add('ctrl-yt-active');
+        }
+      };
+
+      return row;
+    }
+
+    function _ctrlRenderSearchResults(reset = false) {
       const list = document.getElementById('ctrl-list-popup-list');
       if (!list) return;
-      list.innerHTML = '';
-      if (!data.results || !data.results.length) {
+      if (reset) {
+        _ctrlSearchRenderCount = 0;
+        list.innerHTML = '';
+      }
+      const oldMore = list.querySelector('.ctrl-search-more-wrap');
+      if (oldMore) oldMore.remove();
+
+      if (!_ctrlSearchResultsAll || !_ctrlSearchResultsAll.length) {
         list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No results found</div>';
         return;
       }
-      data.results.forEach(r => {
-        const row = document.createElement('div');
-        row.className = 'ctrl-popup-item' + (r.filename === _ctrlSearchQueuedFile ? ' ctrl-yt-active' : '');
-        row.title = r.filename;
 
-        const slug = document.createElement('span');
-        slug.className = 'ctrl-popup-item-dur';
-        slug.textContent = r.slug ? '[' + r.slug + ']' : '';
+      const end = Math.min(_ctrlSearchRenderCount + _CTRL_SEARCH_PAGE_SIZE, _ctrlSearchResultsAll.length);
+      const frag = document.createDocumentFragment();
+      for (let i = _ctrlSearchRenderCount; i < end; i++) {
+        frag.appendChild(_ctrlBuildSearchRow(_ctrlSearchResultsAll[i], i));
+      }
+      list.appendChild(frag);
+      _ctrlSearchRenderCount = end;
 
-        const title = document.createElement('span');
-        title.className = 'ctrl-popup-item-title';
-        title.textContent = r.title;
+      if (_ctrlSearchRenderCount < _ctrlSearchResultsAll.length) {
+        const wrap = document.createElement('div');
+        wrap.className = 'ctrl-search-more-wrap';
+        wrap.style.cssText = 'display:flex;justify-content:center;padding:8px 0 4px;';
+        const btn = document.createElement('button');
+        btn.className = 'ctrl-popup-item-add';
+        btn.style.cssText = 'font-size:0.85em;padding:4px 10px;';
+        const remaining = _ctrlSearchResultsAll.length - _ctrlSearchRenderCount;
+        const step = Math.min(_CTRL_SEARCH_PAGE_SIZE, remaining);
+        btn.textContent = 'Show ' + step + ' more';
+        btn.onclick = () => _ctrlRenderSearchResults(false);
+        wrap.appendChild(btn);
+        list.appendChild(wrap);
+      }
+    }
 
-        const song = document.createElement('span');
-        song.className = 'ctrl-popup-item-song';
-        song.textContent = r.song || '';
-
-        const addBtn = document.createElement('button');
-        addBtn.className = 'ctrl-popup-item-add';
-        addBtn.textContent = '+';
-        addBtn.title = 'Add to playlist after current';
-        addBtn.onclick = e => {
-          e.stopPropagation();
-          socket.emit('host_action', {action: 'add_theme', filename: r.filename});
-        };
-
-        row.appendChild(slug);
-        row.appendChild(title);
-        if (r.song) row.appendChild(song);
-        row.appendChild(addBtn);
-
-        row.onclick = () => {
-          socket.emit('host_action', {action: 'queue_theme', filename: r.filename});
-          _ctrlSearchQueuedFile = (r.filename === _ctrlSearchQueuedFile) ? null : r.filename;
-          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item').forEach(e => e.classList.remove('ctrl-yt-active'));
-          if (_ctrlSearchQueuedFile) row.classList.add('ctrl-yt-active');
-        };
-
-        list.appendChild(row);
-      });
+    socket.on('theme_search_results', data => {
+      if (!_ctrlSearchListOpen) return;
+      _ctrlSearchIsInfinite = !!(data && data.playlist_infinite);
+      _ctrlSearchQuery = String((data && data.query) || '').trim();
+      _ctrlSearchResultsAll = Array.isArray(data && data.results) ? data.results : [];
+      const titleEl = document.getElementById('ctrl-list-popup-title');
+      if (titleEl) titleEl.textContent = 'Search Themes (' + _ctrlSearchResultsAll.length + ')';
+      _ctrlRenderSearchResults(true);
     });
 
     const _ctrlDiffOptions = [
@@ -4987,17 +6395,20 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     const _ctrlAutoBonusOptions = [
-      {label: 'Off',             value: null},
       {label: 'Random',          value: 'random'},
+      {divider: true},
       {label: 'Multiple Choice', value: 'multiple'},
       {label: 'Year',            value: 'year'},
       {label: 'Score',           value: 'score'},
       {label: 'Members',         value: 'members'},
-      {label: 'Popularity',      value: 'popularity'},
+      {label: 'Popularity Rank', value: 'popularity'},
       {label: 'Tags',            value: 'tags'},
       {label: 'Studio',          value: 'studio'},
       {label: 'Artist',          value: 'artist'},
-      {label: 'Song',            value: 'song'},
+      {label: 'Song Title',      value: 'song'},
+      {divider: true},
+      {label: 'Free Form',       value: 'freeform'},
+      {label: 'Buzzer',          value: 'buzzer'},
     ];
     function _ctrlToggleAutoBonusList() {
       const opening = !_ctrlAutoBonusListOpen;
@@ -5012,7 +6423,27 @@ _HTML = r"""<!DOCTYPE html>
       const list = document.getElementById('ctrl-list-popup-list');
       if (!list) return;
       list.innerHTML = '';
+      if (_ctrlAutoBonusCurrent) {
+        const offEl = document.createElement('div');
+        offEl.className = 'ctrl-popup-item ctrl-popup-item-off';
+        offEl.textContent = '✕  Off';
+        offEl.onclick = () => {
+          _ctrlAutoBonusCurrent = null;
+          socket.emit('host_action', {action: 'set_auto_bonus', value: ''});
+          _ctrlListPopupClose();
+        };
+        list.appendChild(offEl);
+        const sepDiv = document.createElement('div');
+        sepDiv.className = 'ctrl-popup-divider';
+        list.appendChild(sepDiv);
+      }
       _ctrlAutoBonusOptions.forEach(opt => {
+        if (opt.divider) {
+          const div = document.createElement('div');
+          div.className = 'ctrl-popup-divider';
+          list.appendChild(div);
+          return;
+        }
         const el = document.createElement('div');
         el.className = 'ctrl-popup-item' + (opt.value === _ctrlAutoBonusCurrent ? ' ctrl-yt-active' : '');
         el.textContent = opt.label;
@@ -5033,6 +6464,8 @@ _HTML = r"""<!DOCTYPE html>
         'ctrl-tgl-censors':   !!data.censors,
         'ctrl-tgl-shortcuts': !!data.shortcuts,
         'ctrl-tgl-dock':      !!data.dock,
+        'ctrl-tgl-info-start':!!data.info_start,
+        'ctrl-tgl-info-end':  !!data.info_end,
         'ctrl-queue-blind':    !!data.queue_blind,
         'ctrl-queue-peek':     !!data.queue_peek,
         'ctrl-queue-mute-peek':!!data.queue_mute_peek,
@@ -5061,18 +6494,52 @@ _HTML = r"""<!DOCTYPE html>
       // Active state on tgl proxy buttons in main panel
       const tglProxyIds = {
         'tgl_blind': !!data.blind, 'tgl_peek': !!data.peek, 'tgl_mute': !!data.mute,
+        'tgl_narrow': !!data.peek, 'tgl_widen': !!data.peek,
         'tgl_censors': !!data.censors, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock,
+        'tgl_info_start': !!data.info_start, 'tgl_info_end': !!data.info_end,
+        'lt':      !!data.light_mode,
+        'lt_stop': !!data.light_mode,
+        'lt_dice': data.light_mode === 'variety',
+        'yt':      !!data.yt_queued,
+        'fl':      !!data.fl_queued,
+        'search':  !!data.search_queued,
+        'end_session': !!data.end_session_popup,
+        'scoreboard_open_close': !!data.scoreboard_open,
+        'scoreboard_toggle': !!data.scoreboard_visible,
+        'scoreboard_align': !!data.scoreboard_open,
+        'scoreboard_extend': !!data.scoreboard_open,
+        'scoreboard_grow': !!data.scoreboard_open,
+        'scoreboard_shrink': !!data.scoreboard_open,
       };
       for (const [eid, active] of Object.entries(tglProxyIds)) {
-        document.querySelectorAll(`[data-proxy-extra="${eid}"]`).forEach(el => el.classList.toggle('ctrl-toggle-active', active));
+        document.querySelectorAll(`[data-proxy-extra="${eid}"],[data-extra-id="${eid}"]`).forEach(el => el.classList.toggle('ctrl-toggle-active', active));
       }
       document.querySelectorAll('.ctrl-censor-count').forEach(el => {
         el.textContent = data.censor_count != null ? data.censor_count : 0;
       });
       // Update proxy state for extra toggle buttons in pinned area
-      const tglProxyMap = { 'tgl_censors': !!data.censors, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock };
+      const tglProxyMap = {
+        'tgl_censors': !!data.censors,
+        'tgl_shortcuts': !!data.shortcuts,
+        'tgl_dock': !!data.dock,
+        'tgl_info_start': !!data.info_start,
+        'tgl_info_end': !!data.info_end,
+      };
       for (const [eid, active] of Object.entries(tglProxyMap)) {
         document.querySelectorAll(`[data-proxy-extra="${eid}"]`).forEach(el => el.classList.toggle('ctrl-toggle-active', active));
+      }
+      // Highlight Info Reveal buttons when their popup is currently showing
+      const revealMap = {
+        'rev_info':      !!data.info_popup,
+        'rev_title':     !!data.title_popup,
+        'reveal_artist': !!data.artist_popup,
+        'reveal_studio': !!data.studio_popup,
+        'reveal_season': !!data.season_popup,
+        'reveal_year':   !!data.year_popup,
+      };
+      for (const [eid, active] of Object.entries(revealMap)) {
+        document.querySelectorAll(`[data-extra-id="${eid}"],[data-proxy-extra="${eid}"]`).forEach(el =>
+          el.classList.toggle('ctrl-reveal-active', active));
       }
       // Sync difficulty and auto-bonus state
       if (data.difficulty != null) {
@@ -5087,6 +6554,26 @@ _HTML = r"""<!DOCTYPE html>
         document.querySelectorAll('[data-extra-id="auto_bonus"]').forEach(el =>
           el.classList.toggle('ctrl-toggle-active', _ctrlAutoBonusCurrent != null));
       }
+      const bonusToExtraId = {
+        'multiple':   'b_multiple',
+        'year':       'b_year',
+        'score':      'b_score',
+        'members':    'b_members',
+        'popularity': 'b_rank',
+        'tags':       'b_tags',
+        'freeform':   'b_free',
+        'studio':     'bonus_studio',
+        'artist':     'bonus_artist',
+        'song':       'bonus_song',
+        'characters': 'bonus_chars',
+        'buzzer':     'bonus_buzzer',
+      };
+      const activeBonusExtraId = bonusToExtraId[data.active_bonus || ''] || null;
+      Object.values(bonusToExtraId).forEach(eid => {
+        const active = (eid === activeBonusExtraId);
+        document.querySelectorAll(`[data-extra-id="${eid}"],[data-proxy-extra="${eid}"]`).forEach(el =>
+          el.classList.toggle('ctrl-bonus-active', active));
+      });
     });
 
     const _CTRL_DEFAULT_PINNED = [
@@ -5100,12 +6587,12 @@ _HTML = r"""<!DOCTYPE html>
 
     const _ctrlExtrasConfig = {
       // Queue
-      'lt':           { classes: 'ctrl-sect-queue',                           html: 'Lightning', title: 'Lightning round types' },
-      'lt_stop':      { classes: 'ctrl-sect-queue',                           html: '&#x23F9;',  title: 'Stop lightning round', serverCtrl: true },
+      'lt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Lightning', title: 'Lightning round types' },
+      'lt_stop':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x23F9;',  title: 'Stop lightning round', serverCtrl: true },
       'lt_dice':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F3B2;', title: 'Variety Lightning Round', ltMode: 'variety' },
-      'yt':           { classes: 'ctrl-sect-queue',                           html: 'YouTube',   title: 'YouTube videos', serverCtrl: true },
-      'fl':           { classes: 'ctrl-sect-queue',                           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
-      'search':       { classes: 'ctrl-sect-queue',                           html: '&#x1F50D;', title: 'Search themes' },
+      'yt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'YouTube',   title: 'YouTube videos', serverCtrl: true },
+      'fl':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
+      'search':       { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F50D;', title: 'Search themes' },
       // Bonus
       'b_multiple':   { classes: 'ctrl-sect-bonus',                           html: 'Multiple',  title: '' },
       'b_year':       { classes: 'ctrl-sect-bonus',                           html: 'Year',      title: '' },
@@ -5118,17 +6605,23 @@ _HTML = r"""<!DOCTYPE html>
       'bonus_artist': { classes: 'ctrl-sect-bonus',                           html: 'Artist',    title: '' },
       'bonus_song':   { classes: 'ctrl-sect-bonus',                           html: 'Song',      title: '' },
       'bonus_chars':  { classes: 'ctrl-sect-bonus',                           html: 'Characters', title: '' },
+      'bonus_buzzer': { classes: 'ctrl-sect-bonus',                           html: 'Buzzer',    title: '' },
+      'buzz_lock':    { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Buzz Lock', title: 'Toggle buzzer lock' },
+      'buzz_reset':   { classes: 'ctrl-sect-bonus',                           html: 'Buzz Reset', title: 'Reset buzzer order' },
       'auto_bonus':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Auto Bonus', title: 'Auto bonus type at round start' },
       // Toggles
       'difficulty':   { classes: 'ctrl-sect-toggle',                          html: 'Difficulty', title: 'Set playlist difficulty' },
+      'tgl_fullscreen':{ classes: 'ctrl-sect-toggle',                         html: 'Fullscreen', title: 'Toggle VLC fullscreen mode' },
       'tgl_blind':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Blind',     title: 'Toggle blind' },
       'tgl_peek':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Peek',      title: 'Toggle peek' },
-      'tgl_narrow':   { classes: 'ctrl-sect-toggle',                          html: '&#x25C0;',  title: 'Narrow peek' },
-      'tgl_widen':    { classes: 'ctrl-sect-toggle',                          html: '&#x25B6;',  title: 'Widen peek' },
+      'tgl_narrow':   { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25C0;',  title: 'Narrow peek' },
+      'tgl_widen':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25B6;',  title: 'Widen peek' },
       'tgl_mute':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Mute',      title: 'Toggle mute' },
       'tgl_censors':  { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Censors (<span class="ctrl-censor-count">0</span>)', title: 'Toggle censors' },
       'tgl_shortcuts':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Keys',      title: 'Toggle keyboard shortcuts' },
       'tgl_dock':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Dock',      title: 'Toggle dock' },
+      'tgl_info_start':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',         html: 'Info Start', title: 'Toggle auto-show info at start' },
+      'tgl_info_end': { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Info End',  title: 'Toggle auto-show info at end' },
       // Info Reveal
       'rev_info':     { classes: 'ctrl-sect-reveal',                          html: 'Show Information', title: 'Show full info' },
       'rev_title':    { classes: 'ctrl-sect-reveal',                          html: 'Title',     title: 'Show title only' },
@@ -5144,12 +6637,19 @@ _HTML = r"""<!DOCTYPE html>
       'mark_mute_peek':{ classes: 'ctrl-mark-btn ctrl-sect-mark',             html: '&#x1F507;', title: 'Mute Peek Mark' },
       // Session
       'end_session':  { classes: 'ctrl-sect-session',                         html: 'End',       title: 'End session' },
+      // Scoreboard actions (invoke menu commands in main app)
+      'scoreboard_open_close': { classes: 'ctrl-sect-scoreboard',             html: 'Open/Close', title: 'Open or close scoreboard' },
+      'scoreboard_toggle': { classes: 'ctrl-sect-scoreboard',                 html: 'Toggle',    title: 'Toggle scoreboard visibility' },
+      'scoreboard_align':  { classes: 'ctrl-sect-scoreboard',                 html: 'Align',     title: 'Flip scoreboard alignment' },
+      'scoreboard_extend': { classes: 'ctrl-sect-scoreboard',                 html: 'Extend',    title: 'Toggle extended stats' },
+      'scoreboard_grow':   { classes: 'ctrl-sect-scoreboard',                 html: 'Grow',      title: 'Increase scoreboard size' },
+      'scoreboard_shrink': { classes: 'ctrl-sect-scoreboard',                 html: 'Shrink',    title: 'Decrease scoreboard size' },
     };
 
     const _ctrlExtraActions = {
       'lt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleLtList(); },
       'lt_stop':      () => socket.emit('host_action',{action:'stop_lightning'}),
-      'lt_dice':      () => socket.emit('host_action',{action:'invoke',id:'lightning_variety'}),
+      'lt_dice':      () => { _ctrlCloseExtrasPopup(); socket.emit('host_action',{action:'invoke',id:'lightning_variety'}); },
       'yt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleYouTubeList(); },
       'fl':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleFlList(); },
       'search':       () => { _ctrlCloseExtrasPopup(); _ctrlToggleSearchRow(); },
@@ -5164,6 +6664,9 @@ _HTML = r"""<!DOCTYPE html>
       'bonus_artist': () => { socket.emit('host_action',{action:'invoke',id:'bonus_artist'}); _ctrlCloseExtrasPopup(); },
       'bonus_song':   () => { socket.emit('host_action',{action:'invoke',id:'bonus_song'}); _ctrlCloseExtrasPopup(); },
       'bonus_chars':  () => { socket.emit('host_action',{action:'invoke',id:'bonus_chars'}); _ctrlCloseExtrasPopup(); },
+      'bonus_buzzer': () => { socket.emit('host_action',{action:'invoke',id:'bonus_buzzer'}); _ctrlCloseExtrasPopup(); },
+      'buzz_lock':    () => socket.emit('host_action',{action:'invoke',id:'buzzer_lock'}),
+      'buzz_reset':   () => socket.emit('host_action',{action:'invoke',id:'buzzer_reset'}),
       'tgl_blind':    () => socket.emit('host_action',{action:'invoke',id:'blind'}),
       'tgl_peek':     () => socket.emit('host_action',{action:'invoke',id:'peek'}),
       'tgl_narrow':   () => socket.emit('host_action',{action:'invoke',id:'narrow_peek'}),
@@ -5172,6 +6675,8 @@ _HTML = r"""<!DOCTYPE html>
       'tgl_censors':  () => socket.emit('host_action',{action:'invoke',id:'censors'}),
       'tgl_shortcuts':() => socket.emit('host_action',{action:'invoke',id:'enable_shortcuts'}),
       'tgl_dock':     () => socket.emit('host_action',{action:'invoke',id:'dock_player'}),
+      'tgl_info_start':() => socket.emit('host_action',{action:'invoke',id:'auto_info_start'}),
+      'tgl_info_end': () => socket.emit('host_action',{action:'invoke',id:'auto_info_end'}),
       'rev_info':     () => { socket.emit('host_action',{action:'invoke',id:'info_popup'}); _ctrlCloseExtrasPopup(); },
       'rev_title':    () => { socket.emit('host_action',{action:'invoke',id:'title_popup'}); _ctrlCloseExtrasPopup(); },
       'reveal_artist':() => { socket.emit('host_action',{action:'invoke',id:'artist_info'}); _ctrlCloseExtrasPopup(); },
@@ -5184,7 +6689,15 @@ _HTML = r"""<!DOCTYPE html>
       'mark_peek':    () => socket.emit('host_action',{action:'invoke',id:'peek_mark'}),
       'mark_mute_peek':() => socket.emit('host_action',{action:'invoke',id:'mute_peek_mark'}),
       'end_session':  () => { socket.emit('host_action',{action:'invoke',id:'end_session'}); _ctrlCloseExtrasPopup(); },
+      // Scoreboard actions — call main app menu registry via invoke
+      'scoreboard_open_close': () => socket.emit('host_action',{action:'toggle_scoreboard'}),
+      'scoreboard_toggle':      () => socket.emit('host_action',{action:'invoke', id:'scoreboard_toggle'}),
+      'scoreboard_align':       () => socket.emit('host_action',{action:'invoke', id:'scoreboard_align'}),
+      'scoreboard_extend':      () => socket.emit('host_action',{action:'invoke', id:'scoreboard_extend'}),
+      'scoreboard_grow':        () => socket.emit('host_action',{action:'invoke', id:'scoreboard_grow'}),
+      'scoreboard_shrink':      () => socket.emit('host_action',{action:'invoke', id:'scoreboard_shrink'}),
       'difficulty':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleDiffList(); },
+      'tgl_fullscreen':() => socket.emit('host_action',{action:'invoke',id:'fullscreen'}),
       'auto_bonus':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleAutoBonusList(); },
     };
 
@@ -5219,6 +6732,7 @@ _HTML = r"""<!DOCTYPE html>
       if (!container) return;
       container.innerHTML = '';
       _ctrlPinnedExtras.forEach(eid => {
+        if (typeof eid !== 'string') return;
         if (eid.startsWith('_br_')) {
           const el = document.createElement('div');
           el.className = 'ctrl-pinned-break';
@@ -5627,11 +7141,14 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function _metaHistoryPush(d) {
-      if (!d || !d.title) return;
+      if (!d) return;
+      const newTitle = d.eng_title || d.title || d.filename || '';
+      if (!newTitle) return;
       const last = _metaHistory[_metaHistory.length - 1];
+      const lastTitle = last ? (last.eng_title || last.title || last.filename || '') : '';
       const newSlug = d.current_theme && d.current_theme.slug;
       const lastSlug = last && last.current_theme && last.current_theme.slug;
-      if (!last || last.title !== d.title || (newSlug && newSlug !== lastSlug)) {
+      if (!last || lastTitle !== newTitle || (newSlug && newSlug !== lastSlug)) {
         _metaHistory.push(d);
         if (_metaHistory.length > 20) {
           _metaHistory.shift();
@@ -5688,8 +7205,8 @@ _HTML = r"""<!DOCTYPE html>
       }
       const btn = document.getElementById('meta-nav-autofollow');
       if (btn) btn.classList.toggle('on', _metaAutoFollow);
-      const viewData = _metaHistory.length > 0 ? _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx] : null;
-      if (titleEl) titleEl.textContent = viewData ? (viewData.eng_title || viewData.title || '') : '';
+      const viewData = _metaHistory.length > 0 ? _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx] : (_currentMetadata || null);
+      if (titleEl) titleEl.textContent = viewData ? (viewData.eng_title || viewData.title || viewData.filename || '') : '';
     }
     function _renderMetadata(d) {
       // null = navigate history; real data = render latest (history push handled by event handlers)
@@ -5715,9 +7232,6 @@ _HTML = r"""<!DOCTYPE html>
         if (value == null || value === '' || value === 'N/A') return;
         lines.push('<div class="meta-row"><span class="meta-label">' + _escHtml(label) + '</span> ' + _escHtml(String(value)) + '</div>');
       }
-      line('TITLE:', d.title);
-      line('ENGLISH:', d.eng_title);
-      if (d.synonyms && d.synonyms.length) line('SYNONYMS:', d.synonyms.join(', '));
       if (!d.is_game && d.current_theme && d.current_theme.slug) {
         const ct = d.current_theme;
         const slugLabel = ct.slug + (ct.overall_suffix || '');
@@ -5726,8 +7240,18 @@ _HTML = r"""<!DOCTYPE html>
         let html = '<div class="meta-row meta-theme-row"><span class="meta-label">THEME:</span>' +
           '<span class="mt-theme-content"><span class="' + slugCls + '">' + _escHtml(slugLabel) + '</span>' +
           '<span class="mt-title">' + _escHtml(titleText) + '</span>';
-        if (ct.artists && ct.artists.length)
-          html += '<span class="mt-artist mt-continuation">by: ' + _escHtml(ct.artists_str || ct.artists.join(', ')) + '</span>';
+        if (ct.artists && ct.artists.length) {
+          const artistsDisplay = ct.artists.map((a) => {
+            const hasThemes = ct.artist_themes && ct.artist_themes[a] && ct.artist_themes[a].themes && ct.artist_themes[a].themes.length > 0;
+            if (hasThemes) {
+              const count = Number(ct.artist_themes[a].theme_count || 0);
+              return '<span class="mt-artist-item"><span class="mt-artist-name">' + _escHtml(a) + '</span><button class="artist-themes-btn" data-artist="' + _escHtml(a) + '">' + count + '</button></span>';
+            } else {
+              return '<span class="mt-artist-item">' + _escHtml(a) + '</span>';
+            }
+          }).join(', ');
+          html += '<span class="mt-artist mt-continuation">by: ' + artistsDisplay + '</span>';
+        }
         let vText = ct.version ? 'v' + ct.version : '';
         if (ct.episodes) vText += (vText ? ': ' : '') + '(Eps: ' + ct.episodes + ')';
         if (ct.flags && ct.flags.length) vText += (vText ? ' ' : '') + ct.flags.join(' ');
@@ -5737,6 +7261,9 @@ _HTML = r"""<!DOCTYPE html>
         html += '</span></div>';
         lines.push(html);
       }
+      line('TITLE:', d.title);
+      line('ENGLISH:', d.eng_title);
+      if (d.synonyms && d.synonyms.length) line('SYNONYMS:', d.synonyms.join(', '));
       if (d.is_game) {
         line('RELEASE DATE:', d.release);
       } else {
@@ -5772,13 +7299,161 @@ _HTML = r"""<!DOCTYPE html>
         lines.push('<div class="meta-row"><span class="meta-label">EPISODES:</span> ' + epsVal + '</div>');
       }
       if (d.tags && d.tags.length) line('TAGS:', d.tags.join(', '));
-      if (d.studios && d.studios.length) line('STUDIOS:', d.studios.join(', '));
+      if (d.studios && d.studios.length) {
+        if (d.current_theme && d.current_theme.studio_entries) {
+          const studiosDisplay = d.studios.map((s) => {
+            const hasEntries = d.current_theme.studio_entries[s] && d.current_theme.studio_entries[s].entries && d.current_theme.studio_entries[s].entries.length > 0;
+            if (hasEntries) {
+              const count = Number(d.current_theme.studio_entries[s].entry_count || 0);
+              return '<span class="mt-artist-item"><span class="mt-artist-name">' + _escHtml(s) + '</span><button class="studio-themes-btn" data-studio="' + _escHtml(s) + '">' + count + '</button></span>';
+            }
+            return '<span class="mt-artist-item">' + _escHtml(s) + '</span>';
+          }).join(', ');
+          lines.push('<div class="meta-row"><span class="meta-label">STUDIOS:</span> ' + studiosDisplay + '</div>');
+        } else {
+          line('STUDIOS:', d.studios.join(', '));
+        }
+      }
       if (d.series) {
         const seriesStr = Array.isArray(d.series) ? d.series.join(', ') : String(d.series);
         line('SERIES:', seriesStr);
       }
       if (d.file_count != null) line('TOTAL PLAYS:', d.file_count + (d.themes_ago || ''));
       box.innerHTML = lines.join('') || '<span style="color:#555">No data.</span>';
+      
+      // Attach event listeners to artist themes buttons
+      const artistBtns = box.querySelectorAll('.artist-themes-btn');
+      if (artistBtns && d.current_theme && d.current_theme.artist_themes) {
+        artistBtns.forEach(btn => {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const artistName = this.getAttribute('data-artist');
+            const artistData = d.current_theme.artist_themes[artistName];
+            if (artistData) {
+              _showArtistThemesDialog(artistName, artistData);
+            }
+          });
+        });
+      }
+      const studioBtns = box.querySelectorAll('.studio-themes-btn');
+      if (studioBtns && d.current_theme && d.current_theme.studio_entries) {
+        studioBtns.forEach(btn => {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const studioName = this.getAttribute('data-studio');
+            const studioData = d.current_theme.studio_entries[studioName];
+            if (studioData) _showStudioEntriesDialog(studioName, studioData);
+          });
+        });
+      }
+    }
+
+    function _themeSlugSortCmp(a, b) {
+      const sA = String(a || '').toUpperCase().trim();
+      const sB = String(b || '').toUpperCase().trim();
+      const mA = sA.match(/^([A-Z]+)\s*(\d+)?/);
+      const mB = sB.match(/^([A-Z]+)\s*(\d+)?/);
+      const pA = mA ? mA[1] : sA;
+      const pB = mB ? mB[1] : sB;
+      const nA = mA && mA[2] ? Number(mA[2]) : 0;
+      const nB = mB && mB[2] ? Number(mB[2]) : 0;
+      const gA = pA.startsWith('OP') ? 0 : (pA.startsWith('ED') ? 1 : 2);
+      const gB = pB.startsWith('OP') ? 0 : (pB.startsWith('ED') ? 1 : 2);
+      if (gA !== gB) return gA - gB;
+      if (nA !== nB) return nA - nB;
+      return sA.localeCompare(sB);
+    }
+
+    function _showThemesDialog(titleText, data, emptyText) {
+      const overlay = document.getElementById('artist-themes-overlay');
+      const title = document.getElementById('artist-themes-title');
+      const content = document.getElementById('artist-themes-content');
+      if (!overlay || !title || !content) return;
+
+      title.textContent = titleText || 'All themes';
+
+      if (!data || !data.themes || !data.themes.length) {
+        content.innerHTML = '<div class="artist-themes-empty">' + _escHtml(emptyText || 'No themes found.') + '</div>';
+      } else {
+        const animeCount = Number(data.total_count || data.themes.length || 0);
+        const themeCount = Number(data.theme_count || 0);
+        const summary = '<div class="artist-themes-summary">' + animeCount + ' anime \u2022 ' + themeCount + ' themes</div>';
+        const rows = data.themes.map(item => {
+          const animeTitle = _escHtml((item && item.anime_title) ? item.anime_title : 'Unknown Title');
+          const slugs = (item && item.themes && item.themes.length)
+            ? item.themes.map(s => '<span class="artist-theme-chip">' + _escHtml(String(s || '')) + '</span>').join('')
+            : '<span class="artist-theme-chip">Unknown</span>';
+          return '<div class="artist-theme-row">' +
+            '<div class="artist-theme-title"><span>' + animeTitle + ':</span>' + slugs + '</div>' +
+            '</div>';
+        }).join('');
+        content.innerHTML = summary + '<div class="artist-themes-list">' + rows + '</div>';
+      }
+
+      overlay.classList.add('active');
+    }
+
+    function _showArtistThemesDialog(artistName, artistData) {
+      _showThemesDialog('All themes by ' + (artistName || 'artist'), artistData, 'No themes found.');
+    }
+
+    function _fmtStudioEntryHtml(rawEntry) {
+      const text = String(rawEntry || 'Unknown Title');
+      const m = text.match(/^(.*)\s\(((?:19|20)\d{2})\)$/);
+      if (!m) return '<span>' + _escHtml(text) + '</span>';
+      const name = _escHtml((m[1] || '').trim() || 'Unknown Title');
+      const year = _escHtml(m[2]);
+      return '<span>' + name + ' <span style="opacity:.62">(' + year + ')</span></span>';
+    }
+
+    function _showStudioEntriesDialog(studioName, studioData) {
+      const overlay = document.getElementById('artist-themes-overlay');
+      const title = document.getElementById('artist-themes-title');
+      const content = document.getElementById('artist-themes-content');
+      if (!overlay || !title || !content) return;
+
+      title.textContent = 'All entries by ' + (studioName || 'studio');
+
+      if (!studioData || !studioData.entries || !studioData.entries.length) {
+        content.innerHTML = '<div class="artist-themes-empty">No entries found.</div>';
+      } else {
+        const total = Number(studioData.total_count || studioData.entries.length || 0);
+        const groups = (studioData.series_groups && studioData.series_groups.length) ? studioData.series_groups : null;
+        const groupCount = groups ? groups.length : 0;
+        const summary = groups
+          ? '<div class="artist-themes-summary">' + total + ' entries \u2022 ' + groupCount + ' series</div>'
+          : '<div class="artist-themes-summary">' + total + ' entries</div>';
+
+        let rows = '';
+        if (groups) {
+          rows = groups.map(g => {
+            const gTitle = _escHtml(String(g.series || 'Unknown Series'));
+            const gEntries = (g.entries && g.entries.length) ? g.entries : ['Unknown Title'];
+            const showHeader = gEntries.length > 1;
+            const entriesHtml = gEntries.map(e => {
+              return '<div class="artist-theme-title">' + _fmtStudioEntryHtml(e) + '</div>';
+            }).join('');
+            return '<div class="artist-theme-row studio-series-group">' +
+              (showHeader ? '<div class="studio-series-title">' + gTitle + '</div>' : '') +
+              entriesHtml +
+              '</div>';
+          }).join('');
+        } else {
+          rows = studioData.entries.map(entry => {
+            return '<div class="artist-theme-row"><div class="artist-theme-title">' + _fmtStudioEntryHtml(entry) + '</div></div>';
+          }).join('');
+        }
+        content.innerHTML = summary + '<div class="artist-themes-list">' + rows + '</div>';
+      }
+
+      overlay.classList.add('active');
+    }
+
+    function _closeArtistThemesDialog() {
+      const overlay = document.getElementById('artist-themes-overlay');
+      if (overlay) overlay.classList.remove('active');
     }
 
     function _renderSeriesThemes(d) {
@@ -5802,8 +7477,20 @@ _HTML = r"""<!DOCTYPE html>
             const titleText = ': ' + (theme.title ? theme.title : '????');
             let html = '<div class="mt-theme' + (theme.is_playing ? ' playing' : '') + '"><span class="' + slugCls + '">' + _escHtml(slugText) + '</span>' +
               '<span class="mt-title">' + _escHtml(titleText) + '</span>';
-            if (theme.artists && theme.artists.length)
-              html += '<br><span class="mt-artist">by: ' + _escHtml(theme.artists_str || theme.artists.join(', ')) + '</span>';
+            if (theme.artists && theme.artists.length) {
+              let artistsHtml = _escHtml(theme.artists_str || theme.artists.join(', '));
+              if (theme.is_playing && d.current_theme && d.current_theme.artist_themes) {
+                artistsHtml = theme.artists.map((a) => {
+                  const hasThemes = d.current_theme.artist_themes[a] && d.current_theme.artist_themes[a].themes && d.current_theme.artist_themes[a].themes.length > 0;
+                  if (hasThemes) {
+                    const count = Number(d.current_theme.artist_themes[a].theme_count || 0);
+                    return '<span class="mt-artist-item"><span class="mt-artist-name">' + _escHtml(a) + '</span><button class="artist-themes-btn" data-artist="' + _escHtml(a) + '">' + count + '</button></span>';
+                  }
+                  return '<span class="mt-artist-item">' + _escHtml(a) + '</span>';
+                }).join(', ');
+              }
+              html += '<br><span class="mt-artist">by: ' + artistsHtml + '</span>';
+            }
             if (theme.versions && theme.versions.length) {
               theme.versions.forEach(v => {
                 const vCls = 'mt-ver' + (v.is_playing ? ' playing' : '');
@@ -5827,6 +7514,18 @@ _HTML = r"""<!DOCTYPE html>
         });
       });
       box.innerHTML = parts.join('');
+      const artistBtns = box.querySelectorAll('.artist-themes-btn');
+      if (artistBtns && d.current_theme && d.current_theme.artist_themes) {
+        artistBtns.forEach(btn => {
+          btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const artistName = this.getAttribute('data-artist');
+            const artistData = d.current_theme.artist_themes[artistName];
+            if (artistData) _showArtistThemesDialog(artistName, artistData);
+          });
+        });
+      }
       _scrollToPlayingTheme();
     }
 
@@ -6015,9 +7714,48 @@ def flush_pending_selections():
     # Build reverse lookup: name → sid
     name_to_sid = {pname: sid for sid, pname in _connected_players.items()}
     already_submitted = {a['name'] for a in _submitted_answers}
+    # Build sets of values already locked in by formal submissions so we can
+    # skip auto-submitting duplicate answers on no-repeat question types.
+    is_year  = _current_question and 'year'        in _current_question
+    is_drum  = _current_question and 'drum'        in _current_question
+    is_rank  = _current_question and 'rank_slider' in _current_question
+    flush_taken_years  = set(_taken_years)   # claimed so far; grows within this flush
+    flush_taken_scores = set(_taken_scores)
+    flush_taken_ranks  = set(_taken_ranks)
     new_entries = []
     for name, answer in list(_pending_selections.items()):
         if name not in already_submitted:
+            # For no-repeat question types, reject if the value is already taken.
+            rejected = False
+            if is_year:
+                try:
+                    yr = int(answer)
+                    if yr in flush_taken_years:
+                        rejected = True
+                    else:
+                        flush_taken_years.add(yr)
+                except (ValueError, TypeError):
+                    pass
+            elif is_drum:
+                try:
+                    sc = float(answer)
+                    if sc in flush_taken_scores:
+                        rejected = True
+                    else:
+                        flush_taken_scores.add(sc)
+                except (ValueError, TypeError):
+                    pass
+            elif is_rank:
+                try:
+                    rk = int(answer)
+                    if rk in flush_taken_ranks:
+                        rejected = True
+                    else:
+                        flush_taken_ranks.add(rk)
+                except (ValueError, TypeError):
+                    pass
+            if rejected:
+                continue  # don't queue or notify — UI stays unlocked
             entry = {'name': name, 'answer': answer}
             _answer_queue.put(entry)
             _submitted_answers.append(entry)
@@ -6030,8 +7768,7 @@ def flush_pending_selections():
     _pending_selections = {}
     if new_entries and _socketio:
         _broadcast_players_update()
-        for sid in list(_submitted_sids):
-            _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
+        _emit_peer_answers_update()
         if _host_sids:
             for sid in list(_host_sids):
                 _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
@@ -6061,7 +7798,7 @@ def set_rules_text(header: str, body: str):
         _socketio.emit('rules_update', _current_rules)
 
 
-def push_question(title, info='', choices=None, drum=None, stepper=None, tags=None, year=None, tags_max=None, autocomplete=None, rank_slider=None):
+def push_question(title, info='', choices=None, drum=None, stepper=None, tags=None, year=None, tags_max=None, autocomplete=None, rank_slider=None, buzzer_only=False):
     """Push a question to all connected browser clients.
 
     Args:
@@ -6074,6 +7811,7 @@ def push_question(title, info='', choices=None, drum=None, stepper=None, tags=No
         tags_max:    Max number of tags a player may select (= number of correct tags).
         year:        Dict for year picker (decade+ones drums): {min, max, initial}.
         autocomplete: 'anime' to enable anime-title datalist on the free-text input.
+        buzzer_only: If True, hides answer inputs and shows buzzer-only UI for this question.
     """
     global _current_question
     if not FLASK_AVAILABLE or _socketio is None:
@@ -6109,7 +7847,13 @@ def push_question(title, info='', choices=None, drum=None, stepper=None, tags=No
         _current_question['year']        = year
         _current_question['taken_years'] = []
     if autocomplete:      _current_question['autocomplete'] = autocomplete
+    if buzzer_only:       _current_question['buzzer_only'] = True
+
+    # Reset buzzer each round.
+    # Buzzer bonus starts unlocked; other questions keep buzzer closed.
+    _reset_buzzer(open_after_reset=bool(buzzer_only))
     _socketio.emit('question', _current_question)
+    _emit_buzzer_state()
 
 
 def remove_answer_by_name(name: str):
@@ -6120,8 +7864,7 @@ def remove_answer_by_name(name: str):
     _submitted_answers[:] = [a for a in _submitted_answers if a['name'] != name]
     _removal_queue.put(name)
     _broadcast_players_update()
-    for sid in list(_submitted_sids):
-        _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
+    _emit_peer_answers_update()
     for sid in list(_host_sids):
         _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
 
@@ -6161,9 +7904,11 @@ def clear_question():
             _answer_queue.put({'name': name, 'answer': answer})
     _pending_selections = {}
     _current_question = None
+    _reset_buzzer(open_after_reset=False)
     _submitted_answers = []
     _submitted_sids = set()
     _socketio.emit('clear', {'rules_header': _current_rules.get('header',''), 'rules_body': _current_rules.get('body','')})
+    _emit_buzzer_state()
     _broadcast_players_update()
     set_info_public(False)
 
@@ -6302,11 +8047,12 @@ def push_fixed_lightning_list(rounds: list, queued_name: str = None):
             _socketio.emit('fixed_lightning_list', payload, to=sid)
 
 
-def push_theme_search_results(results: list):
+def push_theme_search_results(results: list, playlist_infinite: bool = False, query: str = ""):
     """Push theme search results to all host clients."""
     if FLASK_AVAILABLE and _socketio and _host_sids:
+        payload = {'results': results, 'playlist_infinite': bool(playlist_infinite), 'query': str(query or '')}
         for sid in list(_host_sids):
-            _socketio.emit('theme_search_results', {'results': results}, to=sid)
+            _socketio.emit('theme_search_results', payload, to=sid)
 
 
 def push_playlist_info(total: int, current_index: int, to_sid: str = None, counter: str = None):
@@ -6373,34 +8119,77 @@ def start(port=8080, ngrok_domain=None):
     """Start the Flask/SocketIO server in a daemon thread, optionally launch ngrok.
 
     Returns True if server started, False if Flask is unavailable.
+    Subsequent start() calls after stop() reuse the same thread and SocketIO
+    instance to avoid the "address already in use" crash that would cause all
+    server-to-client emits to silently fail.
     """
-    global _server_started
+    global _server_started, _server_thread
     if not FLASK_AVAILABLE:
         return False
-    _build_app()
-    t = threading.Thread(
-        target=lambda: _socketio.run(
-            _app, host='0.0.0.0', port=port,
-            allow_unsafe_werkzeug=True, log_output=False
-        ),
-        daemon=True
-    )
-    t.start()
+    # Only build and launch the server thread if it isn't already alive.
+    # Killing and recreating the thread would leave the old Werkzeug server
+    # holding port 8080 while the new _socketio has no active server, which
+    # means every push_question / push_player_colors / etc. emit is silently
+    # discarded.
+    if _server_thread is None or not _server_thread.is_alive():
+        _build_app()
+        # Capture the freshly-built instances in local vars so the lambda
+        # always runs against the correct pair even if globals change later.
+        _cur_app = _app
+        _cur_sio = _socketio
+        t = threading.Thread(
+            target=lambda: _cur_sio.run(
+                _cur_app, host='0.0.0.0', port=port,
+                allow_unsafe_werkzeug=True, log_output=False
+            ),
+            daemon=True
+        )
+        t.start()
+        _server_thread = t
     _server_started = True
     if ngrok_domain:
         _start_ngrok(ngrok_domain, port)
     else:
-        print(f"[Web Server] Running locally on port {port} (no ngrok domain set).")
+        print(f"[Web Server] Running locally on port {port} (no ngrok domain set.)")
     return True
 
 
 def stop():
-    """Terminate the ngrok process if running."""
+    """Mark the server as stopped and clean up ngrok + ephemeral connection state.
+
+    The underlying Flask/SocketIO/Werkzeug thread is intentionally left running
+    so that the same _socketio instance stays alive. Killing it would leave the
+    old thread holding port 8080 while the new _socketio (created in the next
+    start() call) has no active server, causing all server-to-client emits to be
+    silently discarded after restart.
+    """
     global _ngrok_process, _server_started
     _server_started = False
     if _ngrok_process:
-        _ngrok_process.terminate()
+        try:
+            _ngrok_process.terminate()
+        except Exception:
+            pass
         _ngrok_process = None
+    # Clear ephemeral connection state so the next start() is fresh.
+    global _connected_players, _host_sids, _submitted_sids
+    try:
+        _connected_players.clear()
+    except Exception:
+        _connected_players = {}
+    try:
+        _host_sids.clear()
+    except Exception:
+        _host_sids = set()
+    try:
+        _submitted_sids.clear()
+    except Exception:
+        _submitted_sids = set()
+    _pending_selections.clear()
+    _submitted_answers.clear()
+    _taken_years.clear()
+    _taken_scores.clear()
+    _taken_ranks.clear()
 
 
 def is_running():
@@ -6549,6 +8338,8 @@ def _build_app():
             emit('timer_update', _timer_state)
         if _info_public and _current_metadata:
             emit('info_public_update', {'show': True, 'metadata': _current_metadata})
+        emit('emoji_status', {'muted': False, 'timed_out': False, 'timeout_until': 0, 'remaining_ms': 0})
+        _emit_buzzer_state(to_sid=_req.sid)
         # Send playback state to newly-connected hosts after they authenticate via claim_host
 
     @_socketio.on('disconnect')
@@ -6566,8 +8357,11 @@ def _build_app():
         if not name:
             return
         _connected_players[_req.sid] = name
+        emit('emoji_status', _get_emoji_status(name))
         _broadcast_players_update()
-        if any(a['name'] == name for a in _submitted_answers):
+        if (_current_question and _current_question.get('buzzer_only') and _submitted_answers):
+            emit('peer_answers_update', {'answers': list(_submitted_answers)})
+        elif any(a['name'] == name for a in _submitted_answers):
             _submitted_sids.add(_req.sid)
             emit('peer_answers_update', {'answers': list(_submitted_answers)})
         # If a question is active, this player is now served
@@ -6592,66 +8386,99 @@ def _build_app():
                 emit('marks_update', _current_marks)
             if _current_toggles:
                 emit('toggles_update', _current_toggles)
+            emit('host_messages_update', {'messages': list(_host_messages)})
         else:
             emit('host_denied', {})
 
-    @_socketio.on('select_answer')
-    def handle_select(data):
+    @_socketio.on('host_message_send')
+    def handle_host_message_send(data):
         from flask import request as _req
         if _req.remote_addr in _shadow_kicked_ips:
             return
-        name = str(data.get('name', 'Anonymous')).strip()[:50] or 'Anonymous'
-        if name in _banned_names:
+        name = _connected_players.get(_req.sid, '').strip()
+        if not name or name in _banned_names:
             return
-        if not _current_question:
+        text = str((data or {}).get('text', '')).strip()
+        if not text:
             return
-        answer = str(data.get('answer', '')).strip()[:200]
-        _pending_selections[name] = answer
+        text = text[:280]
+        entry = {'name': name, 'text': text, 'ts': int(time.time() * 1000)}
+        _host_messages.append(entry)
+        if len(_host_messages) > 500:
+            del _host_messages[:-500]
+        _emit_host_messages()
+        _emit_host_message_toast(entry)
+
+    @_socketio.on('host_messages_clear')
+    def handle_host_messages_clear(data):
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        _host_messages.clear()
+        _emit_host_messages()
+
+    @_socketio.on('select_answer')
+    def handle_select(data):
+      from flask import request as _req
+      if _req.remote_addr in _shadow_kicked_ips:
+        return
+      sid_name = _connected_players.get(_req.sid, '')
+      raw_name = sid_name if sid_name else str((data or {}).get('name', 'Anonymous'))
+      name = str(raw_name).strip()[:50] or 'Anonymous'
+      if name in _banned_names:
+        return
+      if not _current_question:
+        return
+      if not bool((data or {}).get('explicit', False)):
+        return
+      answer = str(data.get('answer', '')).strip()[:200]
+      _pending_selections[name] = answer
 
     @_socketio.on('submit_answer')
     def handle_answer(data):
-        from flask import request as _req
-        if _req.remote_addr in _shadow_kicked_ips:
-            return  # silently discard (shadow kick)
-        name   = str(data.get('name',   'Anonymous')).strip()[:50] or 'Anonymous'
-        if name in _banned_names:
-            return  # silently discard (name ban)
-        answer = str(data.get('answer', '')).strip()[:200]
-        _pending_selections.pop(name, None)  # no longer pending once submitted
-        _answer_queue.put({'name': name, 'answer': answer})
-        _submitted_answers.append({'name': name, 'answer': answer})
-        _submitted_sids.add(_req.sid)
-        _broadcast_players_update()
-        for sid in list(_submitted_sids):
-            _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
-        if _host_sids:
-            for sid in list(_host_sids):
-                _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
-        if _current_question and 'rank_slider' in _current_question:
-            try:
-                rk = int(answer)
-                _taken_ranks.add(rk)
-                _current_question['taken_ranks'] = list(_taken_ranks)
-                _socketio.emit('rank_taken', {'rank': rk})
-            except (ValueError, TypeError):
-                pass
-            _socketio.emit('rank_marks_update', {'answers': list(_submitted_answers)})
-        if _current_question and 'year' in _current_question:
-            try:
-                yr = int(answer)
-                _taken_years.add(yr)
-                _current_question['taken_years'] = list(_taken_years)
-                _socketio.emit('year_taken', {'year': yr})
-            except (ValueError, TypeError):
-                pass
-        if _current_question and 'drum' in _current_question:
-            try:
-                sc = float(answer)
-                _taken_scores.add(sc)
-                _current_question['taken_scores'] = list(_taken_scores)
-                _socketio.emit('score_taken', {'score': sc})
-            except (ValueError, TypeError):
-                pass
+      from flask import request as _req
+      if _req.remote_addr in _shadow_kicked_ips:
+        return  # silently discard (shadow kick)
+      sid_name = _connected_players.get(_req.sid, '')
+      raw_name = sid_name if sid_name else str((data or {}).get('name', 'Anonymous'))
+      name = str(raw_name).strip()[:50] or 'Anonymous'
+      if name in _banned_names:
+        return  # silently discard (name ban)
+      answer = str(data.get('answer', '')).strip()[:200]
+      _pending_selections.pop(name, None)  # no longer pending once submitted
+      _answer_queue.put({'name': name, 'answer': answer})
+      _submitted_answers.append({'name': name, 'answer': answer})
+      _submitted_sids.add(_req.sid)
+      _broadcast_players_update()
+      _emit_peer_answers_update()
+      if _host_sids:
+        for sid in list(_host_sids):
+          _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+      if _current_question and 'rank_slider' in _current_question:
+        try:
+          rk = int(answer)
+          _taken_ranks.add(rk)
+          _current_question['taken_ranks'] = list(_taken_ranks)
+          _socketio.emit('rank_taken', {'rank': rk})
+        except (ValueError, TypeError):
+          pass
+        _socketio.emit('rank_marks_update', {'answers': list(_submitted_answers)})
+      if _current_question and 'year' in _current_question:
+        try:
+          yr = int(answer)
+          _taken_years.add(yr)
+          _current_question['taken_years'] = list(_taken_years)
+          _socketio.emit('year_taken', {'year': yr})
+        except (ValueError, TypeError):
+          pass
+      if _current_question and 'drum' in _current_question:
+        try:
+          sc = float(answer)
+          _taken_scores.add(sc)
+          _current_question['taken_scores'] = list(_taken_scores)
+          _socketio.emit('score_taken', {'score': sc})
+        except (ValueError, TypeError):
+          pass
 
     @_socketio.on('remove_answer')
     def handle_remove_answer(data):
@@ -6665,8 +8492,7 @@ def _build_app():
         _submitted_answers.pop(idx)
         _removal_queue.put(removed_name)
         _broadcast_players_update()
-        for sid in list(_submitted_sids):
-            _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
+        _emit_peer_answers_update()
         for sid in list(_host_sids):
             _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
 
@@ -6686,8 +8512,67 @@ def _build_app():
         # Remove all submitted answers for this player
         _submitted_answers[:] = [a for a in _submitted_answers if a['name'] != name]
         _broadcast_players_update()
-        for sid in list(_submitted_sids):
-            _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
+        _emit_peer_answers_update()
+        for sid in list(_host_sids):
+            _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+
+    @_socketio.on('rename_player')
+    def handle_rename_player(data):
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        old_name = str((data or {}).get('old_name', '')).strip()[:50]
+        new_name = str((data or {}).get('new_name', '')).strip()[:50]
+        if not old_name or not new_name or old_name == new_name:
+            return
+        if ' ' in new_name:
+            return
+        if new_name in _banned_names:
+            return
+        # Avoid duplicate connected names
+        if any(pname == new_name for pname in _connected_players.values()):
+            return
+
+        changed = False
+        renamed_sids = []
+        for sid, pname in list(_connected_players.items()):
+          if sid in _host_sids:
+            continue
+          if pname == old_name:
+            _connected_players[sid] = new_name
+            changed = True
+            renamed_sids.append(sid)
+        if not changed:
+            return
+
+        # Migrate pending selection
+        if old_name in _pending_selections:
+            old_pending = _pending_selections.pop(old_name)
+            if new_name not in _pending_selections:
+                _pending_selections[new_name] = old_pending
+
+        # Migrate submitted answers
+        for a in _submitted_answers:
+            if a.get('name') == old_name:
+                a['name'] = new_name
+
+        # Migrate shadow-kick display entry
+        if old_name in _shadow_kicked_players and new_name not in _shadow_kicked_players:
+            _shadow_kicked_players[new_name] = _shadow_kicked_players.pop(old_name)
+
+        # Migrate in-memory color and notify scoreboard command channel
+        if old_name in _player_colors and new_name not in _player_colors:
+            _player_colors[new_name] = _player_colors.pop(old_name)
+            try:
+                clr = _player_colors.get(new_name) or {}
+                _write_color_command(new_name, str(clr.get('bg', '') or ''), str(clr.get('text', '') or ''))
+            except Exception:
+                pass
+
+        _broadcast_players_update()
+        _emit_peer_answers_update()
+        for sid in renamed_sids:
+            _socketio.emit('name_forced', {'name': new_name}, to=sid)
         for sid in list(_host_sids):
             _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
 
@@ -6713,8 +8598,7 @@ def _build_app():
         _shadow_kicked_players[name] = ip
         _submitted_answers[:] = [a for a in _submitted_answers if a['name'] != name]
         _broadcast_players_update()
-        for sid in list(_submitted_sids):
-            _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
+        _emit_peer_answers_update()
         for sid in list(_host_sids):
             _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
 
@@ -6745,8 +8629,7 @@ def _build_app():
         _shadow_kicked_players[name] = ip
         _submitted_answers[:] = [a for a in _submitted_answers if a['name'] != name]
         _broadcast_players_update()
-        for sid in list(_submitted_sids):
-            _socketio.emit('peer_answers_update', {'answers': list(_submitted_answers)}, to=sid)
+        _emit_peer_answers_update()
         for sid in list(_host_sids):
             _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
 
@@ -6765,6 +8648,30 @@ def _build_app():
         _banned_names.discard(name)
         _broadcast_players_update()
 
+    @_socketio.on('emoji_disable')
+    def handle_emoji_disable(data):
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        name = str(data.get('name', '')).strip()
+        if not name:
+            return
+        _emoji_disabled_names.add(name)
+        _broadcast_players_update()
+        _emit_emoji_status_for_name(name)
+
+    @_socketio.on('emoji_enable')
+    def handle_emoji_enable(data):
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        name = str(data.get('name', '')).strip()
+        if not name:
+            return
+        _emoji_disabled_names.discard(name)
+        _broadcast_players_update()
+        _emit_emoji_status_for_name(name)
+
     @_socketio.on('send_emoji')
     def handle_send_emoji(data):
         from flask import request as _req
@@ -6773,11 +8680,110 @@ def _build_app():
         name = _connected_players.get(_req.sid, '').strip()
         if not name or name in _banned_names:
             return
-        emoji = str(data.get('emoji', '')).strip()
-        # Accept any emoji-like string: non-empty, ≤10 chars, no ASCII characters
-        if not emoji or len(emoji) > 10 or any(ord(c) < 128 for c in emoji):
+        if name in _emoji_disabled_names:
+            emit('emoji_status', _get_emoji_status(name))
             return
+
+        now = time.time()
+        timeout_until = float(_emoji_timeout_until.get(name, 0.0) or 0.0)
+        if timeout_until > now:
+            emit('emoji_status', _get_emoji_status(name))
+            return
+
+        emoji = str(data.get('emoji', '')).strip()
+        # Accept emoji-like strings: non-empty, ≤10 chars.
+        # Reject plain ASCII words (letters) but allow keycap digits
+        # (they include combining/non-ASCII codepoints). Require at least
+        # one non-ASCII codepoint to ensure it's an emoji-like string.
+        if not emoji or len(emoji) > 10:
+            return
+        # reject if contains ASCII letters (prevents words)
+        if any(c.isalpha() and ord(c) < 128 for c in emoji):
+            return
+        # require at least one non-ASCII codepoint (emoji or combining marks)
+        if not any(ord(c) >= 128 for c in emoji):
+            return
+
+        # Rolling-window anti-spam tracking
+        dq = _emoji_events_by_name.get(name)
+        if dq is None:
+            dq = deque()
+            _emoji_events_by_name[name] = dq
+
+        # Keep only recent events within longest relevant window.
+        max_window = max(_EMOJI_WINDOW_SECONDS, _EMOJI_BURST_WINDOW_SECONDS)
+        while dq and (now - dq[0]) > max_window:
+            dq.popleft()
+        dq.append(now)
+
+        # Burst guard first.
+        burst_count = 0
+        for ts in reversed(dq):
+            if (now - ts) <= _EMOJI_BURST_WINDOW_SECONDS:
+                burst_count += 1
+            else:
+                break
+        if burst_count >= _EMOJI_BURST_THRESHOLD:
+            _apply_emoji_timeout(name, short=True)
+            emit('emoji_status', _get_emoji_status(name))
+            return
+
+        # Standard threshold in rolling window.
+        window_count = 0
+        for ts in reversed(dq):
+            if (now - ts) <= _EMOJI_WINDOW_SECONDS:
+                window_count += 1
+            else:
+                break
+        if window_count > _EMOJI_TIMEOUT_THRESHOLD:
+            _apply_emoji_timeout(name, short=False)
+            emit('emoji_status', _get_emoji_status(name))
+            return
+
+        # Optional warning pulse to help client show near-limit state.
+        if window_count >= _EMOJI_WARN_THRESHOLD:
+            emit('emoji_status', _get_emoji_status(name))
+
         _emoji_queue.put((name, emoji))
+
+    @_socketio.on('buzzer_control')
+    def handle_buzzer_control(data):
+      from flask import request as _req
+      if _req.sid not in _host_sids:
+        return
+      cmd = str((data or {}).get('cmd', '')).strip().lower()
+      control_buzzer(cmd)
+
+    @_socketio.on('buzz_press')
+    def handle_buzz_press(data):
+      from flask import request as _req
+      if _req.remote_addr in _shadow_kicked_ips:
+        return
+      name = _connected_players.get(_req.sid, '').strip()
+      if not name or name in _banned_names:
+        return
+      if (not _current_question) or (not _current_question.get('buzzer_only')):
+        return
+      if (not _buzzer_open) or _buzzer_locked:
+        return
+      # One buzz per player per open/reset cycle.
+      if any(item.get('name') == name for item in _submitted_answers):
+        return
+      rank = len(_submitted_answers) + 1
+      now_ms = int(time.time() * 1000)
+      base_ms = _buzzer_opened_at_ms if isinstance(_buzzer_opened_at_ms, int) else now_ms
+      elapsed_ms = max(0, now_ms - base_ms)
+      answer = f"[#{rank}] {elapsed_ms} ms"
+      _pending_selections.pop(name, None)
+      _answer_queue.put({'name': name, 'answer': answer})
+      _submitted_answers.append({'name': name, 'answer': answer})
+      _submitted_sids.add(_req.sid)
+      _broadcast_players_update()
+      _emit_peer_answers_update()
+      if _host_sids:
+        for sid in list(_host_sids):
+          _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+      _emit_buzzer_state()
 
     @_socketio.on('host_action')
     def handle_host_action(data):
@@ -6816,11 +8822,23 @@ def _broadcast_players_update():
     for name in _connected_players.values():
         if name not in seen:
             seen.add(name)
-            players.append({'name': name, 'submitted': name in submitted_names, 'kicked': False, 'host': name in host_names})
+        players.append({
+          'name': name,
+          'submitted': name in submitted_names,
+          'kicked': False,
+          'host': name in host_names,
+          'emoji_muted': name in _emoji_disabled_names,
+        })
     for name in _shadow_kicked_players:
         if name not in seen:
             seen.add(name)
-            players.append({'name': name, 'submitted': name in submitted_names, 'kicked': True, 'host': False})
+        players.append({
+          'name': name,
+          'submitted': name in submitted_names,
+          'kicked': True,
+          'host': False,
+          'emoji_muted': name in _emoji_disabled_names,
+        })
     _socketio.emit('players_update', {'players': players})
 
 
