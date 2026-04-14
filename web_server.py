@@ -320,6 +320,7 @@ _HTML = r"""<!DOCTYPE html>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Guess The Anime</title>
+  <link rel="icon" type="image/png" href="data:image/png;base64,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"/>
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1200,7 +1201,7 @@ _HTML = r"""<!DOCTYPE html>
     #current-time {
       background: #1a1a2a; border: 1px solid #334; border-radius: 20px;
       color: #aaa; font-size: 0.82em; padding: 7px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-      white-space: nowrap; pointer-events: none;
+      pointer-events: none;
       min-width: 84px;
       flex: 0 0 auto;
       display: inline-flex;
@@ -1210,6 +1211,10 @@ _HTML = r"""<!DOCTYPE html>
       font-variant-numeric: tabular-nums;
       line-height: 1;
       overflow: hidden;
+      white-space: nowrap;
+    }
+    @media (max-width: 768px) {
+      #current-time { display: none; }
     }
     #current-time { order: 1; margin-right: 6px; }
     #metadata-btn { order: 2; }
@@ -1415,6 +1420,14 @@ _HTML = r"""<!DOCTYPE html>
       background: #2a1010; color: #cc6666; border-color: #7a2222;
     }
     #sc-clear-btn:hover { background: #3a1515; border-color: #aa3333; }
+    #sc-archive-btn {
+      background: #3a2a10; color: #ffd38a; border-color: #9a6a22;
+    }
+    #sc-archive-btn:hover { background: #4a3515; border-color: #bb8a33; }
+    #sc-archive-btn:active { background: #2a1d0a; }
+    #sc-archive-btn:disabled {
+      background: #2a2115; color: #9a8a6a; border-color: #5a4a32; cursor: default;
+    }
     /* TOGETHER / AUTO toolbar toggles */
     .sc-toggle-btn {
       font-family: 'Segoe UI', sans-serif; font-size: 0.65em; font-weight: bold;
@@ -1422,7 +1435,7 @@ _HTML = r"""<!DOCTYPE html>
       padding: 3px 6px; border: 1px solid #444;
       background: #252525; color: #888; letter-spacing: 0.05em;
     }
-    .sc-toggle-btn:hover { background: #333; color: #ccc; }
+    .sc-toggle-btn:hover { border-color: #666; }
     .sc-toggle-btn.sc-toggle-on { color: #66dd88; border-color: #44aa60; background: #1a3022; }
     /* column headers */
     #sc-col-headers {
@@ -1825,7 +1838,7 @@ _HTML = r"""<!DOCTYPE html>
       word-break: break-word;
     }
     #meta-nav-arrows {
-      display: none; align-items: center; justify-content: center; gap: 4px; width: 100%;
+      display: flex; align-items: center; justify-content: center; gap: 4px; width: 100%;
     }
     #meta-nav-arrows.visible { display: flex; }
     #meta-nav-autofollow {
@@ -1857,6 +1870,60 @@ _HTML = r"""<!DOCTYPE html>
     .meta-tab-btn:hover:not(.active) { color: #88a; }
     .meta-tab-pane { display: none; flex: 1; overflow-y: auto; min-height: 0; }
     .meta-tab-pane.active { display: block; }
+    #meta-info-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 2px 0 6px;
+    }
+    #meta-cover-wrap {
+      display: none;
+      justify-content: flex-start;
+      margin: 0;
+      flex: 0 0 auto;
+    }
+    #meta-cover-wrap.active { display: flex; }
+    #meta-cover-btn {
+      background: #101020;
+      border: 1px solid #334;
+      border-radius: 8px;
+      padding: 3px;
+      cursor: pointer;
+      line-height: 0;
+    }
+    #meta-cover-btn:hover { border-color: #557; background: #15152b; }
+    #meta-cover-img {
+      display: block;
+      width: 92px;
+      height: 130px;
+      object-fit: cover;
+      border-radius: 6px;
+      background: #0a0a14;
+    }
+    #meta-theme-head {
+      flex: 1;
+      min-width: 0;
+      font-size: 0.84em;
+      line-height: 1.5;
+      color: #ccc;
+    }
+    #meta-theme-head .meta-row { margin-bottom: 0; }
+    #meta-cover-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.86); z-index: 862;
+      align-items: center; justify-content: center;
+      padding: 16px;
+    }
+    #meta-cover-overlay.active { display: flex; }
+    #meta-cover-full {
+      max-width: min(92vw, 540px);
+      max-height: 90vh;
+      object-fit: contain;
+      border-radius: 10px;
+      border: 1px solid #334;
+      background: #111;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.5);
+    }
     /* ── Playlist tab pane needs flex column so vscroll fills height ── */
     #meta-pane-playlist { display: none; flex-direction: column; overflow: hidden; }
     #meta-pane-playlist.active { display: flex; }
@@ -1889,6 +1956,12 @@ _HTML = r"""<!DOCTYPE html>
     .meta-theme-row { display: flex; gap: 0.4em; align-items: baseline; }
     .mt-theme-content { flex: 1; }
     .mt-continuation { display: block; }
+    .mt-fav-mark {
+      display: inline-block; margin-left: 6px; color: #ff7aa8;
+      font-size: 0.92em; line-height: 1; vertical-align: middle;
+    }
+    .mt-fav-mark.leading { margin-left: 0; margin-right: 0; }
+    .mt-fav-mark.playing { color: #ff94ba; }
     /* ── Themes tab ── */
     #metadata-themes-content { font-size: 0.84em; color: #ccc; }
     .mt-anime-header {
@@ -1922,8 +1995,62 @@ _HTML = r"""<!DOCTYPE html>
     .studio-themes-btn:hover { background: #1b2a23; border-color: #3d6350; color: #b7f3d5; }
     .mt-ver { color: #555; font-size: 0.85em; margin-left: 10px; }
     .mt-ver.playing { color: #8cf; }
+    .mt-ver .mt-fav-mark { font-size: 1em; }
     .mt-flags { color: #a88; font-size: 0.82em; }
     .mt-props { color: #555; font-size: 0.80em; }
+    .mt-main-row { display: block; }
+    .mt-main-row .mt-title { flex: none; }
+    .mt-sub-row {
+      display: flex; align-items: center; gap: 6px;
+    }
+    .mt-sub-row-indent { margin-left: 10px; }
+    .mt-sub-row .mt-ver { margin-left: 0; }
+    .mt-action-btn {
+      background: #1a1a2e;
+      border: 1px solid #334;
+      color: #88a;
+      border-radius: 5px;
+      padding: 0px 7px;
+      font-size: 0.82em;
+      cursor: pointer;
+      line-height: 1.4;
+    }
+    .mt-action-btn:hover { background: #24243c; border-color: #557; color: #bbf; }
+    #theme-action-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 861;
+      align-items: center; justify-content: center;
+      padding: 14px;
+    }
+    #theme-action-overlay.active { display: flex; }
+    #theme-action-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 12px;
+      width: min(90vw, 420px);
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 12px;
+    }
+    #theme-action-title {
+      color: #aaf; font-size: 0.88em; line-height: 1.35;
+      border-bottom: 1px solid #223; padding-bottom: 8px;
+      word-break: break-word;
+    }
+    .theme-action-btn {
+      width: 100%; text-align: left;
+      background: #151525; border: 1px solid #334; color: #ccd;
+      border-radius: 8px; padding: 10px 12px; cursor: pointer;
+      font-size: 0.9em;
+    }
+    .theme-action-btn:hover { background: #1d1d33; border-color: #557; color: #eef; }
+    .theme-action-btn.play { border-color: #3a5; color: #8fd; }
+    .theme-action-btn.queue { border-color: #557; color: #9cf; }
+    .theme-action-btn.add { border-color: #775; color: #fdc; }
+    #theme-action-cancel {
+      margin-top: 2px;
+      background: #222; border: 1px solid #444;
+      border-radius: 8px; color: #aaa; cursor: pointer;
+      font-size: 0.9em; padding: 10px;
+    }
+    #theme-action-cancel:hover { background: #333; color: #fff; }
     #artist-themes-overlay {
       display: none; position: fixed; inset: 0;
       background: rgba(0,0,0,0.75); z-index: 860;
@@ -2139,7 +2266,7 @@ _HTML = r"""<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <div id="timer-bar"><div id="timer-display" style="display:none">0</div><div id="timer-title"><span class="tt-desktop">Guess The Anime</span><span class="tt-mobile">GUESS<br>THE<br>ANIME</span></div></div>
+  <div id="timer-bar"><div id="timer-display" style="display:none">0</div><div id="timer-title"><span class="tt-desktop">Guess The Anime</span><span class="tt-mobile">GUESS<br>THE ANIME</span></div></div>
   <div id="top-bar">
     <button id="history-btn" onclick="_openHistory()" style="display:none">&#8635; SESSION HISTORY</button>
     <div id="player-label" title="Click to change name">
@@ -2209,7 +2336,8 @@ _HTML = r"""<!DOCTYPE html>
       <span id="sc-toolbar-title">Scoreboard</span>
       <button id="sc-tog-auto" class="sc-toggle-btn" onclick="_scToggleAuto()" title="Scores send automatically after clicking a delta. Turn off to batch manually.">AUTO</button>
       <button id="sc-tog-together" class="sc-toggle-btn" onclick="_scToggleTogether()" title="Any delta press resets the shared timer for everyone.">BATCH</button>
-      <button id="sc-clear-btn" class="sc-toolbar-btn" onclick="_scClearAll()">CLEAR ALL</button>
+      <button id="sc-clear-btn" class="sc-toolbar-btn" onclick="_scClearAll()">CLEAR</button>
+      <button id="sc-archive-btn" class="sc-toolbar-btn" onclick="_scArchive()" title="Archive current session (uses the host name configured in Scoreboard settings).">ARCHIVE</button>
       <span style="flex:1"></span>
       <button id="sc-submit-btn" class="sc-toolbar-btn" onclick="_scSubmitPending()">SUBMIT</button>
     </div>
@@ -2453,6 +2581,20 @@ _HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="meta-cover-overlay" onclick="if(event.target===this)_closeMetaCover()">
+    <img id="meta-cover-full" alt="Cover art"/>
+  </div>
+
+  <div id="theme-action-overlay" onclick="if(event.target===this)_closeThemeActionPrompt()">
+    <div id="theme-action-box">
+      <div id="theme-action-title">Theme actions</div>
+      <button class="theme-action-btn play" onclick="_themeActionRun('play')">&#9654; Play now</button>
+      <button class="theme-action-btn queue" onclick="_themeActionRun('queue')">&#9203; Queue next</button>
+      <button class="theme-action-btn add" onclick="_themeActionRun('add')">&#10133; Add next</button>
+      <button id="theme-action-cancel" onclick="_closeThemeActionPrompt()">Cancel</button>
+    </div>
+  </div>
+
   <div id="bottom-left-wrap">
     <div id="player-list-wrap" style="display:none">
       <button id="player-list-btn" onclick="_togglePlayerList()">&#128101; <span id="player-count">0</span></button>
@@ -2523,11 +2665,11 @@ _HTML = r"""<!DOCTYPE html>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Queue</span>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt" onclick="_ctrlExtraClick('lt')">Lightning</button>
-        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_stop" onclick="_ctrlExtraClick('lt_stop')">&#x23F9;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_dice" onclick="_ctrlExtraClick('lt_dice')">&#x1F3B2;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="yt" onclick="_ctrlExtraClick('yt')">YouTube</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_stop" onclick="_ctrlExtraClick('lt_stop')">&#x23F9;</button>
       </div>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Bonus</span>
@@ -2615,7 +2757,7 @@ _HTML = r"""<!DOCTYPE html>
       </div>
       <!-- Collapsible playlist panel -->
       <div class="ctrl-collapse-toggle" id="ctrl-playlist-toggle" onclick="_ctrlTogglePlaylist()" style="display:none">
-        <span class="ctrl-collapse-label">&#x203A; Playlist</span>
+        <span class="ctrl-collapse-label" id="ctrl-playlist-label">&#x203A; Playlist</span>
         <span id="ctrl-playlist-counter" style="font-size:0.75em;color:#556;margin-left:4px"></span>
         <span class="ctrl-collapse-chevron" id="ctrl-playlist-chevron">&#x25BE;</span>
       </div>
@@ -2696,6 +2838,14 @@ _HTML = r"""<!DOCTYPE html>
         <button class="meta-tab-btn" onclick="_switchMetadataTab('more')">&#x1F4DD; More</button>
       </div>
       <div id="meta-pane-info" class="meta-tab-pane active">
+        <div id="meta-info-head">
+          <div id="meta-cover-wrap">
+            <button id="meta-cover-btn" onclick="_openMetaCover()" title="Open cover">
+              <img id="meta-cover-img" alt="Cover art"/>
+            </button>
+          </div>
+          <div id="meta-theme-head"></div>
+        </div>
         <div id="metadata-content"><span style="color:#555">No metadata loaded.</span></div>
       </div>
       <div id="meta-pane-themes" class="meta-tab-pane">
@@ -3872,6 +4022,9 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('peer-answers-list').innerHTML = '';
       _peerAnswersOpen = false;
       _autoOpenSidePanels(true);
+      if (_metadataOpen && _metadataTab === 'themes') {
+        _renderSeriesThemes(_metaViewData());
+      }
     });
 
     socket.on('player_colors_update', data => {
@@ -4827,6 +4980,10 @@ _HTML = r"""<!DOCTYPE html>
     let _metaHistoryIdx = 0;  // 0 = newest
     let _metaAutoFollow = true;
     let _currentMetadata = null;
+    let _metaCoverUrl = '';
+    let _themeActionTarget = null;
+    let _themeActionSeq = 1;
+    let _themeActionMap = {};
     let _sidePanelInitDone = false;
 
     function _saveSidePanels() {
@@ -5220,6 +5377,19 @@ _HTML = r"""<!DOCTYPE html>
     let _scTogether    = false;
     let _scAuto        = false;
     let _scDelay       = 1500; // ms — mirrors delta_commit_delay config
+    let _scArchiveBusy = false;
+    let _scArchiveRequestedAt = 0;
+    let _scArchivePreCount = 0;
+    let _scArchiveBusyTimer = null;
+
+    function _scSetArchiveBusy(busy) {
+      _scArchiveBusy = !!busy;
+      const btn = document.getElementById('sc-archive-btn');
+      if (btn) {
+        btn.disabled = _scArchiveBusy;
+        btn.textContent = _scArchiveBusy ? 'ARCHIVING…' : 'ARCHIVE';
+      }
+    }
 
     function _scLoadPrefs(auto_send, delay_together, commit_delay, score_font, name_font) {
       _scAuto     = !!auto_send;
@@ -5942,9 +6112,43 @@ _HTML = r"""<!DOCTYPE html>
       setTimeout(() => { _scFitScroll(); _scRenderGhosts(); }, 0);
     }
 
+    function _scArchive() {
+      if (_scArchiveBusy) return;
+      if (!confirm('Are you sure you want to archive this session and clear the data?')) return;
+      _scArchivePreCount = Array.isArray(_scPlayers) ? _scPlayers.length : 0;
+      _scArchiveRequestedAt = Date.now();
+      _scSetArchiveBusy(true);
+      _showToast('Archiving session…');
+      socket.emit('host_action', { action: 'scores_archive' });
+
+      // Encourage a quick UI refresh while archive runs.
+      setTimeout(() => { socket.emit('host_action', { action: 'get_scores' }); }, 500);
+      setTimeout(() => { socket.emit('host_action', { action: 'get_scores' }); }, 1800);
+
+      if (_scArchiveBusyTimer) clearTimeout(_scArchiveBusyTimer);
+      _scArchiveBusyTimer = setTimeout(() => {
+        if (!_scArchiveBusy) return;
+        _scSetArchiveBusy(false);
+        _showToast('Archive request sent. Waiting for scoreboard update…', 4200);
+        _scArchiveBusyTimer = null;
+      }, 12000);
+    }
+
     socket.on('scores_update', data => {
       if (data && data.auto_send !== undefined)
         _scLoadPrefs(data.auto_send, data.delay_together, data.commit_delay, data.score_font, data.name_font);
+
+      if (_scArchiveBusy) {
+        const now = Date.now();
+        const playersCount = (data && Array.isArray(data.players)) ? data.players.length : -1;
+        const elapsed = now - (_scArchiveRequestedAt || now);
+        if (playersCount === 0 && (elapsed > 500 || _scArchivePreCount > 0)) {
+          _scSetArchiveBusy(false);
+          if (_scArchiveBusyTimer) { clearTimeout(_scArchiveBusyTimer); _scArchiveBusyTimer = null; }
+          _showToast('Archive complete.', 2200);
+        }
+      }
+
       // If an optimistic update was applied recently, hold off re-rendering until either:
       //   a) the server data matches our optimistic snapshot (early release), or
       //   b) the 5-second hard timeout expires.
@@ -6483,7 +6687,7 @@ _HTML = r"""<!DOCTYPE html>
       if (_ctrlLtListOpen) _ctrlRenderLtList();
       // Show/hide server-controlled pinned proxies
       document.querySelectorAll('[data-proxy-extra="lt_stop"]').forEach(el => {
-        el.style.display = (data.light_mode && data.light_mode !== 'variety') ? '' : 'none';
+        el.style.display = '';
       });
       document.querySelectorAll('[data-proxy-extra="yt"]').forEach(el => {
         el.style.display = data.has_youtube ? '' : 'none';
@@ -6498,7 +6702,7 @@ _HTML = r"""<!DOCTYPE html>
         'tgl_censors': !!data.censors, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock,
         'tgl_info_start': !!data.info_start, 'tgl_info_end': !!data.info_end,
         'lt':      !!data.light_mode,
-        'lt_stop': !!data.light_mode,
+        'lt_stop': !!(data.light_mode || data.yt_queued || data.fl_queued || data.search_queued || data.fl_active),
         'lt_dice': data.light_mode === 'variety',
         'yt':      !!data.yt_queued,
         'fl':      !!data.fl_queued,
@@ -6587,8 +6791,9 @@ _HTML = r"""<!DOCTYPE html>
 
     const _ctrlExtrasConfig = {
       // Queue
+      'lt_stop':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x23F9;',  title: 'Stop all queued rounds' },
       'lt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Lightning', title: 'Lightning round types' },
-      'lt_stop':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x23F9;',  title: 'Stop lightning round', serverCtrl: true },
+
       'lt_dice':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F3B2;', title: 'Variety Lightning Round', ltMode: 'variety' },
       'yt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'YouTube',   title: 'YouTube videos', serverCtrl: true },
       'fl':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
@@ -6648,7 +6853,7 @@ _HTML = r"""<!DOCTYPE html>
 
     const _ctrlExtraActions = {
       'lt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleLtList(); },
-      'lt_stop':      () => socket.emit('host_action',{action:'stop_lightning'}),
+      'lt_stop':      () => socket.emit('host_action',{action:'stop_queues'}),
       'lt_dice':      () => { _ctrlCloseExtrasPopup(); socket.emit('host_action',{action:'invoke',id:'lightning_variety'}); },
       'yt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleYouTubeList(); },
       'fl':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleFlList(); },
@@ -6958,6 +7163,8 @@ _HTML = r"""<!DOCTYPE html>
       _metadataOpen = false;
       document.getElementById('metadata-overlay').classList.remove('active');
       document.body.classList.remove('meta-open');
+      _closeMetaCover();
+      _closeThemeActionPrompt();
       _saveSidePanels();
     }
     function _switchMetadataTab(tab) {
@@ -6969,8 +7176,37 @@ _HTML = r"""<!DOCTYPE html>
         const el = document.getElementById('meta-pane-' + t);
         if (el) el.classList.toggle('active', t === tab);
       });
+      _renderMetaCover(_metaViewData());
       if (tab === 'themes') { _renderSeriesThemes(_metaViewData()); _scrollToPlayingTheme(); }
       if (tab === 'more')   _renderMore(_metaViewData());
+    }
+    function _renderMetaCover(d) {
+      const wrap = document.getElementById('meta-cover-wrap');
+      const img = document.getElementById('meta-cover-img');
+      if (!wrap || !img) return;
+      const url = String((d && d.cover) || '').trim();
+      _metaCoverUrl = url;
+      if (!url || _metadataTab !== 'info') {
+        wrap.classList.remove('active');
+        if (!url) img.removeAttribute('src');
+        _closeMetaCover();
+        return;
+      }
+      wrap.classList.add('active');
+      if (img.getAttribute('src') !== url) img.src = url;
+    }
+    function _openMetaCover() {
+      if (!_metaCoverUrl) return;
+      const overlay = document.getElementById('meta-cover-overlay');
+      const img = document.getElementById('meta-cover-full');
+      if (!overlay || !img) return;
+      img.src = _metaCoverUrl;
+      overlay.classList.add('active');
+    }
+    function _closeMetaCover() {
+      const overlay = document.getElementById('meta-cover-overlay');
+      if (!overlay) return;
+      overlay.classList.remove('active');
     }
     function _scrollToPlayingTheme() {
       const pane = document.getElementById('meta-pane-themes');
@@ -7038,6 +7274,8 @@ _HTML = r"""<!DOCTYPE html>
       _plCurrentIndex = (data.current_index != null) ? data.current_index : -1;
       _plCache.clear();
       _plPending.clear();
+      const label = document.getElementById('ctrl-playlist-label');
+      if (label) label.innerHTML = '&#x203A; ' + (data.label || 'Playlist');
       const counter = document.getElementById('ctrl-playlist-counter');
       if (counter) counter.textContent = data.counter || '';
       const spacer = document.getElementById('pl-spacer');
@@ -7188,21 +7426,17 @@ _HTML = r"""<!DOCTYPE html>
       const total = _metaHistory.length;
       const arrows = document.getElementById('meta-nav-arrows');
       const titleEl = document.getElementById('meta-nav-title');
-      if (total > 1) {
-        if (arrows) arrows.classList.add('visible');
-        const label = document.getElementById('meta-history-label');
-        if (label) label.textContent = (total - _metaHistoryIdx) + ' / ' + total;
-        const prev = document.getElementById('meta-history-prev');
-        const next = document.getElementById('meta-history-next');
-        const oldest = document.getElementById('meta-history-oldest');
-        const newest = document.getElementById('meta-history-newest');
-        if (prev) prev.disabled = _metaHistoryIdx >= total - 1;
-        if (next) next.disabled = _metaHistoryIdx <= 0;
-        if (oldest) oldest.disabled = _metaHistoryIdx >= total - 1;
-        if (newest) newest.disabled = _metaHistoryIdx <= 0;
-      } else {
-        if (arrows) arrows.classList.remove('visible');
-      }
+      if (arrows) arrows.classList.add('visible');
+      const label = document.getElementById('meta-history-label');
+      if (label) label.textContent = total > 0 ? ((total - _metaHistoryIdx) + ' / ' + total) : '0 / 0';
+      const prev = document.getElementById('meta-history-prev');
+      const next = document.getElementById('meta-history-next');
+      const oldest = document.getElementById('meta-history-oldest');
+      const newest = document.getElementById('meta-history-newest');
+      if (prev) prev.disabled = (_metaHistoryIdx >= total - 1) || total <= 1;
+      if (next) next.disabled = (_metaHistoryIdx <= 0) || total <= 1;
+      if (oldest) oldest.disabled = (_metaHistoryIdx >= total - 1) || total <= 1;
+      if (newest) newest.disabled = (_metaHistoryIdx <= 0) || total <= 1;
       const btn = document.getElementById('meta-nav-autofollow');
       if (btn) btn.classList.toggle('on', _metaAutoFollow);
       const viewData = _metaHistory.length > 0 ? _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx] : (_currentMetadata || null);
@@ -7222,12 +7456,20 @@ _HTML = r"""<!DOCTYPE html>
       _metaHistoryUpdateNav();
       const viewData = _metaHistory.length > 0 ? _metaHistory[_metaHistory.length - 1 - _metaHistoryIdx] : d;
       d = viewData;
+      _renderMetaCover(d);
       const box = document.getElementById('metadata-content');
+      const themeHead = document.getElementById('meta-theme-head');
       if (!d || !d.title) {
+        if (themeHead) themeHead.innerHTML = '';
         box.innerHTML = '<span style="color:#555">No metadata available.</span>';
         return;
       }
       const lines = [];
+      let themeHeadHtml = '';
+      function favMarkHtml(isFavorite, extraCls) {
+        if (!isFavorite) return '';
+        return '<span class="mt-fav-mark' + (extraCls ? (' ' + extraCls) : '') + '" title="Favorite">♥</span>';
+      }
       function line(label, value) {
         if (value == null || value === '' || value === 'N/A') return;
         lines.push('<div class="meta-row"><span class="meta-label">' + _escHtml(label) + '</span> ' + _escHtml(String(value)) + '</div>');
@@ -7237,8 +7479,9 @@ _HTML = r"""<!DOCTYPE html>
         const slugLabel = ct.slug + (ct.overall_suffix || '');
         const slugCls = 'mt-slug playing';
         const titleText = ': ' + (ct.title || '????');
-        let html = '<div class="meta-row meta-theme-row"><span class="meta-label">THEME:</span>' +
-          '<span class="mt-theme-content"><span class="' + slugCls + '">' + _escHtml(slugLabel) + '</span>' +
+        const favHtml = favMarkHtml(!!ct.favorited, 'leading playing');
+        let html = '<div class="meta-row"><span class="meta-label">THEME:</span></div>' +
+          '<div class="meta-row meta-theme-row"><span class="mt-theme-content">' + favHtml + '<span class="' + slugCls + '">' + _escHtml(slugLabel) + '</span>' +
           '<span class="mt-title">' + _escHtml(titleText) + '</span>';
         if (ct.artists && ct.artists.length) {
           const artistsDisplay = ct.artists.map((a) => {
@@ -7259,7 +7502,10 @@ _HTML = r"""<!DOCTYPE html>
         if (vText || propsHtml)
           html += '<span class="mt-ver playing mt-continuation">' + _escHtml(vText) + propsHtml + '</span>';
         html += '</span></div>';
-        lines.push(html);
+        themeHeadHtml = html;
+      }
+      if (themeHead) {
+        themeHead.innerHTML = themeHeadHtml || '<span style="color:#555">No theme info.</span>';
       }
       line('TITLE:', d.title);
       line('ENGLISH:', d.eng_title);
@@ -7322,7 +7568,7 @@ _HTML = r"""<!DOCTYPE html>
       box.innerHTML = lines.join('') || '<span style="color:#555">No data.</span>';
       
       // Attach event listeners to artist themes buttons
-      const artistBtns = box.querySelectorAll('.artist-themes-btn');
+      const artistBtns = document.querySelectorAll('#meta-pane-info .artist-themes-btn');
       if (artistBtns && d.current_theme && d.current_theme.artist_themes) {
         artistBtns.forEach(btn => {
           btn.addEventListener('click', function(e) {
@@ -7336,7 +7582,7 @@ _HTML = r"""<!DOCTYPE html>
           });
         });
       }
-      const studioBtns = box.querySelectorAll('.studio-themes-btn');
+      const studioBtns = document.querySelectorAll('#meta-pane-info .studio-themes-btn');
       if (studioBtns && d.current_theme && d.current_theme.studio_entries) {
         studioBtns.forEach(btn => {
           btn.addEventListener('click', function(e) {
@@ -7456,13 +7702,56 @@ _HTML = r"""<!DOCTYPE html>
       if (overlay) overlay.classList.remove('active');
     }
 
+    function _themeActionRegister(filename, label) {
+      if (!filename) return '';
+      const id = String(_themeActionSeq++);
+      _themeActionMap[id] = { filename, label: label || '' };
+      return id;
+    }
+
+    function _openThemeActionPrompt(actionId) {
+      if (!_isHost) return;
+      const payload = _themeActionMap[actionId];
+      if (!payload || !payload.filename) return;
+      _themeActionTarget = payload;
+      const title = document.getElementById('theme-action-title');
+      if (title) title.textContent = payload.label ? ('Theme actions: ' + payload.label) : 'Theme actions';
+      const overlay = document.getElementById('theme-action-overlay');
+      if (overlay) overlay.classList.add('active');
+    }
+
+    function _closeThemeActionPrompt() {
+      _themeActionTarget = null;
+      const overlay = document.getElementById('theme-action-overlay');
+      if (overlay) overlay.classList.remove('active');
+    }
+
+    function _themeActionRun(mode) {
+      if (!_isHost || !_themeActionTarget || !_themeActionTarget.filename) return;
+      const fn = _themeActionTarget.filename;
+      if (mode === 'play') {
+        socket.emit('host_action', { action: 'play_theme_now', filename: fn });
+      } else if (mode === 'queue') {
+        socket.emit('host_action', { action: 'queue_theme_only', filename: fn });
+      } else if (mode === 'add') {
+        socket.emit('host_action', { action: 'add_theme', filename: fn });
+      }
+      _closeThemeActionPrompt();
+    }
+
     function _renderSeriesThemes(d) {
       const box = document.getElementById('metadata-themes-content');
       if (!d || !d.series_themes || !d.series_themes.length) {
         box.innerHTML = '<span style="color:#555">No theme data available.</span>';
         return;
       }
+      _themeActionMap = {};
+      _themeActionSeq = 1;
+      _themeActionTarget = null;
       const parts = [];
+      const favMarkHtml = (isFavorite, extraCls='') => isFavorite
+        ? '<span class="mt-fav-mark' + (extraCls ? (' ' + extraCls) : '') + '" title="Favorite">♥</span>'
+        : '';
       d.series_themes.forEach(anime => {
         if (d.series_themes.length > 1) {
           const fmtSeason = [anime.format, anime.season].filter(Boolean).join(' / ');
@@ -7475,8 +7764,13 @@ _HTML = r"""<!DOCTYPE html>
             const slugCls = 'mt-slug' + (theme.is_playing ? ' playing' : '');
             const slugText = theme.slug + (theme.overall_suffix || '');
             const titleText = ': ' + (theme.title ? theme.title : '????');
-            let html = '<div class="mt-theme' + (theme.is_playing ? ' playing' : '') + '"><span class="' + slugCls + '">' + _escHtml(slugText) + '</span>' +
-              '<span class="mt-title">' + _escHtml(titleText) + '</span>';
+            const themeFilename = String(theme.filename || '').trim();
+            const hasVersions = !!(theme.versions && theme.versions.length);
+            const themeActionId = (_isHost && !hasVersions && themeFilename)
+              ? _themeActionRegister(themeFilename, slugText)
+              : '';
+            let html = '<div class="mt-theme' + (theme.is_playing ? ' playing' : '') + '"><div class="mt-main-row"><span class="' + slugCls + '">' + _escHtml(slugText) + '</span>' +
+              '<span class="mt-title">' + _escHtml(titleText) + '</span></div>';
             if (theme.artists && theme.artists.length) {
               let artistsHtml = _escHtml(theme.artists_str || theme.artists.join(', '));
               if (theme.is_playing && d.current_theme && d.current_theme.artist_themes) {
@@ -7489,23 +7783,37 @@ _HTML = r"""<!DOCTYPE html>
                   return '<span class="mt-artist-item">' + _escHtml(a) + '</span>';
                 }).join(', ');
               }
-              html += '<br><span class="mt-artist">by: ' + artistsHtml + '</span>';
+              html += '<div class="mt-artist">by: ' + artistsHtml + '</div>';
             }
             if (theme.versions && theme.versions.length) {
               theme.versions.forEach(v => {
                 const vCls = 'mt-ver' + (v.is_playing ? ' playing' : '');
+                const subRowClass = _isHost ? 'mt-sub-row' : 'mt-sub-row mt-sub-row-indent';
                 let vText = v.version ? 'v' + v.version : '';
                 if (v.episodes) vText += (vText ? ': ' : '') + '(Eps: ' + v.episodes + ')';
                 if (v.flags && v.flags.length) vText += (vText ? ' ' : '') + v.flags.join(' ');
                 const propsHtml = v.file_props ? ' <span class="mt-props">' + _escHtml(v.file_props) + '</span>' : '';
-                if (vText || propsHtml)
-                  html += '<br><span class="' + vCls + '">' + _escHtml(vText) + propsHtml + '</span>';
+                const vFilename = String(v.filename || '').trim();
+                const vActionId = (_isHost && vFilename)
+                  ? _themeActionRegister(vFilename, (slugText + (vText ? ' ' + vText : '')))
+                  : '';
+                const vActionBtn = vActionId
+                  ? '<button class="mt-action-btn" data-taid="' + vActionId + '" title="Theme actions">&#9654;</button>'
+                  : '';
+                const vFavHtml = favMarkHtml(!!v.favorited, (v.is_playing ? 'leading playing' : 'leading'));
+                if (vText || propsHtml || vActionBtn || vFavHtml)
+                  html += '<div class="' + subRowClass + '">' + vActionBtn + vFavHtml + '<span class="' + vCls + '">' + _escHtml(vText) + propsHtml + '</span></div>';
               });
             } else {
+              const subRowClass = _isHost ? 'mt-sub-row' : 'mt-sub-row mt-sub-row-indent';
               let vText = '';
               if (theme.episodes) vText += '(Eps: ' + theme.episodes + ')';
               if (theme.flags && theme.flags.length) vText += (vText ? ' ' : '') + theme.flags.join(' ');
-              if (vText) html += '<br><span class="mt-ver">' + _escHtml(vText) + '</span>';
+              const tActionBtn = themeActionId
+                ? '<button class="mt-action-btn" data-taid="' + themeActionId + '" title="Theme actions">&#9654;</button>'
+                : '';
+              const themeFavHtml = favMarkHtml(!!theme.favorited, theme.is_playing ? 'leading playing' : 'leading');
+              if (vText || tActionBtn || themeFavHtml) html += '<div class="' + subRowClass + '">' + tActionBtn + themeFavHtml + '<span class="mt-ver">' + _escHtml(vText) + '</span></div>';
             }
             if (theme.special) html += ' <span class="mt-flags">(SPECIAL)</span>';
             html += '</div>';
@@ -7526,6 +7834,13 @@ _HTML = r"""<!DOCTYPE html>
           });
         });
       }
+      box.querySelectorAll('.mt-action-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          _openThemeActionPrompt(this.getAttribute('data-taid'));
+        });
+      });
       _scrollToPlayingTheme();
     }
 
@@ -8055,12 +8370,14 @@ def push_theme_search_results(results: list, playlist_infinite: bool = False, qu
             _socketio.emit('theme_search_results', payload, to=sid)
 
 
-def push_playlist_info(total: int, current_index: int, to_sid: str = None, counter: str = None):
+def push_playlist_info(total: int, current_index: int, to_sid: str = None, counter: str = None, label: str = None):
     """Push playlist length + current position to requesting host client."""
     if FLASK_AVAILABLE and _socketio:
         payload = {'total': total, 'current_index': current_index}
         if counter is not None:
             payload['counter'] = counter
+        if label is not None:
+            payload['label'] = label
         sids = [to_sid] if to_sid else list(_host_sids)
         for sid in sids:
             _socketio.emit('playlist_info', payload, to=sid)
@@ -8241,6 +8558,7 @@ def _build_app():
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Session History</title>
+<link rel="icon" type="image/png" href="data:image/png;base64,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"/>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ background: #111; color: #ccc; font-family: 'Segoe UI', monospace;

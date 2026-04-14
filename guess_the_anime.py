@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "17.2"  # Update this when making releases
+APP_VERSION = "17.3"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -54,6 +54,49 @@ import unicodedata
 import web_server
 
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
+
+# App icon (32x32 PNG, base64-encoded from guess_the_anime.ico)
+_APP_ICON_B64 = (
+    "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"
+)
 
 # Helper function for VLC error messages
 def _vlc_error_exit(error_details=None):
@@ -2570,6 +2613,8 @@ def _build_web_series_themes(data, playing_filename):
                             "version": v_num,
                             "episodes": v.get("episodes"),
                             "flags": _get_version_flags(v),
+                            "filename": v_fn,
+                            "favorited": bool(check_favorited(v_fn)) if v_fn else False,
                             "file_props": get_file_props_label(v_fn) if v_fn else "",
                             "is_playing": bool(is_playing_ver),
                         })
@@ -2579,6 +2624,8 @@ def _build_web_series_themes(data, playing_filename):
                     "slug": theme_slug,
                     "overall_suffix": overall_suffix,
                     "title": theme.get("title"),
+                    "filename": fn,
+                    "favorited": bool(check_favorited(fn)) if fn else False,
                     "artists": _th_artists,
                     "artists_str": get_artists_string(_th_artists, total=True),
                     "is_playing": bool(is_playing_theme),
@@ -2820,6 +2867,7 @@ def update_metadata():
                         "anidb_id": data.get("anidb"),
                         "anilist_id": data.get("anilist"),
                         "animethemes_slug": data.get("animethemes_slug"),
+                        "cover": data.get("cover"),
                     }
                 if playlist.get("infinite"):
                     _file_count = sum(1 for item in playlist.get("playlist", []) if item == filename)
@@ -2858,6 +2906,7 @@ def update_metadata():
                         "slug": _slug,
                         "overall_suffix": _overall_suffix,
                         "title": _song.get("title") if _song else None,
+                        "favorited": bool(check_favorited(filename)) if filename else False,
                         "artists": _ct_artists,
                         "artists_str": get_artists_string(_ct_artists, total=True),
                         "version": _v_num,
@@ -5570,7 +5619,7 @@ def confirm_save_playlist(text=""):
             save()
 
 def new_playlist(playlis, name=None):
-    global playlist
+    global playlist, playlist_changed
     confirm_save_playlist("creating a new playlist")
     playlist = copy.deepcopy(BLANK_PLAYLIST)
     up_next_text()
@@ -5579,6 +5628,7 @@ def new_playlist(playlis, name=None):
     update_current_index(0)
     update_playlist_name()
     save_config()
+    playlist_changed = True
     
     # Start caching first theme if it's a streamable file
     if playlis and len(playlis) > 0:
@@ -5599,7 +5649,7 @@ def create_infinite_playlist(include_non_local=None):
     playlist["infinite_settings"]["include_non_local_files"] = include_non_local if include_non_local is not None else False
     # Set default filter to exclude overlap and NSFW themes without censors, and exclude Tagged/New Themes playlists
     playlist["filter"] = {
-        "themes_exclude": ["OVERLAP", "NSFW (Without Censors)", "TRANSITION (Without Censors)"],
+        "themes_exclude": ["OVERLAP (Without Censors)", "NSFW (Without Censors)", "TRANSITION (Without Censors)", "MOVIE EDs (Without Censors)"],
         "playlist_filter_exclude": ["Tagged Themes", "New Themes"]
     }
     get_pop_time_groups(refetch=True)
@@ -6840,6 +6890,20 @@ def save_config():
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=4, allow_nan=False)
 
+_THEME_FLAG_MIGRATIONS = {
+    "OVERLAP": "OVERLAP (Without Censors)",
+    "SPOILER": "SPOILER (Without Censors)",
+}
+
+def _migrate_theme_flags(filter_dict):
+    """Rename legacy theme flag strings to their censor-split equivalents in-place."""
+    if not isinstance(filter_dict, dict):
+        return
+    for key in ("themes_exclude", "themes_include"):
+        val = filter_dict.get(key)
+        if isinstance(val, list):
+            filter_dict[key] = [_THEME_FLAG_MIGRATIONS.get(v, v) for v in val]
+
 def load_config():
     """Function to load configuration"""
     global directory_files, directory, playlist, host, inverted_colors, scoreboard_rules
@@ -6868,6 +6932,7 @@ def load_config():
             playlist = config.get("playlist", copy.deepcopy(BLANK_PLAYLIST))
             if "background_track_history" not in playlist:
                 playlist["background_track_history"] = []
+            _migrate_theme_flags(playlist.get("filter", {}))
             directory_files = config.get("directory_files", {})
             directory = config.get("directory", "themes")
             scoreboard_rules = load_rules(selected_rules_file)
@@ -9398,6 +9463,7 @@ def load_filter(index):
     if not confirm:
         return  # User canceled
     filters = filter_data.get("filter")
+    _migrate_theme_flags(filters)
     if playlist.get("infinite"):
         playlist["filter"] = filters
         print("Applied Filters:", filters)
@@ -9603,12 +9669,16 @@ def show_filter_popup():
     theme_exclude_options = [
         "DUPLICATES",
         "LATER VERSIONS",
-        "OVERLAP",
+        "OVERLAP (Without Censors)",
+        "OVERLAP (With Censors)",
         "NSFW (Without Censors)",
         "NSFW (With Censors)",
-        "SPOILER",
+        "SPOILER (Without Censors)",
+        "SPOILER (With Censors)",
         "TRANSITION (Without Censors)",
-        "TRANSITION (With Censors)"
+        "TRANSITION (With Censors)",
+        "MOVIE EDs (Without Censors)",
+        "MOVIE EDs (With Censors)"
     ]
     themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
@@ -9932,7 +10002,10 @@ def filter_playlist(filters):
         themes_include_set = set(filters.get("themes_include", []))
         all_theme_filter_flags = themes_exclude_set | themes_include_set
         needs_nsfw_check = "NSFW (With Censors)" in all_theme_filter_flags or "NSFW (Without Censors)" in all_theme_filter_flags
+        needs_overlap_check = "OVERLAP (With Censors)" in all_theme_filter_flags or "OVERLAP (Without Censors)" in all_theme_filter_flags
+        needs_spoiler_check = "SPOILER (With Censors)" in all_theme_filter_flags or "SPOILER (Without Censors)" in all_theme_filter_flags
         needs_transition_check = "TRANSITION (With Censors)" in all_theme_filter_flags or "TRANSITION (Without Censors)" in all_theme_filter_flags
+        needs_movie_ed_check = "MOVIE EDs (With Censors)" in all_theme_filter_flags or "MOVIE EDs (Without Censors)" in all_theme_filter_flags
         needs_duplicates = "DUPLICATES" in all_theme_filter_flags
         needs_versions = "LATER VERSIONS" in all_theme_filter_flags
         exclude_duplicates = has_themes_exclude and "DUPLICATES" in themes_exclude_set
@@ -10071,8 +10144,13 @@ def filter_playlist(filters):
                 
                 source = current_version_data if current_version_data else theme
                 overlap = source.get("overlap")
-                if overlap == "Over":
-                    theme_flags.add("OVERLAP")
+                if needs_overlap_check and overlap == "Over":
+                    if has_censors is None:
+                        has_censors = bool(get_file_censors(filename))
+                    if has_censors:
+                        theme_flags.add("OVERLAP (With Censors)")
+                    else:
+                        theme_flags.add("OVERLAP (Without Censors)")
                 elif needs_transition_check and overlap == "Transition":
                     if has_censors is None:
                         has_censors = bool(get_file_censors(filename))
@@ -10080,8 +10158,13 @@ def filter_playlist(filters):
                         theme_flags.add("TRANSITION (With Censors)")
                     else:
                         theme_flags.add("TRANSITION (Without Censors)")
-                if source.get("spoiler"):
-                    theme_flags.add("SPOILER")
+                if needs_spoiler_check and source.get("spoiler"):
+                    if has_censors is None:
+                        has_censors = bool(get_file_censors(filename))
+                    if has_censors:
+                        theme_flags.add("SPOILER (With Censors)")
+                    else:
+                        theme_flags.add("SPOILER (Without Censors)")
                 if needs_nsfw_check and source.get("nsfw"):
                     if has_censors is None:
                         has_censors = bool(get_file_censors(filename))
@@ -10089,6 +10172,13 @@ def filter_playlist(filters):
                         theme_flags.add("NSFW (With Censors)")
                     else:
                         theme_flags.add("NSFW (Without Censors)")
+                if needs_movie_ed_check and get_format(data) == "Movie" and "ED" in slug:
+                    if has_censors is None:
+                        has_censors = bool(get_file_censors(filename))
+                    if has_censors:
+                        theme_flags.add("MOVIE EDs (With Censors)")
+                    else:
+                        theme_flags.add("MOVIE EDs (Without Censors)")
 
             if has_themes_exclude and not theme_flags.isdisjoint(themes_exclude_set):
                 continue 
@@ -11571,6 +11661,28 @@ def unselect_light_modes():
     if popout_buttons_by_name.get("lightning_start"):
         popout_buttons_by_name["lightning_start"].configure(text="▶ START")
 
+def stop_all_queues():
+    """Clear all queued special rounds: lightning, YouTube, search, and fixed lightning."""
+    global search_queue, fixed_lightning_queue, fixed_lightning_round_playlist_data, fixed_current_round
+    # Clear lightning mode + button text
+    unselect_light_modes()
+    toggle_coming_up_popup(False, "Lightning Round")
+    # Clear YouTube queue (handles its own popup + button state)
+    unload_youtube_video()
+    # Clear search queue
+    if search_queue:
+        search_queue = None
+    # Clear fixed lightning (queued and/or currently active playlist)
+    if fixed_lightning_queue or fixed_lightning_round_playlist_data:
+        fl_name = (fixed_lightning_queue or fixed_lightning_round_playlist_data or {}).get("name")
+        fixed_lightning_queue = None
+        fixed_lightning_round_playlist_data = None
+        fixed_current_round = None
+        if fl_name:
+            toggle_coming_up_popup(False, fl_name)
+        update_playlist_display()
+    up_next_text()
+
 
 # =========================================
 #          *LIGHTNING ROUND START
@@ -11650,11 +11762,36 @@ def update_light_round(time):
                     player.set_fullscreen(True)
                     char_answer = copy.copy(character_round_answer)
                     cover_answer = light_cover_image
+                    image_answer_source = None  # source text shown as answer (no header, width_max=0.55)
+                    if fixed_current_round and fixed_current_round.get("type") == "image":
+                        answer_image_url = (fixed_current_round.get("answer_image_url") or "").strip()
+                        answer_show_both = fixed_current_round.get("answer_show_both", False)
+                        if answer_image_url:
+                            try:
+                                answer_image = load_image_from_url(answer_image_url, size=None)
+                                if answer_show_both:
+                                    if light_cover_image:
+                                        cover_answer = [light_cover_image, answer_image]
+                                    else:
+                                        cover_answer = answer_image
+                                else:
+                                    cover_answer = answer_image
+                            except Exception:
+                                pass
+                            # Collect source text to show as answer instead of the IMAGE SOURCE header
+                            if last_image_source[0] == currently_playing.get("filename") and last_image_source[1]:
+                                if fixed_current_round.get("image_source"):
+                                    image_answer_source = fixed_current_round.get("image_source")
+                                else:
+                                    src_url = last_image_source[1]
+                                    image_answer_source = src_url.split('/')[2] if src_url.startswith('http') else src_url
                     trivia_answer = light_trivia_answer
                     if mismatch_visuals:
                         top_info_data = "MISMATCHED VISUALS:\n" + mismatch_visuals
                     elif last_streamed[0] == currently_playing.get("filename") and last_streamed[1] != "Trailer":
                         top_info_data = f"YOUTUBE VIDEO:\n{last_streamed[1]}\nby {last_streamed[3]}"
+                    elif image_answer_source:
+                        top_info_data = None  # will be shown via top_info(image_answer_source) below
                     elif last_image_source[0] == currently_playing.get("filename") and last_image_source[1]:
                         if fixed_current_round and fixed_current_round.get("image_source"):
                             domain = fixed_current_round.get("image_source")
@@ -11669,17 +11806,21 @@ def update_light_round(time):
                     set_black_screen(False)
                     update_light_round_number()
                     clean_up_light_round()
+                    max_width_size = 0.55 if (light_round_answer_length < 10) else 0.5
+
                     if synopsis_start_index is not None and fixed_current_round and fixed_current_round.get("synopsis_during_answer"):
                         toggle_synopsis_overlay(text=get_light_synopsis_string())
                     if top_info_data:
                         top_info(top_info_data, 20)
                     if char_answer:
-                        top_info(char_answer[0], width_max=0.55) 
+                        top_info(char_answer[0], width_max=max_width_size) 
                         toggle_character_image_overlay(char_answer[1])
                     if cover_answer:
                         toggle_character_image_overlay(cover_answer)
                     if trivia_answer:
-                        top_info(trivia_answer, width_max=0.55) 
+                        top_info(trivia_answer, width_max=max_width_size)
+                    if image_answer_source:
+                        top_info(image_answer_source, width_max=max_width_size)
                 if not light_mode or (fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("current_index") == fixed_lightning_round_playlist_data.get("round_count") - 1):
                     start_str = "end"
                 set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
@@ -15571,8 +15712,52 @@ def toggle_character_image_overlay(character=None, destroy=False):
     max_width = int(screen_w * width_percent)
     max_height = int(screen_h * 0.7)
 
-    # Get original image
-    pil_image = ImageTk.getimage(character)
+    # Get original image (single) or combine multiple images side-by-side
+    if isinstance(character, (list, tuple)):
+        pil_images = []
+        for img in character:
+            if not img:
+                continue
+            try:
+                rgba_img = ImageTk.getimage(img).convert("RGBA")
+                # Trim transparent padding to avoid visible seam/gap when stitching.
+                try:
+                    alpha_bbox = rgba_img.getchannel("A").getbbox()
+                    if alpha_bbox:
+                        rgba_img = rgba_img.crop(alpha_bbox)
+                except Exception:
+                    pass
+                pil_images.append(rgba_img)
+            except Exception:
+                continue
+
+        if not pil_images:
+            return
+
+        if len(pil_images) == 1:
+            pil_image = pil_images[0]
+        else:
+            target_height = max(img.height for img in pil_images)
+            normalized = []
+            for img in pil_images:
+                if img.height != target_height and img.height > 0:
+                    new_w = int(img.width * (target_height / img.height))
+                    img = img.resize((max(1, new_w), target_height), Image.LANCZOS)
+                normalized.append(img)
+
+            spacing = 0
+            total_width = sum(img.width for img in normalized) + spacing * (len(normalized) - 1)
+            combined = Image.new("RGBA", (total_width, target_height), (0, 0, 0, 0))
+
+            x_offset = 0
+            for img in normalized:
+                combined.paste(img, (x_offset, 0), img)
+                x_offset += img.width + spacing
+
+            pil_image = combined
+    else:
+        pil_image = ImageTk.getimage(character)
+
     img_w, img_h = pil_image.size
     
     # Constrain both width and height
@@ -18885,7 +19070,8 @@ FIXED_LIGHTNING_ROUNDS = {
         "theme",
         "start_time",
         "duration",
-        "answer_duration"
+        "answer_duration",
+        "background_track"
     ],
     "blind": [
         "music_icon",
@@ -18938,6 +19124,8 @@ FIXED_LIGHTNING_ROUNDS = {
     "image": [
         "image_variant",
         "image_url",
+        "answer_image_url",
+        "answer_show_both",
         "image_source",
         "image_header",
         "slide_direction",
@@ -18990,6 +19178,7 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "start_time": {"type": "time", "required": False},
     "duration": {"type": "duration", "required": False},
     "answer_duration": {"type": "duration", "required": False},
+    "background_track": {"type": "music_track", "required": False, "show_if_muted": True},
     "blind_variant": {"type": "dropdown", "required": False, "options": lightning_mode_settings_default.get("blind",{}).get("variants",{}), "default": "standard"},
     "frame1": {"type": "time", "required": True},
     "frame2": {"type": "time", "required": True},
@@ -19021,6 +19210,8 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
         "default": "standard"
     },
     "image_url": {"type": "image_url", "required": True},
+    "answer_image_url": {"type": "image_url", "required": False},
+    "answer_show_both": {"type": "toggle", "required": False, "default": False},
     "cover_fill": {"type": "cover_fill", "required": False},
     "cover_header": {"type": "text", "required": False, "default": "Cover"},
     "image_source": {"type": "text", "required": False},
@@ -19583,6 +19774,13 @@ def open_fixed_lightning_manager():
 def should_show_field(field_name, round_data):
     """Check if a field should be shown based on show_if conditions"""
     field_config = FIXED_LIGHTNING_ROUND_FIELD_INDEX.get(field_name, {})
+
+    # show_if_muted: only show when the round type is a muted round
+    if field_config.get("show_if_muted"):
+        round_type = round_data.get("type", "")
+        if not lightning_mode_settings.get(round_type, {}).get("muted"):
+            return False
+
     show_if = field_config.get("show_if")
     
     if not show_if:
@@ -20625,6 +20823,141 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 
                 field_widgets[field_name] = ("area_selector", lambda area=selected_area: area[0])
             
+            elif field_type == "music_track":
+                # Typable dropdown populated with detected music files (alphabetical, autocomplete)
+                mt_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
+                mt_frame.pack(side="left")
+                if not music_files:
+                    load_music_files()
+                track_basenames = sorted([os.path.basename(f) for f in music_files], key=str.lower)
+                current_value = round_data.get(field_name, "")
+                var = tk.StringVar(value=current_value)
+                combo = ttk.Combobox(mt_frame, textvariable=var, values=track_basenames,
+                                     state='normal', font=font_entry, width=35)
+                combo.pack(side="left", padx=(0, 5))
+
+                suggest_popup = tk.Toplevel(combo)
+                suggest_popup.withdraw()
+                suggest_popup.overrideredirect(True)
+                suggest_popup.configure(bg="white")
+
+                suggest_frame = tk.Frame(suggest_popup, bg="black", highlightthickness=1, highlightbackground="white")
+                suggest_frame.pack(fill="both", expand=True)
+                suggest_list = tk.Listbox(
+                    suggest_frame,
+                    bg="black",
+                    fg="white",
+                    selectbackground="#303030",
+                    selectforeground="white",
+                    activestyle="none",
+                    exportselection=False,
+                    height=6,
+                    width=35,
+                    font=font_entry,
+                )
+                suggest_list.pack(fill="both", expand=True)
+                _mt_suggest_visible = [False]
+
+                def _mt_show_suggestions(items, _combo=combo, _popup=suggest_popup, _list=suggest_list):
+                    _list.delete(0, tk.END)
+                    for item in items[:100]:
+                        _list.insert(tk.END, item)
+                    if _list.size() == 0:
+                        _mt_hide_suggestions()
+                        return
+                    try:
+                        visible_rows = min(_list.size(), 6)
+                        _list.configure(height=visible_rows)
+                        _combo.update_idletasks()
+                        _list.update_idletasks()
+                        x = _combo.winfo_rootx()
+                        y = _combo.winfo_rooty() + _combo.winfo_height() + 2
+                        w = _combo.winfo_width()
+                        h = suggest_frame.winfo_reqheight()
+                        _popup.geometry(f"{w}x{h}+{x}+{y}")
+                        _popup.deiconify()
+                        _popup.lift()
+                    except Exception:
+                        _mt_hide_suggestions()
+                        return
+                    _mt_suggest_visible[0] = True
+
+                def _mt_hide_suggestions(_popup=suggest_popup):
+                    try:
+                        _popup.withdraw()
+                    except Exception:
+                        pass
+                    _mt_suggest_visible[0] = False
+
+                def _mt_apply_suggestion(_event=None, _combo=combo, _list=suggest_list, _var=var):
+                    selection = _list.curselection()
+                    if not selection:
+                        return "break"
+                    value = _list.get(selection[0])
+                    _var.set(value)
+                    _mt_hide_suggestions()
+                    _combo.focus_set()
+                    _combo.icursor(tk.END)
+                    return "break"
+
+                def _mt_autocomplete(event, _combo=combo, _names=track_basenames):
+                    if event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
+                        return
+                    typed = _combo.get().lower()
+                    if not typed:
+                        _combo['values'] = _names
+                        _mt_hide_suggestions()
+                        return
+                    filtered = [n for n in _names if n.lower().startswith(typed)]
+                    shown = filtered if filtered else _names
+                    _combo['values'] = shown
+                    _mt_show_suggestions(shown)
+
+                def _mt_focus_out(_event=None, _combo=combo):
+                    def _later():
+                        try:
+                            focused = _combo.focus_get()
+                        except KeyError:
+                            focused_name = str(_combo.tk.call("focus") or "")
+                            if "popdown" in focused_name:
+                                return
+                            focused = None
+                        if focused in (suggest_list, combo, suggest_popup):
+                            return
+                        _mt_hide_suggestions()
+                    _combo.after(120, _later)
+
+                def _mt_down_key(_event=None):
+                    if _mt_suggest_visible[0] and suggest_list.size() > 0:
+                        suggest_list.focus_set()
+                        suggest_list.selection_clear(0, tk.END)
+                        suggest_list.selection_set(0)
+                        suggest_list.activate(0)
+                        return "break"
+
+                def _mt_destroy_popup(_event=None, _popup=suggest_popup):
+                    try:
+                        _popup.destroy()
+                    except Exception:
+                        pass
+
+                combo.bind('<KeyRelease>', _mt_autocomplete)
+                combo.bind('<FocusOut>', _mt_focus_out)
+                combo.bind('<Down>', _mt_down_key)
+                combo.bind('<Escape>', lambda e: (_mt_hide_suggestions(), "break")[1])
+                combo.bind('<Destroy>', _mt_destroy_popup)
+                suggest_list.bind('<ButtonRelease-1>', _mt_apply_suggestion)
+                suggest_list.bind('<Return>', _mt_apply_suggestion)
+                suggest_list.bind('<Escape>', lambda e: (_mt_hide_suggestions(), combo.focus_set(), "break")[2])
+
+                def clear_track(v=var, _combo=combo, _names=track_basenames):
+                    v.set("")
+                    _combo['values'] = _names
+                    _mt_hide_suggestions()
+                tk.Button(mt_frame, text="CLEAR", font=font_entry,
+                          bg="black", fg="white", width=6, command=clear_track).pack(side="left")
+                field_widgets[field_name] = ("dropdown", var)
+
             elif field_type == "video_url":
                 # Video URL field with two buttons
                 url_frame = tk.Frame(field_frame, bg=BACKGROUND_COLOR)
@@ -20927,6 +21260,19 @@ def play_background_music(toggle):
             print("No music files found in 'music' folder. Add music files to this folder to play background music during lightning rounds.")
             checked_music_folder = True
         return
+
+    # If the current fixed round specifies a background track, pin to that track
+    if toggle and fixed_current_round:
+        pinned = (fixed_current_round.get("background_track") or "").strip()
+        if pinned:
+            matched = next(
+                (i for i, f in enumerate(music_files) if os.path.basename(f) == pinned),
+                None
+            )
+            if matched is not None and matched != current_music_index:
+                current_music_index = matched
+                music_changed = True  # Force reload with the pinned track
+            # If not found, fall through to whatever track was already queued
 
     if music_loaded and not music_changed:
         if toggle and not disable_video_audio:
@@ -22515,8 +22861,9 @@ def play_video(index=playlist["current_index"]):
     global video_stopped, currently_playing, search_queue, censors_enabled, frame_light_round_started, light_round_start_time
     global synopsis_start_index, title_light_letters, playlist_loaded, playing_next_error, light_round_started
     global fixed_lightning_queue, fixed_lightning_round_playlist_data, light_mode, fixed_current_round, light_round_answer_length
-    global current_light_mode, current_light_variant
+    global current_light_mode, current_light_variant, playlist_changed
     playlist_loaded = False
+    playlist_changed = False
     light_round_start_time = None
     synopsis_start_index = None
     title_light_letters = None
@@ -23532,13 +23879,17 @@ def update_current_index(value = None, save = True):
         if save:
             save_config()
         if web_server.is_running():
-            if playlist.get('infinite', False):
+            if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
+                fixed_rounds = fixed_lightning_round_playlist_data.get("rounds", [])
+                fixed_index = fixed_lightning_round_playlist_data.get("current_index", 0)
+                web_server.push_playlist_info(len(fixed_rounds), fixed_index, counter=(f'{fixed_index+1}/{len(fixed_rounds)}' if fixed_rounds else '0/0'), label='Fixed Playlist')
+            elif playlist.get('infinite', False):
                 out_of = total_infinite_files - len(cached_skipped_themes)
-                web_server.push_playlist_info(-1, -1, counter=f'\u221e/{out_of}')
+                web_server.push_playlist_info(-1, -1, counter=f'\u221e/{out_of}', label='Playlist')
             else:
                 out_of = len(playlist['playlist'])
                 cur = playlist['current_index']
-                web_server.push_playlist_info(out_of, cur, counter=f'{cur+1}/{out_of}')
+                web_server.push_playlist_info(out_of, cur, counter=f'{cur+1}/{out_of}', label='Playlist')
     except NameError:
         pass  # root isn't defined yet — possibly too early in startup
 
@@ -23655,7 +24006,7 @@ def play_next():
     if special_repeat_track_mode:
         toggle_special_repeat()
     set_skip_direction(1)
-    if playlist_loaded:
+    if playlist_loaded or playlist_changed:
         play_video(playlist["current_index"])
     else:
         if playlist["current_index"] + 1 >= len(playlist["playlist"]):
@@ -25242,6 +25593,7 @@ def _push_web_toggles():
         "has_youtube":   bool(youtube_metadata.get("videos")),
         "yt_queued":     bool(youtube_queue),
         "fl_queued":     bool(fixed_lightning_queue),
+        "fl_active":     bool(fixed_lightning_round_playlist_data),
         "search_queued": bool(search_queue),
         "difficulty":    playlist.get("difficulty", 2),
         "auto_bonus_start": auto_bonus_start,
@@ -29269,6 +29621,12 @@ root.title(WINDOW_TITLE)
 root.geometry(f"{scl(1200, "UI")}x{scl(ROOT_MIN_HEIGHT, "UI")}")
 root.minsize(scl(900, "UI"), scl(ROOT_MIN_HEIGHT, "UI"))  # Set minimum window size to prevent controls squishing
 root.configure(bg=BACKGROUND_COLOR)  # Set background color to black
+try:
+    import base64 as _b64, io as _io
+    _icon_img = ImageTk.PhotoImage(Image.open(_io.BytesIO(_b64.b64decode(_APP_ICON_B64))))
+    root.iconphoto(True, _icon_img)
+except Exception:
+    pass
 ROOT_FONT = ("Segoe UI", scl(9, "UI"))
 MENU_FONT = ("Segoe UI", scl(10, "UI"))
 # root.resizable(False, False)
@@ -31991,14 +32349,41 @@ def _handle_host_action(action: str, data: dict):
                     return
                 up_next_text()
 
+        def _get_web_playlist_source():
+            if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
+                rounds = fixed_lightning_round_playlist_data.get("rounds", [])
+                current_index = fixed_lightning_round_playlist_data.get("current_index", 0)
+                return {
+                    "is_fixed": True,
+                    "items": rounds,
+                    "current_index": current_index,
+                    "counter": f'{current_index + 1}/{len(rounds)}' if rounds else '0/0',
+                    "label": 'Fixed Playlist',
+                }
+            items = playlist.get("playlist", [])
+            current_index = playlist.get("current_index", -1)
+            if playlist.get("infinite", False):
+                out_of = total_infinite_files - len(cached_skipped_themes)
+                counter = f'∞/{out_of}'
+            else:
+                out_of = len(items)
+                counter = f'{current_index+1}/{out_of}'
+            return {
+                "is_fixed": False,
+                "items": items,
+                "current_index": current_index,
+                "counter": counter,
+                "label": 'Playlist',
+            }
+
         if action == 'invoke':
             item_id = str(data.get('id', '')).strip()
             if item_id:
                 _invoke_registry_by_id(item_id)
                 _push_web_toggles()
                 _push_web_marks()
-        elif action == 'stop_lightning':
-            unselect_light_modes()
+        elif action in ('stop_queues', 'stop_lightning'):
+            stop_all_queues()
             _push_web_toggles()
         elif action == 'seek':
             ms = int(data.get('position_ms', 0))
@@ -32175,49 +32560,54 @@ def _handle_host_action(action: str, data: dict):
                 save_config()
                 up_next_text()
         elif action == 'get_playlist_info':
-            items = playlist.get('playlist', [])
-            cur   = playlist.get('current_index', -1)
-            if playlist.get('infinite', False):
-                out_of = total_infinite_files - len(cached_skipped_themes)
-                _counter = f'\u221e/{out_of}'
-            else:
-                out_of = len(items)
-                _counter = f'{cur+1}/{out_of}'
-            web_server.push_playlist_info(len(items), cur, to_sid=data.get('_sid'), counter=_counter)
+            source = _get_web_playlist_source()
+            web_server.push_playlist_info(len(source['items']), source['current_index'], to_sid=data.get('_sid'), counter=source['counter'], label=source['label'])
         elif action == 'playlist_goto':
             idx = int(data.get('index', -1))
-            if 0 <= idx < len(playlist.get('playlist', [])):
-                root.after(0, play_video, idx)
+            source = _get_web_playlist_source()
+            if 0 <= idx < len(source['items']):
+                if source['is_fixed']:
+                    root.after(0, play_fixed_round_by_index, idx)
+                else:
+                    root.after(0, play_video, idx)
         elif action == 'get_playlist_chunk':
             offset = int(data.get('offset', 0))
             count  = min(int(data.get('count', 100)), 200)
-            items  = playlist.get('playlist', [])
-            cur    = playlist.get('current_index', -1)
+            source = _get_web_playlist_source()
+            items  = source['items']
+            cur    = source['current_index']
             chunk  = items[offset: offset + count]
             results = []
-            for rel_i, fn in enumerate(chunk):
+            for rel_i, item in enumerate(chunk):
                 abs_i = offset + rel_i
-                is_lightning = fn.startswith('[L]')
-                clean_fn = fn[3:] if is_lightning else fn
-                file_data = get_file_metadata_by_name(clean_fn)
-                if file_data:
-                    mal_key = file_data.get('mal')
-                    anime_d = anime_metadata.get(mal_key, {}) if mal_key else {}
-                    title = get_display_title({**file_data, **anime_d}) if anime_d else (file_data.get('name') or clean_fn)
-                    slug  = ('[L] ' if is_lightning else '') + file_data.get('slug', '')
-                    song_title  = ''
+                if source['is_fixed']:
+                    title = get_fixed_round_title(f'round_{abs_i}', item)
+                    slug = ''
+                    song_title = ''
                     song_artist = ''
-                    for s in (file_data.get('songs') or []):
-                        if s.get('slug') == file_data.get('slug', ''):
-                            song_title = s.get('title') or ''
-                            if abs_i == cur:
-                                song_artist = get_artists_string(s.get('artist') or [], total=True)
-                            break
                 else:
-                    title       = clean_fn
-                    slug        = '[L]' if is_lightning else ''
-                    song_title  = ''
-                    song_artist = ''
+                    fn = item
+                    is_lightning = fn.startswith('[L]')
+                    clean_fn = fn[3:] if is_lightning else fn
+                    file_data = get_file_metadata_by_name(clean_fn)
+                    if file_data:
+                        mal_key = file_data.get('mal')
+                        anime_d = anime_metadata.get(mal_key, {}) if mal_key else {}
+                        title = get_display_title({**file_data, **anime_d}) if anime_d else (file_data.get('name') or clean_fn)
+                        slug  = ('[L] ' if is_lightning else '') + file_data.get('slug', '')
+                        song_title  = ''
+                        song_artist = ''
+                        for s in (file_data.get('songs') or []):
+                            if s.get('slug') == file_data.get('slug', ''):
+                                song_title = s.get('title') or ''
+                                if abs_i == cur:
+                                    song_artist = get_artists_string(s.get('artist') or [], total=True)
+                                break
+                    else:
+                        title       = clean_fn
+                        slug        = '[L]' if is_lightning else ''
+                        song_title  = ''
+                        song_artist = ''
                 results.append({
                     'i':       abs_i,
                     'title':   title,
@@ -32286,6 +32676,8 @@ def _handle_host_action(action: str, data: dict):
                     print(f"Error saving sc_set_prefs: {e}")
         elif action == 'scores_clear_all':
             send_scoreboard_command("[CLEAR_ALL]")
+        elif action == 'scores_archive':
+            send_scoreboard_command("[ARCHIVE]")
         elif action == 'get_scores':
             _push_web_scores()
         elif action == 'player_set_team':
