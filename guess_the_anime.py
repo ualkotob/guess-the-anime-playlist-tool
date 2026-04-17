@@ -1,9 +1,9 @@
-﻿# =========================================
+# =========================================
 #      GUESS THE ANIME - PLAYLIST TOOL
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "17.3"  # Update this when making releases
+APP_VERSION = "17.4"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -770,6 +770,7 @@ INFINITE_SETTINGS_FOLDER = "infinite_settings"
 BONUS_SETTINGS_FOLDER = "bonus_settings"
 POPOUT_LAYOUTS_FOLDER = "popout_layouts"
 YOUTUBE_FOLDER = "youtube"
+YOUTUBE_CACHE_FOLDER = "youtube/cache"
 PLAYLISTS_FOLDER = "playlists/"
 FILTERS_FOLDER = "filters"
 CENSOR_JSON_FILE = "censors/censors.json"
@@ -801,7 +802,7 @@ OVERLAY_COLOR_OPTIONS = ["black", "white"]
 SETTINGS_SCHEMA = [
     {"key": "volume_level",                    "config_key": "volume_level",                    "label": "Volume Level:",              "type": "int",      "default": 100,   "width": 10, "tooltip": "Master volume level for all audio playback (0-100)."},
     {"key": "stream_volume_boost",             "config_key": "stream_volume_boost",             "label": "Stream Volume Boost:",       "type": "int",      "default": 0,     "width": 10, "tooltip": "Additional volume boost specifically for stream audio from YouTube clips/trailers."},
-    {"key": "background_music_volume_modifier","config_key": "background_music_volume_modifier","label": "Music Volume Modifier:",     "type": "float",    "default": 0.1,   "width": 10, "min": 0.0, "max": 1.0, "tooltip": "Volume multiplier for background music during lightning rounds (0.0 - 1.0)."},
+    {"key": "bgm_volume","config_key": "bgm_volume","label": "BGM Volume:",     "type": "float",    "default": 1.0,   "width": 10, "min": 0.0, "max": 1.5, "tooltip": "Volume multiplier for background music (0.0 - 1.5). Scales the dB curve output."},
     {"key": "themes_cache_size",               "config_key": "themes_cache_size",               "label": "Themes Cache Size (MB):",    "type": "int",      "default": 500,   "width": 10, "min": 0,   "tooltip": "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."},
     # Skip group — 4 entries rendered as one row in the popup
     {"key": "skip_play_seconds",     "config_key": "skip_play_seconds",  "label": "Skip Play Settings:", "type": "float", "default": 0,   "width": 6, "min": 0, "group": "skip_group", "tooltip": "Play Seconds: Duration to play before auto-skip (0 = disabled)"},
@@ -882,13 +883,36 @@ def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
     return None
 
 # Function to fetch anime metadata using Jikan API
+last_jikan_error = None
 def fetch_jikan_metadata(mal_id):
+    global last_jikan_error
+    last_jikan_error = None
     url = f"https://api.jikan.moe/v4/anime/{mal_id}/full"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        if data.get("data"):
-            return data["data"]
+    try:
+        # Keep this responsive when Jikan is down/slow.
+        response = requests.get(url, timeout=12)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("data"):
+                return data["data"]
+            last_jikan_error = f"Jikan returned 200 but no data payload for MAL {mal_id}"
+            return None
+
+        # Jikan rate-limit / temporary outage handling hints.
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            last_jikan_error = f"Jikan rate-limited (429) for MAL {mal_id}" + (f", Retry-After={retry_after}s" if retry_after else "")
+        elif 500 <= response.status_code <= 599:
+            last_jikan_error = f"Jikan server error ({response.status_code}) for MAL {mal_id}"
+        else:
+            last_jikan_error = f"Jikan request failed ({response.status_code}) for MAL {mal_id}"
+    except requests.exceptions.Timeout:
+        last_jikan_error = f"Jikan timeout for MAL {mal_id}"
+    except requests.exceptions.RequestException as e:
+        last_jikan_error = f"Jikan network error for MAL {mal_id}: {e}"
+    except Exception as e:
+        last_jikan_error = f"Unexpected Jikan error for MAL {mal_id}: {e}"
+
     return None
 
 def fetch_anidb_metadata(aid):
@@ -1499,11 +1523,29 @@ def refetch_metadata():
 def get_external_site_id(anime_themes, site):
     if anime_themes:
         for resource in anime_themes.get("resources", []):
-            if resource["site"] == site:
-                site_id = str(resource["external_id"])
-                if site_id == "None" or ("/episode/" in resource.get("link", "")):
+            if resource.get("site") == site:
+                ext_id = resource.get("external_id")
+                if ext_id is not None:
+                    site_id = str(ext_id)
+                    if site_id != "None":
+                        return site_id
+
+                # Fallback: some resources may omit external_id but still include it in the link.
+                link = str(resource.get("link") or "")
+                if "/episode/" in link:
                     return None
-                return site_id
+                if site == "MyAnimeList":
+                    m = re.search(r"/anime/(\d+)", link)
+                    if m:
+                        return m.group(1)
+                elif site == "AniList":
+                    m = re.search(r"/anime/(\d+)", link)
+                    if m:
+                        return m.group(1)
+                elif site == "aniDB":
+                    m = re.search(r"/anime/(\d+)", link)
+                    if m:
+                        return m.group(1)
     return None
 
 def reorder_file_metadata_entry(mal_id):
@@ -1594,26 +1636,32 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         anime_themes = fetch_animethemes_metadata(filename)
         # Extract slug and version from animethemes data instead of filename
         slug_found = False
-        extra_check = False
-        while not slug_found and not extra_check:
-            if anime_themes and anime_themes.get("animethemes"):
-                for theme in anime_themes.get("animethemes", []):
-                    theme_entries = theme.get("animethemeentries", [])
-                    for entry in theme_entries:
-                        videos = entry.get("videos", [])
-                        for video in videos:
-                            if video.get("basename") and (filename.split(".")[0] == video.get("basename", "").split(".")[0]):
-                                slug = theme.get("slug", slug)
-                                version = entry.get("version")
-                                slug_found = True
-                                break
-                        if slug_found:
-                            break
-                    if slug_found:
-                        break
-            if not slug_found:
-                extra_check = True
-                anime_themes = fetch_animethemes_metadata(filename, split=False)
+        filename_base = os.path.splitext(str(filename or ""))[0].lower()
+
+        def _extract_slug_version(src):
+            nonlocal slug, version, slug_found
+            if not src or not src.get("animethemes"):
+                return
+            for theme in src.get("animethemes", []):
+                for entry in theme.get("animethemeentries", []):
+                    for video in entry.get("videos", []):
+                        video_base = os.path.splitext(str(video.get("basename") or ""))[0].lower()
+                        if video_base and video_base == filename_base:
+                            slug = theme.get("slug", slug)
+                            version = entry.get("version")
+                            slug_found = True
+                            return
+
+        # Pass 1: prefix match lookup (fast/common)
+        _extract_slug_version(anime_themes)
+
+        # Pass 2: exact basename fallback (important when prefix returns a different anime)
+        if not slug_found:
+            anime_themes_exact = fetch_animethemes_metadata(filename, split=False)
+            if anime_themes_exact:
+                anime_themes = anime_themes_exact
+                _extract_slug_version(anime_themes)
+
         mal_id = get_external_site_id(anime_themes, "MyAnimeList")
         anidb_id = get_external_site_id(anime_themes, "aniDB")
         anilist_id = get_external_site_id(anime_themes, "AniList")
@@ -1784,6 +1832,35 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                 # Update name in file_metadata
                 if anime_data.get("title"):
                     mal_entry["name"] = anime_data.get("title")
+            else:
+                # Keep a minimal entry so AnimThemes songs/artists can still be stored and shown.
+                if not anime_data:
+                    anime_data = {
+                        "title": (anime_themes or {}).get("name") or mal_entry.get("name") or "N/A",
+                        "synonyms": [],
+                        "series": get_name_list(anime_themes or {}, "series"),
+                        "aired": "N/A",
+                        "season": ((str((anime_themes or {}).get("season") or "N/A") + " " + str((anime_themes or {}).get("year") or "N/A")).strip()),
+                        "score": "N/A",
+                        "rank": "N/A",
+                        "members": "N/A",
+                        "popularity": "N/A",
+                        "type": (anime_themes or {}).get("media_format") or "N/A",
+                        "source": "N/A",
+                        "episodes": "N/A",
+                        "studios": [],
+                        "genres": [],
+                        "themes": [],
+                        "demographics": [],
+                        "synopsis": (anime_themes or {}).get("synopsis") or "N/A",
+                        "cover": ((anime_themes or {}).get("images", [{}])[0] or {}).get("link"),
+                        "trailer": None,
+                    }
+                    anime_metadata[mal_id] = anime_data
+                    if anime_data.get("title") and mal_entry.get("name") in [None, "N/A", ""]:
+                        mal_entry["name"] = anime_data.get("title")
+                _jikan_reason = f" ({last_jikan_error})" if last_jikan_error else ""
+                print(f" [META DBG] Jikan missing/unavailable for MAL {mal_id}{_jikan_reason}; using minimal AniThemes-derived metadata", end="")
         if anidb_id:
             anidb_data = anidb_metadata.get(anidb_id, {})
             if anime_data and (refetch or not anidb_data.get("characters") or not anidb_data.get("tags") or not anidb_data.get("episode_info")):
@@ -2050,7 +2127,8 @@ def refresh_jikan_data(mal_id, data, label=""):
         save_metadata()
         print(f"\r{label}Refreshing Jikan data for {data['title']}...COMPLETE")
     else:
-        print(f"\r{label}Refreshing Jikan data for {title}...FAILED")
+        _reason = f" ({last_jikan_error})" if last_jikan_error else ""
+        print(f"\r{label}Refreshing Jikan data for {title}...FAILED{_reason}")
 
 def refresh_anidb_data(anidb_id, data, label=""):
     global anidb_cooldown, anidb_delay
@@ -2707,12 +2785,16 @@ def update_metadata():
                 if not is_game(data):
                     add_single_data_line(left_column, data, " (#", 'rank', False, title_font="white")
                 if data.get("platforms"):
+                    _reviews_num = _safe_int(data.get("reviews", 0), 0)
+                    _pop_display = data.get("popularity") or "N/A"
                     left_column.insert(tk.END, " REVIEWS: ", "bold")
-                    left_column.insert(tk.END, f"{f"{(data.get("reviews", 0) or 0):,}"} (#{data.get("popularity") or "N/A"})", "white")
+                    left_column.insert(tk.END, f"{_reviews_num:,} (#{_pop_display})", "white")
                 else:
+                    _members_num = _safe_int(data.get("members", 0), 0)
+                    _pop_display = data.get("popularity") or "N/A"
                     left_column.insert(tk.END, ") ", "white")
                     left_column.insert(tk.END, "MEMBERS: ", "bold")
-                    left_column.insert(tk.END, f"{f"{data.get("members") or 0:,}"} (#{data.get("popularity") or "N/A"})", "white")
+                    left_column.insert(tk.END, f"{_members_num:,} (#{_pop_display})", "white")
                 
                 anilist_id = data.get("anilist")
                 if anilist_id and str(anilist_id) in anilist_metadata:
@@ -2767,7 +2849,7 @@ def update_metadata():
                     left_column.insert(tk.END, f"{get_format(data) or 'N/A'}", "white") 
                 add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
                 left_column.insert(tk.END, "TAGS: ", "bold")
-                tags = data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])
+                tags = get_tags(data)
                 for index, tag in enumerate(tags):
                     left_column.insert(tk.END, f"{tag}", "white")
                     if index < len(tags)-1:
@@ -2795,7 +2877,7 @@ def update_metadata():
                 update_popout_currently_playling(data)
             if web_server.is_running():
                 _is_game = is_game(data) if data else False
-                _tags = (data.get('genres', []) + data.get('themes', []) + data.get('demographics', [])) if data else []
+                _tags = get_tags(data) if data else []
                 _anilist_score_str = None
                 _anilist_popularity_val = None
                 _anilist_popularity_ranks = []
@@ -2964,7 +3046,8 @@ def update_popout_currently_playling(data, clear=False):
         marks = get_file_marks(currently_playing.get("filename", ""))
         if data.get("platforms"):
             episodes = ", ".join(data.get("platforms"))
-            members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
+            _reviews_num = _safe_int(data.get("reviews", 0), 0)
+            members = f"Reviews: {_reviews_num:,}"
             score = f"Score: {data.get("score")}" if data.get("score") else ""
         elif is_youtube:
             duration = data.get("duration")
@@ -2980,7 +3063,9 @@ def update_popout_currently_playling(data, clear=False):
                 episodes = "Airing"
             else:
                 episodes = str(episodes) + " Episodes"
-            members = f"Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
+            _members_num = _safe_int(data.get("members", 0), 0)
+            _pop_display = data.get("popularity") or "N/A"
+            members = f"Members: {_members_num:,} (#{_pop_display})"
             score = f"Score: {data.get("score")} (#{data.get("rank")})"
         if is_game(data):
             aired = data.get("release")
@@ -3707,7 +3792,8 @@ def _push_web_up_next():
                 version_num = ""
             if lightning_queue and lightning_queue[0] == next_filename and variety_light_mode_enabled:
                 mode_label = mode_label or f"[{lightning_queue[1].upper()}]"
-            members = f"{d.get('members') or 0:,}"
+            _members_num = _safe_int(d.get('members', 0), 0)
+            members = f"{_members_num:,}"
             popularity = f"#{d.get('popularity')}" if d.get('popularity') else ""
             season = d.get("season", "")
             detail_parts = [f"{slug}{version_num}"]
@@ -3807,9 +3893,10 @@ def update_up_next_display(widget, clear=False):
                             title = title[:32] + "..."
                         if lightning_queue and lightning_queue[0] == next_filename and variety_light_mode_enabled:
                             widget.insert(tk.END, f"[{lightning_queue[1].upper()}] ", "white")
+                        _members_num = _safe_int(next_up_data.get('members', 0), 0)
                         next_up_text = (
                             f"{get_file_marks(next_filename)}{title}\n"
-                            f"{format_slug(next_up_data.get('slug'))}{version_num} | {next_up_data.get('members') or 0:,} "
+                            f"{format_slug(next_up_data.get('slug'))}{version_num} | {_members_num:,} "
                             f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
                         )
                     if is_popout:
@@ -3842,7 +3929,29 @@ def adjust_up_next_height(widget, is_popout):
     widget.config(state=tk.DISABLED, wrap="word")
 
 def get_display_title(data):
-    return data.get("eng_title") or data.get("title") or "No Title Found"
+    def _pick(v):
+        s = str(v or "").strip()
+        return s if s and s.upper() != "N/A" else None
+
+    return (
+        _pick(data.get("eng_title"))
+        or _pick(data.get("title"))
+        or next((_pick(s) for s in (data.get("synonyms") or []) if _pick(s)), None)
+        or "No Title Found"
+    )
+
+def _safe_int(value, default=0):
+    """Best-effort int conversion for metadata values like None, '', 'N/A', or comma-formatted numbers."""
+    try:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            value = value.strip().replace(",", "")
+            if not value or value.upper() == "N/A":
+                return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 def is_game(data):
     return get_format(data) == "Game" or get_format(data) == "Visual Novel" or data.get("platforms")
@@ -4021,7 +4130,7 @@ def get_filenames_from_tag(match):
     for filename in get_cached_deduplicated_files():
         file_data = get_metadata(filename)
         if file_data:
-            for tag in file_data.get('genres', []) + file_data.get('themes', []) + file_data.get('demographics', []):
+            for tag in get_tags(file_data):
                 if tag == match:
                     filenames.append(filename)
                     break
@@ -5654,6 +5763,10 @@ def create_infinite_playlist(include_non_local=None):
     }
     get_pop_time_groups(refetch=True)
     get_next_infinite_track()
+    def _init_tail():
+        fill_speculative_tail()
+        prefetch_next_themes()
+    root.after(200, _init_tail)
     update_playlist_name("")
     save_config()
     
@@ -5893,14 +6006,22 @@ INFINITE_SETTINGS_DEFAULT = {
     "tag_cooldown": 1,
     "include_non_local_files": False,
     "deduplicate_files": True,
-    "deduplicate_versions": False
+    "deduplicate_versions": False,
+    "preload_track_count": 5
 }
 
 infinite_settings = INFINITE_SETTINGS_DEFAULT.copy()
 
 def get_infinite_settings():
-    """Get infinite settings from current playlist or fall back to global settings."""
-    return playlist.get("infinite_settings", infinite_settings)
+    """Get infinite settings from current playlist or fall back to global settings.
+    Merges with INFINITE_SETTINGS_DEFAULT so any keys added after a playlist was saved
+    (e.g. preload_track_count) always have their default value available.
+    """
+    stored = playlist.get("infinite_settings")
+    if stored is None:
+        return infinite_settings
+    # Shallow-merge: defaults supply missing top-level keys; stored values take precedence.
+    return {**INFINITE_SETTINGS_DEFAULT, **stored}
 
 
 difficulty_ranges = [
@@ -5948,6 +6069,10 @@ def toggle_infinite_playlist():
         playlist["infinite"] = True
         if playlist["current_index"]+1 >= len(playlist["playlist"]):
             get_next_infinite_track()
+        def _init_tail():
+            fill_speculative_tail()
+            prefetch_next_themes()
+        root.after(200, _init_tail)
     
     # Refresh list display to show any changes
     if list_loaded == "playlist":
@@ -6041,11 +6166,61 @@ def refresh_pop_time_groups(refetch_next=True):
     if refetch_next and playlist["current_index"] == len(playlist["playlist"])-2:
         refetch_next_track()
 
+_refetch_debounce_id = None
+
+def _start_refetch_prefetch():
+    """Called 5 s after the last difficulty/filter change to download the new committed next + speculative tail."""
+    global _refetch_debounce_id
+    _refetch_debounce_id = None
+    # Cancel the auto-download that get_next_infinite_track triggered for the committed next,
+    # then re-issue prefetch so it also covers the speculative tail.
+    if playlist.get("playlist"):
+        cn = get_clean_filename(playlist["playlist"][-1])
+        if cn in active_downloads:
+            cancel_download(cn)
+    prefetch_next_themes()
+
 def refetch_next_track():
+    global _refetch_debounce_id
+
+    # Cancel any in-flight download for the outgoing committed next
+    if playlist.get("playlist"):
+        old_next = get_clean_filename(playlist["playlist"][-1])
+        if old_next in active_downloads:
+            cancel_download(old_next)
+
+    # Cancel and clear the speculative tail + shadow order counters —
+    # they were built for the old difficulty/filter and are now stale.
+    for f in playlist.get("speculative_tail", []):
+        clean = get_clean_filename(f)
+        if clean in active_downloads:
+            cancel_download(clean)
+    playlist["speculative_tail"] = []
+    playlist.pop("spec_order", None)
+
+    # Cancel any pending refetch download timer
+    if _refetch_debounce_id is not None:
+        root.after_cancel(_refetch_debounce_id)
+        _refetch_debounce_id = None
+
+    # Immediately re-pick the committed next track (no download yet)
     playlist["playlist"].pop(len(playlist["playlist"])-1)
     get_next_infinite_track(increment=False)
+
+    # Cancel the download that get_next_infinite_track may have just started
+    if playlist.get("playlist"):
+        new_next = get_clean_filename(playlist["playlist"][-1])
+        if new_next in active_downloads:
+            cancel_download(new_next)
+
     up_next_text()
     root.after(1000, queue_next_lightning_mode)
+
+    # Pre-pick speculative tail entries immediately (pick-only, no downloads)
+    root.after(100, lambda: fill_speculative_tail())
+
+    # Schedule actual download 5 s from now (debounced — resets on each rapid change)
+    _refetch_debounce_id = root.after(5000, _start_refetch_prefetch)
 
 INT_INF = float('inf')
 cached_pop_time_group = None
@@ -6331,32 +6506,68 @@ def get_pop_time_groups(refetch=False):
 
     return copy.deepcopy(cached_pop_time_group), copy.deepcopy(cached_boosted_show_files_map)
 
-def next_playlist_order(increment=True):
+def next_playlist_order():
     global cached_pop_time_cooldown
-    if playlist["order"] >= len(playlist["pop_time_order"]) - 1:
+    playlist["order"] += 1
+    if playlist["order"] >= len(playlist["pop_time_order"]):
+        old_len = len(playlist["pop_time_order"])
         playlist["order"] = 0
-        playlist["pop_time_order"] = get_pop_time_order()
-    elif increment:
-        playlist["order"] += 1
-    if increment:
-        cached_pop_time_cooldown += 1
-        if cached_pop_time_cooldown > 50:
-            def worker():
-                get_pop_time_groups(True)
-            threading.Thread(target=worker, daemon=True).start()
-            cached_pop_time_cooldown = 0
+        playlist["pop_time_order"] = playlist.pop("next_pop_time_order", None) or get_pop_time_order()
+        playlist["next_pop_time_order"] = get_pop_time_order()
+        # Shift spec_order so it stays relative to the new pop_time_order
+        if "spec_order" in playlist:
+            playlist["spec_order"] = max(0, playlist["spec_order"] - old_len)
+    cached_pop_time_cooldown += 1
+    if cached_pop_time_cooldown > 50:
+        def worker():
+            get_pop_time_groups(True)
+        threading.Thread(target=worker, daemon=True).start()
+        cached_pop_time_cooldown = 0
 
-def get_next_infinite_track(increment=True):
+def next_spec_order():
+    """Advance the speculative shadow order counter without touching the real playlist order.
+    spec_order may exceed len(pop_time_order) — _get_pop_time_entry() handles the overflow
+    by reading from next_pop_time_order, which is always pre-generated.
+    """
+    playlist["spec_order"] = playlist.get("spec_order", playlist["order"]) + 1
+
+def _get_pop_time_entry(order_val):
+    """Return the (p, t) pair for the given absolute order value.
+    Values within pop_time_order are returned directly; values that overflow
+    into the next cycle are served from next_pop_time_order.
+    """
+    pop = playlist["pop_time_order"]
+    if order_val < len(pop):
+        return pop[order_val]
+    nxt = playlist.get("next_pop_time_order", [])
+    idx = order_val - len(pop)
+    if idx < len(nxt):
+        return nxt[idx]
+    # Fallback (shouldn't be reached with a properly maintained next_pop_time_order)
+    return pop[order_val % len(pop)]
+
+def get_next_infinite_track(increment=True, speculative=False):
     if not playlist.get("infinite", False):
         return
     
     inf_settings = get_infinite_settings()
-    next_playlist_order(increment)
+    # In speculative mode use shadow order counters so the real playlist order
+    # is not advanced prematurely (it is advanced on promotion instead).
+    if speculative:
+        next_spec_order()
+        _order_key = "spec_order"
+    else:
+        if increment:
+            next_playlist_order()
+        _order_key = "order"
     groups, shows_files_map = get_pop_time_groups()
     effective_difficulty_range = difficulty_ranges[playlist["difficulty"]]
     min_s_limit, min_f_limit = base_series_cooldown, base_file_cooldown = get_cooldown_for_popularity(1, effective_difficulty_range, groups)
     s_limit_mod, f_limit_mod = 1, 1
-    p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
+    if speculative:
+        p, t = _get_pop_time_entry(playlist[_order_key])
+    else:
+        p, t = playlist["pop_time_order"][playlist[_order_key]]
 
     if p < len(groups) and t < len(groups[p]) and groups[p][t]:
         random.shuffle(groups[p][t])
@@ -6366,16 +6577,20 @@ def get_next_infinite_track(increment=True):
     tag_cooldown_failures = 0
     tag_failed_files = []
     max_tag_tries = len(groups[p][t]) // 3
-    op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:])
-    playlist_history = playlist["playlist"][-inf_settings.get("max_history_check", 5000):]
+    # In speculative mode include already-queued tail entries in the history window
+    # so consecutive speculative picks respect cooldowns with each other.
+    spec_tail = playlist.get("speculative_tail", []) if speculative else []
+    op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:] + spec_tail)
+    playlist_history = (playlist["playlist"] + spec_tail)[-inf_settings.get("max_history_check", 5000):]
     series_boost_cache = {}
     current_session_lightning = get_current_session_lightning_tracks()
 
     # Precompute recent tag union for tag cooldown checks
     recent_tags_union = set()
-    if inf_settings["tag_cooldown"] and playlist["playlist"]:
+    tag_source = playlist["playlist"] + spec_tail if speculative else playlist["playlist"]
+    if inf_settings["tag_cooldown"] and tag_source:
         tag_cooldown_limit = inf_settings["tag_cooldown"]
-        for recent_file in playlist["playlist"][-tag_cooldown_limit:]:
+        for recent_file in tag_source[-tag_cooldown_limit:]:
             recent_tags_union.update(get_tags(get_metadata(get_clean_filename(recent_file))))
 
     while not selected_file:
@@ -6388,8 +6603,12 @@ def get_next_infinite_track(increment=True):
         if p >= len(groups) or t >= len(groups[p]) or not groups[p][t]:
             if try_count > 18:
                 return
-            next_playlist_order()
-            p, t = playlist["pop_time_order"][playlist["order"]][0], playlist["pop_time_order"][playlist["order"]][1]
+            if speculative:
+                next_spec_order()
+                p, t = _get_pop_time_entry(playlist[_order_key])
+            else:
+                next_playlist_order()
+                p, t = playlist["pop_time_order"][playlist[_order_key]]
             if groups[p][t]:
                 random.shuffle(groups[p][t])
             max_tag_tries = len(groups[p][t]) // 4
@@ -6488,6 +6707,10 @@ def get_next_infinite_track(increment=True):
                         print(f"   ⏰ Series Cooldown: {s_limit:.0f} tracks (base: {base_series_cooldown})")
                         print(f"   ⏰ File Cooldown: {f_limit:.0f} tracks (base: {base_file_cooldown})")
                     
+                    if speculative:
+                        # Speculative mode: just return the file without touching playlist/UI/downloads
+                        return selected_file
+
                     playlist["playlist"].append(selected_file)
                     if playlist["current_index"] == -1:
                         update_current_index(0)
@@ -6514,6 +6737,68 @@ def get_next_infinite_track(increment=True):
             else:
                 s_limit_mod = s_limit_mod * 0.9
                 f_limit_mod = f_limit_mod * 0.9
+
+def fill_speculative_tail(n=None):
+    """Pre-pick up to n speculative tracks beyond the committed next, without downloading them.
+    These entries are stored in playlist['speculative_tail'] and promoted into the real
+    playlist one-by-one as play advances, keeping the visible playlist clean.
+    spec_order tracks how far ahead the tail has been picked. It may exceed
+    len(pop_time_order) and overflow into next_pop_time_order seamlessly.
+    n defaults to the 'speculative_tail_depth' infinite setting.
+    Must be called from the main Tkinter thread.
+    """
+    if not playlist.get("infinite", False):
+        return
+    if n is None:
+        n = get_infinite_settings().get("preload_track_count", 3)
+    if "speculative_tail" not in playlist:
+        playlist["speculative_tail"] = []
+    # Ensure next_pop_time_order exists so spec picks can overflow beyond the current cycle.
+    if "next_pop_time_order" not in playlist:
+        playlist["next_pop_time_order"] = get_pop_time_order()
+    # Initialise shadow counter from the real order the first time (or after a reset).
+    if "spec_order" not in playlist:
+        playlist["spec_order"] = playlist["order"]
+    while len(playlist["speculative_tail"]) < n:
+        result = get_next_infinite_track(speculative=True)
+        if not result:
+            break
+        playlist["speculative_tail"].append(result)
+
+def _promote_or_generate_next():
+    """Advance infinite playlist by one track.
+    Promotes the first entry from speculative_tail if available (fast, no re-pick needed),
+    otherwise falls back to a fresh get_next_infinite_track() call.
+    After promoting, schedules a background refill of the speculative tail.
+    """
+    if not playlist.get("infinite", False):
+        return
+    tail = playlist.get("speculative_tail", [])
+    if tail:
+        promoted = tail.pop(0)
+        # Consume the real order slot that this speculative entry was picked for.
+        # next_playlist_order() automatically handles wrap by consuming next_pop_time_order
+        # (which spec already used) and generating a fresh next_pop_time_order, keeping
+        # real and speculative on the same cycle.
+        next_playlist_order()
+        playlist["playlist"].append(promoted)
+        if playlist["current_index"] == -1:
+            update_current_index(0)
+        else:
+            update_current_index()
+        if list_loaded == "playlist":
+            global current_list_content, current_list_selected
+            current_list_content = convert_playlist_to_dict(playlist["playlist"])
+            current_list_selected = playlist["current_index"]
+            refresh_current_list()
+        prefetch_next_themes()
+        # Refill the speculative tail (pick only, downloads controlled by prefetch)
+        root.after(50, lambda: fill_speculative_tail())
+    else:
+        get_next_infinite_track()
+        # tail was empty — reset spec_order so next fill starts from real order
+        playlist.pop("spec_order", None)
+        root.after(50, lambda: fill_speculative_tail())
 
 def get_cooldown_for_popularity(popularity_rank, difficulty_range, groups):
     """Calculate cooldowns using computed values with smooth interpolation based on popularity rank"""
@@ -6881,10 +7166,11 @@ def save_config():
         "directory_files": directory_files
     }
     
-    # Convert infinities in playlist's infinite_settings before saving
+    # Convert infinities and diff infinite_settings against defaults before saving
     if playlist.get("infinite_settings"):
         config["playlist"] = copy.deepcopy(playlist)
-        config["playlist"]["infinite_settings"] = convert_infinities_to_markers(config["playlist"]["infinite_settings"])
+        inf_diff = compute_settings_diff(INFINITE_SETTINGS_DEFAULT, config["playlist"]["infinite_settings"]) or {}
+        config["playlist"]["infinite_settings"] = convert_infinities_to_markers(inf_diff)
     
     update_current_index(save = False)
     with open(CONFIG_FILE, "w") as f:
@@ -6930,6 +7216,17 @@ def load_config():
                 globals()[_s["key"]] = _cast(_val) if _cast else _val
             host = config.get("host", "")
             playlist = config.get("playlist", copy.deepcopy(BLANK_PLAYLIST))
+            if playlist.get("infinite_settings") is not None:
+                from functools import reduce
+                def _deep_merge(base, override):
+                    result = copy.deepcopy(base)
+                    for k, v in override.items():
+                        if isinstance(v, dict) and isinstance(result.get(k), dict):
+                            result[k] = _deep_merge(result[k], v)
+                        else:
+                            result[k] = copy.deepcopy(v)
+                    return result
+                playlist["infinite_settings"] = _deep_merge(INFINITE_SETTINGS_DEFAULT, playlist["infinite_settings"])
             if "background_track_history" not in playlist:
                 playlist["background_track_history"] = []
             _migrate_theme_flags(playlist.get("filter", {}))
@@ -7374,6 +7671,8 @@ def update_playlist_name(name=None):
     if playlist.get("infinite"):
         extra_text = " ∞"
     root.title(f"[{get_themes_played_count()}] {WINDOW_TITLE} - {playlist["name"]}{extra_text}")
+    if web_server.is_running():
+        _push_web_toggles()
 
 def save_metadata_atomic(filepath, data, encoding=None, ensure_ascii=True):
     """Atomically save JSON data to prevent corruption on crash."""
@@ -9902,7 +10201,7 @@ def get_all_tags(playlis=None, game=True, double=False):
     tags = []
     def add_tag(anime):
         if game or not is_game(anime):
-            for tag in anime.get('genres', []) + anime.get('themes', []) + anime.get('demographics', []):
+            for tag in get_tags(anime):
                 if double or tag not in tags:
                     tags.append(tag)
     if playlis:
@@ -10103,7 +10402,7 @@ def filter_playlist(filters):
                 continue
 
         if has_tags_include or has_tags_include_and or has_tags_exclude:
-            tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))
+            tags = set(get_tags(data))
             if has_tags_include and tags.isdisjoint(filter_tags_include_set):
                 continue
             if has_tags_include_and and not filter_tags_include_and_set.issubset(tags):
@@ -10704,6 +11003,7 @@ lightning_mode_settings_default = {
     "_misc_settings": {
         "answer_length": 8,
         "image_width_percent": 70,
+        "download_cache_mb": 0,
         "background_music": {
             "rounds_per_track": 3,
             "random_start": False,
@@ -11848,7 +12148,8 @@ def update_light_round(time):
                 if time_left <= 10:
                     clues_overlay_labels["Episodes"].config(text=str(data.get("episodes") or "Airing"))
                     clues_overlay_labels["Score"].config(text=f"{data.get('score')}\n#{data.get('rank')}")
-                    clues_overlay_labels["Members"].config(text=f"{data.get('members') or 0:,}\n#{data.get('popularity') or 'N/A'}")
+                    _members_num = _safe_int(data.get('members', 0), 0)
+                    clues_overlay_labels["Members"].config(text=f"{_members_num:,}\n#{data.get('popularity') or 'N/A'}")
                 else:
                     clues_overlay_labels["Episodes"].config(text=f"in...{round(time_left-10)}")
                     clues_overlay_labels["Score"].config(text=f"in...{round(time_left-10)}")
@@ -12629,8 +12930,10 @@ def queue_next_lightning_mode():
                 clip_variants = lightning_mode_settings.get("clip", {}).get("variants", {})
                 clip_enabled, trailer_enabled = clip_variants.get("random_clip"), clip_variants.get("trailer")
                 url, name, channel, length = None, None, None, None
+                yt_source_url = None  # Original YouTube URL (url may be resolved CDN URL for fixed rounds)
                 if next_fixed_round:
                     clip_url = next_fixed_round.get("clip_url")
+                    yt_source_url = clip_url
                     url, length, name, channel = get_youtube_stream_url(clip_url, include_other_info=True)
                     name = next_fixed_round.get("clip_title") or name
                     channel = next_fixed_round.get("clip_author") or channel
@@ -12638,9 +12941,11 @@ def queue_next_lightning_mode():
                     if not youtube_api_limited and YOUTUBE_API_KEY and clip_enabled:
                         url, name, channel = play_random_clip(data, True, ost=(next_mode=='ost'))
                     if url:
+                        yt_source_url = url
                         length = get_youtube_stream_url(url)
                     elif next_mode != 'ost' and data.get("trailer") and trailer_enabled:
                         url = f"https://www.youtube.com/watch?v={data.get("trailer")}"
+                        yt_source_url = url
                         name = "trailer"
                         channel = None
                         length = get_youtube_stream_url(url)
@@ -12651,6 +12956,17 @@ def queue_next_lightning_mode():
                     lightning_queue_data[next_filename]["ost_url"] = [url, name, channel, length]
                 else:
                     lightning_queue_data[next_filename]["clip_url"] = [url, name, channel, length]
+                # Pre-download to local cache if the setting is enabled and ffmpeg is available
+                if yt_source_url and ffmpeg_available:
+                    cache_mb = int(lightning_mode_settings.get("_misc_settings", {}).get("download_cache_mb", 0))
+                    if cache_mb > 0:
+                        cache_path = _get_yt_cache_path(yt_source_url)
+                        if cache_path and not os.path.exists(cache_path) and not os.path.exists(cache_path + '.part'):
+                            threading.Thread(
+                                target=_yt_cache_download_bg,
+                                args=(yt_source_url, cache_path, cache_mb),
+                                daemon=True
+                            ).start()
             elif "c. " in next_mode:
                 min_desc = 0
                 if next_mode == 'c. profile':
@@ -13099,7 +13415,8 @@ def toggle_clues_overlay(destroy=False):
     studio = "\n".join(data.get("studios", []))
     tags = "\n".join(get_tags(data))
     score = f"{data.get('score')}\n#{data.get('rank')}"
-    popularity = f"{data.get('members') or 0:,}\n#{data.get('popularity') or 'N/A'}"
+    _members_num = _safe_int(data.get('members', 0), 0)
+    popularity = f"{_members_num:,}\n#{data.get('popularity') or 'N/A'}"
     episodes = str(data.get("episodes") or "Airing")
     type_ = get_format(data)
     source = data.get("source", "")
@@ -17301,6 +17618,77 @@ currently_streaming = None
 last_streamed = ["","","",""]
 last_image_source = ["", ""]  # [filename, image_url]
 _cached_streams = {}
+_yt_cache_downloads_in_progress = set()  # youtube_ids currently being downloaded
+
+def _get_yt_cache_path(youtube_url):
+    """Return the local cache file path for a YouTube URL, or None if no video ID found."""
+    match = re.search(r'(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})', youtube_url or '')
+    if not match:
+        return None
+    return os.path.join(YOUTUBE_CACHE_FOLDER, f"{match.group(1)}.mp4")
+
+def _evict_yt_cache(max_mb):
+    """Delete oldest files from YOUTUBE_CACHE_FOLDER until total size is under max_mb."""
+    if max_mb <= 0:
+        return
+    cache_dir = YOUTUBE_CACHE_FOLDER
+    if not os.path.isdir(cache_dir):
+        return
+    files = []
+    total = 0
+    for fname in os.listdir(cache_dir):
+        if not fname.endswith('.mp4'):
+            continue
+        fpath = os.path.join(cache_dir, fname)
+        try:
+            sz = os.path.getsize(fpath)
+            mtime = os.path.getmtime(fpath)
+            files.append((mtime, sz, fpath))
+            total += sz
+        except OSError:
+            pass
+    files.sort()  # oldest first
+    limit = max_mb * 1024 * 1024
+    for mtime, sz, fpath in files:
+        if total <= limit:
+            break
+        try:
+            os.remove(fpath)
+            total -= sz
+        except OSError:
+            pass
+
+def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
+    """Background thread: download youtube_url to cache_path via yt-dlp, then evict if over budget."""
+    vid_id = os.path.splitext(os.path.basename(cache_path))[0]
+    if vid_id in _yt_cache_downloads_in_progress:
+        return
+    _yt_cache_downloads_in_progress.add(vid_id)
+    try:
+        os.makedirs(YOUTUBE_CACHE_FOLDER, exist_ok=True)
+        part_path = cache_path + '.part'
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
+            'merge_output_format': 'mp4',
+            'outtmpl': cache_path,
+            'quiet': True,
+            'no_warnings': True,
+            'noprogress': True,
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([youtube_url])
+        # Remove stale .part file if yt-dlp left one
+        if os.path.exists(part_path):
+            try:
+                os.remove(part_path)
+            except OSError:
+                pass
+        if os.path.exists(cache_path):
+            _evict_yt_cache(max_mb)
+    except Exception as e:
+        print(f"[YT cache] Download failed for {youtube_url}: {e}")
+    finally:
+        _yt_cache_downloads_in_progress.discard(vid_id)
 
 def extract_youtube_id_from_trailer(trailer_data):
     """Extract YouTube ID from trailer data, handling cases where youtube_id is None.
@@ -17380,8 +17768,26 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
 
 def stream_url(url, name=None, channel=None, new_player=True):
     global currently_streaming, last_streamed, preset_media, video_stopped, stream_player
+    # Check for a locally cached file first (avoids live yt-dlp URL resolution)
+    cache_path = _get_yt_cache_path(url)
+    if cache_path and os.path.exists(cache_path) and not os.path.exists(cache_path + '.part'):
+        direct_stream = cache_path
+        # Try to get title/channel from in-memory cache; otherwise use provided args
+        cached = _cached_streams.get(url)
+        if cached and len(cached) >= 4:
+            length = cached[1]
+            if not name:
+                name = cached[2]
+            if not channel:
+                channel = cached[3]
+        else:
+            length = 0  # VLC will determine actual length during playback
+            if not name:
+                name = os.path.splitext(os.path.basename(cache_path))[0]
+            if not channel:
+                channel = ""
     # For AnimThemes, skip yt-dlp processing since URL is already direct
-    if not name or not channel:
+    elif not name or not channel:
         direct_stream, length, name, channel = get_youtube_stream_url(url, include_other_info=True)
     else:
         direct_stream, length = get_youtube_stream_url(url)
@@ -18104,7 +18510,10 @@ def download_to_cache(filename, silent=False):
                 print(f"\rCached: {filename} ({filesize_mb:.1f} MB)" + " " * 30)  # Clear line and show final status
             
             # Set flag to indicate UI needs update (checked periodically on main thread)
-            download_ui_update_pending = True
+            # Only trigger for non-silent downloads — silent prefetch completions don't
+            # need to refresh the up-next display.
+            if not silent:
+                download_ui_update_pending = True
             
         except Exception as e:
             if not silent:
@@ -18152,38 +18561,45 @@ def wait_for_download(filename, timeout=30):
     return filename not in active_downloads  # True if completed
 
 def prefetch_next_themes():
-    """Prefetch the next 1-5 themes based on how many downloads have completed.
-    
-    Progressive download logic:
-    - After 0 downloads: prefetch 1 ahead
-    - After 1+ downloads: prefetch 2 ahead
-    - After 3+ downloads: prefetch up to 5 ahead
+    """Prefetch upcoming themes with a flat cap of 2 new download starts per call.
+
+    Walks the full lookahead window (real playlist + speculative tail) in order and
+    starts at most MAX_NEW_PREFETCH_DOWNLOADS new downloads per call.  Already-cached
+    or already-in-flight entries are skipped without consuming the cap, so the buffer
+    builds up naturally: call 1 starts tracks 2 & 3, call 2 (when 2 is done) starts
+    4 & 5, etc., without ever hammering the server with many simultaneous requests.
     """
+    MAX_LOOKAHEAD = 5          # how many real-playlist slots ahead to consider
+    MAX_NEW_DOWNLOADS = 2      # new download starts allowed per call
+
     if not playlist.get("playlist"):
         return
-    
-    # Determine how many themes ahead to prefetch based on completed downloads
-    if downloads_completed == 0:
-        prefetch_count = 1
-    elif downloads_completed < 3:
-        prefetch_count = 2
-    else:
-        prefetch_count = 5
-    
+
     current_idx = playlist.get("current_index", 0)
     playlist_items = playlist["playlist"]
-    
-    # Prefetch the next prefetch_count themes
-    for i in range(1, prefetch_count + 1):
+
+    # Build ordered list: real playlist lookahead then speculative tail.
+    upcoming = []
+    for i in range(1, MAX_LOOKAHEAD + 1):
         next_idx = (current_idx + i) % len(playlist_items)
-        next_entry = playlist_items[next_idx]
-        next_filename = get_clean_filename(next_entry)
-        
-        # Check if this file needs to be cached
-        if is_animethemes_stream_file(next_filename):
-            # Don't download if already in local directory or cache or currently downloading
-            if not check_file_availability(next_filename):
-                download_to_cache(next_filename, silent=True)
+        upcoming.append(get_clean_filename(playlist_items[next_idx]))
+    for tail_entry in playlist.get("speculative_tail", []):
+        upcoming.append(get_clean_filename(tail_entry))
+
+    # Walk the list and start up to MAX_NEW_DOWNLOADS new downloads.
+    # In-flight and cached entries are free — they don't consume the cap.
+    new_started = 0
+    for filename in upcoming:
+        if new_started >= MAX_NEW_DOWNLOADS:
+            break
+        if not is_animethemes_stream_file(filename):
+            continue
+        if filename in active_downloads:
+            continue  # already in flight, don't double-start
+        if check_file_availability(filename):
+            continue  # already on disk/cache
+        download_to_cache(filename, silent=True)
+        new_started += 1
     
     # Also prefetch themes from fixed lightning rounds if active
     if fixed_lightning_queue or fixed_lightning_round_playlist_data:
@@ -18946,7 +19362,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         progress_overlay.overrideredirect(True)
         progress_overlay.attributes("-topmost", True)
         progress_overlay.attributes("-alpha", 0.8)
-        progress_overlay.configure(bg=OVERLAY_BACKGROUND_COLOR)
+        progress_overlay.configure(bg=OVERLAY_TEXT_COLOR)  # outline colour
 
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
@@ -18958,6 +19374,11 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         progress_overlay.geometry(f"{width}x{height}+{-screen_width}+{y}")
         progress_overlay.update_idletasks()
 
+        # Inner frame fills everything except a border matching the synopsis box thickness
+        _border = scl(4)
+        _inner = tk.Frame(progress_overlay, bg=OVERLAY_BACKGROUND_COLOR, bd=0)
+        _inner.place(x=_border, y=_border, relwidth=1.0, relheight=1.0, width=-_border*2, height=-_border*2)
+
         # Style configuration
         style = ttk.Style(root)
         style.theme_use('default')
@@ -18968,7 +19389,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
                         borderwidth=10,
                         relief="solid")
 
-        light_progress_bar = ttk.Progressbar(progress_overlay, orient="horizontal", mode="determinate",
+        light_progress_bar = ttk.Progressbar(_inner, orient="horizontal", mode="determinate",
                                              length=round(screen_width * 0.6))
         light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
 
@@ -18979,7 +19400,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
             music_icon = "🎼"
         else:
             music_icon = "🎵"
-        music_icon_label = tk.Label(progress_overlay, text=music_icon, font=("Segoe UI Emoji", scl(100)),
+        music_icon_label = tk.Label(_inner, text=music_icon, font=("Segoe UI Emoji", scl(100)),
                                     bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
 
         music_icon_label.place(x=0, rely=0.35, anchor="center")  # Temporarily place far left
@@ -21247,7 +21668,7 @@ def next_background_track():
         music_changed = True
 
 checked_music_folder = False
-background_music_volume_modifier = 0.1
+background_music_volume_modifier = 1.0
 def play_background_music(toggle):
     """Function to play or pause background music"""
     global music_loaded, current_music_index, music_changed, checked_music_folder
@@ -21306,10 +21727,7 @@ def play_background_music(toggle):
             else:
                 pygame.mixer.music.play(-1)  # -1 loops indefinitely
             
-            if disable_video_audio:
-                pygame.mixer.music.set_volume(0)
-            else:
-                pygame.mixer.music.set_volume(background_music_volume_modifier*(volume_level/100))  # Adjust volume
+            set_volume(volume_level)
             music_changed = False
             # Record track usage only when actually played
             record_background_track_usage(track_path)
@@ -21522,6 +21940,20 @@ def get_artist_themes_data(artist_name, current_filename=None, max_display=None,
         else:
             grp = 2
         return (grp, num, s)
+
+    def _popularity_sort_value(v):
+        """Return numeric popularity for sorting; unknown/invalid values sort last."""
+        if v is None:
+            return float("inf")
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip().replace(",", "")
+        if not s or s.upper() == "N/A":
+            return float("inf")
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return float("inf")
     
     same_artists = get_filenames_from_artist(artist_name)
     
@@ -21540,11 +21972,11 @@ def get_artist_themes_data(artist_name, current_filename=None, max_display=None,
                         "themes": [],
                         "popularity": popularity
                     }
-                anime_themes[anime_title]["themes"].append(theme_slug)
+                anime_themes[anime_title]["themes"].append({"slug": theme_slug, "filename": f})
     
     # Sort by popularity (lower number = more popular)
     all_sorted_anime = sorted(anime_themes.items(), 
-                             key=lambda x: x[1]["popularity"] or float('inf'))
+                             key=lambda x: _popularity_sort_value(x[1].get("popularity")))
     total_count = len(all_sorted_anime)
     theme_count = sum(len(info["themes"]) for _, info in all_sorted_anime)
     
@@ -21562,7 +21994,7 @@ def get_artist_themes_data(artist_name, current_filename=None, max_display=None,
     # Build output structure for web consumption
     themes_list = []
     for anime_title, info in sorted_anime:
-        _sorted_slugs = sorted(info["themes"], key=_theme_sort_key)
+        _sorted_slugs = sorted(info["themes"], key=lambda t: _theme_sort_key(t["slug"]))
         themes_list.append({
             "anime_title": anime_title,
             "themes": _sorted_slugs,
@@ -21795,7 +22227,7 @@ def toggle_title_popup(show, info_type=None):
             bottom_row = f"{full_title}Views: {views} | Likes: {likes} | {uploaded} | {duration}"
         else:
             japanese_title = data.get("title")
-            title = data.get("eng_title") or japanese_title or (data.get("synonyms", [None]) or [None])[0]
+            title = get_display_title(data)
             theme = format_slug(data.get("slug"))
             version_num = data.get("version")
             if version_num and version_num not in ["null", "1"]:
@@ -21820,7 +22252,8 @@ def toggle_title_popup(show, info_type=None):
             if data.get("platforms"):
                 episodes = ", ".join(data.get("platforms"))
                 if data.get("reviews"):
-                    members = f"Reviews: {(data.get("reviews", 0) or 0):,}"
+                    _reviews_num = _safe_int(data.get("reviews", 0), 0)
+                    members = f"Reviews: {_reviews_num:,}"
                 else:
                     members = ""
                 if data.get("score"):
@@ -21833,7 +22266,9 @@ def toggle_title_popup(show, info_type=None):
                     episodes = "Airing"
                 else:
                     episodes = str(episodes) + " Episodes"
-                members = f"MAL Members: {data.get("members") or 0:,} (#{data.get("popularity") or "N/A"})"
+                _members_num = _safe_int(data.get("members", 0), 0)
+                _pop_display = data.get("popularity") or "N/A"
+                members = f"MAL Members: {_members_num:,} (#{_pop_display})"
                 score = f"MAL Score: {data.get("score")} (#{data.get("rank")})"
             if info_type != "title_only":
                 title_row = title
@@ -21850,7 +22285,10 @@ def toggle_title_popup(show, info_type=None):
                         if artist_data["themes"]:
                             artist_themes_lines = []
                             for item in artist_data["themes"]:
-                                themes_str = "/".join(item["themes"])
+                                themes_str = "/".join(
+                                    t["slug"] if isinstance(t, dict) else t
+                                    for t in item["themes"]
+                                )
                                 artist_themes_lines.append(f"{item['anime_title']}: {themes_str}")
                             
                             # Add "...and X more" if there are more entries
@@ -22045,10 +22483,18 @@ def get_tags_string(data):
     return ", ".join(get_tags(data))
 
 def get_tags(data):
+    def _normalize_tag_values(value):
+        if not value:
+            return []
+        if isinstance(value, dict):
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [item for item in value if item]
+        return [value]
+
     tags = []
-    for c in ['genres', 'themes','demographics']:
-        if data.get(c):
-            tags = tags + data.get(c)
+    for category in ["genres", "themes", "demographics"]:
+        tags.extend(_normalize_tag_values(data.get(category)))
     return tags
 
 def get_song_string(data, type=None, totals=False, artist_limit=3):
@@ -22068,7 +22514,7 @@ def prompt_title_top_info_text(event=None):
     result = simpledialog.askstring("Title Top Info Text", "Enter text that will appear above the title only info popup:", initialvalue=title_top_info_txt)
     if result is not None:
         title_top_info_txt = result
-        save_config()    
+        save_config()
 
 # =========================================
 #         *BONUS QUESTIONS
@@ -22086,7 +22532,19 @@ BONUS_SETTINGS_DEFAULT = {
     "tags":       {"points_per_tag": 1.0, "lightning_points_per_tag": 1.0, "included_in_random": True},
     "characters": {"included_in_random": False},
     "freeform":   {"points": 1.0, "lightning_points": 1.0, "included_in_random": False},
-    "buzzer":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": False, "popup": False},
+    "buzzer":     {"popup": False, "player_buzz_popup": True, "sound": True, "sound_volume": 1.0, "included_in_random": False,
+                   "player_buzz_popup_properties": {
+                       "max_alpha": 0.9,
+                       "fade_in_ms": 220,
+                       "hold_ms": 2400,
+                       "fade_out_ms": 350,
+                       "steps": 18,
+                       "rise_px": 50,
+                       "push_ms": 220,
+                       "push_steps": 18,
+                       "margin": 40,
+                       "gap": 10,
+                   }},
     "random":     {"no_repeat": True, "cycle_all": True},
 }
 
@@ -22320,11 +22778,11 @@ def guess_extra(extra = None):
 
             # Build weighted list of distractor artists from other anime
             weighted_artists = []
-            data_tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))
+            data_tags = set(get_tags(data))
             for anime in anime_metadata.values():
                 if anime.get("title") == data.get("title"):
                     continue
-                anime_tags = set(anime.get("genres", []) + anime.get("themes", []) + anime.get("demographics", []))
+                anime_tags = set(get_tags(anime))
                 tag_overlap = len(data_tags & anime_tags)
                 for song in anime.get("songs", []):
                     for artist in song.get("artist", []):
@@ -22384,11 +22842,11 @@ def guess_extra(extra = None):
 
             # 2. Gather weighted titles by tag overlap (excluding correct title and same artist titles)
             weighted_titles = []
-            data_tags = set(data.get("genres", []) + data.get("themes", []) + data.get("demographics", []))
+            data_tags = set(get_tags(data))
             for anime in anime_metadata.values():
                 if anime.get("title") == data.get("title"):
                     continue
-                anime_tags = set(anime.get("genres", []) + anime.get("themes", []) + anime.get("demographics", []))
+                anime_tags = set(get_tags(anime))
                 tag_overlap = len(data_tags & anime_tags)
                 for song in anime.get("songs", []):
                     title = song.get("title")
@@ -22879,7 +23337,7 @@ def play_video(index=playlist["current_index"]):
     toggle_coming_up_popup(False)
 
     if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]) and not youtube_queue and not search_queue and not fixed_lightning_queue:
-        get_next_infinite_track()
+        _promote_or_generate_next()
     
     if fixed_lightning_queue or fixed_lightning_round_playlist_data:
         if fixed_lightning_queue and (not fixed_lightning_round_playlist_data or (fixed_lightning_round_playlist_data.get("name") != fixed_lightning_queue.get("name"))):
@@ -23209,7 +23667,7 @@ def play_filename(playlist_entry, fullscreen=True):
     }
     update_censor_button_count()
     if censor_editor:
-        open_censor_editor(True)
+        update_censor_editor_for_new_play()
     if variety_light_mode_enabled:
         set_variety_light_mode()
     if auto_info_start:
@@ -23340,9 +23798,9 @@ def parse_timestamp_flexible(timestamp_str):
 session_data = []  # JSON session data
 session_start_time = None
 
-def reset_session_history():
+def reset_session_history(confirm=True):
     global session_data, session_start_time
-    if session_data:
+    if confirm and session_data:
         count = get_themes_played_count()
         confirm = messagebox.askyesno(
             "Reset Session History",
@@ -24010,7 +24468,7 @@ def play_next():
         play_video(playlist["current_index"])
     else:
         if playlist["current_index"] + 1 >= len(playlist["playlist"]):
-            get_next_infinite_track()
+            _promote_or_generate_next()
         if playlist["current_index"] + 1 < len(playlist["playlist"]):
             play_video(playlist["current_index"] + 1)
 
@@ -24193,7 +24651,9 @@ def update_seek_bar():
                 player.get_length(),
                 player.is_playing(),
                 volume_level,
-                autoplay_toggle
+                autoplay_toggle,
+                background_music_volume_modifier,
+                bzz_modifier=bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get('sound_volume', 1.0)
             )
             _push_web_toggles()
         except Exception:
@@ -24648,6 +25108,7 @@ def check_file_censors(filename, time, video_end, check_title=True):
     file_censors = get_file_censors(filename)
     censor_found = False
     mute_found = False
+    _image_color = None
     if file_censors:
         for censor in file_censors:
             if (not blind_enabled or censor.get("mute")) and show_censor(censor, check_title) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
@@ -24668,7 +25129,9 @@ def check_file_censors(filename, time, video_end, check_title=True):
                             censor_width = int(video_w * (censor['size_w'] / 100))
                             censor_height = int(video_h * (censor['size_h'] / 100))
                             censor_box.geometry(f"{censor_width}x{censor_height}")
-                            censor_box.configure(bg=(censor.get("color") or get_image_color()))
+                            if not _image_color:
+                                _image_color = get_image_color() 
+                            censor_box.configure(bg=(censor.get("color") or _image_color or "black"))
                             set_censor_position(censor_box, censor['pos_x'], censor['pos_y'], video_x, video_y, video_w, video_h)
                         except tk.TclError:
                             pass
@@ -24994,7 +25457,34 @@ current_censors = {}
 censor_editor = None
 censor_editor_pinned = [False]
 censor_entry_widgets = []
-def open_censor_editor(refresh=False):
+
+def update_censor_editor_for_new_play():
+    """Update the censor editor with new censors data when a new song plays, preserving window position."""
+    global current_censors, censor_editor, censor_page_offset, censor_entry_widgets
+    
+    if not censor_editor:
+        return
+    
+    filename = currently_playing.get("filename")
+    if filename:
+        current_censors = copy.deepcopy(get_file_censors(filename))
+    
+    # Update the window title
+    censor_editor.title(f"Censor Editor for {filename}")
+    
+    # Reset pagination to first page
+    censor_page_offset = 0
+    
+    # Clear all censor entry widgets
+    for widgets in censor_entry_widgets:
+        for widget in widgets:
+            widget.destroy()
+    censor_entry_widgets.clear()
+    
+    # Call open_censor_editor with a special flag to only refresh content
+    open_censor_editor(refresh_only=True)
+
+def open_censor_editor(refresh=False, refresh_only=False):
     global current_censors, censor_editor, censor_entry_widgets
     
     # Pagination variables
@@ -25020,14 +25510,34 @@ def open_censor_editor(refresh=False):
     bg_color = "black"
 
     if censor_editor:
-        censor_editor_close()
-        if not refresh:
-            return
-    censor_editor = tk.Toplevel()
-    censor_editor.configure(bg=BACKGROUND_COLOR)
-    censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
-    get_window_position_and_setup(censor_editor)
-    censor_editor.attributes("-topmost", bool(censor_editor_pinned[0]))
+        # If refresh_only is True, just update the content without closing the window
+        if refresh_only:
+            # Update title
+            censor_editor.title(f"Censor Editor for {filename}")
+            # Clear existing censor entry widgets from rows >= 2
+            for widgets in censor_entry_widgets:
+                for widget in widgets:
+                    if widget.winfo_exists():
+                        widget.destroy()
+            censor_entry_widgets.clear()
+            # Fall through to refresh the UI
+        else:
+            # Original behavior: close and recreate
+            censor_editor_close()
+            if not refresh:
+                return
+            censor_editor = tk.Toplevel()
+            censor_editor.configure(bg=BACKGROUND_COLOR)
+            censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
+            get_window_position_and_setup(censor_editor)
+            censor_editor.attributes("-topmost", bool(censor_editor_pinned[0]))
+    else:
+        # Window doesn't exist, create it
+        censor_editor = tk.Toplevel()
+        censor_editor.configure(bg=BACKGROUND_COLOR)
+        censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
+        get_window_position_and_setup(censor_editor)
+        censor_editor.attributes("-topmost", bool(censor_editor_pinned[0]))
         
     # Create header and pagination controls
     _aot_state = censor_editor_pinned
@@ -25601,6 +26111,7 @@ def _push_web_toggles():
         "end_session_popup": bool(end_message_window),
         "scoreboard_open": scoreboard_open,
         "scoreboard_visible": scoreboard_visible,
+        "session_history_count": get_themes_played_count(),
     })
 
 def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
@@ -27866,10 +28377,7 @@ def toggle_mute(muted=None, lightning=False):
         disable_video_audio = muted
         player.audio_set_mute(disable_video_audio)
         if music_loaded:
-            if disable_video_audio:
-                pygame.mixer.music.set_volume(0)
-            else:
-                pygame.mixer.music.set_volume(background_music_volume_modifier*(volume_level/100))
+            set_volume(volume_level)
 
 # =========================================
 #              *END SESSION
@@ -29852,8 +30360,8 @@ def build_menu(parent_menu, items):
         visual_idx  = 0          # actual menu entry index (separators count)
 
         def _render_label(item):
-            """Compose the menu label: '{icon}  {label}  [{shortcut}]  [{cycle_key}↻{pos}]'.
-            Shortcut display is resolved from DEFAULT_SHORTCUTS via get_shortcut()."""
+            """Compose visible menu label + right-aligned accelerator text.
+            Returns (label_text, accel_text_or_empty)."""
             raw_label = item["label"]() if callable(item.get("label")) else item.get("label", "")
             icon = item.get("icon", "")
             if callable(icon):
@@ -29862,15 +30370,20 @@ def build_menu(parent_menu, items):
             key = get_shortcut(item_id) if item_id else None
             sd  = _shortcut_display_name(key) if key else None
             text = f"{icon}  {raw_label}" if icon else raw_label
-            suffix = f"  [{sd}]" if sd else ""
+
+            accel_parts = []
+            if sd:
+                accel_parts.append(sd)
             cycle_pos = item.get("cycle_pos")
             if cycle_pos:
                 cyc_id, pos = cycle_pos
                 cyc_key = get_shortcut(cyc_id)
                 if cyc_key:
                     cyc_sd = _shortcut_display_name(cyc_key)
-                    suffix += f"  [{cyc_sd}\u21bb{pos}]"
-            return text + suffix
+                    accel_parts.append(f"{cyc_sd}\u21bb{pos}")
+
+            accel = "   ".join(accel_parts)
+            return text, accel
 
         for item in item_list:
             # --- separator ---
@@ -29901,13 +30414,13 @@ def build_menu(parent_menu, items):
                 menu.entryconfig(start_idx + cur, background=HIGHLIGHT_COLOR, foreground="white")
                 continue
 
-            rendered = _render_label(item)
+            rendered, accel = _render_label(item)
 
             # --- cascade (submenu) ---
             if "submenu" in item:
                 sub = _make_menu()
                 _add_items(sub, item["submenu"])
-                menu.add_cascade(label=rendered, menu=sub)
+                menu.add_cascade(label=rendered, menu=sub, accelerator=accel)
                 if "toggle" in item and item["toggle"]():
                     menu.entryconfig(visual_idx, background=HIGHLIGHT_COLOR, foreground="white")
                 if "tooltip" in item:
@@ -29922,6 +30435,7 @@ def build_menu(parent_menu, items):
                 _booleans.append(bv)
                 menu.add_checkbutton(
                     label=rendered,
+                    accelerator=accel,
                     variable=bv,
                     command=item["command"],
                     selectcolor=HIGHLIGHT_COLOR,
@@ -29934,7 +30448,7 @@ def build_menu(parent_menu, items):
                 continue
 
             # --- plain command ---
-            menu.add_command(label=rendered, command=item["command"])
+            menu.add_command(label=rendered, accelerator=accel, command=item["command"])
             if "tooltip" in item:
                 tooltip_map[visual_idx] = item["tooltip"]
             visual_idx += 1
@@ -31311,7 +31825,15 @@ def set_volume(value):
     volume_level = int(value)
     player.audio_set_volume(volume_level)  # Adjust VLC volume
     if music_loaded:
-        pygame.mixer.music.set_volume(background_music_volume_modifier*(volume_level/100))  # Adjust volume
+        if disable_video_audio or volume_level == 0:
+            vol = 0.0
+        else:
+            # dB-based curve: perceptually linear across the full scale.
+            # BGM_DB_RANGE controls how many dB separate silence (0%) from full (100%).
+            # 40dB is standard for audio faders; increase for a steeper drop-off.
+            BGM_DB_RANGE = 45
+            vol = background_music_volume_modifier * (10 ** ((volume_level / 100 - 1) * BGM_DB_RANGE / 20))
+        pygame.mixer.music.set_volume(vol)  # Adjust volume
     update_volume_display()
 
 def update_volume_display():
@@ -31549,6 +32071,7 @@ def cycle_guess_other():
         guess_extra("artist")
 
 _reroll_debounce_id = None
+# Note: _refetch_debounce_id is declared near refetch_next_track (see infinite playlist section)
 
 def _start_reroll_prefetch():
     """Called 5 s after the last re-roll to download the chosen next track."""
@@ -32329,7 +32852,7 @@ def _invoke_registry_by_id(item_id: str):
 def _handle_host_action(action: str, data: dict):
     """Dispatch remote control commands from the web host controller."""
     def _dispatch():
-        global youtube_queue, fixed_lightning_queue, search_queue
+        global youtube_queue, fixed_lightning_queue, search_queue, _buzz_preset_index
         try:
             _sid = data.get('_sid')
         except Exception:
@@ -32389,15 +32912,23 @@ def _handle_host_action(action: str, data: dict):
             ms = int(data.get('position_ms', 0))
             seek_to(ms)
         elif action == 'set_volume':
-            global volume_level
             vol = max(0, min(100, int(data.get('volume', 100))))
-            volume_level = vol
-            player.audio_set_volume(vol)
+            set_volume(vol)
+        elif action == 'set_bgm_modifier':
+            global background_music_volume_modifier
+            background_music_volume_modifier = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
+            if music_loaded:
+                set_volume(volume_level)
+            save_config()
+        elif action == 'set_bzz_modifier':
+            bonus_settings.setdefault('buzzer', dict(BONUS_SETTINGS_DEFAULT['buzzer']))['sound_volume'] = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
+            save_config()
         elif action == 'set_autoplay':
             set_autoplay_mode(max(0, min(3, int(data.get('mode', 0)))))
         elif action == 'request_state':
             web_server.push_playback_state(
-                projected_vlc_time, player.get_length(), player.is_playing(), volume_level, autoplay_toggle
+                projected_vlc_time, player.get_length(), player.is_playing(), volume_level, autoplay_toggle, background_music_volume_modifier,
+                bzz_modifier=bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get('sound_volume', 1.0)
             )
         elif action == 'toggle_scoreboard':
             # Follow the menu registry's open/close items so behavior matches UI menu
@@ -32411,6 +32942,9 @@ def _handle_host_action(action: str, data: dict):
                 _invoke_registry_by_id('scoreboard_toggle')
             _push_web_toggles()
             _push_web_marks()
+        elif action == 'reset_session_history':
+            reset_session_history(confirm=False)
+            _push_web_toggles()
         elif action == 'get_youtube_list':
             def _fmt(seconds):
                 m, s = divmod(int(seconds), 60)
@@ -32529,6 +33063,221 @@ def _handle_host_action(action: str, data: dict):
                         })
                     web_server.push_theme_search_results(results, playlist.get('infinite', False), q)
                 threading.Thread(target=_run_search, daemon=True).start()
+
+        elif action == 'get_directory_groups':
+            stat_type = str(data.get('stat_type', '')).strip()
+            sid = data.get('_sid')
+            def _run_dir_groups(st=stat_type, _sid=sid):
+                groups_raw = []
+                try:
+                    if st == 'artist':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            fd = get_file_metadata_by_name(fn)
+                            if not fd: continue
+                            slug = fd.get('slug')
+                            meta = get_metadata(fn)
+                            for song in meta.get('songs', []):
+                                if song.get('slug') == slug:
+                                    for artist in song.get('artist', []):
+                                        d.setdefault(artist, []).append(fn)
+                                    break
+                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif st == 'series':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            series = meta.get('series') or meta.get('title', 'Unknown')
+                            if isinstance(series, list):
+                                for s in series: d.setdefault(s, []).append(fn)
+                            else:
+                                d.setdefault(series, []).append(fn)
+                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif st == 'season':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            s = meta.get('season') or 'Unknown'
+                            if s == 'N/A': s = 'Unknown'
+                            d.setdefault(s, []).append(fn)
+                        def _sk(s):
+                            if s == 'Unknown': return (9999, 4)
+                            try:
+                                sn, yr = s.split()
+                                return (int(yr), {'Winter':0,'Spring':1,'Summer':2,'Fall':3}.get(sn, 4))
+                            except: return (9999, 4)
+                        groups_raw = [(s, d[s]) for s in sorted(d, key=_sk, reverse=True)]
+                    elif st == 'year':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            season = meta.get('season', '')
+                            yr = season[-4:] if season and season[-4:].isdigit() else 'Unknown'
+                            if yr.isdigit():
+                                y = int(yr)
+                                if y >= 2000: g = str(y)
+                                elif y >= 1990: g = '1990s'
+                                elif y >= 1980: g = '1980s'
+                                elif y >= 1970: g = '1970s'
+                                elif y >= 1960: g = '1960s'
+                                else: g = 'Pre-60s'
+                            else:
+                                g = 'Unknown'
+                            d.setdefault(g, []).append(fn)
+                        def _yk(g):
+                            if g.isdigit(): return -int(g)
+                            elif g.endswith('s'): return -int(g[:4])
+                            elif g == 'Pre-60s': return -1950
+                            else: return 9999
+                        groups_raw = [(g, d[g]) for g in sorted(d, key=_yk)]
+                    elif st == 'studio':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            for studio in meta.get('studios', []):
+                                d.setdefault(studio, []).append(fn)
+                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif st == 'tag':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            for tag in get_tags(meta):
+                                d.setdefault(tag, []).append(fn)
+                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif st == 'type':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            t = get_format(meta) or 'Unknown'
+                            d.setdefault(t, []).append(fn)
+                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif st == 'slug':
+                        d = {}
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            slug = meta.get('slug', 'Unknown')
+                            d.setdefault(slug, []).append(fn)
+                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                except Exception as e:
+                    print(f"[directory_groups error] {e}")
+                total = sum(len(files) for _, files in groups_raw)
+                groups_out = [{'label': label, 'count': len(files)} for label, files in groups_raw]
+                web_server.push_directory_groups(groups_out, st, total, to_sid=_sid)
+            threading.Thread(target=_run_dir_groups, daemon=True).start()
+
+        elif action == 'get_directory_themes':
+            stat_type = str(data.get('stat_type', '')).strip()
+            group_label = str(data.get('group_label', '')).strip()
+            sid = data.get('_sid')
+            def _run_dir_themes(st=stat_type, gl=group_label, _sid=sid):
+                # Rebuild the group's file list (same logic as above but for one group)
+                try:
+                    files = []
+                    if st == 'artist':
+                        for fn in get_cached_deduplicated_files():
+                            fd = get_file_metadata_by_name(fn)
+                            if not fd: continue
+                            slug = fd.get('slug')
+                            meta = get_metadata(fn)
+                            for song in meta.get('songs', []):
+                                if song.get('slug') == slug:
+                                    if gl in song.get('artist', []):
+                                        files.append(fn)
+                                    break
+                    elif st == 'series':
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            series = meta.get('series') or meta.get('title', 'Unknown')
+                            if isinstance(series, list):
+                                if gl in series: files.append(fn)
+                            else:
+                                if series == gl: files.append(fn)
+                    elif st == 'season':
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            s = meta.get('season') or 'Unknown'
+                            if s == 'N/A': s = 'Unknown'
+                            if s == gl: files.append(fn)
+                    elif st == 'year':
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            season = meta.get('season', '')
+                            yr = season[-4:] if season and season[-4:].isdigit() else 'Unknown'
+                            if yr.isdigit():
+                                y = int(yr)
+                                if y >= 2000: g = str(y)
+                                elif y >= 1990: g = '1990s'
+                                elif y >= 1980: g = '1980s'
+                                elif y >= 1970: g = '1970s'
+                                elif y >= 1960: g = '1960s'
+                                else: g = 'Pre-60s'
+                            else:
+                                g = 'Unknown'
+                            if g == gl: files.append(fn)
+                    elif st == 'studio':
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            if gl in meta.get('studios', []): files.append(fn)
+                    elif st == 'tag':
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            if gl in get_tags(meta): files.append(fn)
+                    elif st == 'type':
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            if (get_format(meta) or 'Unknown') == gl: files.append(fn)
+                    elif st == 'slug':
+                        for fn in get_cached_deduplicated_files():
+                            meta = get_metadata(fn)
+                            if meta.get('slug', 'Unknown') == gl: files.append(fn)
+                    files.sort(key=lambda f: get_title(f, f).lower())
+                    results = []
+                    for fn in files:
+                        meta = get_metadata(fn)
+                        title_en = str(meta.get('eng_title') or '').strip()
+                        title_jp = str(meta.get('title') or '').strip()
+                        title = title_en or title_jp or fn
+                        slug = meta.get('slug') or ''
+                        song_title = ''
+                        artist_name = ''
+                        for s in (meta.get('songs') or []):
+                            if s.get('slug') == slug:
+                                song_title = s.get('title') or ''
+                                artist_name = get_artists_string(s.get('artist') or [], total=False)
+                                break
+                        results.append({
+                            'filename': fn,
+                            'title': title,
+                            'title_en': title_en,
+                            'title_jp': title_jp,
+                            'slug': slug,
+                            'song': song_title,
+                            'artist': artist_name,
+                            'season': str(meta.get('season') or '').strip(),
+                            'format': str(get_format(meta) or '').strip(),
+                            'studio': ', '.join([str(x).strip() for x in (meta.get('studios') or []) if str(x).strip()]),
+                            'song_match': False,
+                            'artist_match': False,
+                        })
+                except Exception as e:
+                    print(f"[directory_themes error] {e}")
+                    results = []
+                web_server.push_directory_themes(results, st, gl, to_sid=_sid)
+            threading.Thread(target=_run_dir_themes, daemon=True).start()
+
+        elif action == 'get_buzz_presets':
+            presets_list = [{'index': i, 'name': p[0]} for i, p in enumerate(BUZZ_PRESETS)]
+            web_server.push_buzz_presets(presets_list, _buzz_preset_index, to_sid=data.get('_sid'))
+
+        elif action == 'set_buzz_preset':
+            idx = int(data.get('index', 0))
+            if 0 <= idx < len(BUZZ_PRESETS):
+                _buzz_preset_index = idx
+            presets_list = [{'index': i, 'name': p[0]} for i, p in enumerate(BUZZ_PRESETS)]
+            web_server.push_buzz_presets(presets_list, _buzz_preset_index)
+            if not data.get('silent'):
+                _play_buzz_sound(1, 'Test')
+
         elif action == 'queue_theme':
             fn = str(data.get('filename', '')).strip()
             if fn:
@@ -32570,6 +33319,34 @@ def _handle_host_action(action: str, data: dict):
                     root.after(0, play_fixed_round_by_index, idx)
                 else:
                     root.after(0, play_video, idx)
+        elif action == 'playlist_delete':
+            idx = int(data.get('index', -1))
+            source = _get_web_playlist_source()
+            if not source['is_fixed'] and 0 <= idx < len(source['items']):
+                def _do_delete(i=idx):
+                    global current_list_offset
+                    pl = playlist.get("playlist", [])
+                    if not (0 <= i < len(pl)):
+                        return
+                    del pl[i]
+                    # Adjust current_index pointer so current track doesn't shift
+                    cur = playlist.get("current_index", 0)
+                    if i < cur:
+                        playlist["current_index"] = max(0, cur - 1)
+                    # Clamp scroll offset so it can't be past the end (causes black screen)
+                    entries_count = get_list_entries_count()
+                    max_offset = max(0, len(pl) - entries_count)
+                    current_list_offset = min(current_list_offset, max_offset)
+                    update_playlist_name()
+                    update_current_index()
+                    # update_playlist_display rebuilds current_list_content and current_list_selected
+                    # correctly, then calls refresh_current_list()
+                    if list_loaded == "playlist":
+                        update_playlist_display()
+                    # Build correct args for push_playlist_info(total, current_index, counter, label)
+                    new_source = _get_web_playlist_source()
+                    web_server.push_playlist_info(len(new_source['items']), new_source['current_index'], counter=new_source['counter'], label=new_source['label'])
+                root.after(0, _do_delete)
         elif action == 'get_playlist_chunk':
             offset = int(data.get('offset', 0))
             count  = min(int(data.get('count', 100)), 200)
@@ -32690,6 +33467,468 @@ def _handle_host_action(action: str, data: dict):
     root.after(0, _dispatch)
 
 web_server.set_host_action_callback(_handle_host_action)
+
+# ---------------------------------------------------------------------------
+# Buzzer sound presets — segment-based generator
+#
+# Each preset: (name, r1_segments, r2_segments)
+#   r1 = first buzz (rank==1), r2 = subsequent buzzes
+#
+# Each segment is a dict:
+#   f1    : base frequency Hz (default 220)
+#   f2    : second frequency Hz to mix in (default = f1; detuning f2 slightly
+#           above f1 creates a beating/roughness texture)
+#   f_end : if set, f1 sweeps linearly from f1 → f_end over the segment
+#   wave  : 'sq' square | 'tri' triangle | 'saw' sawtooth |
+#           'sin' sine   | 'noi' white noise
+#   duty  : square-wave duty cycle 0–1 (default 0.5)
+#   dur   : duration ms
+#   vol   : volume 0.0–1.0
+#   gap   : silence AFTER this segment (ms)
+#   atk   : attack time ms (default 5)
+#   rel   : release start as fraction of dur (default 0.75)
+# ---------------------------------------------------------------------------
+_SQ, _TRI, _SAW, _SIN, _NOI = 'sq', 'tri', 'saw', 'sin', 'noi'
+
+BUZZ_PRESETS = [
+    # ── No sound ─────────────────────────────────────────────────────────
+    ('No Sound', [], []),
+
+    # ── Chimes & Bells (sine, melodic) ───────────────────────────────────
+    ('Double Ding',
+        [{'f1':520,'wave':_SIN,'dur':180,'vol':0.68,'gap':55},
+         {'f1':780,'wave':_SIN,'dur':250,'vol':0.68}],
+        [{'f1':520,'wave':_SIN,'dur':120,'vol':0.55,'gap':45},
+         {'f1':780,'wave':_SIN,'dur':160,'vol':0.55}]),
+    ('Triple Ding',
+        [{'f1':330,'wave':_SIN,'dur':110,'vol':0.62,'gap':30},
+         {'f1':440,'wave':_SIN,'dur':110,'vol':0.66,'gap':30},
+         {'f1':660,'wave':_SIN,'dur':200,'vol':0.70}],
+        [{'f1':440,'wave':_SIN,'dur': 80,'vol':0.55,'gap':25},
+         {'f1':660,'wave':_SIN,'dur':150,'vol':0.60}]),
+    ('Ding Dong',
+        [{'f1':587,'wave':_SIN,'dur':200,'vol':0.66,'gap':60},
+         {'f1':440,'wave':_SIN,'dur':320,'vol':0.66,'rel':0.4}],
+        [{'f1':587,'wave':_SIN,'dur':140,'vol':0.55,'gap':45},
+         {'f1':440,'wave':_SIN,'dur':220,'vol':0.55,'rel':0.4}]),
+    ('Jingle Up',
+        [{'f1':392,'wave':_SIN,'dur': 90,'vol':0.60,'gap':18},
+         {'f1':494,'wave':_SIN,'dur': 90,'vol':0.63,'gap':18},
+         {'f1':587,'wave':_SIN,'dur': 90,'vol':0.66,'gap':18},
+         {'f1':784,'wave':_SIN,'dur':220,'vol':0.70,'rel':0.35}],
+        [{'f1':494,'wave':_SIN,'dur': 75,'vol':0.55,'gap':15},
+         {'f1':784,'wave':_SIN,'dur':180,'vol':0.62,'rel':0.35}]),
+    ('Ding-Ding Up',
+        [{'f1':440,'wave':_SIN,'dur':120,'vol':0.64,'gap':35},
+         {'f1':660,'wave':_SIN,'dur':200,'vol':0.70,'rel':0.45,'gap':80},
+         {'f1':440,'wave':_SIN,'dur':120,'vol':0.64,'gap':35},
+         {'f1':660,'wave':_SIN,'dur':200,'vol':0.70,'rel':0.45}],
+        [{'f1':523,'wave':_SIN,'dur': 90,'vol':0.55,'gap':28},
+         {'f1':784,'wave':_SIN,'dur':150,'vol':0.62,'rel':0.45}]),
+    ('Tah-Dah',
+        [{'f1':330,'wave':_SIN,'dur': 80,'vol':0.58,'gap':15},
+         {'f1':523,'wave':_SIN,'dur': 80,'vol':0.62,'gap':15},
+         {'f1':659,'wave':_SIN,'dur':280,'vol':0.70,'rel':0.35}],
+        [{'f1':392,'wave':_SIN,'dur': 70,'vol':0.53,'gap':14},
+         {'f1':659,'wave':_SIN,'dur':210,'vol':0.62,'rel':0.35}]),
+
+    # ── Ascending Runs ──────────────────────────────────────────────────
+    ('Four Step Up',
+        [{'f1':294,'wave':_SIN,'dur': 90,'vol':0.58,'gap':18},
+         {'f1':370,'wave':_SIN,'dur': 90,'vol':0.61,'gap':18},
+         {'f1':440,'wave':_SIN,'dur': 90,'vol':0.65,'gap':18},
+         {'f1':587,'wave':_SIN,'dur':240,'vol':0.70,'rel':0.35}],
+        [{'f1':370,'wave':_SIN,'dur': 72,'vol':0.53,'gap':15},
+         {'f1':587,'wave':_SIN,'dur':180,'vol':0.62,'rel':0.35}]),
+    ('Skip Up',
+        [{'f1':330,'wave':_SIN,'dur': 95,'vol':0.60,'gap':22},
+         {'f1':523,'wave':_SIN,'dur': 95,'vol':0.64,'gap':22},
+         {'f1':784,'wave':_SIN,'dur':250,'vol':0.70,'rel':0.35}],
+        [{'f1':392,'wave':_SIN,'dur': 75,'vol':0.54,'gap':18},
+         {'f1':784,'wave':_SIN,'dur':190,'vol':0.62,'rel':0.35}]),
+    ('Big Skip',
+        [{'f1':262,'wave':_SIN,'dur':100,'vol':0.60,'gap':25},
+         {'f1':523,'wave':_SIN,'dur':100,'vol':0.65,'gap':25},
+         {'f1':1047,'wave':_SIN,'dur':260,'vol':0.70,'rel':0.32}],
+        [{'f1':330,'wave':_SIN,'dur': 80,'vol':0.54,'gap':20},
+         {'f1':880,'wave':_SIN,'dur':200,'vol':0.62,'rel':0.32}]),
+
+    # ── Morse & Pulse (sine) ─────────────────────────────────────────────
+    ('Ding Dit-Dah',
+        [{'f1':659,'wave':_SIN,'dur': 90,'vol':0.64,'gap':55},
+         {'f1':659,'wave':_SIN,'dur':260,'vol':0.70,'rel':0.4}],
+        [{'f1':784,'wave':_SIN,'dur': 72,'vol':0.55,'gap':44},
+         {'f1':784,'wave':_SIN,'dur':195,'vol':0.62,'rel':0.4}]),
+    ('Morse Up',
+        [{'f1':523,'wave':_SIN,'dur': 85,'vol':0.62,'gap':52},
+         {'f1':659,'wave':_SIN,'dur':240,'vol':0.70,'rel':0.4}],
+        [{'f1':587,'wave':_SIN,'dur': 68,'vol':0.54,'gap':42},
+         {'f1':784,'wave':_SIN,'dur':185,'vol':0.62,'rel':0.4}]),
+    ('Dit-Dit-Dah',
+        [{'f1':587,'wave':_SIN,'dur': 80,'vol':0.62,'gap':45},
+         {'f1':587,'wave':_SIN,'dur': 80,'vol':0.63,'gap':45},
+         {'f1':784,'wave':_SIN,'dur':260,'vol':0.70,'rel':0.38}],
+        [{'f1':659,'wave':_SIN,'dur': 65,'vol':0.54,'gap':36},
+         {'f1':880,'wave':_SIN,'dur':195,'vol':0.62,'rel':0.38}]),
+
+    # ── Classic Buzz (detuned square) ────────────────────────────────────
+    ('Buzz Step Up',
+        [{'f1':160,'f2':168,'wave':_SQ,'dur':120,'vol':0.72,'gap':25},
+         {'f1':200,'f2':210,'wave':_SQ,'dur':120,'vol':0.74,'gap':25},
+         {'f1':260,'f2':272,'wave':_SQ,'dur':260,'vol':0.76}],
+        [{'f1':200,'f2':210,'wave':_SQ,'dur': 90,'vol':0.60,'gap':20},
+         {'f1':280,'f2':294,'wave':_SQ,'dur':180,'vol':0.63}]),
+    ('Blip Blip Blap',
+        [{'f1':240,'f2':252,'wave':_SQ,'dur': 90,'vol':0.70,'gap':35},
+         {'f1':240,'f2':252,'wave':_SQ,'dur': 90,'vol':0.70,'gap':35},
+         {'f1':160,'f2':168,'wave':_SQ,'dur':320,'vol':0.76}],
+        [{'f1':280,'f2':294,'wave':_SQ,'dur': 70,'vol':0.58,'gap':28},
+         {'f1':190,'f2':200,'wave':_SQ,'dur':220,'vol':0.62}]),
+    ('Power Chord Hit',
+        [{'f1':196,'f2':294,'wave':_SQ,'dur':120,'vol':0.70,'gap':30},
+         {'f1':196,'f2':294,'wave':_SQ,'dur':120,'vol':0.72,'gap':30},
+         {'f1':196,'f2':294,'wave':_SQ,'dur':320,'vol':0.76,'rel':0.4}],
+        [{'f1':220,'f2':330,'wave':_SQ,'dur': 90,'vol':0.58,'gap':24},
+         {'f1':220,'f2':330,'wave':_SQ,'dur':220,'vol':0.63,'rel':0.4}]),
+    ('Buzz & Ping',
+        [{'f1':155,'f2':163,'wave':_SQ,'dur':280,'vol':0.74,'gap':40},
+         {'f1':660,'wave':_SQ,'dur':180,'vol':0.66,'rel':0.35}],
+        [{'f1':185,'f2':195,'wave':_SQ,'dur':190,'vol':0.60,'gap':32},
+         {'f1':784,'wave':_SQ,'dur':130,'vol':0.55,'rel':0.35}]),
+    ('Double Zap',
+        [{'f1':200,'f2':212,'wave':_SQ,'dur':150,'vol':0.72,'gap':50},
+         {'f1':260,'f2':274,'wave':_SQ,'dur':260,'vol':0.76}],
+        [{'f1':240,'f2':254,'wave':_SQ,'dur':110,'vol':0.60,'gap':40},
+         {'f1':320,'f2':338,'wave':_SQ,'dur':180,'vol':0.64}]),
+    ('Tick-Tock Buzz',
+        [{'f1':320,'f2':336,'wave':_SQ,'dur': 80,'vol':0.68,'gap':40},
+         {'f1':200,'f2':210,'wave':_SQ,'dur': 80,'vol':0.66,'gap':40},
+         {'f1':320,'f2':336,'wave':_SQ,'dur': 80,'vol':0.68,'gap':40},
+         {'f1':155,'f2':163,'wave':_SQ,'dur':280,'vol':0.76}],
+        [{'f1':260,'f2':274,'wave':_SQ,'dur': 65,'vol':0.56,'gap':32},
+         {'f1':185,'f2':195,'wave':_SQ,'dur':200,'vol':0.62}]),
+    ('Square Fanfare',
+        [{'f1':262,'wave':_SQ,'dur': 80,'vol':0.62,'gap':18},
+         {'f1':330,'wave':_SQ,'dur': 80,'vol':0.64,'gap':18},
+         {'f1':392,'wave':_SQ,'dur': 80,'vol':0.66,'gap':18},
+         {'f1':523,'wave':_SQ,'dur':240,'vol':0.70,'rel':0.38}],
+        [{'f1':330,'wave':_SQ,'dur': 65,'vol':0.55,'gap':15},
+         {'f1':523,'wave':_SQ,'dur':185,'vol':0.62,'rel':0.38}]),
+    # ── Square Punchy ────────────────────────────────────────────────────
+    ('Double Buzz',
+        [{'f1':165,'f2':172,'wave':_SQ,'dur':220,'vol':0.75,'gap':80},
+         {'f1':165,'f2':172,'wave':_SQ,'dur':220,'vol':0.75}],
+        [{'f1':200,'f2':210,'wave':_SQ,'dur':150,'vol':0.60,'gap':60},
+         {'f1':200,'f2':210,'wave':_SQ,'dur':150,'vol':0.60}]),
+    ('Stutter Buzz',
+        [{'f1':162,'f2':170,'wave':_SQ,'dur':100,'vol':0.72,'gap':35},
+         {'f1':162,'f2':170,'wave':_SQ,'dur':100,'vol':0.72,'gap':35},
+         {'f1':162,'f2':170,'wave':_SQ,'dur':320,'vol':0.76}],
+        [{'f1':195,'f2':205,'wave':_SQ,'dur': 75,'vol':0.60,'gap':28},
+         {'f1':195,'f2':205,'wave':_SQ,'dur':220,'vol':0.63}]),
+    ('Morse Dit-Dah',
+        [{'f1':700,'wave':_SQ,'dur': 80,'vol':0.66,'gap':60},
+         {'f1':700,'wave':_SQ,'dur':230,'vol':0.70}],
+        [{'f1':800,'wave':_SQ,'dur': 65,'vol':0.56,'gap':48},
+         {'f1':800,'wave':_SQ,'dur':170,'vol':0.60}]),
+    ('Buzz Morse Up',
+        [{'f1':180,'f2':189,'wave':_SQ,'dur': 80,'vol':0.68,'gap':55},
+         {'f1':240,'f2':252,'wave':_SQ,'dur':260,'vol':0.74}],
+        [{'f1':210,'f2':220,'wave':_SQ,'dur': 65,'vol':0.56,'gap':44},
+         {'f1':280,'f2':294,'wave':_SQ,'dur':185,'vol':0.61}]),
+    ('Hard Three',
+        [{'f1':196,'f2':206,'wave':_SQ,'dur':100,'vol':0.70,'gap':30},
+         {'f1':247,'f2':259,'wave':_SQ,'dur':100,'vol':0.72,'gap':30},
+         {'f1':294,'f2':308,'wave':_SQ,'dur':260,'vol':0.76}],
+        [{'f1':247,'f2':259,'wave':_SQ,'dur': 80,'vol':0.58,'gap':24},
+         {'f1':330,'f2':346,'wave':_SQ,'dur':190,'vol':0.63}]),
+
+    # ── Commented-out originals (kept for reference) ──────────────────────
+    # ('Classic Game Show', [{'f1':160,'f2':168,'wave':_SQ,'dur':600,'vol':0.75}], [{'f1':200,'f2':210,'wave':_SQ,'dur':350,'vol':0.60}]),
+    # ('Deep & Heavy',      [{'f1':110,'f2':116,'wave':_SQ,'dur':750,'vol':0.80}], [{'f1':140,'f2':148,'wave':_SQ,'dur':400,'vol':0.65}]),
+    # ('Sharp Buzz',        [{'f1':220,'f2':232,'wave':_SQ,'dur':500,'vol':0.70}], [{'f1':260,'f2':274,'wave':_SQ,'dur':300,'vol':0.55}]),
+    # ('Low Rumble',        [{'f1': 95,'f2':100,'wave':_SQ,'dur':700,'vol':0.82}], [{'f1':120,'f2':126,'wave':_SQ,'dur':380,'vol':0.68}]),
+    # ('Fast Beat',         [{'f1':155,'f2':175,'wave':_SQ,'dur':500,'vol':0.72}], [{'f1':190,'f2':212,'wave':_SQ,'dur':300,'vol':0.58}]),
+    # ('Long Blast',        [{'f1':140,'f2':155,'wave':_SQ,'dur':900,'vol':0.80}], [{'f1':175,'f2':188,'wave':_SQ,'dur':450,'vol':0.65}]),
+    # ('Quick Zap',         [{'f1':200,'f2':214,'wave':_SQ,'dur':260,'vol':0.75}], [{'f1':240,'f2':255,'wave':_SQ,'dur':160,'vol':0.62}]),
+    # ('Slow Pulse',        [{'f1':145,'f2':147,'wave':_SQ,'dur':850,'vol':0.78}], [{'f1':175,'f2':177,'wave':_SQ,'dur':440,'vol':0.63}]),
+    # ('Mid Growl',         [{'f1':175,'f2':190,'wave':_SQ,'dur':580,'vol':0.74}], [{'f1':210,'f2':228,'wave':_SQ,'dur':310,'vol':0.60}]),
+    # ('Sawtooth Grind',    [{'f1':150,'f2':158,'wave':_SAW,'dur':600,'vol':0.72}], [{'f1':185,'f2':194,'wave':_SAW,'dur':320,'vol':0.58}]),
+    # ('Angry Saw',         [{'f1':200,'f2':215,'wave':_SAW,'dur':500,'vol':0.75}], [{'f1':240,'f2':257,'wave':_SAW,'dur':280,'vol':0.60}]),
+    # ('Saw Sweep Down',    [{'f1':350,'f_end':130,'wave':_SAW,'dur':550,'vol':0.73}], [{'f1':290,'f_end':150,'wave':_SAW,'dur':300,'vol':0.59}]),
+    # ('Diesel Horn',       [{'f1':120,'f2':161,'wave':_SAW,'dur':700,'vol':0.78}], [{'f1':150,'f2':200,'wave':_SAW,'dur':380,'vol':0.63}]),
+    # ('Soft Triangle',     [{'f1':200,'f2':210,'wave':_TRI,'dur':600,'vol':0.80}], [{'f1':240,'f2':252,'wave':_TRI,'dur':320,'vol':0.65}]),
+    # ('Mellow Tri-Buzz',   [{'f1':150,'f2':153,'wave':_TRI,'dur':700,'vol':0.78}], [{'f1':185,'f2':188,'wave':_TRI,'dur':360,'vol':0.63}]),
+    # ('Warm Hollow',       [{'f1':130,'f2':134,'wave':_TRI,'dur':680,'vol':0.82,'rel':0.65}], [{'f1':160,'f2':164,'wave':_TRI,'dur':350,'vol':0.66}]),
+    # ('Falling Tone',      [{'f1':320,'f_end':140,'wave':_SQ,'dur':500,'vol':0.72}], [{'f1':280,'f_end':160,'wave':_SQ,'dur':300,'vol':0.58}]),
+    # ('Rising Chirp',      [{'f1':180,'f_end':480,'wave':_SQ,'dur':350,'vol':0.70}], [{'f1':220,'f_end':380,'wave':_SQ,'dur':200,'vol':0.58}]),
+    # ('Dive Bomb',         [{'f1':600,'f_end': 80,'wave':_SAW,'dur':650,'vol':0.75}], [{'f1':500,'f_end':100,'wave':_SAW,'dur':380,'vol':0.60}]),
+    # ('Laser Up',          [{'f1': 80,'f_end':800,'wave':_SQ,'dur':400,'vol':0.68}], [{'f1':100,'f_end':600,'wave':_SQ,'dur':250,'vol':0.56}]),
+    # ('Boing',             [{'f1':300,'f_end': 90,'wave':_SIN,'dur':500,'vol':0.74,'rel':0.5}], [{'f1':260,'f_end':100,'wave':_SIN,'dur':300,'vol':0.60,'rel':0.5}]),
+    # ('Woop Woop',         [{'f1':220,'f_end':350,'wave':_SQ,'dur':180,'vol':0.68,'gap':0},{'f1':350,'f_end':220,'wave':_SQ,'dur':180,'vol':0.68}], [{'f1':260,'f_end':380,'wave':_SQ,'dur':130,'vol':0.58,'gap':0},{'f1':380,'f_end':260,'wave':_SQ,'dur':130,'vol':0.58}]),
+    # ('Fanfare Hit',       [{'f1':260,'wave':_SIN,'dur':90,'vol':0.60,'gap':20},{'f1':330,'wave':_SIN,'dur':90,'vol':0.64,'gap':20},{'f1':392,'wave':_SIN,'dur':90,'vol':0.68,'gap':20},{'f1':523,'wave':_SIN,'dur':240,'vol':0.72}], [{'f1':330,'wave':_SIN,'dur':80,'vol':0.55,'gap':18},{'f1':523,'wave':_SIN,'dur':180,'vol':0.62}]),
+    # ('Bell Chord',        [{'f1':523,'f2':659,'wave':_SIN,'dur':400,'vol':0.65,'rel':0.4}], [{'f1':523,'f2':659,'wave':_SIN,'dur':250,'vol':0.52,'rel':0.4}]),
+    # ('Bright Ping',       [{'f1':880,'wave':_SIN,'dur':280,'vol':0.65,'rel':0.3}], [{'f1':1046,'wave':_SIN,'dur':180,'vol':0.55,'rel':0.3}]),
+    # ('Victory Trill',     [{'f1':523,'wave':_SQ,'dur':70,'vol':0.60,'gap':22},{'f1':659,'wave':_SQ,'dur':70,'vol':0.62,'gap':22},{'f1':523,'wave':_SQ,'dur':70,'vol':0.60,'gap':22},{'f1':784,'wave':_SQ,'dur':240,'vol':0.68}], [{'f1':659,'wave':_SQ,'dur':60,'vol':0.55,'gap':18},{'f1':784,'wave':_SQ,'dur':190,'vol':0.60}]),
+    # ('Triple Zap',        [{'f1':240,'wave':_SQ,'dur':110,'vol':0.70,'gap':45},{'f1':300,'wave':_SQ,'dur':110,'vol':0.72,'gap':45},{'f1':370,'wave':_SQ,'dur':180,'vol':0.75}], [{'f1':280,'wave':_SQ,'dur':80,'vol':0.60,'gap':35},{'f1':370,'wave':_SQ,'dur':130,'vol':0.62}]),
+    # ('Rapid Fire',        [{'f1':180,'f2':188,'wave':_SQ,'dur':75,'vol':0.70,'gap':28},{'f1':180,'f2':188,'wave':_SQ,'dur':75,'vol':0.70,'gap':28},{'f1':180,'f2':188,'wave':_SQ,'dur':75,'vol':0.70,'gap':28},{'f1':180,'f2':188,'wave':_SQ,'dur':210,'vol':0.75}], [{'f1':210,'f2':220,'wave':_SQ,'dur':55,'vol':0.60,'gap':22},{'f1':210,'f2':220,'wave':_SQ,'dur':55,'vol':0.60,'gap':22},{'f1':210,'f2':220,'wave':_SQ,'dur':140,'vol':0.62}]),
+    # ('Descending Steps',  [{'f1':400,'wave':_SQ,'dur':130,'vol':0.70,'gap':25},{'f1':320,'wave':_SQ,'dur':130,'vol':0.72,'gap':25},{'f1':240,'wave':_SQ,'dur':130,'vol':0.74,'gap':25},{'f1':160,'wave':_SQ,'dur':250,'vol':0.76}], [{'f1':320,'wave':_SQ,'dur':95,'vol':0.58,'gap':20},{'f1':200,'wave':_SQ,'dur':180,'vol':0.62}]),
+    # ('Ascending Steps',   [{'f1':160,'wave':_SQ,'dur':120,'vol':0.68,'gap':22},{'f1':240,'wave':_SQ,'dur':120,'vol':0.70,'gap':22},{'f1':360,'wave':_SQ,'dur':120,'vol':0.72,'gap':22},{'f1':480,'wave':_SQ,'dur':200,'vol':0.75}], [{'f1':200,'wave':_SQ,'dur':90,'vol':0.58,'gap':18},{'f1':400,'wave':_SQ,'dur':160,'vol':0.63}]),
+    # ('Noise Blast',       [{'wave':_NOI,'dur':380,'vol':0.65}], [{'wave':_NOI,'dur':210,'vol':0.52}]),
+    # ('Noise + Buzz',      [{'wave':_NOI,'dur':120,'vol':0.60,'gap':0},{'f1':160,'f2':168,'wave':_SQ,'dur':480,'vol':0.72}], [{'wave':_NOI,'dur':80,'vol':0.50,'gap':0},{'f1':200,'f2':210,'wave':_SQ,'dur':280,'vol':0.58}]),
+    # ('Chirp-Chirp-Win',   [{'f1':500,'f_end':700,'wave':_SQ,'dur':120,'vol':0.62,'gap':35},{'f1':500,'f_end':700,'wave':_SQ,'dur':120,'vol':0.64,'gap':35},{'f1':700,'wave':_SIN,'dur':280,'vol':0.70,'rel':0.38}], [{'f1':600,'f_end':800,'wave':_SQ,'dur':90,'vol':0.55,'gap':28},{'f1':800,'wave':_SIN,'dur':200,'vol':0.62,'rel':0.38}]),
+    # ('Bounce x3',         [{'f1':330,'wave':_SIN,'dur':80,'vol':0.56,'gap':28},{'f1':440,'wave':_SIN,'dur':80,'vol':0.60,'gap':28},{'f1':330,'wave':_SIN,'dur':80,'vol':0.56,'gap':28},{'f1':440,'wave':_SIN,'dur':80,'vol':0.60,'gap':28},{'f1':330,'wave':_SIN,'dur':80,'vol':0.56,'gap':28},{'f1':587,'wave':_SIN,'dur':220,'vol':0.70,'rel':0.38}], [{'f1':440,'wave':_SIN,'dur':65,'vol':0.52,'gap':22},{'f1':587,'wave':_SIN,'dur':170,'vol':0.60,'rel':0.38}]),
+    # ('Level Up',          [{'f1':262,'wave':_SQ,'dur':80,'vol':0.58,'gap':18},{'f1':330,'wave':_SQ,'dur':80,'vol':0.60,'gap':18},{'f1':392,'wave':_SQ,'dur':80,'vol':0.62,'gap':18},{'f1':523,'wave':_SQ,'dur':80,'vol':0.64,'gap':18},{'f1':659,'wave':_SQ,'dur':80,'vol':0.66,'gap':18},{'f1':784,'wave':_SQ,'dur':220,'vol':0.70,'rel':0.35}], [{'f1':392,'wave':_SQ,'dur':65,'vol':0.55,'gap':15},{'f1':523,'wave':_SQ,'dur':65,'vol':0.58,'gap':15},{'f1':784,'wave':_SQ,'dur':170,'vol':0.64,'rel':0.35}]),
+    # ('Stab-Stab-Hold',    [{'f1':587,'wave':_SQ,'dur':100,'vol':0.66,'gap':40},{'f1':587,'wave':_SQ,'dur':100,'vol':0.68,'gap':40},{'f1':784,'wave':_SQ,'dur':300,'vol':0.72,'rel':0.4}], [{'f1':659,'wave':_SQ,'dur':80,'vol':0.58,'gap':32},{'f1':880,'wave':_SQ,'dur':220,'vol':0.64,'rel':0.4}]),
+    # ('Bwee-Bwee-Bwoop',  [{'f1':400,'f_end':600,'wave':_TRI,'dur':130,'vol':0.62,'gap':30},{'f1':400,'f_end':600,'wave':_TRI,'dur':130,'vol':0.64,'gap':30},{'f1':600,'f_end':300,'wave':_TRI,'dur':280,'vol':0.70,'rel':0.4}], [{'f1':480,'f_end':680,'wave':_TRI,'dur':100,'vol':0.54,'gap':25},{'f1':680,'f_end':340,'wave':_TRI,'dur':200,'vol':0.62,'rel':0.4}]),
+    # ('Tada Chord',        [{'f1':392,'f2':523,'wave':_SIN,'dur':100,'vol':0.62,'gap':25},{'f1':392,'f2':523,'wave':_SIN,'dur':100,'vol':0.64,'gap':25},{'f1':523,'f2':659,'wave':_SIN,'dur':320,'vol':0.72,'rel':0.35}], [{'f1':523,'f2':659,'wave':_SIN,'dur':80,'vol':0.56,'gap':20},{'f1':523,'f2':784,'wave':_SIN,'dur':240,'vol':0.64,'rel':0.35}]),
+    # ('Mario Coin',        [{'f1':987,'wave':_SIN,'dur':60,'vol':0.66,'gap':8},{'f1':1318,'wave':_SIN,'dur':180,'vol':0.70,'rel':0.3}], [{'f1':987,'wave':_SIN,'dur':50,'vol':0.56,'gap':7},{'f1':1318,'wave':_SIN,'dur':140,'vol':0.62,'rel':0.3}]),
+    # ('Correct! x2',       [{'f1':523,'wave':_SIN,'dur':100,'vol':0.62,'gap':30},{'f1':659,'wave':_SIN,'dur':100,'vol':0.66,'gap':30},{'f1':784,'wave':_SIN,'dur':160,'vol':0.70,'rel':0.4,'gap':65},{'f1':523,'wave':_SIN,'dur':100,'vol':0.62,'gap':30},{'f1':659,'wave':_SIN,'dur':100,'vol':0.66,'gap':30},{'f1':784,'wave':_SIN,'dur':160,'vol':0.70,'rel':0.4}], [{'f1':659,'wave':_SIN,'dur':80,'vol':0.55,'gap':22},{'f1':784,'wave':_SIN,'dur':130,'vol':0.62,'rel':0.4}]),
+    # ('Retro Win',         [{'f1':523,'wave':_SQ,'dur':90,'vol':0.60,'gap':20},{'f1':659,'wave':_SQ,'dur':90,'vol':0.63,'gap':20},{'f1':523,'wave':_SQ,'dur':90,'vol':0.60,'gap':20},{'f1':784,'wave':_SQ,'dur':220,'vol':0.68,'rel':0.35,'gap':60},{'f1':523,'wave':_SQ,'dur':90,'vol':0.60,'gap':20},{'f1':659,'wave':_SQ,'dur':90,'vol':0.63,'gap':20},{'f1':523,'wave':_SQ,'dur':90,'vol':0.60,'gap':20},{'f1':784,'wave':_SQ,'dur':220,'vol':0.68,'rel':0.35}], [{'f1':659,'wave':_SQ,'dur':70,'vol':0.55,'gap':16},{'f1':784,'wave':_SQ,'dur':170,'vol':0.62,'rel':0.35}]),
+    # ('Jingle Bell Hit',   [{'f1':1047,'wave':_SIN,'dur':70,'vol':0.62,'gap':22},{'f1':784,'wave':_SIN,'dur':70,'vol':0.60,'gap':22},{'f1':1047,'wave':_SIN,'dur':70,'vol':0.64,'gap':22},{'f1':1319,'wave':_SIN,'dur':220,'vol':0.70,'rel':0.35}], [{'f1':784,'wave':_SIN,'dur':55,'vol':0.53,'gap':18},{'f1':1047,'wave':_SIN,'dur':170,'vol':0.60,'rel':0.35}]),
+]
+_buzz_preset_index = 1  # default: Double Ding
+
+
+BUZZ_TOAST_MAX_ALPHA = 0.9
+_buzz_toast_wins = []   # list of dicts: {win, base_y, cx, h}
+
+def _show_buzz_toast(rank, name):
+    """Show a rising, fading toast on-screen when a player buzzes in. Multiple stack upward smoothly."""
+    try:
+        import web_server as _ws_mod
+        # Mirror push_player_colors: file is authoritative, in-memory overrides
+        merged_colors = {}
+        try:
+            import json as _json
+            _sc_path = os.path.join(_ws_mod._SCOREBOARD_DATA, 'scoreboard_colors.json')
+            if os.path.exists(_sc_path):
+                with open(_sc_path, 'r', encoding='utf-8') as _f:
+                    merged_colors.update(_json.load(_f))
+        except Exception:
+            pass
+        merged_colors.update(_ws_mod._player_colors)
+        clr = merged_colors.get(name) or {}
+        bg       = clr.get('bg',   OVERLAY_BACKGROUND_COLOR)
+        fg       = clr.get('text', OVERLAY_TEXT_COLOR)
+        border_c = fg
+    except Exception:
+        bg       = OVERLAY_BACKGROUND_COLOR
+        fg       = OVERLAY_TEXT_COLOR
+        border_c = fg
+
+    rank_labels = {1: '1st \u2013 BUZZ IN', 2: '2nd \u2013 BUZZ IN', 3: '3rd \u2013 BUZZ IN'}
+    rank_str = rank_labels.get(rank, f'#{rank} \u2013 BUZZ IN')
+
+    win = tk.Toplevel(root)
+    win.overrideredirect(True)
+    win.attributes('-topmost', True)
+    win.attributes('-alpha', 0.0)
+    win.configure(bg=border_c)
+
+    border_px = max(2, scl(3))
+    outer = tk.Frame(win, bg=border_c, padx=border_px, pady=border_px)
+    outer.pack()
+    inner = tk.Frame(outer, bg=bg, padx=scl(40), pady=scl(20))
+    inner.pack()
+    tk.Label(inner, text=rank_str,
+             font=('Segoe UI', max(18, scl(24, 'UI')), 'bold'),
+             fg=fg, bg=bg).pack()
+    tk.Label(inner, text=name,
+             font=('Segoe UI', max(28, scl(48, 'UI')), 'bold'),
+             fg=fg, bg=bg).pack()
+
+    win.update_idletasks()
+    w  = win.winfo_width()
+    h  = win.winfo_height()
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+
+    _pp = bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get(
+        'player_buzz_popup_properties', BONUS_SETTINGS_DEFAULT['buzzer']['player_buzz_popup_properties'])
+    margin  = scl(int(_pp.get('margin',     40)))
+    gap     = scl(int(_pp.get('gap',        10)))
+    rise_px = scl(int(_pp.get('rise_px',    50)))
+    PUSH_MS    = int(_pp.get('push_ms',    220))
+    PUSH_STEPS = int(_pp.get('push_steps', 18))
+
+    cx      = (sw - w) // 2
+    base_y  = sh - h - margin
+
+    entry = {'win': win, 'base_y': base_y, 'cx': cx, 'h': h}
+    _buzz_toast_wins.append(entry)
+
+    # --- push existing toasts up smoothly ---
+    push_amount = h + gap
+    PUSH_MS = 220
+    PUSH_STEPS = 18
+    push_step_ms = max(1, PUSH_MS // PUSH_STEPS)
+
+    # snapshot existing toasts (all except the new one)
+    existing = [e for e in _buzz_toast_wins if e is not entry]
+    for e in existing:
+        e['base_y'] -= push_amount   # update their target base_y
+
+    def _push_others(step=0):
+        if step > PUSH_STEPS:
+            return
+        t = step / PUSH_STEPS
+        ease = t * (2 - t)  # ease-out
+        for e in existing:
+            if not e['win'].winfo_exists():
+                continue
+            cur_y = int((e['base_y'] + push_amount) - push_amount * ease)
+            e['win'].geometry(f"+{e['cx']}+{cur_y}")
+        if step < PUSH_STEPS:
+            root.after(push_step_ms, lambda: _push_others(step + 1))
+        else:
+            for e in existing:
+                if e['win'].winfo_exists():
+                    e['win'].geometry(f"+{e['cx']}+{e['base_y']}")
+
+    root.after(10, _push_others)
+
+    # --- new toast: rise + fade in ---
+    _pp = bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get(
+        'player_buzz_popup_properties', BONUS_SETTINGS_DEFAULT['buzzer']['player_buzz_popup_properties'])
+    FADE_IN_MS  = int(_pp.get('fade_in_ms',  220))
+    HOLD_MS     = int(_pp.get('hold_ms',     2400))
+    FADE_OUT_MS = int(_pp.get('fade_out_ms', 350))
+    STEPS       = int(_pp.get('steps',       18))
+    _max_alpha  = float(_pp.get('max_alpha', BUZZ_TOAST_MAX_ALPHA))
+    step_ms     = max(1, FADE_IN_MS // STEPS)
+    out_step_ms = max(1, FADE_OUT_MS // STEPS)
+
+    win.geometry(f'+{cx}+{base_y + rise_px}')
+
+    def _fade_in(step=0):
+        if not win.winfo_exists():
+            return
+        try:
+            t = step / STEPS
+            win.attributes('-alpha', t * _max_alpha)
+            win.geometry(f'+{cx}+{int(base_y + rise_px * (1.0 - t))}')
+            if step < STEPS:
+                root.after(step_ms, lambda: _fade_in(step + 1))
+            else:
+                win.attributes('-alpha', _max_alpha)
+                win.geometry(f'+{cx}+{base_y}')
+                root.after(HOLD_MS, _fade_out)
+        except Exception:
+            pass
+
+    def _fade_out(step=0):
+        if not win.winfo_exists():
+            return
+        try:
+            win.attributes('-alpha', _max_alpha * (1.0 - step / STEPS))
+            if step < STEPS:
+                root.after(out_step_ms, lambda: _fade_out(step + 1))
+            else:
+                try:
+                    _buzz_toast_wins.remove(entry)
+                except ValueError:
+                    pass
+                win.destroy()
+        except Exception:
+            pass
+
+    root.after(10, _fade_in)
+
+
+def _play_buzz_sound(rank, name):
+    """Play a buzzer sound on the host machine when a player buzzes in."""
+    _buz = bonus_settings.get("buzzer", BONUS_SETTINGS_DEFAULT["buzzer"])
+    if name != 'Test':
+        if _buz.get("player_buzz_popup", True):
+            root.after(0, lambda: _show_buzz_toast(rank, name))
+    def _make_wav_segments(segments):
+        import wave, struct, math, io, random
+        rate = 44100
+        all_frames = bytearray()
+        for seg in segments:
+            f1   = float(seg.get('f1', 220))
+            f2   = float(seg.get('f2', f1))
+            f_end = seg.get('f_end', None)
+            wv   = seg.get('wave', _SQ)
+            duty = float(seg.get('duty', 0.5))
+            dur  = int(seg.get('dur', 300))
+            vol  = float(seg.get('vol', 0.7))
+            gap  = int(seg.get('gap', 0))
+            atk  = int(seg.get('atk', 5))
+            rel  = float(seg.get('rel', 0.75))
+            n         = int(rate * dur / 1000)
+            attack_n  = max(1, int(rate * atk / 1000))
+            rel_start = int(n * rel)
+            phase1 = 0.0
+            phase2 = 0.0
+            for i in range(n):
+                t     = i / max(1, n - 1)
+                cur_f1 = f1 + (f_end - f1) * t if f_end is not None else f1
+                cur_f2 = f2
+                p1 = phase1 % 1.0
+                p2 = phase2 % 1.0
+                if wv == _SQ:
+                    s1 = 1.0 if p1 < duty else -1.0
+                    s2 = 1.0 if p2 < duty else -1.0
+                elif wv == _TRI:
+                    s1 = (4*p1 - 1) if p1 < 0.5 else (3 - 4*p1)
+                    s2 = (4*p2 - 1) if p2 < 0.5 else (3 - 4*p2)
+                elif wv == _SAW:
+                    s1 = p1 * 2.0 - 1.0
+                    s2 = p2 * 2.0 - 1.0
+                elif wv == _SIN:
+                    s1 = math.sin(phase1 * 2 * math.pi)
+                    s2 = math.sin(phase2 * 2 * math.pi)
+                elif wv == _NOI:
+                    s1 = s2 = random.uniform(-1.0, 1.0)
+                else:
+                    s1 = s2 = 0.0
+                sample_f = (s1 + s2) * 0.5
+                if i < attack_n:
+                    env = i / attack_n
+                elif i >= rel_start:
+                    env = 1.0 - (i - rel_start) / max(1, n - rel_start)
+                else:
+                    env = 1.0
+                val = int(sample_f * env * vol * 32767)
+                all_frames += struct.pack('<h', max(-32768, min(32767, val)))
+                phase1 += cur_f1 / rate
+                phase2 += cur_f2 / rate
+            if gap > 0:
+                all_frames += b'\x00\x00' * int(rate * gap / 1000)
+        buf = io.BytesIO()
+        with wave.open(buf, 'wb') as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(bytes(all_frames))
+        return buf.getvalue()
+
+    def _beep():
+        try:
+            import winsound
+            _buz_cfg = bonus_settings.get("buzzer", BONUS_SETTINGS_DEFAULT["buzzer"])
+            if not _buz_cfg.get("sound", True):
+                return
+            p = BUZZ_PRESETS[_buzz_preset_index]
+            if p[0] == 'No Sound':
+                return
+            segs = p[1] if rank == 1 else p[2]
+            if volume_level <= 0:
+                vol_scale = 0.0
+            else:
+                BGM_DB_RANGE = 45
+                vol_scale = 10 ** ((volume_level / 100 - 1) * BGM_DB_RANGE / 20)
+            sound_volume = float(_buz_cfg.get("sound_volume", 1.0))
+            scaled = [{**s, 'vol': s.get('vol', 0.7) * vol_scale * sound_volume} for s in segs]
+            wav = _make_wav_segments(scaled)
+            winsound.PlaySound(wav, winsound.SND_MEMORY)
+        except Exception:
+            pass
+    threading.Thread(target=_beep, daemon=True).start()
+
+web_server.set_buzz_callback(_play_buzz_sound)
 scan_directory(True)
 create_first_row_buttons()
 rebuild_shortcut_dispatch()

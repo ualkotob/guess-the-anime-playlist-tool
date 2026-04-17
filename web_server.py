@@ -132,6 +132,7 @@ _up_next: dict = {}           # up-next track info; pushed to host clients
 _current_marks: dict = {}     # {tagged, favorited, blind, peek, mute_peek} for current theme
 _current_toggles: dict = {}   # {blind, peek, mute, censors, shortcuts, dock, censor_count}
 _host_action_callback = None  # callable(action, data) set by main app for remote control
+_on_buzz_callback = None       # callable(rank: int, name: str) called when a player buzzes in
 _pending_selections: dict = {}  # name → answer; silently tracks current selection before submit
 
 public_url = None          # Readable from main app after start()
@@ -700,6 +701,40 @@ _HTML = r"""<!DOCTYPE html>
       text-transform: uppercase;
       letter-spacing: .04em;
     }
+    #hm-right-controls {
+      display: flex; align-items: center; gap: 5px;
+    }
+    #hm-popup-btn {
+      background: transparent; border: none; padding: 0 2px;
+      font-size: 1.08em; cursor: pointer; line-height: 1;
+      opacity: 0.8; transition: opacity 0.15s;
+    }
+    #hm-popup-btn:hover { opacity: 1; }
+    #hm-popup-btn.off { opacity: 0.35; filter: grayscale(1); }
+    #hm-vol-wrap {
+      display: flex; align-items: center; gap: 3px;
+    }
+    #hm-bell-btn {
+      background: transparent; border: none; padding: 0 2px;
+      font-size: 1.15em; cursor: pointer; line-height: 1;
+      opacity: 0.75; transition: opacity 0.15s;
+    }
+    #hm-bell-btn:hover { opacity: 1; }
+    #hm-bell-btn.muted { opacity: 0.35; filter: grayscale(1); }
+    #hm-vol-slider {
+      -webkit-appearance: none; appearance: none;
+      width: 72px; height: 4px;
+      border-radius: 2px; background: #334; outline: none; cursor: pointer;
+    }
+    #hm-vol-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 13px; height: 13px; border-radius: 50%;
+      background: #6699ff; cursor: pointer;
+    }
+    #hm-vol-slider::-moz-range-thumb {
+      width: 13px; height: 13px; border-radius: 50%;
+      background: #6699ff; cursor: pointer; border: none;
+    }
     #host-messages-clear {
       background: transparent;
       border: 1px solid #334;
@@ -736,27 +771,47 @@ _HTML = r"""<!DOCTYPE html>
       display: inline-block;
     }
 
+    @keyframes hostToastIn {
+      from { opacity: 0; transform: translateX(-50%) translateY(16px) scale(0.96); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0)    scale(1); }
+    }
+    @keyframes hostToastGlow {
+      0%,100% { box-shadow: 0 0 6px 2px rgba(100,160,255,0.4),  0 0 18px 4px rgba(80,130,255,0.2),  0 8px 28px rgba(0,0,0,0.6); border-color: #6699ff; }
+      50%     { box-shadow: 0 0 16px 6px rgba(140,200,255,0.75), 0 0 36px 10px rgba(100,160,255,0.35), 0 8px 28px rgba(0,0,0,0.6); border-color: #aaddff; }
+    }
     #host-msg-toast {
       display: none;
       position: fixed;
       left: 50%;
-      top: 18px;
+      bottom: 18px;
       transform: translateX(-50%);
       z-index: 950;
       width: min(94vw, 560px);
-      background: rgba(16,16,32,0.95);
-      border: 1px solid #446;
+      background: rgba(12,18,40,0.97);
+      border: 2px solid #6699ff;
       border-radius: 12px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
-      padding: 13px 15px;
+      box-shadow: 0 0 0 0 rgba(120,180,255,0.55), 0 8px 28px rgba(0,0,0,0.6);
+      padding: 13px 16px 13px 52px;
       color: #dde7ff;
-      font-size: 1em;
-      line-height: 1.35;
+      font-size: 1.05em;
+      line-height: 1.4;
     }
-    #host-msg-toast.active { display: block; }
-    #host-msg-toast .from { color: #9fc4ff; font-weight: bold; font-size: 1.03em; margin-bottom: 2px; }
+    #host-msg-toast::before {
+      content: '\2709';
+      position: absolute;
+      left: 13px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 1.6em;
+      color: #88bbff;
+    }
+    #host-msg-toast.active {
+      display: block;
+      animation: hostToastIn 0.22s ease-out, hostToastGlow 1.2s ease-in-out 0.22s infinite;
+    }
+    #host-msg-toast .from { color: #aaccff; font-weight: bold; font-size: 1.06em; margin-bottom: 3px; }
     #host-msg-toast .body {
-      color: #dfe5ff;
+      color: #e8eeff;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       word-break: break-word;
@@ -1310,28 +1365,6 @@ _HTML = r"""<!DOCTYPE html>
     }
     .ctrl-popup-item-add:hover { color: #aaf; border-color: #446; }
     .ctrl-popup-item-song { color: #778; font-size: 0.85em; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42%; }
-    .ctrl-popup-item-search {
-      display: grid;
-      grid-template-columns: 40px minmax(0, 1fr);
-      align-items: stretch;
-      gap: 8px;
-      min-height: 64px;
-    }
-    .ctrl-popup-search-actions {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      align-items: stretch;
-      justify-content: center;
-    }
-    .ctrl-popup-search-actions .ctrl-popup-item-add {
-      width: 100%;
-      min-width: 0;
-      padding: 1px 0;
-      text-align: center;
-      line-height: 1.2;
-      font-size: 0.74em;
-    }
     .ctrl-popup-search-text {
       min-width: 0;
       display: grid;
@@ -1354,11 +1387,19 @@ _HTML = r"""<!DOCTYPE html>
       border-radius: 3px;
       padding: 0 2px;
     }
+    .ctrl-popup-item-back {
+      color: #778; font-size: 0.82em; padding: 5px 10px;
+      cursor: pointer; border-radius: 6px; display: flex; align-items: center; gap: 5px;
+    }
+    .ctrl-popup-item-back:hover { background: #1a1a2e; color: #aab; }
     #controller-box {
       background: #0d0d1a; border: 1px solid #334; border-radius: 16px 16px 0 0;
       width: 100%; max-width: 480px; padding: 10px 20px 32px;
       display: flex; flex-direction: column; gap: 12px;
       max-height: 85vh; overflow-y: auto;
+    }
+    .ctrl-section {
+      display: block;
     }
     /* ── Controller info toggle bar ── */
     .ctrl-collapse-toggle {
@@ -1369,6 +1410,58 @@ _HTML = r"""<!DOCTYPE html>
       font-size: 0.75em; color: #88a; letter-spacing: .05em; text-transform: uppercase;
     }
     .ctrl-collapse-chevron { font-size: 0.8em; color: #556; }
+    @media (min-width: 1000px) {
+      #controller-box {
+        padding-left: 0;
+        padding-top: 0;
+      }
+      #ctrl-section-playlist.section-open {
+        flex: 1;
+        min-height: 0;
+      }
+      #ctrl-section-playlist.section-open > #ctrl-playlist-panel {
+        min-height: 0;
+      }
+      .ctrl-section.section-open {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr);
+        column-gap: 4px;
+        align-items: stretch;
+      }
+      .ctrl-section.section-open > .ctrl-collapse-toggle {
+        border-bottom: none;
+        border-right: none;
+        padding: 0;
+        justify-content: center;
+        min-height: 100%;
+        writing-mode: vertical-rl;
+        text-orientation: sideways;
+        transform: rotate(180deg);
+        gap: 2px;
+      }
+      .ctrl-section.section-open > .ctrl-collapse-toggle .ctrl-collapse-label {
+        font-size: 0.6em;
+        letter-spacing: .04em;
+        white-space: nowrap;
+      }
+      .ctrl-section.section-open > .ctrl-collapse-toggle .ctrl-collapse-chevron {
+        font-size: 0.62em;
+      }
+      .ctrl-section.section-open #ctrl-playlist-counter {
+        display: inline;
+        margin-left: 0;
+        font-size: 0.68em;
+        writing-mode: inherit;
+        text-orientation: inherit;
+        white-space: nowrap;
+      }
+      .ctrl-section.section-open > #ctrl-upnext-panel,
+      .ctrl-section.section-open > #ctrl-playlist-panel,
+      .ctrl-section.section-open > #ctrl-controls-panel,
+      .ctrl-section.section-open > #ctrl-infotext-panel {
+        min-width: 0;
+      }
+    }
     /* ── Scoreboard toggle button (bottom-center, host-only) ── */
     #sc-view-wrap {
       position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
@@ -1418,6 +1511,9 @@ _HTML = r"""<!DOCTYPE html>
     #sc-submit-btn:hover { background: #253060; border-color: #4466cc; }
     #sc-clear-btn {
       background: #2a1010; color: #cc6666; border-color: #7a2222;
+      font-family: 'Segoe UI Emoji', 'Segoe UI', sans-serif; font-size: 0.85em; font-weight: normal;
+      width: 24px; height: 22px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
     }
     #sc-clear-btn:hover { background: #3a1515; border-color: #aa3333; }
     #sc-archive-btn {
@@ -1430,10 +1526,12 @@ _HTML = r"""<!DOCTYPE html>
     }
     /* TOGETHER / AUTO toolbar toggles */
     .sc-toggle-btn {
-      font-family: 'Segoe UI', sans-serif; font-size: 0.65em; font-weight: bold;
+      font-family: 'Segoe UI Emoji', 'Segoe UI', sans-serif; font-size: 0.85em;
       border-radius: 3px; cursor: pointer; line-height: 1;
-      padding: 3px 6px; border: 1px solid #444;
-      background: #252525; color: #888; letter-spacing: 0.05em;
+      width: 24px; height: 22px; padding: 0;
+      border: 1px solid #444;
+      background: #252525; color: #888;
+      display: inline-flex; align-items: center; justify-content: center;
     }
     .sc-toggle-btn:hover { border-color: #666; }
     .sc-toggle-btn.sc-toggle-on { color: #66dd88; border-color: #44aa60; background: #1a3022; }
@@ -1626,8 +1724,8 @@ _HTML = r"""<!DOCTYPE html>
     }
     .ctrl-bonus-btn.ctrl-bonus-more:hover { color: #88a; border-color: #334; }
     /* ── Button section color coding ── */
-    .ctrl-sect-queue  { background: #1e0c0c; border-color: #334; color: #c66; box-shadow: none; }
-    .ctrl-sect-queue:hover  { background: #2e1010; color: #f88; border-color: #f88; box-shadow: 0 0 5px 0 rgba(160,40,40,0.40); }
+    .ctrl-sect-queue  { background: #211507; border-color: #5a4723; color: #e0b062; box-shadow: none; }
+    .ctrl-sect-queue:hover  { background: #31200b; color: #ffd48a; border-color: #ffcf70; box-shadow: 0 0 5px 0 rgba(220,160,40,0.40); }
     .ctrl-sect-bonus  { background: #0c1220; border-color: #334; color: #6af; box-shadow: none; }
     .ctrl-sect-bonus:hover  { background: #102040; color: #9cf; border-color: #9cf; box-shadow: 0 0 5px 0 rgba(30,100,200,0.40); }
     .ctrl-sect-toggle { background: #12151a; border-color: #334; color: #7a8898; }
@@ -1636,8 +1734,8 @@ _HTML = r"""<!DOCTYPE html>
     .ctrl-sect-reveal:hover { background: #102818; color: #9e9; border-color: #9e9; box-shadow: 0 0 5px 0 rgba(40,140,60,0.40); }
     .ctrl-sect-mark   { background: #1a0c14; border-color: #334; color: #c88; box-shadow: none; }
     .ctrl-sect-mark:hover   { background: #2a1020; color: #eaa; border-color: #eaa; box-shadow: 0 0 5px 0 rgba(140,40,80,0.40); }
-    .ctrl-sect-session { background: #1e0c0c; border-color: #334; color: #c55; box-shadow: none; }
-    .ctrl-sect-session:hover { background: #2e1010; color: #f88; border-color: #f88; box-shadow: 0 0 5px 0 rgba(160,30,30,0.40); }
+    .ctrl-sect-session { background: #1e0c0c; border-color: #5a2d2d; color: #d96a6a; box-shadow: none; }
+    .ctrl-sect-session:hover { background: #2e1010; color: #ff9a9a; border-color: #ff8a8a; box-shadow: 0 0 5px 0 rgba(180,50,50,0.40); }
     /* Scoreboard-specific color (distinct) */
     .ctrl-sect-scoreboard { background: #2a083a; border-color: #334; color: #f6a; box-shadow: none; }
     .ctrl-sect-scoreboard:hover { background: #3a0f50; color: #ffd; border-color: #e6a; box-shadow: 0 0 5px 0 rgba(200,80,160,0.40); }
@@ -1726,10 +1824,10 @@ _HTML = r"""<!DOCTYPE html>
     #ctrl-toggles-grid { display: flex; flex-wrap: wrap; gap: 7px; justify-content: center; }
     .ctrl-toggle-btn.ctrl-toggle-active { background: #0d1e2c; border-color: #99bbdd; color: #cce0f5; box-shadow: 0 0 7px 0 rgba(130,180,230,0.50); }
     .ctrl-toggle-btn.ctrl-toggle-active:hover { background: #122438; color: #ddf0ff; border-color: #bbddee; }
-    .ctrl-toggle-btn.ctrl-sect-queue.ctrl-toggle-active { background: #2e1010; border-color: #ff7755; color: #ffccaa; box-shadow: 0 0 7px 0 rgba(220,90,50,0.55); }
-    .ctrl-toggle-btn.ctrl-sect-queue.ctrl-toggle-active:hover { background: #3a1414; border-color: #ffaa88; color: #ffddc8; }
-    .ctrl-sect-session.ctrl-toggle-active { background: #2e1010; border-color: #ff7777; color: #ffcccc; box-shadow: 0 0 7px 0 rgba(220,80,80,0.50); }
-    .ctrl-sect-session.ctrl-toggle-active:hover { background: #3a1414; border-color: #ff9999; color: #ffe0e0; }
+    .ctrl-toggle-btn.ctrl-sect-queue.ctrl-toggle-active { background: #3a240a; border-color: #ffd15a; color: #fff0c2; box-shadow: 0 0 7px 0 rgba(235,180,60,0.55); }
+    .ctrl-toggle-btn.ctrl-sect-queue.ctrl-toggle-active:hover { background: #4a2d0d; border-color: #ffe08a; color: #fff6d8; }
+    .ctrl-sect-session.ctrl-toggle-active { background: #341212; border-color: #ff7a7a; color: #ffd1d1; box-shadow: 0 0 8px 0 rgba(220,80,80,0.55); }
+    .ctrl-sect-session.ctrl-toggle-active:hover { background: #431616; border-color: #ffa0a0; color: #ffe2e2; }
     .ctrl-sect-scoreboard.ctrl-toggle-active { background: #3a0f50; border-color: #ff88cc; color: #ffd6ee; box-shadow: 0 0 9px 0 rgba(210,95,180,0.60); }
     .ctrl-sect-scoreboard.ctrl-toggle-active:hover { background: #4a1464; border-color: #ffb3dd; color: #ffe6f5; }
     /* Info reveal buttons: highlight while the matching popup is showing */
@@ -1800,8 +1898,8 @@ _HTML = r"""<!DOCTYPE html>
     #ctrl-vol-slider-wrap {
       position: absolute; bottom: 52px; left: 0;
       background: #1a1a30; border: 1px solid #334; border-radius: 10px;
-      padding: 8px 12px; display: flex; flex-direction: row;
-      align-items: center; gap: 8px; z-index: 10; white-space: nowrap;
+      padding: 8px 12px; display: flex; flex-direction: column;
+      align-items: stretch; gap: 6px; z-index: 10; white-space: nowrap;
     }
     #ctrl-vol-slider {
       -webkit-appearance: none; appearance: none;
@@ -1817,7 +1915,47 @@ _HTML = r"""<!DOCTYPE html>
       background: #88f; cursor: pointer; border: none;
     }
     #ctrl-vol-label { font-size: 0.7em; color: #88a; min-width: 2em; text-align: right; }
-    /* ── Metadata modal ── */
+    #ctrl-vol-slider-row { display: flex; align-items: center; gap: 8px; }
+    /* ── BZZ row inside volume popup ── */
+    #ctrl-bzz-row {
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid #334; padding-bottom: 6px; margin-bottom: 2px;
+    }
+    #ctrl-bzz-label-hd { font-size: 0.7em; color: #88a; white-space: nowrap; }
+    #ctrl-bzz-slider {
+      -webkit-appearance: none; appearance: none;
+      width: 100px; height: 4px; border-radius: 2px;
+      background: #334; outline: none; cursor: pointer;
+    }
+    #ctrl-bzz-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px;
+      border-radius: 50%; background: #88f; cursor: pointer;
+    }
+    #ctrl-bzz-slider::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #88f; cursor: pointer; border: none;
+    }
+    #ctrl-bzz-label { font-size: 0.7em; color: #88a; min-width: 2.5em; text-align: right; }
+    /* ── BGM row inside volume popup ── */
+    #ctrl-bgm-row {
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid #334; padding-bottom: 6px; margin-bottom: 2px;
+    }
+    #ctrl-bgm-label-hd { font-size: 0.7em; color: #88a; white-space: nowrap; }
+    #ctrl-bgm-slider {
+      -webkit-appearance: none; appearance: none;
+      width: 100px; height: 4px; border-radius: 2px;
+      background: #334; outline: none; cursor: pointer;
+    }
+    #ctrl-bgm-slider::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px;
+      border-radius: 50%; background: #88f; cursor: pointer;
+    }
+    #ctrl-bgm-slider::-moz-range-thumb {
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #88f; cursor: pointer; border: none;
+    }
+    #ctrl-bgm-label { font-size: 0.7em; color: #88a; min-width: 2.5em; text-align: right; }
     #metadata-overlay {
       display: none; position: fixed; inset: 0;
       background: rgba(0,0,0,0.75); z-index: 700;
@@ -1942,7 +2080,7 @@ _HTML = r"""<!DOCTYPE html>
     .pl-row:hover { background: #1a1a2e; color: #eef; }
     .pl-row.pl-current { background: #1a1a2e; color: #aaf; font-weight: bold; }
     .pl-row-num   { color: #445; font-size: 0.78em; min-width: 32px; text-align: right; flex-shrink: 0; }
-    .pl-row-slug  { color: #556; font-size: 0.82em; flex-shrink: 0; }
+    .pl-row-slug  { color: #88f; font-size: 0.82em; flex-shrink: 0; }
     .pl-row-lightning { font-size: 0.85em; flex-shrink: 0; line-height: 1; }
     .pl-row-title { flex: 1; overflow: hidden; white-space: nowrap; }
     .pl-row-song  { color: #778; font-size: 0.82em; flex-shrink: 0;
@@ -2023,6 +2161,21 @@ _HTML = r"""<!DOCTYPE html>
       padding: 14px;
     }
     #theme-action-overlay.active { display: flex; }
+    #pl-entry-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 861;
+      align-items: center; justify-content: center; padding: 14px;
+    }
+    #pl-entry-overlay.active { display: flex; }
+    #pl-entry-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 12px;
+      width: min(90vw, 420px);
+      display: flex; flex-direction: column; gap: 10px; padding: 12px;
+    }
+    #pl-entry-title {
+      color: #aaf; font-size: 0.88em; line-height: 1.35;
+      border-bottom: 1px solid #223; padding-bottom: 8px; word-break: break-word;
+    }
     #theme-action-box {
       background: #0d0d1a; border: 1px solid #334; border-radius: 12px;
       width: min(90vw, 420px);
@@ -2098,6 +2251,12 @@ _HTML = r"""<!DOCTYPE html>
       font-size: 0.78em;
       line-height: 1.55;
     }
+    .artist-theme-play-btn {
+      cursor: pointer;
+      transition: background .12s, border-color .12s, color .12s;
+    }
+    .artist-theme-play-btn:hover { background: #243455; border-color: #5a7fc0; color: #c8e0ff; }
+    .artist-theme-play-btn:active { background: #2a3d66; border-color: #7a9fd8; }
     .studio-series-group {
       display: flex; flex-direction: column; gap: 6px;
     }
@@ -2334,9 +2493,9 @@ _HTML = r"""<!DOCTYPE html>
     <!-- toolbar -->
     <div id="sc-toolbar">
       <span id="sc-toolbar-title">Scoreboard</span>
-      <button id="sc-tog-auto" class="sc-toggle-btn" onclick="_scToggleAuto()" title="Scores send automatically after clicking a delta. Turn off to batch manually.">AUTO</button>
-      <button id="sc-tog-together" class="sc-toggle-btn" onclick="_scToggleTogether()" title="Any delta press resets the shared timer for everyone.">BATCH</button>
-      <button id="sc-clear-btn" class="sc-toolbar-btn" onclick="_scClearAll()">CLEAR</button>
+      <button id="sc-tog-auto" class="sc-toggle-btn" onclick="_scToggleAuto()" title="AUTO — Scores send automatically after clicking a delta. Turn off to batch manually.">&#9889;</button>
+      <button id="sc-tog-together" class="sc-toggle-btn" onclick="_scToggleTogether()" title="BATCH — Any delta press resets the shared timer for everyone.">&#10697;</button>
+      <button id="sc-clear-btn" class="sc-toolbar-btn" onclick="_scClearAll()" title="CLEAR — Remove all players from the scoreboard.">&#128465;</button>
       <button id="sc-archive-btn" class="sc-toolbar-btn" onclick="_scArchive()" title="Archive current session (uses the host name configured in Scoreboard settings).">ARCHIVE</button>
       <span style="flex:1"></span>
       <button id="sc-submit-btn" class="sc-toolbar-btn" onclick="_scSubmitPending()">SUBMIT</button>
@@ -2412,7 +2571,15 @@ _HTML = r"""<!DOCTYPE html>
       <div id="host-messages-wrap" style="display:none">
         <div id="host-messages-head">
           <span>Host Inbox (<span id="host-messages-count">0</span>)</span>
-          <button id="host-messages-clear" onclick="_clearHostMessages()">Clear</button>
+          <div id="hm-right-controls">
+            <button id="hm-popup-btn" onclick="_toggleHostMessagePopups()" title="Toggle host message popups">&#128172;</button>
+            <div id="hm-vol-wrap" title="Toggle mute / unmute chime">
+              <button id="hm-bell-btn" onclick="_toggleChimeMute()">&#128276;</button>
+              <input id="hm-vol-slider" type="range" min="0" max="1" step="0.05"
+                oninput="_setChimeVolume(this.value)" />
+            </div>
+            <button id="host-messages-clear" onclick="_clearHostMessages()">Clear</button>
+          </div>
         </div>
         <div id="host-messages-list"></div>
       </div>
@@ -2595,6 +2762,15 @@ _HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <div id="pl-entry-overlay" onclick="if(event.target===this)_closePlEntryPopup()">
+    <div id="pl-entry-box">
+      <div id="pl-entry-title">Playlist entry</div>
+      <button class="theme-action-btn play" onclick="_plEntryRun('play')">&#9654; Play now</button>
+      <button class="theme-action-btn" style="border-color:#a33;color:#f99" onclick="_plEntryRun('delete')">&#x1F5D1; Delete</button>
+      <button id="theme-action-cancel" onclick="_closePlEntryPopup()">Cancel</button>
+    </div>
+  </div>
+
   <div id="bottom-left-wrap">
     <div id="player-list-wrap" style="display:none">
       <button id="player-list-btn" onclick="_togglePlayerList()">&#128101; <span id="player-count">0</span></button>
@@ -2669,6 +2845,7 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="yt" onclick="_ctrlExtraClick('yt')">YouTube</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="directory" onclick="_ctrlExtraClick('directory')">&#x1F4C2;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_stop" onclick="_ctrlExtraClick('lt_stop')">&#x23F9;</button>
       </div>
       <div class="ctrl-extras-sect-row">
@@ -2687,10 +2864,11 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_buzzer" onclick="_ctrlExtraClick('bonus_buzzer')">Buzzer</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_lock" onclick="_ctrlExtraClick('buzz_lock')">Buzz Lock</button>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_reset" onclick="_ctrlExtraClick('buzz_reset')">Buzz Reset</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_sound" onclick="_ctrlExtraClick('buzz_sound')" title="Choose buzzer sound preset">Buzz Sound</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="auto_bonus" onclick="_ctrlExtraClick('auto_bonus')">Auto Bonus</button>
       </div>
       <div class="ctrl-extras-sect-row">
-        <span class="ctrl-extras-sect-label">Toggles &amp; End</span>
+        <span class="ctrl-extras-sect-label">Toggles &amp; Session</span>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_blind" onclick="_ctrlExtraClick('tgl_blind')">Blind</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_peek" onclick="_ctrlExtraClick('tgl_peek')">Peek</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_narrow" onclick="_ctrlExtraClick('tgl_narrow')">&#x25C0;</button>
@@ -2700,9 +2878,10 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="tgl_fullscreen" onclick="_ctrlExtraClick('tgl_fullscreen')">Fullscreen</button>
         <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="difficulty" onclick="_ctrlExtraClick('difficulty')">Difficulty</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-shortcuts" data-extra-id="tgl_shortcuts" onclick="_ctrlExtraClick('tgl_shortcuts')" title="Toggle keyboard shortcuts">Keys</button>
-        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')" title="Toggle dock">Dock</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')">Dock</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-start" data-extra-id="tgl_info_start" onclick="_ctrlExtraClick('tgl_info_start')" title="Toggle auto-show info at start">Info Start</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-end" data-extra-id="tgl_info_end" onclick="_ctrlExtraClick('tgl_info_end')" title="Toggle auto-show info at end">Info End</button>
+        <button class="ctrl-bonus-btn ctrl-sect-session" id="ctrl-reset-session-btn" data-extra-id="reset_session_history" onclick="_ctrlExtraClick('reset_session_history')">Reset Session [0]</button>
         <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="end_session" onclick="_ctrlExtraClick('end_session')">End</button>
       </div>
       <div class="ctrl-extras-sect-row">
@@ -2713,11 +2892,11 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_studio" onclick="_ctrlExtraClick('reveal_studio')">Studio</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_season" onclick="_ctrlExtraClick('reveal_season')">Season</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_year" onclick="_ctrlExtraClick('reveal_year')">Year</button>
-        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-tag" data-extra-id="mark_tag" onclick="_ctrlExtraClick('mark_tag')" title="Tag">&#x2717;</button>
-        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-fav" data-extra-id="mark_fav" onclick="_ctrlExtraClick('mark_fav')" title="Favorite">♥</button>
-        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-blind" data-extra-id="mark_blind" onclick="_ctrlExtraClick('mark_blind')" title="Blind Mark">&#x1F441;</button>
-        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-peek" data-extra-id="mark_peek" onclick="_ctrlExtraClick('mark_peek')" title="Peek Mark">&#x1F440;</button>
-        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-mute-peek" data-extra-id="mark_mute_peek" onclick="_ctrlExtraClick('mark_mute_peek')" title="Mute Peek Mark">&#x1F507;</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-tag" data-extra-id="mark_tag" onclick="_ctrlExtraClick('mark_tag')">&#x2717;</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-fav" data-extra-id="mark_fav" onclick="_ctrlExtraClick('mark_fav')">♥</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-blind" data-extra-id="mark_blind" onclick="_ctrlExtraClick('mark_blind')">&#x1F441;</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-peek" data-extra-id="mark_peek" onclick="_ctrlExtraClick('mark_peek')">&#x1F440;</button>
+        <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-mute-peek" data-extra-id="mark_mute_peek" onclick="_ctrlExtraClick('mark_mute_peek')">&#x1F507;</button>
       </div>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Scoreboard</span>
@@ -2740,52 +2919,60 @@ _HTML = r"""<!DOCTYPE html>
     <div id="controller-box">
       <button id="ctrl-close-btn" onclick="_toggleController()" title="Close controls">&#x2715;</button>
       <!-- Collapsible up next panel -->
-      <div class="ctrl-collapse-toggle" id="ctrl-upnext-toggle" onclick="_ctrlToggleUpNext()">
-        <span class="ctrl-collapse-label">&#x203A; Up Next</span>
-        <span class="ctrl-collapse-chevron" id="ctrl-upnext-chevron">&#x25BE;</span>
-      </div>
-      <div id="ctrl-upnext-panel" style="display:none">
-        <div id="ctrl-upnext-actions">
-          <button class="ctrl-upnext-queue-btn" id="ctrl-queue-blind" onclick="socket.emit('host_action',{action:'invoke',id:'queue_blind_round'})" ontouchend="this.blur()" title="Queue Blind Round">&#x1F441; Blind</button>
-          <button class="ctrl-upnext-queue-btn" id="ctrl-queue-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_peek_round'})" ontouchend="this.blur()" title="Queue Peek Round">&#x1F440; Peek</button>
-          <button class="ctrl-upnext-queue-btn" id="ctrl-queue-mute-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_mute_peek_round'})" ontouchend="this.blur()" title="Queue Mute Peek Round">&#x1F507; Mute Peek</button>
-          <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-reroll" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'reroll_next'})" ontouchend="this.blur()" title="Re-roll next track">&#x1F504; Re-roll</button>
+      <div class="ctrl-section" id="ctrl-section-upnext">
+        <div class="ctrl-collapse-toggle" id="ctrl-upnext-toggle" onclick="_ctrlToggleUpNext()">
+          <span class="ctrl-collapse-label">&#x203A; Up Next</span>
+          <span class="ctrl-collapse-chevron" id="ctrl-upnext-chevron">&#x25BE;</span>
         </div>
-        <div id="ctrl-upnext-mode"></div>
-        <div id="ctrl-upnext-title"><span class="ctrl-upnext-label">NEXT:</span> <span id="ctrl-upnext-title-text">No upcoming track</span></div>
-        <div id="ctrl-upnext-detail"></div>
+        <div id="ctrl-upnext-panel" style="display:none">
+          <div id="ctrl-upnext-actions">
+            <button class="ctrl-upnext-queue-btn" id="ctrl-queue-blind" onclick="socket.emit('host_action',{action:'invoke',id:'queue_blind_round'})" ontouchend="this.blur()" title="Queue Blind Round">&#x1F441; Blind</button>
+            <button class="ctrl-upnext-queue-btn" id="ctrl-queue-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_peek_round'})" ontouchend="this.blur()" title="Queue Peek Round">&#x1F440; Peek</button>
+            <button class="ctrl-upnext-queue-btn" id="ctrl-queue-mute-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_mute_peek_round'})" ontouchend="this.blur()" title="Queue Mute Peek Round">&#x1F507; Mute Peek</button>
+            <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-reroll" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'reroll_next'})" ontouchend="this.blur()" title="Re-roll next track">&#x1F504; Re-roll</button>
+          </div>
+          <div id="ctrl-upnext-mode"></div>
+          <div id="ctrl-upnext-title"><span class="ctrl-upnext-label">NEXT:</span> <span id="ctrl-upnext-title-text">No upcoming track</span></div>
+          <div id="ctrl-upnext-detail"></div>
+        </div>
       </div>
       <!-- Collapsible playlist panel -->
-      <div class="ctrl-collapse-toggle" id="ctrl-playlist-toggle" onclick="_ctrlTogglePlaylist()" style="display:none">
-        <span class="ctrl-collapse-label" id="ctrl-playlist-label">&#x203A; Playlist</span>
-        <span id="ctrl-playlist-counter" style="font-size:0.75em;color:#556;margin-left:4px"></span>
-        <span class="ctrl-collapse-chevron" id="ctrl-playlist-chevron">&#x25BE;</span>
-      </div>
-      <div id="ctrl-playlist-panel" style="display:none">
-        <div id="pl-vscroll">
-          <div id="pl-spacer"></div>
+      <div class="ctrl-section" id="ctrl-section-playlist">
+        <div class="ctrl-collapse-toggle" id="ctrl-playlist-toggle" onclick="_ctrlTogglePlaylist()" style="display:none">
+          <span class="ctrl-collapse-label" id="ctrl-playlist-label">&#x203A; Playlist</span>
+          <span id="ctrl-playlist-counter" style="font-size:0.75em;color:#556;margin-left:4px"></span>
+          <span class="ctrl-collapse-chevron" id="ctrl-playlist-chevron">&#x25BE;</span>
+        </div>
+        <div id="ctrl-playlist-panel" style="display:none">
+          <div id="pl-vscroll">
+            <div id="pl-spacer"></div>
+          </div>
         </div>
       </div>
       <!-- Flex spacer: pushes Controls + seek to bottom when playlist is collapsed -->
       <div id="ctrl-flex-spacer"></div>
       <!-- Combined controls panel -->
-      <div class="ctrl-collapse-toggle" id="ctrl-controls-toggle" onclick="_ctrlToggleControls()">
-        <span class="ctrl-collapse-label">&#x203A; Controls</span>
-        <span class="ctrl-collapse-chevron" id="ctrl-controls-chevron">&#x25BE;</span>
-      </div>
-      <div id="ctrl-controls-panel" style="display:none">
-          <div id="ctrl-pinned-extras"></div>
-          <button class="ctrl-bonus-btn ctrl-sect-toggle" onclick="_ctrlOpenExtrasPopup()" title="More options">More…</button>
+      <div class="ctrl-section" id="ctrl-section-controls">
+        <div class="ctrl-collapse-toggle" id="ctrl-controls-toggle" onclick="_ctrlToggleControls()">
+          <span class="ctrl-collapse-label">&#x203A; Controls</span>
+          <span class="ctrl-collapse-chevron" id="ctrl-controls-chevron">&#x25BE;</span>
+        </div>
+        <div id="ctrl-controls-panel" style="display:none">
+            <div id="ctrl-pinned-extras"></div>
+            <button class="ctrl-bonus-btn ctrl-sect-toggle" onclick="_ctrlOpenExtrasPopup()" title="More options">More…</button>
+        </div>
       </div>
       <!-- Collapsible info text panel -->
-      <div class="ctrl-collapse-toggle" id="ctrl-infotext-toggle" onclick="_ctrlToggleInfoText()">
-        <span class="ctrl-collapse-label">&#x203A; Info</span>
-        <span class="ctrl-collapse-chevron" id="ctrl-infotext-chevron">&#x25BE;</span>
-      </div>
-      <div id="ctrl-infotext-panel" style="display:none">
-          <div id="ctrl-info-top"></div>
-          <div id="ctrl-info-main"></div>
-          <div id="ctrl-info-bottom"></div>
+      <div class="ctrl-section" id="ctrl-section-infotext">
+        <div class="ctrl-collapse-toggle" id="ctrl-infotext-toggle" onclick="_ctrlToggleInfoText()">
+          <span class="ctrl-collapse-label">&#x203A; Info</span>
+          <span class="ctrl-collapse-chevron" id="ctrl-infotext-chevron">&#x25BE;</span>
+        </div>
+        <div id="ctrl-infotext-panel" style="display:none">
+            <div id="ctrl-info-top"></div>
+            <div id="ctrl-info-main"></div>
+            <div id="ctrl-info-bottom"></div>
+        </div>
       </div>
       <!-- Seek bar -->
       <div id="ctrl-seek-row">
@@ -2800,9 +2987,23 @@ _HTML = r"""<!DOCTYPE html>
         <div id="ctrl-vol-wrap">
           <button class="ctrl-btn ctrl-btn-sm" id="ctrl-vol-btn" onclick="_ctrlToggleVolume()" title="Volume">&#x1F50A;</button>
           <div id="ctrl-vol-slider-wrap" style="display:none">
-            <input id="ctrl-vol-slider" type="range" min="0" max="100" value="100"
-                   oninput="_ctrlVolumeChange(this.value)">
-            <span id="ctrl-vol-label">100</span>
+            <div id="ctrl-bzz-row">
+              <span id="ctrl-bzz-label-hd">BUZZ</span>
+              <input id="ctrl-bzz-slider" type="range" min="0" max="150" value="100"
+                     oninput="_ctrlBzzChange(this.value)">
+              <span id="ctrl-bzz-label">100%</span>
+            </div>
+            <div id="ctrl-bgm-row">
+              <span id="ctrl-bgm-label-hd">BGM</span>
+              <input id="ctrl-bgm-slider" type="range" min="0" max="150" value="100"
+                     oninput="_ctrlBgmChange(this.value)">
+              <span id="ctrl-bgm-label">100%</span>
+            </div>
+            <div id="ctrl-vol-slider-row">
+              <input id="ctrl-vol-slider" type="range" min="0" max="100" value="100"
+                     oninput="_ctrlVolumeChange(this.value)">
+              <span id="ctrl-vol-label">100</span>
+            </div>
           </div>
         </div>
         <div id="ctrl-buttons">
@@ -2896,6 +3097,8 @@ _HTML = r"""<!DOCTYPE html>
       if (playerName) socket.emit('set_name', { name: playerName });
       const storedPw = localStorage.getItem('gta_host_pw');
       if (storedPw) { _lastClaimPw = storedPw; socket.emit('claim_host', { password: storedPw }); }
+      const buzzCookie = document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('buzz_preset_index='));
+      if (buzzCookie) { const idx = parseInt(buzzCookie.split('=')[1]); if (!isNaN(idx)) socket.emit('host_action', {action:'set_buzz_preset', index:idx, silent:true}); }
     });
     let _currentQid  = null;      // qid of the active question
     let _currentQuestionTitle = '';  // title of the active question
@@ -2920,6 +3123,76 @@ _HTML = r"""<!DOCTYPE html>
     let _buzzerState = { open: false, locked: false, order: [] };
     let _hostMessages = [];
     let _hostMsgToastTimer = null;
+    let _audioCtx = null;
+    let _hostMsgPopupsEnabled = true;
+    let _chimeVolume = 0.28;
+    let _lastChimeVolume = 0.28;
+    function _getCookie(name) {
+      const m = document.cookie.match('(?:^|; )' + name + '=([^;]*)');
+      return m ? decodeURIComponent(m[1]) : null;
+    }
+    function _setCookie(name, value) {
+      const exp = new Date(Date.now() + 365*24*60*60*1000).toUTCString();
+      document.cookie = name + '=' + encodeURIComponent(value) + '; expires=' + exp + '; path=/';
+    }
+    function _updateHostPopupState() {
+      const btn = document.getElementById('hm-popup-btn');
+      if (!btn) return;
+      btn.classList.toggle('off', !_hostMsgPopupsEnabled);
+      btn.title = _hostMsgPopupsEnabled ? 'Host message popups: ON' : 'Host message popups: OFF';
+    }
+    function _setHostMsgPopupsEnabled(enabled, save = true) {
+      _hostMsgPopupsEnabled = !!enabled;
+      if (save) _setCookie('hm_popups_enabled', _hostMsgPopupsEnabled ? '1' : '0');
+      _updateHostPopupState();
+    }
+    function _toggleHostMessagePopups() {
+      _setHostMsgPopupsEnabled(!_hostMsgPopupsEnabled);
+    }
+    function _initHostMsgPopups() {
+      const saved = _getCookie('hm_popups_enabled');
+      if (saved !== null) {
+        _hostMsgPopupsEnabled = !(saved === '0' || String(saved).toLowerCase() === 'false');
+      }
+      _updateHostPopupState();
+    }
+    function _updateBellState() {
+      const btn = document.getElementById('hm-bell-btn');
+      if (btn) btn.classList.toggle('muted', _chimeVolume === 0);
+    }
+    function _setChimeVolume(val, save = true) {
+      _chimeVolume = parseFloat(val) || 0;
+      if (_chimeVolume > 0) _lastChimeVolume = _chimeVolume;
+      if (save) _setCookie('hm_chime_vol', String(_chimeVolume));
+      const slider = document.getElementById('hm-vol-slider');
+      if (slider) slider.value = _chimeVolume;
+      _updateBellState();
+    }
+    function _toggleChimeMute() {
+      _setChimeVolume(_chimeVolume === 0 ? _lastChimeVolume : 0);
+    }
+    function _initChimeVolume() {
+      const saved = _getCookie('hm_chime_vol');
+      if (saved !== null) _chimeVolume = parseFloat(saved) || 0;
+      if (_chimeVolume > 0) _lastChimeVolume = _chimeVolume;
+      const slider = document.getElementById('hm-vol-slider');
+      if (slider) slider.value = _chimeVolume;
+      _updateBellState();
+    }
+    function _getAudioCtx() {
+      if (!_audioCtx) {
+        try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+      }
+      return _audioCtx;
+    }
+    // Unlock AudioContext on first user gesture so chimes can play later
+    document.addEventListener('click',     () => { try { _getAudioCtx()?.resume(); } catch(e){} }, { once: false, passive: true });
+    document.addEventListener('touchstart', () => { try { _getAudioCtx()?.resume(); } catch(e){} }, { once: false, passive: true });
+    document.addEventListener('keydown',    () => { try { _getAudioCtx()?.resume(); } catch(e){} }, { once: false, passive: true });
+    document.addEventListener('DOMContentLoaded', () => {
+      _initHostMsgPopups();
+      _initChimeVolume();
+    });
     /* ── Timer state ── */
     let _timerSeconds  = 0;
     let _timerPaused   = false;
@@ -4787,19 +5060,48 @@ _HTML = r"""<!DOCTYPE html>
       cnt.textContent = String(_hostMessages.length);
       list.innerHTML = rows.join('') || '<div class="hm-item" style="color:#667">No messages yet.</div>';
     }
+    function _playHostMsgChime() {
+      try {
+        const ctx = _getAudioCtx();
+        if (!ctx) return;
+        ctx.resume().then(() => {
+          const t = ctx.currentTime;
+          // Two-tone ascending chime
+          [[660, 0, 0.12], [880, 0.13, 0.22]].forEach(([freq, start, dur]) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, t + start);
+            gain.gain.setValueAtTime(0, t + start);
+            gain.gain.linearRampToValueAtTime(Math.max(0.0001, _chimeVolume), t + start + 0.03);
+            gain.gain.exponentialRampToValueAtTime(0.0001, t + start + dur);
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.start(t + start); osc.stop(t + start + dur);
+          });
+        });
+      } catch (e) {}
+      try { navigator.vibrate && navigator.vibrate([60, 40, 80]); } catch (e) {}
+    }
     function _showHostMessageToast(entry) {
       if (!_isHost) return;
+      if (!_hostMsgPopupsEnabled) {
+        _playHostMsgChime();
+        return;
+      }
       const toast = document.getElementById('host-msg-toast');
       if (!toast) return;
       const name = _escHtml((entry && entry.name) ? entry.name : 'Player');
       const text = _escHtml((entry && entry.text) ? entry.text : '');
-      toast.innerHTML = '<div class="from">\u2709 ' + name + '</div><div class="body">' + text + '</div>';
+      toast.innerHTML = '<div class="from">' + name + '</div><div class="body">' + text + '</div>';
+      toast.classList.remove('active');
+      void toast.offsetWidth; // force reflow so animation restarts
       toast.classList.add('active');
+      _playHostMsgChime();
       if (_hostMsgToastTimer) clearTimeout(_hostMsgToastTimer);
       _hostMsgToastTimer = setTimeout(() => {
         toast.classList.remove('active');
         _hostMsgToastTimer = null;
-      }, 4200);
+      }, 6000);
     }
 
     function _showToast(msg, ms = 3000) {
@@ -5095,6 +5397,8 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlSearchListOpen = false;
       _ctrlDiffListOpen = false;
       _ctrlAutoBonusListOpen = false;
+      _ctrlDirListOpen = false;
+      _ctrlBuzzSoundListOpen = false;
       const overlay = document.getElementById('ctrl-list-popup-overlay');
       const box = document.getElementById('ctrl-list-popup-box');
       if (overlay) overlay.classList.remove('active');
@@ -5225,6 +5529,14 @@ _HTML = r"""<!DOCTYPE html>
         if (vs) vs.value = data.volume;
         if (vl) vl.textContent = data.volume;
       }
+      if (data.bgm_modifier !== undefined) {
+        _ctrlBgmPct = Math.round(data.bgm_modifier * 100);
+        _ctrlBgmRender();
+      }
+      if (data.bzz_modifier !== undefined) {
+        _ctrlBzzPct = Math.round(data.bzz_modifier * 100);
+        _ctrlBzzRender();
+      }
       if (data.autoplay !== undefined) _ctrlSetAutoplayMode(data.autoplay);
       _ctrlRenderInfo(_currentMetadata);
     });
@@ -5334,6 +5646,8 @@ _HTML = r"""<!DOCTYPE html>
       if (toggle) {
         toggle.classList.toggle('is-open', !!isOpen);
         toggle.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        const section = toggle.closest('.ctrl-section');
+        if (section) section.classList.toggle('section-open', !!isOpen);
       }
       const chev = document.getElementById(chevronId);
       if (chev) chev.textContent = isOpen ? '\u25BE' : '\u25B8';
@@ -6292,6 +6606,8 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlSearchListOpen = false;
       _ctrlDiffListOpen = false;
       _ctrlAutoBonusListOpen = false;
+      _ctrlDirListOpen = false;
+      _ctrlBuzzSoundListOpen = false;
       _ctrlListPopupClose();
     }
 
@@ -6421,7 +6737,7 @@ _HTML = r"""<!DOCTYPE html>
 
     function _ctrlBuildSearchRow(r, index) {
       const row = document.createElement('div');
-      row.className = 'ctrl-popup-item ctrl-popup-item-search' + (r.filename === _ctrlSearchQueuedFile ? ' ctrl-yt-active' : '');
+      row.className = 'ctrl-popup-item';
       row.title = r.filename;
       row.dataset.filename = r.filename || '';
 
@@ -6431,9 +6747,13 @@ _HTML = r"""<!DOCTYPE html>
       const qLower = _ctrlSearchQuery.toLowerCase();
       const enMatch = !!(qLower && titleEn && titleEn.toLowerCase().includes(qLower));
       const jpMatch = !!(qLower && titleJp && titleJp.toLowerCase().includes(qLower));
+      const fnMatch = !!(qLower && r.filename && r.filename.toLowerCase().includes(qLower));
       let titleText = titleEn || titleJp || titleFallback || 'Unknown Title';
       if (titleEn && titleJp && jpMatch && !enMatch) {
         titleText = titleEn + ' (' + titleJp + ')';
+      } else if (fnMatch && !enMatch && !jpMatch) {
+        const fnBase = String(r.filename || '').replace(/^.*[\\/]/, '');
+        titleText = (titleEn || titleJp || titleFallback || 'Unknown Title') + ' (' + fnBase + ')';
       }
       const slugText = String(r.slug || '').trim();
       const labelText = slugText ? (titleText + ' ' + slugText) : titleText;
@@ -6449,41 +6769,7 @@ _HTML = r"""<!DOCTYPE html>
       const metaParts = [seasonText, formatText, studioText].filter(Boolean);
       const metaText = metaParts.join(' | ');
 
-      const addBtn = document.createElement('button');
-      addBtn.className = 'ctrl-popup-item-add';
-      addBtn.textContent = '+';
-      addBtn.title = 'Add to playlist after current';
-      addBtn.onclick = e => {
-        e.stopPropagation();
-        socket.emit('host_action', {action: 'add_theme', filename: r.filename});
-      };
-
-      const queueBtn = document.createElement('button');
-      queueBtn.className = 'ctrl-popup-item-add';
-      queueBtn.textContent = 'Q';
-      queueBtn.title = 'Queue next (standard queue logic)';
-      queueBtn.onclick = e => {
-        e.stopPropagation();
-        socket.emit('host_action', {action: 'queue_theme_only', filename: r.filename});
-        _ctrlSearchQueuedFile = (r.filename === _ctrlSearchQueuedFile) ? null : r.filename;
-        document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item-search').forEach(el => el.classList.remove('ctrl-yt-active'));
-        if (_ctrlSearchQueuedFile && !_ctrlSearchIsInfinite) row.classList.add('ctrl-yt-active');
-      };
-
-      const playBtn = document.createElement('button');
-      playBtn.className = 'ctrl-popup-item-add';
-      playBtn.textContent = '▶';
-      playBtn.title = 'Play immediately';
-      playBtn.onclick = e => {
-        e.stopPropagation();
-        socket.emit('host_action', {action: 'play_theme_now', filename: r.filename});
-      };
-
-      const actionsCol = document.createElement('div');
-      actionsCol.className = 'ctrl-popup-search-actions';
-      actionsCol.appendChild(playBtn);
-      actionsCol.appendChild(queueBtn);
-      actionsCol.appendChild(addBtn);
+      const actionId = _themeActionRegister(r.filename, labelText);
 
       const textCol = document.createElement('div');
       textCol.className = 'ctrl-popup-search-text';
@@ -6500,17 +6786,9 @@ _HTML = r"""<!DOCTYPE html>
       textCol.appendChild(lineArtist);
       textCol.appendChild(lineMeta);
 
-      row.appendChild(actionsCol);
       row.appendChild(textCol);
 
-      row.onclick = () => {
-        socket.emit('host_action', {action: 'queue_theme', filename: r.filename});
-        if (!_ctrlSearchIsInfinite) {
-          _ctrlSearchQueuedFile = (r.filename === _ctrlSearchQueuedFile) ? null : r.filename;
-          document.querySelectorAll('#ctrl-list-popup-list .ctrl-popup-item-search').forEach(e => e.classList.remove('ctrl-yt-active'));
-          if (_ctrlSearchQueuedFile) row.classList.add('ctrl-yt-active');
-        }
-      };
+      row.onclick = () => _openThemeActionPrompt(actionId);
 
       return row;
     }
@@ -6562,6 +6840,216 @@ _HTML = r"""<!DOCTYPE html>
       const titleEl = document.getElementById('ctrl-list-popup-title');
       if (titleEl) titleEl.textContent = 'Search Themes (' + _ctrlSearchResultsAll.length + ')';
       _ctrlRenderSearchResults(true);
+    });
+
+    // ── Directory browser ──
+    let _ctrlDirListOpen = false;
+    let _ctrlDirStatType = null;   // e.g. 'artist'
+    let _ctrlDirGroupLabel = null; // e.g. 'Yuki Kajiura'
+    let _ctrlDirGroupFiles = [];   // filenames for level-3 back navigation
+
+    const _CTRL_DIR_LS_KEY = 'ctrl_dir_pos';
+    function _ctrlDirSavePos(statType, groupLabel) {
+      try { localStorage.setItem(_CTRL_DIR_LS_KEY, JSON.stringify({statType: statType || null, groupLabel: groupLabel || null})); } catch(e){}
+    }
+    function _ctrlDirLoadPos() {
+      try { return JSON.parse(localStorage.getItem(_CTRL_DIR_LS_KEY) || 'null') || {}; } catch(e){ return {}; }
+    }
+
+    const _ctrlDirStatTypes = [
+      {key:'artist',  label:'Themes by Artist'},
+      {key:'series',  label:'Themes by Series'},
+      {key:'season',  label:'Themes by Season'},
+      {key:'year',    label:'Themes by Year'},
+      {key:'studio',  label:'Themes by Studio'},
+      {key:'tag',     label:'Themes by Tag'},
+      {key:'type',    label:'Themes by Type'},
+      {key:'slug',    label:'Themes by Slug'},
+    ];
+
+    function _ctrlToggleDirectoryList() {
+      const opening = !_ctrlDirListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlDirListOpen = true;
+        const saved = _ctrlDirLoadPos();
+        if (saved.statType) {
+          // Restore to last-used stat type (or group if one was open)
+          _ctrlDirStatType = saved.statType;
+          _ctrlDirGroupLabel = saved.groupLabel || null;
+          const statLabel = (_ctrlDirStatTypes.find(t => t.key === saved.statType) || {}).label || 'Directory';
+          _ctrlListPopupOpen(statLabel + ' — Loading…', 'dir_type');
+          const list = document.getElementById('ctrl-list-popup-list');
+          if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+          if (saved.groupLabel) {
+            socket.emit('host_action', {action: 'get_directory_themes', stat_type: saved.statType, group_label: saved.groupLabel});
+          } else {
+            socket.emit('host_action', {action: 'get_directory_groups', stat_type: saved.statType});
+          }
+        } else {
+          _ctrlDirStatType = null;
+          _ctrlListPopupOpen('Directory', 'dir_type');
+          _ctrlRenderDirStatTypes();
+        }
+      }
+    }
+
+    function _ctrlRenderDirStatTypes() {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      const saved = _ctrlDirLoadPos();
+      if (saved.statType) {
+        // Show a quick "last used" hint at top
+        const hint = document.createElement('div');
+        hint.style.cssText = 'padding:2px 10px 5px;font-size:0.75em;color:#557;';
+        const savedLabel = (_ctrlDirStatTypes.find(t => t.key === saved.statType) || {}).label || saved.statType;
+        hint.textContent = 'Last: ' + savedLabel + (saved.groupLabel ? ' › ' + saved.groupLabel : '');
+        list.appendChild(hint);
+      }
+      _ctrlDirStatTypes.forEach(t => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item';
+        el.textContent = t.label;
+        el.onclick = () => {
+          _ctrlDirStatType = t.key;
+          _ctrlDirGroupLabel = null;
+          _ctrlDirSavePos(t.key, null);
+          const titleEl = document.getElementById('ctrl-list-popup-title');
+          if (titleEl) titleEl.textContent = t.label + ' — Loading…';
+          list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+          socket.emit('host_action', {action: 'get_directory_groups', stat_type: t.key});
+        };
+        list.appendChild(el);
+      });
+    }
+
+    socket.on('directory_groups', data => {
+      if (!_ctrlDirListOpen) return;
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      const titleEl = document.getElementById('ctrl-list-popup-title');
+      const statLabel = (_ctrlDirStatTypes.find(t => t.key === data.stat_type) || {}).label || 'Directory';
+      if (titleEl) titleEl.textContent = statLabel + ' (' + (data.groups ? data.groups.length : 0) + ')';
+      // Back button
+      const back = document.createElement('div');
+      back.className = 'ctrl-popup-item-back';
+      back.innerHTML = '&#x2190; Back';
+      back.onclick = () => {
+        _ctrlDirStatType = null;
+        _ctrlDirGroupLabel = null;
+        _ctrlDirSavePos(null, null);
+        if (titleEl) titleEl.textContent = 'Directory';
+        _ctrlRenderDirStatTypes();
+      };
+      list.appendChild(back);
+      const div = document.createElement('div'); div.className = 'ctrl-popup-divider'; list.appendChild(div);
+      if (!data.groups || !data.groups.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:8px;color:#556;font-size:0.85em';
+        empty.textContent = 'No entries found';
+        list.appendChild(empty);
+        return;
+      }
+      data.groups.forEach(g => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item';
+        const pct = data.total ? (g.count / data.total * 100).toFixed(1) : 0;
+        el.innerHTML = '<span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(g.label) + '</span>' +
+                       '<span class="ctrl-popup-item-dur">' + g.count + ' (' + pct + '%)</span>';
+        el.onclick = () => {
+          _ctrlDirGroupLabel = g.label;
+          _ctrlDirSavePos(data.stat_type, g.label);
+          if (titleEl) titleEl.textContent = _ctrlEscapeHtml(g.label) + ' — Loading…';
+          list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+          socket.emit('host_action', {action: 'get_directory_themes', stat_type: _ctrlDirStatType, group_label: g.label});
+        };
+        list.appendChild(el);
+      });
+    });
+
+    socket.on('directory_themes', data => {
+      if (!_ctrlDirListOpen) return;
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      const box = document.getElementById('ctrl-list-popup-box');
+      if (box) box.classList.add('search-mode');
+      list.innerHTML = '';
+      const titleEl = document.getElementById('ctrl-list-popup-title');
+      const groupLabel = data.group_label || _ctrlDirGroupLabel || '';
+      const statLabel = (_ctrlDirStatTypes.find(t => t.key === data.stat_type) || {}).label || 'Directory';
+      const results = Array.isArray(data.results) ? data.results : [];
+      if (titleEl) titleEl.textContent = _ctrlEscapeHtml(groupLabel) + ' (' + results.length + ')';
+      // Back button → returns to group list
+      const back = document.createElement('div');
+      back.className = 'ctrl-popup-item-back';
+      back.innerHTML = '&#x2190; ' + _ctrlEscapeHtml(statLabel);
+      back.onclick = () => {
+        if (box) box.classList.remove('search-mode');
+        _ctrlDirGroupLabel = null;
+        _ctrlDirSavePos(data.stat_type, null);
+        if (titleEl) titleEl.textContent = statLabel + ' — Loading…';
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+        socket.emit('host_action', {action: 'get_directory_groups', stat_type: data.stat_type});
+      };
+      list.appendChild(back);
+      const divEl = document.createElement('div'); divEl.className = 'ctrl-popup-divider'; list.appendChild(divEl);
+      if (!results.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:8px;color:#556;font-size:0.85em';
+        empty.textContent = 'No themes found';
+        list.appendChild(empty);
+        return;
+      }
+      // Re-use search row builder — set query to empty so no highlighting
+      const savedQuery = _ctrlSearchQuery;
+      _ctrlSearchQuery = '';
+      results.forEach((r, i) => list.appendChild(_ctrlBuildSearchRow(r, i)));
+      _ctrlSearchQuery = savedQuery;
+    });
+
+    // ── Buzzer sound preset selector ─────────────────────────────────────────
+    let _ctrlBuzzSoundListOpen = false;
+
+    function _ctrlToggleBuzzSoundList() {
+      const opening = !_ctrlBuzzSoundListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlBuzzSoundListOpen = true;
+        _ctrlListPopupOpen('Buzzer Sound', 'buzz_sound');
+        const list = document.getElementById('ctrl-list-popup-list');
+        if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+        socket.emit('host_action', {action: 'get_buzz_presets'});
+      }
+    }
+
+    socket.on('buzz_presets', data => {
+      if (!_ctrlBuzzSoundListOpen) return;
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      const titleEl = document.getElementById('ctrl-list-popup-title');
+      if (titleEl) titleEl.textContent = 'Buzzer Sound';
+      const hint = document.createElement('div');
+      hint.style.cssText = 'padding:3px 10px 6px;font-size:0.75em;color:#557;';
+      hint.textContent = 'Click a preset to select and play a test sound.';
+      list.appendChild(hint);
+      (data.presets || []).forEach(p => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item';
+        const isCurrent = p.index === data.current;
+        if (isCurrent) el.style.cssText = 'background:#1a2a1a;border-left:2px solid #4a8;';
+        el.innerHTML =
+          '<span style="display:inline-block;width:1.2em;color:#4c8;font-size:0.9em">' +
+          (isCurrent ? '\u2713' : '') + '</span>' +
+          '<span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(p.name) + '</span>';
+        el.onclick = () => {
+          socket.emit('host_action', {action: 'set_buzz_preset', index: p.index});
+          document.cookie = 'buzz_preset_index=' + p.index + ';path=/;max-age=31536000';
+        };
+        list.appendChild(el);
+      });
     });
 
     const _ctrlDiffOptions = [
@@ -6661,6 +7149,9 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     socket.on('toggles_update', data => {
+      _ctrlCurrentToggles = data || {};
+      const sessionCount = Math.max(0, Number(data.session_history_count || 0));
+      _ctrlUpdateResetSessionButton(sessionCount);
       const map = {
         'ctrl-tgl-blind':     !!data.blind,
         'ctrl-tgl-peek':      !!data.peek,
@@ -6788,52 +7279,73 @@ _HTML = r"""<!DOCTYPE html>
     ];
     let _ctrlPinnedExtras = new Set(_CTRL_DEFAULT_PINNED);
     let _ctrlExtrasEditMode = false;
+    let _ctrlCurrentToggles = {};
+
+    function _ctrlUpdateResetSessionButton(count) {
+      const safeCount = Math.max(0, Number(count || 0));
+      const active = safeCount > 0;
+      const label = 'Reset Session [' + safeCount + ']';
+      const title = safeCount > 0
+        ? ('Reset the session history for ' + safeCount + ' theme' + (safeCount !== 1 ? 's' : '') + '.')
+        : 'Reset the current session history.';
+      document.querySelectorAll('[data-extra-id="reset_session_history"],[data-proxy-extra="reset_session_history"]').forEach(el => {
+        el.innerHTML = label;
+        el.title = title;
+        el.classList.toggle('ctrl-toggle-active', active);
+      });
+      if (_ctrlExtrasConfig.reset_session_history) {
+        _ctrlExtrasConfig.reset_session_history.html = label;
+        _ctrlExtrasConfig.reset_session_history.title = title;
+      }
+    }
 
     const _ctrlExtrasConfig = {
       // Queue
       'lt_stop':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x23F9;',  title: 'Stop all queued rounds' },
-      'lt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Lightning', title: 'Lightning round types' },
+      'lt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Lightning', title: 'Open lightning round type chooser' },
 
       'lt_dice':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F3B2;', title: 'Variety Lightning Round', ltMode: 'variety' },
       'yt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'YouTube',   title: 'YouTube videos', serverCtrl: true },
       'fl':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
       'search':       { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F50D;', title: 'Search themes' },
+      'directory':    { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F4C2;', title: 'Browse directory (by artist, season, series…)' },
       // Bonus
-      'b_multiple':   { classes: 'ctrl-sect-bonus',                           html: 'Multiple',  title: '' },
-      'b_year':       { classes: 'ctrl-sect-bonus',                           html: 'Year',      title: '' },
-      'b_tags':       { classes: 'ctrl-sect-bonus',                           html: 'Tags',      title: '' },
-      'b_members':    { classes: 'ctrl-sect-bonus',                           html: 'Members',   title: '' },
-      'b_score':      { classes: 'ctrl-sect-bonus',                           html: 'Score',     title: '' },
-      'b_rank':       { classes: 'ctrl-sect-bonus',                           html: 'Rank',      title: '' },
-      'b_free':       { classes: 'ctrl-sect-bonus',                           html: 'Free',      title: '' },
-      'bonus_studio': { classes: 'ctrl-sect-bonus',                           html: 'Studio',    title: '' },
-      'bonus_artist': { classes: 'ctrl-sect-bonus',                           html: 'Artist',    title: '' },
-      'bonus_song':   { classes: 'ctrl-sect-bonus',                           html: 'Song',      title: '' },
-      'bonus_chars':  { classes: 'ctrl-sect-bonus',                           html: 'Characters', title: '' },
-      'bonus_buzzer': { classes: 'ctrl-sect-bonus',                           html: 'Buzzer',    title: '' },
+      'b_multiple':   { classes: 'ctrl-sect-bonus',                           html: 'Multiple',  title: 'Multiple choice: guess the anime from 4 options' },
+      'b_year':       { classes: 'ctrl-sect-bonus',                           html: 'Year',      title: 'Guess the year this anime first aired' },
+      'b_tags':       { classes: 'ctrl-sect-bonus',                           html: 'Tags',      title: 'Guess the genres/themes/demographics tags' },
+      'b_members':    { classes: 'ctrl-sect-bonus',                           html: 'Members',   title: 'Guess the number of MyAnimeList members' },
+      'b_score':      { classes: 'ctrl-sect-bonus',                           html: 'Score',     title: 'Guess the MyAnimeList score (0.0–10.0)' },
+      'b_rank':       { classes: 'ctrl-sect-bonus',                           html: 'Rank',      title: 'Guess the popularity rank on MyAnimeList' },
+      'b_free':       { classes: 'ctrl-sect-bonus',                           html: 'Free',      title: 'Open a free-answer prompt' },
+      'bonus_studio': { classes: 'ctrl-sect-bonus',                           html: 'Studio',    title: 'Guess the studio that made this anime' },
+      'bonus_artist': { classes: 'ctrl-sect-bonus',                           html: 'Artist',    title: 'Guess the artist who performed the theme' },
+      'bonus_song':   { classes: 'ctrl-sect-bonus',                           html: 'Song',      title: 'Guess the name of the song' },
+      'bonus_chars':  { classes: 'ctrl-sect-bonus',                           html: 'Characters', title: 'Identify 2 characters from this anime out of 6 shown' },
+      'bonus_buzzer': { classes: 'ctrl-sect-bonus',                           html: 'Buzzer',    title: 'Open a buzzer-only web bonus round' },
       'buzz_lock':    { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Buzz Lock', title: 'Toggle buzzer lock' },
       'buzz_reset':   { classes: 'ctrl-sect-bonus',                           html: 'Buzz Reset', title: 'Reset buzzer order' },
-      'auto_bonus':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Auto Bonus', title: 'Auto bonus type at round start' },
+      'buzz_sound':   { classes: 'ctrl-sect-bonus',                           html: 'Buzz Sound', title: 'Choose buzzer sound preset' },
+      'auto_bonus':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Auto Bonus', title: 'Automatically trigger a bonus round at the start of each theme' },
       // Toggles
-      'difficulty':   { classes: 'ctrl-sect-toggle',                          html: 'Difficulty', title: 'Set playlist difficulty' },
+      'difficulty':   { classes: 'ctrl-sect-toggle',                          html: 'Difficulty', title: 'Set playlist difficulty filter' },
       'tgl_fullscreen':{ classes: 'ctrl-sect-toggle',                         html: 'Fullscreen', title: 'Toggle VLC fullscreen mode' },
-      'tgl_blind':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Blind',     title: 'Toggle blind' },
-      'tgl_peek':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Peek',      title: 'Toggle peek' },
-      'tgl_narrow':   { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25C0;',  title: 'Narrow peek' },
-      'tgl_widen':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25B6;',  title: 'Widen peek' },
+      'tgl_blind':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Blind',     title: 'Toggle blind mode' },
+      'tgl_peek':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Peek',      title: 'Toggle peek (partial reveal)' },
+      'tgl_narrow':   { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25C0;',  title: 'Narrow peek window' },
+      'tgl_widen':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25B6;',  title: 'Widen peek window' },
       'tgl_mute':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Mute',      title: 'Toggle mute' },
       'tgl_censors':  { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Censors (<span class="ctrl-censor-count">0</span>)', title: 'Toggle censors' },
       'tgl_shortcuts':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Keys',      title: 'Toggle keyboard shortcuts' },
-      'tgl_dock':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Dock',      title: 'Toggle dock' },
+      'tgl_dock':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Dock',      title: 'Toggle docked player' },
       'tgl_info_start':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',         html: 'Info Start', title: 'Toggle auto-show info at start' },
       'tgl_info_end': { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Info End',  title: 'Toggle auto-show info at end' },
       // Info Reveal
-      'rev_info':     { classes: 'ctrl-sect-reveal',                          html: 'Show Information', title: 'Show full info' },
-      'rev_title':    { classes: 'ctrl-sect-reveal',                          html: 'Title',     title: 'Show title only' },
-      'reveal_artist':{ classes: 'ctrl-sect-reveal',                          html: 'Artist',    title: 'Show artist info' },
-      'reveal_studio':{ classes: 'ctrl-sect-reveal',                          html: 'Studio',    title: 'Show studio info' },
-      'reveal_season':{ classes: 'ctrl-sect-reveal',                          html: 'Season',    title: 'Show season rankings' },
-      'reveal_year':  { classes: 'ctrl-sect-reveal',                          html: 'Year',      title: 'Show year rankings' },
+      'rev_info':     { classes: 'ctrl-sect-reveal',                          html: 'Show Information', title: 'Show full information about the current theme' },
+      'rev_title':    { classes: 'ctrl-sect-reveal',                          html: 'Title',     title: 'Show anime title only' },
+      'reveal_artist':{ classes: 'ctrl-sect-reveal',                          html: 'Artist',    title: 'Open artist info popup' },
+      'reveal_studio':{ classes: 'ctrl-sect-reveal',                          html: 'Studio',    title: 'Open studio info popup' },
+      'reveal_season':{ classes: 'ctrl-sect-reveal',                          html: 'Season',    title: 'Open season rankings popup' },
+      'reveal_year':  { classes: 'ctrl-sect-reveal',                          html: 'Year',      title: 'Open year rankings popup' },
       // Marks
       'mark_tag':     { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x2717;',  title: 'Tag' },
       'mark_fav':     { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '♥',         title: 'Favorite' },
@@ -6841,12 +7353,13 @@ _HTML = r"""<!DOCTYPE html>
       'mark_peek':    { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x1F440;', title: 'Peek Mark' },
       'mark_mute_peek':{ classes: 'ctrl-mark-btn ctrl-sect-mark',             html: '&#x1F507;', title: 'Mute Peek Mark' },
       // Session
-      'end_session':  { classes: 'ctrl-sect-session',                         html: 'End',       title: 'End session' },
+      'reset_session_history': { classes: 'ctrl-sect-session',                html: 'Reset Session [0]', title: 'Clear the current session history' },
+      'end_session':  { classes: 'ctrl-sect-session',                         html: 'End',       title: 'End the current session' },
       // Scoreboard actions (invoke menu commands in main app)
-      'scoreboard_open_close': { classes: 'ctrl-sect-scoreboard',             html: 'Open/Close', title: 'Open or close scoreboard' },
-      'scoreboard_toggle': { classes: 'ctrl-sect-scoreboard',                 html: 'Toggle',    title: 'Toggle scoreboard visibility' },
-      'scoreboard_align':  { classes: 'ctrl-sect-scoreboard',                 html: 'Align',     title: 'Flip scoreboard alignment' },
-      'scoreboard_extend': { classes: 'ctrl-sect-scoreboard',                 html: 'Extend',    title: 'Toggle extended stats' },
+      'scoreboard_open_close': { classes: 'ctrl-sect-scoreboard',             html: 'Open/Close', title: 'Open or close the scoreboard window' },
+      'scoreboard_toggle': { classes: 'ctrl-sect-scoreboard',                 html: 'Toggle',    title: 'Toggle scoreboard visibility on screen' },
+      'scoreboard_align':  { classes: 'ctrl-sect-scoreboard',                 html: 'Align',     title: 'Flip scoreboard alignment (left/right)' },
+      'scoreboard_extend': { classes: 'ctrl-sect-scoreboard',                 html: 'Extend',    title: 'Toggle extended scoreboard stats' },
       'scoreboard_grow':   { classes: 'ctrl-sect-scoreboard',                 html: 'Grow',      title: 'Increase scoreboard size' },
       'scoreboard_shrink': { classes: 'ctrl-sect-scoreboard',                 html: 'Shrink',    title: 'Decrease scoreboard size' },
     };
@@ -6858,6 +7371,7 @@ _HTML = r"""<!DOCTYPE html>
       'yt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleYouTubeList(); },
       'fl':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleFlList(); },
       'search':       () => { _ctrlCloseExtrasPopup(); _ctrlToggleSearchRow(); },
+      'directory':    () => { _ctrlCloseExtrasPopup(); _ctrlToggleDirectoryList(); },
       'b_multiple':   () => { socket.emit('host_action',{action:'invoke',id:'bonus_multiple'}); },
       'b_year':       () => { socket.emit('host_action',{action:'invoke',id:'bonus_year'}); },
       'b_tags':       () => { socket.emit('host_action',{action:'invoke',id:'bonus_tags'}); },
@@ -6872,6 +7386,7 @@ _HTML = r"""<!DOCTYPE html>
       'bonus_buzzer': () => { socket.emit('host_action',{action:'invoke',id:'bonus_buzzer'}); _ctrlCloseExtrasPopup(); },
       'buzz_lock':    () => socket.emit('host_action',{action:'invoke',id:'buzzer_lock'}),
       'buzz_reset':   () => socket.emit('host_action',{action:'invoke',id:'buzzer_reset'}),
+      'buzz_sound':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleBuzzSoundList(); },
       'tgl_blind':    () => socket.emit('host_action',{action:'invoke',id:'blind'}),
       'tgl_peek':     () => socket.emit('host_action',{action:'invoke',id:'peek'}),
       'tgl_narrow':   () => socket.emit('host_action',{action:'invoke',id:'narrow_peek'}),
@@ -6893,6 +7408,13 @@ _HTML = r"""<!DOCTYPE html>
       'mark_blind':   () => socket.emit('host_action',{action:'invoke',id:'blind_mark'}),
       'mark_peek':    () => socket.emit('host_action',{action:'invoke',id:'peek_mark'}),
       'mark_mute_peek':() => socket.emit('host_action',{action:'invoke',id:'mute_peek_mark'}),
+      'reset_session_history': () => {
+        const count = Math.max(0, Number(((_ctrlCurrentToggles || {}).session_history_count) || 0));
+        const msg = 'Reset the session history for ' + count + ' theme' + (count !== 1 ? 's' : '') + '?\n\nThis cannot be undone.';
+        if (!window.confirm(msg)) return;
+        socket.emit('host_action',{action:'reset_session_history'});
+        _ctrlCloseExtrasPopup();
+      },
       'end_session':  () => { socket.emit('host_action',{action:'invoke',id:'end_session'}); _ctrlCloseExtrasPopup(); },
       // Scoreboard actions — call main app menu registry via invoke
       'scoreboard_open_close': () => socket.emit('host_action',{action:'toggle_scoreboard'}),
@@ -6905,6 +7427,16 @@ _HTML = r"""<!DOCTYPE html>
       'tgl_fullscreen':() => socket.emit('host_action',{action:'invoke',id:'fullscreen'}),
       'auto_bonus':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleAutoBonusList(); },
     };
+
+    function _ctrlSyncExtraTooltips() {
+      document.querySelectorAll('[data-extra-id]').forEach(el => {
+        const eid = el.dataset.extraId;
+        const cfg = _ctrlExtrasConfig[eid];
+        if (!cfg) return;
+        if (cfg.title) el.title = cfg.title;
+        else el.removeAttribute('title');
+      });
+    }
 
     function _ctrlExtraClick(eid) {
       if (_ctrlExtrasEditMode) { _ctrlToggleExtraPin(eid); return; }
@@ -7042,6 +7574,7 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function _ctrlOpenExtrasPopup() {
+      _ctrlSyncExtraTooltips();
       document.getElementById('ctrl-extras-popup-overlay').classList.add('active');
     }
     function _ctrlCloseExtrasPopup() {
@@ -7122,6 +7655,34 @@ _HTML = r"""<!DOCTYPE html>
       const lbl = document.getElementById('ctrl-vol-label');
       if (lbl) lbl.textContent = val;
       socket.emit('host_action', { action: 'set_volume', volume: parseInt(val, 10) });
+    }
+
+    let _ctrlBzzPct = 100; // BZZ (buzz sound_volume) as percentage (0-150)
+    function _ctrlBzzRender() {
+      const sl = document.getElementById('ctrl-bzz-slider');
+      const lb = document.getElementById('ctrl-bzz-label');
+      if (sl) sl.value = _ctrlBzzPct;
+      if (lb) lb.textContent = _ctrlBzzPct + '%';
+    }
+    function _ctrlBzzChange(val) {
+      _ctrlBzzPct = Math.max(0, Math.min(150, Math.round(parseFloat(val) || 0)));
+      const lb = document.getElementById('ctrl-bzz-label');
+      if (lb) lb.textContent = _ctrlBzzPct + '%';
+      socket.emit('host_action', { action: 'set_bzz_modifier', modifier: _ctrlBzzPct / 100 });
+    }
+
+    let _ctrlBgmPct = 100; // BGM modifier as percentage (0-150)
+    function _ctrlBgmRender() {
+      const sl = document.getElementById('ctrl-bgm-slider');
+      const lb = document.getElementById('ctrl-bgm-label');
+      if (sl) sl.value = _ctrlBgmPct;
+      if (lb) lb.textContent = _ctrlBgmPct + '%';
+    }
+    function _ctrlBgmChange(val) {
+      _ctrlBgmPct = Math.max(0, Math.min(150, Math.round(parseFloat(val) || 0)));
+      const lb = document.getElementById('ctrl-bgm-label');
+      if (lb) lb.textContent = _ctrlBgmPct + '%';
+      socket.emit('host_action', { action: 'set_bgm_modifier', modifier: _ctrlBgmPct / 100 });
     }
 
     function _ctrlAction(id) {
@@ -7253,6 +7814,29 @@ _HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('.pl-row-title[data-full-title]').forEach(_plSetMidTrunc);
     }
 
+    let _plEntryPopupIndex = -1;
+    function _openPlEntryPopup(index, label) {
+      _plEntryPopupIndex = index;
+      const title = document.getElementById('pl-entry-title');
+      if (title) title.textContent = label || ('Entry #' + (index + 1));
+      const overlay = document.getElementById('pl-entry-overlay');
+      if (overlay) overlay.classList.add('active');
+    }
+    function _closePlEntryPopup() {
+      _plEntryPopupIndex = -1;
+      const overlay = document.getElementById('pl-entry-overlay');
+      if (overlay) overlay.classList.remove('active');
+    }
+    function _plEntryRun(mode) {
+      if (!_isHost || _plEntryPopupIndex < 0) return;
+      if (mode === 'play') {
+        socket.emit('host_action', { action: 'playlist_goto', index: _plEntryPopupIndex });
+      } else if (mode === 'delete') {
+        socket.emit('host_action', { action: 'playlist_delete', index: _plEntryPopupIndex });
+      }
+      _closePlEntryPopup();
+    }
+
     function _plOpen() {
       const vs = document.getElementById('pl-vscroll');
       if (!vs) return;
@@ -7358,7 +7942,7 @@ _HTML = r"""<!DOCTYPE html>
             '<span class="pl-row-title"></span>' +
             '<span class="pl-row-song"></span>';
           el.addEventListener('click', () => {
-            socket.emit('host_action', { action: 'playlist_goto', index: parseInt(el.dataset.plI, 10) });
+            _openPlEntryPopup(parseInt(el.dataset.plI, 10), el.querySelector('.pl-row-title') ? el.querySelector('.pl-row-title').textContent : '');
           });
           spacer.appendChild(el);
         }
@@ -7627,15 +8211,33 @@ _HTML = r"""<!DOCTYPE html>
         const themeCount = Number(data.theme_count || 0);
         const summary = '<div class="artist-themes-summary">' + animeCount + ' anime \u2022 ' + themeCount + ' themes</div>';
         const rows = data.themes.map(item => {
-          const animeTitle = _escHtml((item && item.anime_title) ? item.anime_title : 'Unknown Title');
+          const rawTitle = (item && item.anime_title) ? item.anime_title : 'Unknown Title';
+          const animeTitle = _escHtml(rawTitle);
           const slugs = (item && item.themes && item.themes.length)
-            ? item.themes.map(s => '<span class="artist-theme-chip">' + _escHtml(String(s || '')) + '</span>').join('')
+            ? item.themes.map(s => {
+                const slugStr = (s && typeof s === 'object') ? String(s.slug || '') : String(s || '');
+                const fn = (s && typeof s === 'object') ? String(s.filename || '') : '';
+                if (_isHost && fn) {
+                  const aid = _themeActionRegister(fn, rawTitle + ' \u2013 ' + slugStr);
+                  return '<button class="artist-theme-chip artist-theme-play-btn" data-taid="' + aid + '" title="Theme actions: ' + _escHtml(slugStr) + '">' + _escHtml(slugStr) + '</button>';
+                }
+                return '<span class="artist-theme-chip">' + _escHtml(slugStr) + '</span>';
+              }).join('')
             : '<span class="artist-theme-chip">Unknown</span>';
           return '<div class="artist-theme-row">' +
             '<div class="artist-theme-title"><span>' + animeTitle + ':</span>' + slugs + '</div>' +
             '</div>';
         }).join('');
         content.innerHTML = summary + '<div class="artist-themes-list">' + rows + '</div>';
+        if (_isHost) {
+          content.querySelectorAll('.artist-theme-play-btn').forEach(btn => {
+            btn.addEventListener('click', function(e) {
+              e.preventDefault();
+              e.stopPropagation();
+              _openThemeActionPrompt(this.getAttribute('data-taid'));
+            });
+          });
+        }
       }
 
       overlay.classList.add('active');
@@ -7745,8 +8347,6 @@ _HTML = r"""<!DOCTYPE html>
         box.innerHTML = '<span style="color:#555">No theme data available.</span>';
         return;
       }
-      _themeActionMap = {};
-      _themeActionSeq = 1;
       _themeActionTarget = null;
       const parts = [];
       const favMarkHtml = (isFavorite, extraCls='') => isFavorite
@@ -8362,6 +8962,33 @@ def push_fixed_lightning_list(rounds: list, queued_name: str = None):
             _socketio.emit('fixed_lightning_list', payload, to=sid)
 
 
+def push_directory_groups(groups: list, stat_type: str, total: int, to_sid: str = None):
+    """Push directory group list (e.g. all artists + counts) to host clients."""
+    if FLASK_AVAILABLE and _socketio:
+        payload = {'groups': groups, 'stat_type': stat_type, 'total': total}
+        sids = [to_sid] if to_sid else list(_host_sids)
+        for sid in sids:
+            _socketio.emit('directory_groups', payload, to=sid)
+
+
+def push_directory_themes(results: list, stat_type: str, group_label: str, to_sid: str = None):
+    """Push the theme list for a directory group to host clients."""
+    if FLASK_AVAILABLE and _socketio:
+        payload = {'results': results, 'stat_type': stat_type, 'group_label': group_label}
+        sids = [to_sid] if to_sid else list(_host_sids)
+        for sid in sids:
+            _socketio.emit('directory_themes', payload, to=sid)
+
+
+def push_buzz_presets(presets: list, current_index: int, to_sid: str = None):
+    """Push the list of buzzer sound presets (with current selection) to host clients."""
+    if FLASK_AVAILABLE and _socketio:
+        payload = {'presets': presets, 'current': current_index}
+        sids = [to_sid] if to_sid else list(_host_sids)
+        for sid in sids:
+            _socketio.emit('buzz_presets', payload, to=sid)
+
+
 def push_theme_search_results(results: list, playlist_infinite: bool = False, query: str = ""):
     """Push theme search results to all host clients."""
     if FLASK_AVAILABLE and _socketio and _host_sids:
@@ -8401,7 +9028,7 @@ def push_up_next(data_dict: dict):
             _socketio.emit('up_next_update', _up_next, to=sid)
 
 
-def push_playback_state(current_ms: int, length_ms: int, playing: bool, volume: int = None, autoplay: int = None):
+def push_playback_state(current_ms: int, length_ms: int, playing: bool, volume: int = None, autoplay: int = None, bgm_modifier: float = None, bzz_modifier: float = None):
     """Push current playback position to all host clients (called ~1/sec from main app)."""
     global _playback_state
     _playback_state = {'current_ms': int(current_ms), 'length_ms': int(length_ms), 'playing': bool(playing)}
@@ -8409,6 +9036,10 @@ def push_playback_state(current_ms: int, length_ms: int, playing: bool, volume: 
         _playback_state['volume'] = int(volume)
     if autoplay is not None:
         _playback_state['autoplay'] = int(autoplay)
+    if bgm_modifier is not None:
+        _playback_state['bgm_modifier'] = float(bgm_modifier)
+    if bzz_modifier is not None:
+        _playback_state['bzz_modifier'] = float(bzz_modifier)
     if FLASK_AVAILABLE and _socketio and _host_sids:
         for sid in list(_host_sids):
             _socketio.emit('playback_state', _playback_state, to=sid)
@@ -8430,6 +9061,12 @@ def set_host_action_callback(fn):
     """Register a callable(action: str, data: dict) invoked when the host sends a remote control command."""
     global _host_action_callback
     _host_action_callback = fn
+
+
+def set_buzz_callback(fn):
+    """Register a callable(rank: int, name: str) invoked each time a player buzzes in."""
+    global _on_buzz_callback
+    _on_buzz_callback = fn
 
 
 def start(port=8080, ngrok_domain=None):
@@ -9102,6 +9739,11 @@ def _build_app():
         for sid in list(_host_sids):
           _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
       _emit_buzzer_state()
+      if _on_buzz_callback is not None:
+        try:
+          _on_buzz_callback(rank, name)
+        except Exception:
+          pass
 
     @_socketio.on('host_action')
     def handle_host_action(data):
