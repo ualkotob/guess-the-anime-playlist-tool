@@ -134,6 +134,7 @@ _current_toggles: dict = {}   # {blind, peek, mute, censors, shortcuts, dock, ce
 _host_action_callback = None  # callable(action, data) set by main app for remote control
 _on_buzz_callback = None       # callable(rank: int, name: str) called when a player buzzes in
 _pending_selections: dict = {}  # name → answer; silently tracks current selection before submit
+_skip_grant_player: str = ''  # name of the player currently granted a skip (empty = none)
 
 public_url = None          # Readable from main app after start()
 
@@ -1509,6 +1510,26 @@ _HTML = r"""<!DOCTYPE html>
       background: #1a2040; color: #88aaff; border-color: #3355aa;
     }
     #sc-submit-btn:hover { background: #253060; border-color: #4466cc; }
+    #player-skip-btn {
+      width: 100%; padding: 30px 13px; height: 120px;
+      border: 2px solid #4a3a7a; border-radius: 10px;
+      background: #2a1a5a; color: #ffffff;
+      font-size: 2.2em; font-weight: bold;
+      cursor: pointer; display: none;
+      align-items: center; justify-content: center;
+      margin-top: 10px;
+    }
+    #player-skip-btn:hover { background: #3a2a7a; border-color: #7755cc; }
+    .sc-skip-btn {
+      font-size: 0.78em; line-height: 1; padding: 1px 5px; border-radius: 3px;
+      border: 1px solid #2a3a4a; background: #111820; color: #3a6080;
+      cursor: pointer; margin-right: 2px; flex-shrink: 0;
+    }
+    .sc-skip-btn:hover { background: #1a2a3a; color: #6aaad0; border-color: #3a6a9a; }
+    .sc-skip-btn.active {
+      background: #0a1a30; color: #55ccff; border-color: #2288cc;
+      box-shadow: 0 0 6px #2288ccaa;
+    }
     #sc-clear-btn {
       background: #2a1010; color: #cc6666; border-color: #7a2222;
       font-family: 'Segoe UI Emoji', 'Segoe UI', sans-serif; font-size: 0.85em; font-weight: normal;
@@ -1523,6 +1544,42 @@ _HTML = r"""<!DOCTYPE html>
     #sc-archive-btn:active { background: #2a1d0a; }
     #sc-archive-btn:disabled {
       background: #2a2115; color: #9a8a6a; border-color: #5a4a32; cursor: default;
+    }
+    /* Score history modal */
+    #sc-history-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.65); z-index: 9000;
+      align-items: center; justify-content: center;
+    }
+    #sc-history-modal {
+      background: #1e1e1e; border: 1px solid #333; border-radius: 6px;
+      width: min(540px, 94vw); height: min(520px, 80vh);
+      display: flex; flex-direction: column; overflow: hidden;
+      font-family: 'Segoe UI', sans-serif; color: #e0e0e0;
+    }
+    #sc-history-modal-title {
+      padding: 8px 12px; font-size: 0.75em; font-weight: bold; text-transform: uppercase;
+      letter-spacing: .08em; color: #888; border-bottom: 1px solid #2e2e2e;
+      display: flex; align-items: center; gap: 6px;
+    }
+    #sc-history-table-wrap { overflow-y: auto; flex: 1; min-height: 0; }
+    #sc-history-table {
+      width: 100%; border-collapse: collapse; font-size: 0.78em;
+    }
+    #sc-history-table th {
+      position: sticky; top: 0; background: #252525; color: #888;
+      padding: 5px 8px; text-align: left; border-bottom: 1px solid #333;
+      font-weight: normal; font-size: 0.95em;
+    }
+    #sc-history-table td {
+      padding: 4px 8px; border-bottom: 1px solid #282828;
+    }
+    #sc-history-table tr:last-child td { border-bottom: none; }
+    .sc-hist-delta-pos { color: #66dd88; }
+    .sc-hist-delta-neg { color: #ff7070; }
+    #sc-history-footer {
+      padding: 6px 10px; display: flex; gap: 6px; border-top: 1px solid #2e2e2e;
+      background: #1e1e1e;
     }
     /* TOGETHER / AUTO toolbar toggles */
     .sc-toggle-btn {
@@ -1835,7 +1892,27 @@ _HTML = r"""<!DOCTYPE html>
     .ctrl-sect-reveal.ctrl-reveal-active:hover { background: #143820; border-color: #77ffaa; color: #bbffcc; }
     .ctrl-bonus-btn.ctrl-bonus-active { background: #0a2050; border-color: #55aaff; color: #aaddff; box-shadow: 0 0 7px 0 rgba(50,140,255,0.50); }
     .ctrl-bonus-btn.ctrl-bonus-active:hover { background: #0e2a66; border-color: #88ccff; color: #cceeff; }
-    /* Make Buzz Lock state much more obvious when enabled */
+    /* Highlight buzz buttons when buzzer is open */
+    [data-extra-id="buzz_lock"].buzz-open-active,
+    [data-proxy-extra="buzz_lock"].buzz-open-active,
+    [data-extra-id="buzz_reset"].buzz-open-active,
+    [data-proxy-extra="buzz_reset"].buzz-open-active,
+    [data-extra-id="buzz_sound"].buzz-open-active,
+    [data-proxy-extra="buzz_sound"].buzz-open-active {
+      background: #0a2a4a;
+      border-color: #4499ff;
+      color: #aaddff;
+      box-shadow: 0 0 7px 0 rgba(50, 140, 255, 0.45);
+    }
+    [data-extra-id="buzz_reset"].buzz-open-active:hover,
+    [data-proxy-extra="buzz_reset"].buzz-open-active:hover,
+    [data-extra-id="buzz_sound"].buzz-open-active:hover,
+    [data-proxy-extra="buzz_sound"].buzz-open-active:hover {
+      background: #0e3660;
+      border-color: #66bbff;
+      color: #cceeff;
+    }
+    /* Make Buzz Lock red when locked (overrides blue open state) */
     [data-extra-id="buzz_lock"].ctrl-toggle-active,
     [data-proxy-extra="buzz_lock"].ctrl-toggle-active {
       background: #4a1717;
@@ -2136,6 +2213,7 @@ _HTML = r"""<!DOCTYPE html>
     .mt-ver .mt-fav-mark { font-size: 1em; }
     .mt-flags { color: #a88; font-size: 0.82em; }
     .mt-props { color: #555; font-size: 0.80em; }
+    .mt-plays { color: #666; font-size: 0.80em; margin-left: 4px; }
     .mt-main-row { display: block; }
     .mt-main-row .mt-title { flex: none; }
     .mt-sub-row {
@@ -2440,15 +2518,22 @@ _HTML = r"""<!DOCTYPE html>
     <p style="color:#888;font-size:0.85em">Contact the host if you think this is a mistake.</p>
   </div>
 
-  <div id="kick-overlay">
+  <div id="kick-overlay" onclick="if(event.target===this)_kickCancel()">
     <div id="kick-box">
       <div id="kick-player-name"></div>
+      <div id="kick-rename-row" style="display:none; margin-bottom:8px; gap:4px; display:none; flex-direction:row; align-items:center;">
+        <input id="kick-rename-input" type="search" placeholder="New name…" maxlength="30"
+               autocorrect="off" autocapitalize="none" spellcheck="false"
+               list="player-names-list"
+               style="flex:1; padding:6px 8px; background:#111; border:1px solid #444; border-radius:6px; color:#ccc; font-size:0.9em;"/>
+        <button id="kick-rename-confirm" style="padding:6px 10px;">OK</button>
+      </div>
       <div class="kick-opt-btns">
-        <button id="kick-btn-shadow">Kick</button>
         <button id="kick-btn-rename">Rename</button>
+        <button id="kick-btn-emoji">Disable Emojis</button>
+        <button id="kick-btn-shadow">Kick</button>
         <button id="kick-btn-name">Name Ban</button>
         <button id="kick-btn-ip">IP Ban</button>
-        <button id="kick-btn-emoji">Disable Emojis</button>
         <button id="kick-btn-cancel" onclick="_kickCancel()">Cancel</button>
       </div>
     </div>
@@ -2497,6 +2582,7 @@ _HTML = r"""<!DOCTYPE html>
       <button id="sc-tog-together" class="sc-toggle-btn" onclick="_scToggleTogether()" title="BATCH — Any delta press resets the shared timer for everyone.">&#10697;</button>
       <button id="sc-clear-btn" class="sc-toolbar-btn" onclick="_scClearAll()" title="CLEAR — Remove all players from the scoreboard.">&#128465;</button>
       <button id="sc-archive-btn" class="sc-toolbar-btn" onclick="_scArchive()" title="Archive current session (uses the host name configured in Scoreboard settings).">ARCHIVE</button>
+      <button id="sc-history-btn" class="sc-toolbar-btn" onclick="_scShowHistory()" title="View score change history.">HISTORY</button>
       <span style="flex:1"></span>
       <button id="sc-submit-btn" class="sc-toolbar-btn" onclick="_scSubmitPending()">SUBMIT</button>
     </div>
@@ -2529,6 +2615,27 @@ _HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Score history modal (fixed overlay, outside scoreboard-view) -->
+  <div id="sc-history-overlay" onclick="if(event.target===this)_scCloseHistory()">
+    <div id="sc-history-modal">
+      <div id="sc-history-modal-title">
+        <span style="flex:1">Score Change History</span>
+        <button class="sc-toolbar-btn" onclick="_scCloseHistory()" style="padding:2px 8px">&#x2715;</button>
+      </div>
+      <div id="sc-history-table-wrap">
+        <table id="sc-history-table">
+          <thead><tr><th>Time</th><th>Player</th><th style="text-align:center">Old</th><th style="text-align:center">Delta</th><th style="text-align:center">New</th></tr></thead>
+          <tbody id="sc-history-tbody"></tbody>
+        </table>
+      </div>
+      <div id="sc-history-footer">
+        <button class="sc-toolbar-btn" onclick="_scRefreshHistory()">Refresh</button>
+        <span style="flex:1"></span>
+        <button class="sc-toolbar-btn" onclick="_scClearHistory()" style="color:#ff8080;border-color:#7a3030">Clear History</button>
+      </div>
+    </div>
+  </div>
+
   <div id="host-answers-anchor-score" class="box"></div>
   <div id="host-messages-anchor-score" class="box"></div>
 
@@ -2556,6 +2663,7 @@ _HTML = r"""<!DOCTYPE html>
       </div>
       <div id="choices-area"></div>
       <input id="free-input" placeholder="Your Answer&hellip;" autocomplete="off" style="display:none"/>      <div id="free-error" style="display:none; color:#f66; font-size:0.85em; margin-bottom:8px;"></div>      <button id="submit-btn" onclick="submitAnswer()">Submit</button>
+      <button id="player-skip-btn" onclick="_playerRequestSkip()">&#x23ED; Skip this theme?</button>
       <div id="sent-msg">&#10003; Answer submitted!</div>
       <div id="peer-answers-wrap" style="display:none">
         <button id="peer-answers-toggle" onclick="_togglePeerAnswers()">&#128065; Submitted Answers (0)</button>
@@ -4089,6 +4197,9 @@ _HTML = r"""<!DOCTYPE html>
       _toggleBtnRef = null;
       document.getElementById('waiting').style.display = 'none';
       document.getElementById('question-area').style.display = 'block';
+      // Hide player skip button on new question (grant resets server-side too)
+      const skipBtnReset = document.getElementById('player-skip-btn');
+      if (skipBtnReset) skipBtnReset.style.display = 'none';
       // Ensure per-question UI is visible again (may have been hidden during a clear)
       const qCardShow = document.getElementById('q-card'); if (qCardShow) qCardShow.style.display = '';
       const choicesAreaShow = document.getElementById('choices-area'); if (choicesAreaShow) { choicesAreaShow.style.display = ''; choicesAreaShow.innerHTML = ''; }
@@ -4322,6 +4433,8 @@ _HTML = r"""<!DOCTYPE html>
       _lastPlayerList = data.players || [];
       _refreshPlayerList(_lastPlayerList);
       _scRenderGhosts();
+      // Show/hide skip-grant buttons without disrupting the scoreboard
+      _scUpdateSkipBtns();
     });
 
     socket.on('peer_answers_update', data => {
@@ -4364,6 +4477,7 @@ _HTML = r"""<!DOCTYPE html>
       const choicesArea = document.getElementById('choices-area'); if (choicesArea) { choicesArea.innerHTML = ''; choicesArea.style.display = 'none'; }
       const freeInput = document.getElementById('free-input'); if (freeInput) freeInput.style.display = 'none';
       const submitBtn = document.getElementById('submit-btn'); if (submitBtn) submitBtn.style.display = 'none';
+      const skipBtnClear = document.getElementById('player-skip-btn'); if (skipBtnClear) skipBtnClear.style.display = 'none';
       _applyRules((data && data.rules_header) || '', (data && data.rules_body) || '');
       _showPrevQuestion();
       // Update host toggle to indicate these are previous answers
@@ -4557,14 +4671,28 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('kick-player-name').textContent = 'Action for: ' + name;
       document.getElementById('kick-btn-shadow').onclick = () => { _kickCancel(); socket.emit('remove_player', { name }); };
       document.getElementById('kick-btn-rename').onclick = () => {
-        const next = prompt('Rename "' + name + '" to:', name);
-        if (next === null) return;
-        const newName = String(next || '').trim();
-        if (!newName || newName === name) return;
+        const renameRow = document.getElementById('kick-rename-row');
+        const renameInput = document.getElementById('kick-rename-input');
+        renameRow.style.display = 'flex';
+        renameInput.value = name;
+        renameInput.focus(); renameInput.select();
+      };
+      const _doKickRename = () => {
+        const renameInput = document.getElementById('kick-rename-input');
+        const newName = renameInput.value.trim();
+        if (!newName || newName === name) {
+          document.getElementById('kick-rename-row').style.display = 'none';
+          return;
+        }
         if (/\s/.test(newName)) { alert('Name cannot contain spaces.'); return; }
         if (newName.length > 30) { alert('Name is too long (max 30).'); return; }
         _kickCancel();
         socket.emit('rename_player', { old_name: name, new_name: newName });
+      };
+      document.getElementById('kick-rename-confirm').onclick = _doKickRename;
+      document.getElementById('kick-rename-input').onkeydown = e => {
+        if (e.key === 'Enter') { e.preventDefault(); _doKickRename(); }
+        if (e.key === 'Escape') { document.getElementById('kick-rename-row').style.display = 'none'; }
       };
       document.getElementById('kick-btn-name').onclick   = () => { _kickCancel(); socket.emit('name_ban',      { name }); };
       document.getElementById('kick-btn-ip').onclick     = () => { _kickCancel(); socket.emit('ip_ban',        { name }); };
@@ -4580,6 +4708,8 @@ _HTML = r"""<!DOCTYPE html>
     }
     function _kickCancel() {
       document.getElementById('kick-overlay').classList.remove('active');
+      const renameRow = document.getElementById('kick-rename-row');
+      if (renameRow) renameRow.style.display = 'none';
     }
 
     socket.on('banned', () => {
@@ -4742,7 +4872,9 @@ _HTML = r"""<!DOCTYPE html>
       _buzzerState = Object.assign({ open: false, locked: false, order: [] }, data || {});
       // host button states
       const lockActive = !!_buzzerState.locked;
+      const buzzOpen = !!_buzzerState.open;
       document.querySelectorAll('[data-proxy-extra="buzz_lock"],[data-extra-id="buzz_lock"]').forEach(el => el.classList.toggle('ctrl-toggle-active', lockActive));
+      document.querySelectorAll('[data-proxy-extra="buzz_lock"],[data-extra-id="buzz_lock"],[data-proxy-extra="buzz_reset"],[data-extra-id="buzz_reset"],[data-proxy-extra="buzz_sound"],[data-extra-id="buzz_sound"]').forEach(el => el.classList.toggle('buzz-open-active', buzzOpen));
       _updateBuzzerUI();
     }
 
@@ -5019,7 +5151,7 @@ _HTML = r"""<!DOCTYPE html>
           } else if (!p.host && p.name !== playerName) {
             btn.className = 'pl-remove';
             btn.title = 'Manage player';
-            btn.textContent = '\u2630';
+            btn.textContent = '\u22EE';
             btn.onclick = () => _kickOptions(p);
             div.appendChild(btn);
           }
@@ -5918,7 +6050,7 @@ _HTML = r"""<!DOCTYPE html>
       sc.style.maxHeight = Math.max(80, maxH) + 'px';
     }
 
-    function _scRender(data) {
+    function _scRender(data, forceRebuild = false) {
       if (!data) return;
       const newPlayers   = data.players || [];
       const newDeltaBtns = _scParseDeltaBtns(data.delta_buttons);
@@ -5931,7 +6063,7 @@ _HTML = r"""<!DOCTYPE html>
       const sameNames = newPlayers.length === _scPlayers.length &&
         newPlayers.every((p, i) => p.name === _scPlayers[i].name);
 
-      if (sameNames && sameDeltaBtns) {
+      if (!forceRebuild && sameNames && sameDeltaBtns) {
         // In-place score patch — never destroy DOM
         _scPlayers = newPlayers;
         newPlayers.forEach(p => {
@@ -6031,6 +6163,7 @@ _HTML = r"""<!DOCTYPE html>
           nameInput.className = 'sc-name-input';
           nameInput.style.display = 'none';
 
+          nameInput.setAttribute('list', 'player-names-list');
           nameSpan.title = 'Click to rename';
           nameSpan.onclick = () => {
             nameSpan.style.display = 'none';
@@ -6052,12 +6185,26 @@ _HTML = r"""<!DOCTYPE html>
           row.appendChild(nameSpan);
           row.appendChild(nameInput);
 
+          // Skip-grant button — always created, shown only when player is connected
+          const skipGrantBtn = document.createElement('button');
+          skipGrantBtn.className = 'sc-skip-btn' + (_scSkipGrantPlayer === p.name ? ' active' : '');
+          skipGrantBtn.textContent = '\u23ED';
+          skipGrantBtn.title = 'Grant skip';
+          skipGrantBtn.dataset.skipName = p.name;
+          skipGrantBtn.onclick = e => {
+            e.stopPropagation();
+            socket.emit('toggle_skip_grant', { name: p.name });
+          };
+          const _isConnectedPlayer = _lastPlayerList.some(lp => !lp.host && lp.name === p.name);
+          skipGrantBtn.style.display = _isConnectedPlayer ? '' : 'none';
+          row.appendChild(skipGrantBtn);
+
           // Menu button
           const menuBtn = document.createElement('button');
           menuBtn.className = 'sc-menu-btn';
-          menuBtn.textContent = '☰';
+          menuBtn.textContent = '\u22EE';
           menuBtn.title = 'Options';
-          menuBtn.onclick = e => { e.stopPropagation(); _scShowRowMenu(p.name, menuBtn); };
+          menuBtn.onpointerdown = e => { e.stopPropagation(); _scShowRowMenu(p.name, menuBtn); };
           row.appendChild(menuBtn);
         } else {
           row.appendChild(nameSpan);
@@ -6152,6 +6299,7 @@ _HTML = r"""<!DOCTYPE html>
           nameInput.className = 'sc-name-input';
           nameInput.style.display = 'none';
 
+          nameInput.setAttribute('list', 'player-names-list');
           nameSpan.title = 'Click to rename (ghost)';
           nameSpan.onclick = () => {
             nameSpan.style.display = 'none';
@@ -6215,7 +6363,11 @@ _HTML = r"""<!DOCTYPE html>
     // Row context menu
     let _scMenuEl = null;
     function _scShowRowMenu(name, anchor) {
-      if (_scMenuEl) { _scMenuEl.remove(); _scMenuEl = null; }
+      if (_scMenuEl) {
+        const wasAnchor = _scMenuEl._anchor === anchor;
+        _scMenuEl.remove(); _scMenuEl = null;
+        if (wasAnchor) return; // toggled closed
+      }
       // Resolve latest name from DOM anchor if available (prevents stale prompts)
       let displayName = name;
       try {
@@ -6257,17 +6409,24 @@ _HTML = r"""<!DOCTYPE html>
       menuItem('\uD83D\uDC65  Set team\u2026', '#aabbff', () => _scSetTeamPrompt(displayName, menu));
       // Only show Remove team if the player currently has one
       const curPlayer = _scPlayers.find(p => p.name === displayName);
-      if (curPlayer && curPlayer.team) {
+      const curTeam = String(curPlayer && curPlayer.team || '').trim();
+      if (curTeam !== '') {
         menuItem('\u274C  Remove team', '#cc9966', () => { socket.emit('host_action', { action: 'player_set_team', name: displayName, team: '' }); if (curPlayer) curPlayer.team = ''; });
+      }
+      // Player actions (kick/ban/etc.) — only if player is currently connected
+      const _menuConnected = _lastPlayerList.find(lp => !lp.host && lp.name === displayName);
+      if (_menuConnected) {
+        menuItem('\u26A1  Player actions\u2026', '#ffcc88', () => _kickOptions(_menuConnected));
       }
       document.body.appendChild(menu);
       _scMenuEl = menu;
+      _scMenuEl._anchor = anchor;
+      const _menuAnchor = anchor;
       setTimeout(() => {
         function h(e) {
-          if (!menu.contains(e.target)) {
-            menu.remove(); _scMenuEl = null;
-            document.removeEventListener('pointerdown', h, true);
-          }
+          if (menu.contains(e.target) || _menuAnchor.contains(e.target) || e.target === _menuAnchor) return;
+          menu.remove(); _scMenuEl = null;
+          document.removeEventListener('pointerdown', h, true);
         }
         document.addEventListener('pointerdown', h, true);
       }, 0);
@@ -6338,6 +6497,17 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function _scSubmitPending() { _scFlushAll(); }
+    function _scUpdateSkipBtns() {
+      // Show/hide skip-grant buttons based on who is currently connected, without re-rendering
+      const container = document.getElementById('sc-players');
+      if (!container) return;
+      container.querySelectorAll('.sc-skip-btn').forEach(btn => {
+        const name = btn.dataset.skipName;
+        const connected = _lastPlayerList.some(lp => !lp.host && lp.name === name);
+        btn.style.display = connected ? '' : 'none';
+      });
+    }
+
     function _scSetScore(name, score) {
       socket.emit('host_action', { action: 'score_set', name, score });
       // Optimistic: update _scPlayers and DOM immediately
@@ -6522,6 +6692,40 @@ _HTML = r"""<!DOCTYPE html>
         socket.emit('host_action', { action: 'get_scores' });
       }, 2000);
     }
+
+    // ── Score history modal ──────────────────────────────────────────────
+    function _scShowHistory() {
+      socket.emit('host_action', { action: 'get_score_history' });
+      document.getElementById('sc-history-overlay').style.display = 'flex';
+    }
+    function _scCloseHistory() {
+      document.getElementById('sc-history-overlay').style.display = 'none';
+    }
+    function _scRefreshHistory() {
+      socket.emit('host_action', { action: 'get_score_history' });
+    }
+    function _scClearHistory() {
+      if (!confirm('Clear all score change history?')) return;
+      socket.emit('host_action', { action: 'clear_score_history' });
+    }
+    socket.on('score_history', data => {
+      const entries = (data && Array.isArray(data.entries)) ? data.entries : [];
+      const tbody = document.getElementById('sc-history-tbody');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      entries.slice().reverse().forEach(e => {
+        const delta = parseFloat(e.delta) || 0;
+        const fmt = v => Number.isInteger(v) ? v : parseFloat(parseFloat(v).toFixed(4));
+        const dStr = (delta >= 0 ? '+' : '') + fmt(delta);
+        const dCls = delta >= 0 ? 'sc-hist-delta-pos' : 'sc-hist-delta-neg';
+        const old_s = e.old_score !== undefined ? fmt(e.old_score) : '';
+        const new_s = e.new_score !== undefined ? fmt(e.new_score) : '';
+        const ts = (e.timestamp || '').replace('T', ' ').replace(/\.\d+$/, '');
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${ts}</td><td>${e.player||''}</td><td style="text-align:center">${old_s}</td><td style="text-align:center" class="${dCls}">${dStr}</td><td style="text-align:center">${new_s}</td>`;
+        tbody.appendChild(tr);
+      });
+    });
 
     function _ctrlToggleUpNext() {
       _ctrlUpNextVisible = !_ctrlUpNextVisible;
@@ -6781,7 +6985,10 @@ _HTML = r"""<!DOCTYPE html>
       lineArtist.innerHTML = _ctrlHighlightSearchText(songByText, _ctrlSearchQuery);
       const lineMeta = document.createElement('div');
       lineMeta.className = 'ctrl-popup-search-line meta';
-      lineMeta.innerHTML = _ctrlHighlightSearchText(metaText, _ctrlSearchQuery);
+      let metaHtml = _ctrlHighlightSearchText(metaText, _ctrlSearchQuery);
+      if (r.plays > 0) metaHtml += ' <span class="mt-plays">Plays: ' + r.plays + 'x' + (r.plays_ago != null ? ' (' + r.plays_ago + ' ago)' : '') + '</span>';
+      if ((r.series_plays || 0) > (r.plays || 0)) metaHtml += ' <span class="mt-plays">Series: ' + r.series_plays + 'x' + (r.series_plays_ago != null ? ' (' + r.series_plays_ago + ' ago)' : '') + '</span>';
+      lineMeta.innerHTML = metaHtml;
       textCol.appendChild(lineSong);
       textCol.appendChild(lineArtist);
       textCol.appendChild(lineMeta);
@@ -7689,6 +7896,32 @@ _HTML = r"""<!DOCTYPE html>
       socket.emit('host_action', { action: 'invoke', id });
     }
 
+    function _playerRequestSkip() {
+      socket.emit('player_skip_request', {});
+      const btn = document.getElementById('player-skip-btn');
+      if (btn) btn.style.display = 'none';
+    }
+
+    // Received by the granted player only
+    socket.on('skip_grant_update', data => {
+      const active = !!(data && data.active);
+      const skipBtn = document.getElementById('player-skip-btn');
+      if (skipBtn) skipBtn.style.display = active ? 'flex' : 'none';
+    });
+
+    // Received by all hosts so they can refresh the row button states
+    socket.on('skip_grant_host_update', data => {
+      _scSkipGrantPlayer = (data && data.name) || '';
+      // Refresh all skip-grant row buttons
+      document.querySelectorAll('.sc-skip-btn').forEach(btn => {
+        if (btn.dataset.skipName === _scSkipGrantPlayer && _scSkipGrantPlayer !== '') {
+          btn.classList.add('active');
+        } else {
+          btn.classList.remove('active');
+        }
+      });
+    });
+
     function _ctrlSeekPreview(val) {
       _ctrlSeeking = true;
       if (_ctrlLengthMs > 0) {
@@ -7714,9 +7947,15 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('metadata-overlay').classList.toggle('active', _metadataOpen);
       document.body.classList.toggle('meta-open', _metadataOpen);
       if (_metadataOpen) {
-        _renderMetadata(_currentMetadata);
-        _renderSeriesThemes(_currentMetadata);
-        if (_metadataTab === 'more') _renderMore(_currentMetadata);
+        try {
+          _renderMetadata(_currentMetadata);
+          _renderSeriesThemes(_currentMetadata);
+          if (_metadataTab === 'more') _renderMore(_currentMetadata);
+        } catch(e) {
+          console.error('[_toggleMetadata render error]', e);
+          const box = document.getElementById('metadata-content');
+          if (box) box.innerHTML = '<span style="color:#f55">Render error: ' + String(e) + '</span>';
+        }
       }
       _saveSidePanels();
     }
@@ -7784,6 +8023,7 @@ _HTML = r"""<!DOCTYPE html>
     const _PL_CHUNK  = 100;
     let _plTotal        = 0;
     let _plCurrentIndex = -1;
+    let _scSkipGrantPlayer = '';  // name of player currently holding skip grant
     let _plCache        = new Map();  // chunkOffset → items[]
     let _plPending      = new Set();  // chunkOffsets in-flight
     let _plScrollBound  = false;
@@ -7942,7 +8182,11 @@ _HTML = r"""<!DOCTYPE html>
             '<span class="pl-row-title"></span>' +
             '<span class="pl-row-song"></span>';
           el.addEventListener('click', () => {
-            _openPlEntryPopup(parseInt(el.dataset.plI, 10), el.querySelector('.pl-row-title') ? el.querySelector('.pl-row-title').textContent : '');
+            const _tSpan = el.querySelector('.pl-row-title');
+            const _sSpan = el.querySelector('.pl-row-slug');
+            const _fullTitle = _tSpan ? (_tSpan.dataset.fullTitle || _tSpan.textContent) : '';
+            const _slug = _sSpan ? _sSpan.textContent.trim() : '';
+            _openPlEntryPopup(parseInt(el.dataset.plI, 10), _slug ? (_fullTitle + ' \u2013 ' + _slug) : _fullTitle);
           });
           spacer.appendChild(el);
         }
@@ -8058,8 +8302,25 @@ _HTML = r"""<!DOCTYPE html>
         if (value == null || value === '' || value === 'N/A') return;
         lines.push('<div class="meta-row"><span class="meta-label">' + _escHtml(label) + '</span> ' + _escHtml(String(value)) + '</div>');
       }
-      if (!d.is_game && d.current_theme && d.current_theme.slug) {
-        const ct = d.current_theme;
+      // If current_theme has no slug, try to find the playing theme from series_themes by filename
+      let _ctResolved = (d.current_theme && d.current_theme.slug) ? d.current_theme : null;
+      if (!_ctResolved && d.series_themes && d.filename) {
+        outer: for (const anime of d.series_themes) {
+          for (const sec of (anime.sections || [])) {
+            for (const theme of (sec.themes || [])) {
+              if (theme.filename === d.filename) { _ctResolved = theme; break outer; }
+              for (const v of (theme.versions || [])) {
+                if (v.filename === d.filename) {
+                  _ctResolved = Object.assign({}, theme, { version: v.version, episodes: v.episodes, flags: v.flags, file_props: v.file_props });
+                  break outer;
+                }
+              }
+            }
+          }
+        }
+      }
+      if (_ctResolved && _ctResolved.slug) {
+        const ct = _ctResolved;
         const slugLabel = ct.slug + (ct.overall_suffix || '');
         const slugCls = 'mt-slug playing';
         const titleText = ': ' + (ct.title || '????');
@@ -8069,9 +8330,10 @@ _HTML = r"""<!DOCTYPE html>
           '<span class="mt-title">' + _escHtml(titleText) + '</span>';
         if (ct.artists && ct.artists.length) {
           const artistsDisplay = ct.artists.map((a) => {
-            const hasThemes = ct.artist_themes && ct.artist_themes[a] && ct.artist_themes[a].themes && ct.artist_themes[a].themes.length > 0;
+            const _atMap = (d.current_theme && d.current_theme.artist_themes) || {};
+            const hasThemes = _atMap[a] && _atMap[a].themes && _atMap[a].themes.length > 0;
             if (hasThemes) {
-              const count = Number(ct.artist_themes[a].theme_count || 0);
+              const count = Number(_atMap[a].theme_count || 0);
               return '<span class="mt-artist-item"><span class="mt-artist-name">' + _escHtml(a) + '</span><button class="artist-themes-btn" data-artist="' + _escHtml(a) + '">' + count + '</button></span>';
             } else {
               return '<span class="mt-artist-item">' + _escHtml(a) + '</span>';
@@ -8089,7 +8351,7 @@ _HTML = r"""<!DOCTYPE html>
         themeHeadHtml = html;
       }
       if (themeHead) {
-        themeHead.innerHTML = themeHeadHtml || '<span style="color:#555">No theme info.</span>';
+        themeHead.innerHTML = themeHeadHtml;
       }
       line('TITLE:', d.title);
       line('ENGLISH:', d.eng_title);
@@ -8098,26 +8360,29 @@ _HTML = r"""<!DOCTYPE html>
         line('RELEASE DATE:', d.release);
       } else {
         const airParts = [d.aired, d.season].filter(Boolean);
-        if (airParts.length) line('AIR:', airParts.join(', '));
+        if (airParts.length) line('AIRED:', airParts.join(', '));
       }
       if (d.score != null) {
         let scoreVal = String(d.score);
         if (d.rank) scoreVal += ' (#' + d.rank + ')';
         if (!d.is_game && d.members != null)
           scoreVal += '&nbsp;&nbsp;<span class="meta-label">MEMBERS:</span> ' + Number(d.members).toLocaleString() + ' (#' + (d.popularity || 'N/A') + ')';
-        lines.push('<div class="meta-row"><span class="meta-label">SCORE:</span> ' + scoreVal + '</div>');
+        lines.push('<div class="meta-row"><span class="meta-label">' + (d.is_game ? 'SCORE:' : 'MAL SCORE:') + '</span> ' + scoreVal + '</div>');
       } else if (!d.is_game && d.members != null) {
         line('MEMBERS:', Number(d.members).toLocaleString() + ' (#' + (d.popularity || 'N/A') + ')');
       }
       if (d.is_game) {
         if (d.reviews != null) line('REVIEWS:', Number(d.reviews || 0).toLocaleString() + ' (#' + (d.popularity || 'N/A') + ')');
       }
-      if (d.anilist_score) line('ANILIST SCORE:', d.anilist_score);
-      if (d.anilist_popularity != null) {
-        const popStr = Number(d.anilist_popularity).toLocaleString() +
-          (d.anilist_popularity_ranks && d.anilist_popularity_ranks.length
-            ? ' (' + d.anilist_popularity_ranks.join(' / ') + ')' : '');
-        line('ANILIST MEMBERS:', popStr);
+      if (d.anilist_score) {
+        let alVal = _escHtml(String(d.anilist_score));
+        if (d.anilist_popularity != null) {
+          const alPop = Number(d.anilist_popularity).toLocaleString() +
+            (d.anilist_popularity_ranks && d.anilist_popularity_ranks.length
+              ? ' (' + d.anilist_popularity_ranks.join(' / ') + ')' : '');
+          alVal += '&nbsp;&nbsp;<span class="meta-label">MEMBERS:</span> ' + alPop;
+        }
+        lines.push('<div class="meta-row"><span class="meta-label">ANILIST SCORE:</span> ' + alVal + '</div>');
       }
       if (d.is_game) {
         if (d.platforms && d.platforms.length) line('PLATFORMS:', d.platforms.join(', '));
@@ -8148,7 +8413,20 @@ _HTML = r"""<!DOCTYPE html>
         const seriesStr = Array.isArray(d.series) ? d.series.join(', ') : String(d.series);
         line('SERIES:', seriesStr);
       }
-      if (d.file_count != null) line('TOTAL PLAYS:', d.file_count + (d.themes_ago || ''));
+      if (d.file_plays != null) {
+        const fp = d.file_plays;
+        let fpStr = String(fp.count);
+        if (fp.ago != null) fpStr += ` (${fp.ago} Ago)`;
+        if (fp.lightning) fpStr += ` (${fp.lightning} L)`;
+        line('FILE PLAYS:', fpStr);
+      }
+      if (d.series_plays != null) {
+        const sp = d.series_plays;
+        let spStr = String(sp.count);
+        if (sp.ago != null) spStr += ` (${sp.ago} Ago)`;
+        if (sp.lightning) spStr += ` (${sp.lightning} L)`;
+        line('SERIES PLAYS:', spStr);
+      }
       box.innerHTML = lines.join('') || '<span style="color:#555">No data.</span>';
       
       // Attach event listeners to artist themes buttons
@@ -8367,7 +8645,7 @@ _HTML = r"""<!DOCTYPE html>
             const themeFilename = String(theme.filename || '').trim();
             const hasVersions = !!(theme.versions && theme.versions.length);
             const themeActionId = (_isHost && !hasVersions && themeFilename)
-              ? _themeActionRegister(themeFilename, slugText)
+              ? _themeActionRegister(themeFilename, anime.title + ' – ' + slugText)
               : '';
             let html = '<div class="mt-theme' + (theme.is_playing ? ' playing' : '') + '"><div class="mt-main-row"><span class="' + slugCls + '">' + _escHtml(slugText) + '</span>' +
               '<span class="mt-title">' + _escHtml(titleText) + '</span></div>';
@@ -8393,16 +8671,17 @@ _HTML = r"""<!DOCTYPE html>
                 if (v.episodes) vText += (vText ? ': ' : '') + '(Eps: ' + v.episodes + ')';
                 if (v.flags && v.flags.length) vText += (vText ? ' ' : '') + v.flags.join(' ');
                 const propsHtml = v.file_props ? ' <span class="mt-props">' + _escHtml(v.file_props) + '</span>' : '';
+                const playsHtml = (v.plays > 0) ? ' <span class="mt-plays">Plays: ' + v.plays + 'x' + (v.plays_ago != null ? ' (' + v.plays_ago + ' ago)' : '') + '</span>' : '';
                 const vFilename = String(v.filename || '').trim();
                 const vActionId = (_isHost && vFilename)
-                  ? _themeActionRegister(vFilename, (slugText + (vText ? ' ' + vText : '')))
+                  ? _themeActionRegister(vFilename, anime.title + ' – ' + slugText + (vText ? ' ' + vText : ''))
                   : '';
                 const vActionBtn = vActionId
                   ? '<button class="mt-action-btn" data-taid="' + vActionId + '" title="Theme actions">&#9654;</button>'
                   : '';
                 const vFavHtml = favMarkHtml(!!v.favorited, (v.is_playing ? 'leading playing' : 'leading'));
-                if (vText || propsHtml || vActionBtn || vFavHtml)
-                  html += '<div class="' + subRowClass + '">' + vActionBtn + vFavHtml + '<span class="' + vCls + '">' + _escHtml(vText) + propsHtml + '</span></div>';
+                if (vText || propsHtml || playsHtml || vActionBtn || vFavHtml)
+                  html += '<div class="' + subRowClass + '">' + vActionBtn + vFavHtml + '<span class="' + vCls + '">' + _escHtml(vText) + propsHtml + playsHtml + '</span></div>';
               });
             } else {
               const subRowClass = _isHost ? 'mt-sub-row' : 'mt-sub-row mt-sub-row-indent';
@@ -8413,7 +8692,8 @@ _HTML = r"""<!DOCTYPE html>
                 ? '<button class="mt-action-btn" data-taid="' + themeActionId + '" title="Theme actions">&#9654;</button>'
                 : '';
               const themeFavHtml = favMarkHtml(!!theme.favorited, theme.is_playing ? 'leading playing' : 'leading');
-              if (vText || tActionBtn || themeFavHtml) html += '<div class="' + subRowClass + '">' + tActionBtn + themeFavHtml + '<span class="mt-ver">' + _escHtml(vText) + '</span></div>';
+              const themePlaysHtml = (theme.plays > 0) ? ' <span class="mt-plays">Plays: ' + theme.plays + 'x' + (theme.plays_ago != null ? ' (' + theme.plays_ago + ' ago)' : '') + '</span>' : '';
+              if (vText || tActionBtn || themeFavHtml || themePlaysHtml) html += '<div class="' + subRowClass + '">' + tActionBtn + themeFavHtml + '<span class="mt-ver">' + _escHtml(vText) + themePlaysHtml + '</span></div>';
             }
             if (theme.special) html += ' <span class="mt-flags">(SPECIAL)</span>';
             html += '</div>';
@@ -8568,11 +8848,13 @@ _HTML = r"""<!DOCTYPE html>
       }
       if (_moreSubTab === 'links') {
         const links = [];
-        if (d.mal_id)
+        if (d.igdb_id)
+          links.push({ label: 'IGDB', icon: '\ud83d\udd17', url: 'https://www.igdb.com/games/' + (d.igdb_slug || d.igdb_id) });
+        if (d.mal_id && !d.is_game)
           links.push({ label: 'MyAnimeList', icon: '\ud83d\udd17', url: 'https://myanimelist.net/anime/' + d.mal_id });
-        if (d.anidb_id)
+        if (d.anidb_id && !d.is_game)
           links.push({ label: 'AniDB', icon: '\ud83d\udd17', url: 'https://anidb.net/anime/' + d.anidb_id });
-        if (d.anilist_id)
+        if (d.anilist_id && !d.is_game)
           links.push({ label: 'AniList', icon: '\ud83d\udd17', url: 'https://anilist.co/anime/' + d.anilist_id });
         if (d.animethemes_slug)
           links.push({ label: 'AnimeThemes', icon: '\ud83c\udfb5', url: 'https://animethemes.moe/anime/' + d.animethemes_slug });
@@ -8768,7 +9050,31 @@ def push_question(title, info='', choices=None, drum=None, stepper=None, tags=No
     # Buzzer bonus starts unlocked; other questions keep buzzer closed.
     _reset_buzzer(open_after_reset=bool(buzzer_only))
     _socketio.emit('question', _current_question)
+    # Clear any pending skip grant when a new question starts
+    push_skip_grant('')
     _emit_buzzer_state()
+
+
+def push_skip_grant(name: str):
+    """Grant or revoke a one-time skip for a specific player.
+    Pass empty string to clear the current grant."""
+    global _skip_grant_player
+    prev = _skip_grant_player
+    _skip_grant_player = name
+    if not _socketio:
+        return
+    # Revoke previous holder
+    if prev and prev != name:
+        for sid, pname in list(_connected_players.items()):
+            if pname == prev:
+                _socketio.emit('skip_grant_update', {'active': False}, to=sid)
+    # Grant new holder
+    if name:
+        for sid, pname in list(_connected_players.items()):
+            if pname == name:
+                _socketio.emit('skip_grant_update', {'active': True}, to=sid)
+    # Always push to all hosts so their row buttons refresh
+    _socketio.emit('skip_grant_host_update', {'name': name})
 
 
 def remove_answer_by_name(name: str):
@@ -8826,6 +9132,7 @@ def clear_question():
     _emit_buzzer_state()
     _broadcast_players_update()
     set_info_public(False)
+    push_skip_grant('')
 
 
 def get_answers():
@@ -8918,6 +9225,18 @@ def push_toggles(toggles: dict):
             _socketio.emit('toggles_update', _current_toggles, to=sid)
 
 
+def _sanitize_for_json(obj):
+    """Recursively replace float inf/nan with None so the payload is JSON-safe."""
+    import math
+    if isinstance(obj, float) and (math.isinf(obj) or math.isnan(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
+
+
 def push_metadata(data_dict: dict):
     """Push currently-playing metadata to all connected host clients.
 
@@ -8926,7 +9245,7 @@ def push_metadata(data_dict: dict):
     Pass an empty dict to clear the metadata panel.
     """
     global _current_metadata
-    _current_metadata = data_dict or {}
+    _current_metadata = _sanitize_for_json(data_dict or {})
     if FLASK_AVAILABLE and _socketio:
         for sid in list(_host_sids):
             _socketio.emit('metadata_update', _current_metadata, to=sid)
@@ -9049,6 +9368,18 @@ def push_scores(data: dict):
     """Push scoreboard player data to all connected clients."""
     if FLASK_AVAILABLE and _socketio:
         _socketio.emit('scores_update', data)
+
+
+def push_score_history(entries: list, to_sid: str = None):
+    """Push score change history entries to host client(s)."""
+    if not FLASK_AVAILABLE or not _socketio:
+        return
+    payload = {'entries': entries}
+    if to_sid:
+        _socketio.emit('score_history', payload, to=to_sid)
+    else:
+        for sid in list(_host_sids):
+            _socketio.emit('score_history', payload, to=sid)
 
 
 def push_teams(names: list):
@@ -9295,6 +9626,10 @@ def _build_app():
             emit('info_public_update', {'show': True, 'metadata': _current_metadata})
         emit('emoji_status', {'muted': False, 'timed_out': False, 'timeout_until': 0, 'remaining_ms': 0})
         _emit_buzzer_state(to_sid=_req.sid)
+        # Send skip grant if this player is the granted one
+        name_on_connect = _connected_players.get(_req.sid, '')
+        if name_on_connect and name_on_connect == _skip_grant_player:
+            emit('skip_grant_update', {'active': True})
         # Send playback state to newly-connected hosts after they authenticate via claim_host
 
     @_socketio.on('disconnect')
@@ -9745,6 +10080,33 @@ def _build_app():
         except Exception:
           pass
 
+    @_socketio.on('toggle_skip_grant')
+    def handle_toggle_skip_grant(data):
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        name = str((data or {}).get('name', '')).strip()
+        # Toggle: if already granted to this player, revoke; otherwise grant
+        new_name = '' if (_skip_grant_player == name) else name
+        push_skip_grant(new_name)
+
+    @_socketio.on('player_skip_request')
+    def handle_player_skip_request(data):
+        from flask import request as _req
+        name = _connected_players.get(_req.sid, '').strip()
+        if not name or name != _skip_grant_player:
+            return
+        if name in _banned_names or _req.remote_addr in _shadow_kicked_ips:
+            return
+        # Consume the grant (one-time use)
+        push_skip_grant('')
+        # Invoke next track via the host action callback
+        if _host_action_callback is not None:
+            try:
+                _host_action_callback('invoke', {'id': 'next', '_sid': None})
+            except Exception:
+                pass
+
     @_socketio.on('host_action')
     def handle_host_action(data):
         from flask import request as _req
@@ -9782,6 +10144,8 @@ def _broadcast_players_update():
     for name in _connected_players.values():
         if name not in seen:
             seen.add(name)
+        else:
+            continue
         players.append({
           'name': name,
           'submitted': name in submitted_names,
