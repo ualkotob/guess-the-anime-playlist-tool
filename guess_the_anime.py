@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "17.5"  # Update this when making releases
+APP_VERSION = "17.5.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -842,6 +842,15 @@ SETTINGS_SCHEMA = [
     {"key": "NGROK_DOMAIN",       "config_key": "ngrok_domain",       "label": "Ngrok Domain:",        "type": "str",  "default": "",    "width": 30, "requires_ngrok": True, "tooltip": "Your ngrok static domain (e.g. your-name.ngrok-free.app). Exposes the web server publicly. Requires ngrok.exe on PATH."},
     {"key": "HOST_PASSWORD",      "config_key": "host_password",      "label": "Host Password:",      "type": "password",  "default": "",    "width": 30, "requires_ngrok": True, "tooltip": "If set, entering this password on the join screen grants host view (live answer panel + metadata). Leave blank to disable."},
 ]
+
+# Initialise all schema settings to their defaults at module level so they always
+# exist as globals even before load_config() is called.
+_type_cast_init = {"int": int, "float": float, "bool": bool}
+for _s in SETTINGS_SCHEMA:
+    if _s["key"] not in dir():
+        _cast = _type_cast_init.get(_s["type"])
+        globals()[_s["key"]] = _cast(_s["default"]) if _cast else _s["default"]
+del _s, _cast, _type_cast_init
 
 DISPLAY_SCREEN_WIDTH, DISPLAY_SCREEN_HEIGHT = pyautogui.size()
 def scl(num, type=None):
@@ -21141,7 +21150,7 @@ def open_round_editor(round_info, manager_window=None, position=None):
         def close_and_return():
             """Close editor and return to manager"""
             editor_window.destroy()
-            if manager_window:
+            if manager_window and manager_window.winfo_exists():
                 manager_window.deiconify()
         
         def save_and_return():
@@ -22326,7 +22335,6 @@ def next_background_track():
         music_changed = True
 
 checked_music_folder = False
-background_music_volume_modifier = 1.0
 def play_background_music(toggle):
     """Function to play or pause background music"""
     global music_loaded, current_music_index, music_changed, checked_music_folder
@@ -25310,7 +25318,7 @@ def update_seek_bar():
                 player.is_playing(),
                 volume_level,
                 autoplay_toggle,
-                background_music_volume_modifier,
+                bgm_volume,
                 bzz_modifier=bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get('sound_volume', 1.0)
             )
             _push_web_toggles()
@@ -32534,7 +32542,7 @@ def set_volume(value):
             # BGM_DB_RANGE controls how many dB separate silence (0%) from full (100%).
             # 40dB is standard for audio faders; increase for a steeper drop-off.
             BGM_DB_RANGE = 45
-            vol = background_music_volume_modifier * (10 ** ((volume_level / 100 - 1) * BGM_DB_RANGE / 20))
+            vol = bgm_volume * (10 ** ((volume_level / 100 - 1) * BGM_DB_RANGE / 20))
         pygame.mixer.music.set_volume(vol)  # Adjust volume
     update_volume_display()
 
@@ -33619,8 +33627,8 @@ def _handle_host_action(action: str, data: dict):
             vol = max(0, min(100, int(data.get('volume', 100))))
             set_volume(vol)
         elif action == 'set_bgm_modifier':
-            global background_music_volume_modifier
-            background_music_volume_modifier = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
+            global bgm_volume
+            bgm_volume = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
             if music_loaded:
                 set_volume(volume_level)
             save_config()
@@ -33631,7 +33639,7 @@ def _handle_host_action(action: str, data: dict):
             set_autoplay_mode(max(0, min(3, int(data.get('mode', 0)))))
         elif action == 'request_state':
             web_server.push_playback_state(
-                projected_vlc_time, player.get_length(), player.is_playing(), volume_level, autoplay_toggle, background_music_volume_modifier,
+                projected_vlc_time, player.get_length(), player.is_playing(), volume_level, autoplay_toggle, bgm_volume,
                 bzz_modifier=bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get('sound_volume', 1.0)
             )
         elif action == 'toggle_scoreboard':
