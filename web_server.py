@@ -58,16 +58,33 @@ except ImportError:
 # ---------------------------------------------------------------------------
 def _find_ngrok_cmd():
     """Return the ngrok command string if found, else None."""
-    exe_dir = os.path.dirname(sys.executable)
-    ngrok_local = os.path.join(exe_dir, 'ngrok.exe')
-    if os.path.isfile(ngrok_local):
-        return ngrok_local
-    # Check PATH via shutil.which (works cross-platform)
     import shutil
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    for candidate in [
+        os.path.join(script_dir, 'ngrok.exe'),
+        os.path.join(os.path.dirname(sys.executable), 'ngrok.exe'),
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
     return shutil.which('ngrok')
 
 NGROK_CMD = _find_ngrok_cmd()   # None if not found
 NGROK_AVAILABLE = NGROK_CMD is not None
+
+def _find_cloudflared_cmd():
+    """Return the cloudflared command string if found, else None."""
+    import shutil
+    script_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    for candidate in [
+        os.path.join(script_dir, 'cloudflared.exe'),
+        os.path.join(os.path.dirname(sys.executable), 'cloudflared.exe'),
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
+    return shutil.which('cloudflared')
+
+CLOUDFLARED_CMD = _find_cloudflared_cmd()   # None if not found
+CLOUDFLARED_AVAILABLE = CLOUDFLARED_CMD is not None
 
 # ---------------------------------------------------------------------------
 # Internal state
@@ -103,7 +120,7 @@ _emoji_last_offense: dict = {}     # name -> epoch seconds of last offense
 _EMOJI_WINDOW_SECONDS = 10.0
 _EMOJI_TIMEOUT_THRESHOLD = 50       # >50 in window triggers timeout
 _EMOJI_WARN_THRESHOLD = 24          # optional warning threshold
-_EMOJI_BURST_WINDOW_SECONDS = 1.0
+_EMOJI_BURST_WINDOW_SECONDS = 1
 _EMOJI_BURST_THRESHOLD = 10         # >=10 in 1s triggers short timeout
 _EMOJI_BASE_TIMEOUT_SECONDS = 5.0
 _EMOJI_REPEAT_MULTIPLIER = 1.1
@@ -115,6 +132,7 @@ _buzzer_open: bool = False
 _buzzer_locked: bool = False
 _buzzer_opened_at_ms: int | None = None
 _ngrok_process = None
+_cloudflared_process = None
 _server_thread = None      # Thread running _socketio.run(); kept alive across stop()/start() cycles
 _server_started = False    # True once start() completes successfully
 _titles_provider = None         # callable() → list[str]; set by main app
@@ -133,6 +151,7 @@ _current_marks: dict = {}     # {tagged, favorited, blind, peek, mute_peek} for 
 _current_toggles: dict = {}   # {blind, peek, mute, censors, shortcuts, dock, censor_count}
 _host_action_callback = None  # callable(action, data) set by main app for remote control
 _on_buzz_callback = None       # callable(rank: int, name: str) called when a player buzzes in
+_on_skip_grant_callback = None # callable(name: str) called when skip grant changes (empty = cleared)
 _pending_selections: dict = {}  # name → answer; silently tracks current selection before submit
 _skip_grant_player: str = ''  # name of the player currently granted a skip (empty = none)
 
@@ -280,6 +299,18 @@ def control_buzzer(cmd: str) -> bool:
     if _host_sids:
       for sid in list(_host_sids):
         _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+  elif c == 'open':
+    if not is_buzzer_round:
+      return False
+    _reset_buzzer(open_after_reset=True)
+    _submitted_answers = []
+    _submitted_sids = set()
+    _pending_selections = {}
+    _broadcast_players_update()
+    _emit_peer_answers_update()
+    if _host_sids:
+      for sid in list(_host_sids):
+        _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
   else:
     return False
   _emit_buzzer_state()
@@ -344,16 +375,32 @@ _HTML = r"""<!DOCTYPE html>
       text-transform: uppercase; font-weight: 500;
     }
     #waiting-rules {
-      margin-top: 16px;
+      margin: 16px 0 0;
       background: #1a1a1a; border: 1px solid #333; border-radius: 10px;
       padding: 14px 18px; text-align: left;
-      color: #aaa; font-size: 0.88em; white-space: pre-line; line-height: 1.7;
+      color: #aaa; font-size: 0.88em; line-height: 1.6;
+    }
+    #waiting-rules-inner {
+      width: fit-content; max-width: 100%;
+      margin: 0 auto;
     }
     #waiting-rules-header {
-      text-align: center; font-size: 0.9em; font-weight: bold;
-      color: #777; letter-spacing: 0.05em; margin-bottom: 8px;
-      border-bottom: 1px solid #2a2a2a; padding-bottom: 6px;
+      font-size: 1.25em; font-weight: bold; text-decoration: underline;
+      text-align: left; color: #ccc; letter-spacing: 0.03em;
+      margin-bottom: 8px; padding-bottom: 6px;
+      border-bottom: 1px solid #2a2a2a;
     }
+    #waiting-rules-body { display: flex; flex-direction: column; gap: 0; }
+    .wr-line { white-space: pre-wrap; margin: 0; }
+    .wr-h1  { font-size: 1.5em;  font-weight: bold; margin-top: 6px; }
+    .wr-h2  { font-size: 1.2em;  font-weight: bold; margin-top: 4px; }
+    .wr-h3  { font-size: 1.0em;  font-weight: bold; margin-top: 3px; }
+    .wr-h4  { font-size: 0.78em; font-weight: bold; margin-top: 1px; }
+    .wr-h5  { font-size: 0.62em; font-weight: bold; margin-top: 0; }
+    .wr-h6  { font-size: 0.48em; font-weight: bold; margin-top: 0; }
+    .wr-indent-1 { padding-left: 1em; }
+    .wr-indent-2 { padding-left: 2em; }
+    .wr-indent-3 { padding-left: 3em; }
     #history-link {
       display: inline-block; margin-top: 14px;
       color: #446; font-size: 0.82em; text-decoration: none;
@@ -643,10 +690,16 @@ _HTML = r"""<!DOCTYPE html>
     #emoji-bar {
       display: none; margin-top: 8px;
       text-align: center;
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
+      padding: 14px 18px;
     }
     #emoji-bar p {
-      font-size: 0.78em; color: #556; margin: 0 0 8px;
-      text-transform: uppercase; letter-spacing: .05em;
+      font-size: 0.75em; color: #667; margin: 0 0 10px;
+      text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+      display: flex; align-items: center; gap: 8px;
+    }
+    #emoji-bar p::before, #emoji-bar p::after {
+      content: ''; flex: 1; height: 1px; background: #2a2a3a;
     }
     #emoji-status {
       display: none;
@@ -655,10 +708,14 @@ _HTML = r"""<!DOCTYPE html>
       color: #d99;
       letter-spacing: .02em;
     }
+    #host-msg-card {
+      display: none;
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
+      padding: 14px 18px; margin-top: 8px;
+    }
     #host-msg-row {
       display: flex;
       gap: 6px;
-      margin-top: 10px;
       align-items: center;
     }
     #host-msg-input {
@@ -796,6 +853,7 @@ _HTML = r"""<!DOCTYPE html>
       color: #dde7ff;
       font-size: 1.05em;
       line-height: 1.4;
+      cursor: pointer;
     }
     #host-msg-toast::before {
       content: '\2709';
@@ -844,6 +902,33 @@ _HTML = r"""<!DOCTYPE html>
     .emoji-btn:hover  { border-color: #556; transform: scale(1.15); }
     .emoji-btn:active { transform: scale(0.95); }
     .emoji-btn:disabled { opacity: 0.35; cursor: default; transform: none; }
+    .emoji-btn.queued { }
+    #emoji-queue-preview {
+      display: none; align-items: center; gap: 6px;
+      margin-top: 6px; flex-wrap: wrap;
+    }
+    #emoji-queue-preview.active { display: flex; }
+    #emoji-queue-text {
+      font-size: 1.5em; letter-spacing: 2px; min-width: 24px;
+    }
+    #emoji-queue-send {
+      background: #3a5a3a; border: 1px solid #5a9a5a; border-radius: 6px;
+      padding: 4px 10px; color: #cfc; cursor: pointer; font-size: 0.9em;
+    }
+    #emoji-queue-send:hover { background: #4a7a4a; }
+    #emoji-queue-clear {
+      background: #5a2a2a; border: 1px solid #9a4a4a; border-radius: 6px;
+      padding: 4px 8px; color: #fcc; cursor: pointer; font-size: 0.9em;
+    }
+    #emoji-queue-clear:hover { background: #7a3a3a; }
+    #emoji-queue-save {
+      background: #2a3a5a; border: 1px solid #4a6a9a; border-radius: 6px;
+      padding: 4px 8px; color: #ccf; cursor: pointer; font-size: 0.9em;
+    }
+    #emoji-queue-save:hover { background: #3a4a7a; }
+    #emoji-queue-limit {
+      font-size: 0.75em; color: #f88; align-self: center;
+    }
     #emoji-add-btn {
       background: #2a2a3a; border: 1px solid #556;
       border-radius: 8px; padding: 6px 10px;
@@ -879,7 +964,7 @@ _HTML = r"""<!DOCTYPE html>
     }
     .ep-btn:hover  { border-color: #556; transform: scale(1.15); }
     .ep-btn:active { transform: scale(0.9); }
-    .ep-btn.ep-saved { border-color: #446; background: #1a1a3a; }
+    .ep-btn.ep-saved { border-color: #88aaff; background: rgba(100,130,255,0.25); box-shadow: 0 0 6px rgba(100,130,255,0.4); }
     #emoji-picker-close {
       margin-top: 14px; flex: 1; padding: 11px;
       background: #222; border: 1px solid #444; border-radius: 8px;
@@ -912,8 +997,8 @@ _HTML = r"""<!DOCTYPE html>
     }
     #buzz-btn {
       width: 100%;
-      padding: 30px 13px;
-      height: 120px;
+      padding: 40px 13px;
+      height: 160px;
       border: 2px solid #228;
       border-radius: 10px;
       background: #2a4a78;
@@ -1521,9 +1606,10 @@ _HTML = r"""<!DOCTYPE html>
     }
     #player-skip-btn:hover { background: #3a2a7a; border-color: #7755cc; }
     .sc-skip-btn {
-      font-size: 0.78em; line-height: 1; padding: 1px 5px; border-radius: 3px;
+      font-size: 0.78em; line-height: 1; padding: 0 10px; border-radius: 3px;
       border: 1px solid #2a3a4a; background: #111820; color: #3a6080;
       cursor: pointer; margin-right: 2px; flex-shrink: 0;
+      height: 24px; display: inline-flex; align-items: center; justify-content: center;
     }
     .sc-skip-btn:hover { background: #1a2a3a; color: #6aaad0; border-color: #3a6a9a; }
     .sc-skip-btn.active {
@@ -1606,6 +1692,7 @@ _HTML = r"""<!DOCTYPE html>
     /* scroll area */
     #sc-scroll {
       overflow-y: auto;
+      flex-shrink: 0;
       background: #1e1e1e;
     }
     #sc-scroll::-webkit-scrollbar { width: 8px; background: #1e1e1e; }
@@ -1613,8 +1700,8 @@ _HTML = r"""<!DOCTYPE html>
     /* player rows */
     .sc-row {
       display: flex; align-items: center; gap: 4px;
-      margin: 1px 4px; padding: 0 4px;
-      height: 34px; border-radius: 4px;
+      margin: 0 4px; padding: 0 4px;
+      height: 24px; border-radius: 4px;
       border: 1px solid #2e2e2e; background: #252525;
       box-sizing: border-box; cursor: default;
     }
@@ -1629,8 +1716,8 @@ _HTML = r"""<!DOCTYPE html>
     .sc-deltas { display: flex; gap: 2px; flex: 0 0 auto; align-items: center; }
     .sc-delta-btn {
       font-family: 'Segoe UI', sans-serif; font-size: 0.68em; font-weight: bold;
-      width: 22px; height: 24px; border-radius: 3px; cursor: pointer;
-      border: 1px solid; padding: 0; line-height: 1;
+      min-width: 24px; height: 24px; border-radius: 3px; cursor: pointer;
+      border: 1px solid; padding: 0 3px; line-height: 1; box-sizing: border-box;
     }
     .sc-delta-neg { background: #5a1f1f; color: #ff8080; border-color: #7a3030; }
     .sc-delta-neg:hover { background: #7a2828; border-color: #cc5555; }
@@ -1970,69 +2057,55 @@ _HTML = r"""<!DOCTYPE html>
     .ctrl-btn-autoplay.mode-0 { color: #ccc; }
     .ctrl-btn-autoplay.mode-1 { color: #ccc; }
     .ctrl-btn-autoplay.mode-2 { opacity: 0.35; }
-    /* ── Volume slider popup (horizontal) ── */
+    /* ── Volume slider popup ── */
     #ctrl-vol-wrap { position: relative; display: flex; align-items: center; }
     #ctrl-vol-slider-wrap {
       position: absolute; bottom: 52px; left: 0;
       background: #1a1a30; border: 1px solid #334; border-radius: 10px;
-      padding: 8px 12px; display: flex; flex-direction: column;
-      align-items: stretch; gap: 6px; z-index: 10; white-space: nowrap;
+      padding: 8px 12px; z-index: 10; white-space: nowrap;
+      display: grid;
+      grid-template-columns: max-content 110px auto auto max-content;
+      column-gap: 6px;
+      align-items: center;
     }
-    #ctrl-vol-slider {
+    /* Each row dissolves into the outer shared grid */
+    .vol-row {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: subgrid;
+      align-items: center;
+      padding: 5px 0;
+    }
+    .vol-sep {
+      grid-column: 1 / -1;
+      border: none; border-top: 1px solid #334;
+      margin: 0; padding: 0;
+    }
+    /* slider thumb shared styles */
+    .vol-slider {
       -webkit-appearance: none; appearance: none;
-      width: 130px; height: 4px; border-radius: 2px;
+      width: 100%; height: 4px; border-radius: 2px;
       background: #334; outline: none; cursor: pointer;
     }
-    #ctrl-vol-slider::-webkit-slider-thumb {
+    .vol-slider::-webkit-slider-thumb {
       -webkit-appearance: none; width: 14px; height: 14px;
       border-radius: 50%; background: #88f; cursor: pointer;
     }
-    #ctrl-vol-slider::-moz-range-thumb {
+    .vol-slider::-moz-range-thumb {
       width: 14px; height: 14px; border-radius: 50%;
       background: #88f; cursor: pointer; border: none;
     }
-    #ctrl-vol-label { font-size: 0.7em; color: #88a; min-width: 2em; text-align: right; }
-    #ctrl-vol-slider-row { display: flex; align-items: center; gap: 8px; }
-    /* ── BZZ row inside volume popup ── */
-    #ctrl-bzz-row {
-      display: flex; align-items: center; gap: 8px;
-      border-bottom: 1px solid #334; padding-bottom: 6px; margin-bottom: 2px;
+    .vol-hd  { font-size: 0.7em; color: #88a; text-align: right; white-space: nowrap; }
+    .vol-val { font-size: 0.7em; color: #88a; text-align: center; white-space: nowrap; }
+    #ctrl-vol-slider { } /* kept for JS compat */
+    #ctrl-vol-label  { } /* kept for JS compat */
+    .vol-step-btn {
+      background: none; border: 1px solid #334; border-radius: 4px;
+      color: #88a; font-size: 0.7em; line-height: 1; padding: 1px 4px;
+      cursor: pointer; flex-shrink: 0;
     }
-    #ctrl-bzz-label-hd { font-size: 0.7em; color: #88a; white-space: nowrap; }
-    #ctrl-bzz-slider {
-      -webkit-appearance: none; appearance: none;
-      width: 100px; height: 4px; border-radius: 2px;
-      background: #334; outline: none; cursor: pointer;
-    }
-    #ctrl-bzz-slider::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 14px; height: 14px;
-      border-radius: 50%; background: #88f; cursor: pointer;
-    }
-    #ctrl-bzz-slider::-moz-range-thumb {
-      width: 14px; height: 14px; border-radius: 50%;
-      background: #88f; cursor: pointer; border: none;
-    }
-    #ctrl-bzz-label { font-size: 0.7em; color: #88a; min-width: 2.5em; text-align: right; }
-    /* ── BGM row inside volume popup ── */
-    #ctrl-bgm-row {
-      display: flex; align-items: center; gap: 8px;
-      border-bottom: 1px solid #334; padding-bottom: 6px; margin-bottom: 2px;
-    }
-    #ctrl-bgm-label-hd { font-size: 0.7em; color: #88a; white-space: nowrap; }
-    #ctrl-bgm-slider {
-      -webkit-appearance: none; appearance: none;
-      width: 100px; height: 4px; border-radius: 2px;
-      background: #334; outline: none; cursor: pointer;
-    }
-    #ctrl-bgm-slider::-webkit-slider-thumb {
-      -webkit-appearance: none; width: 14px; height: 14px;
-      border-radius: 50%; background: #88f; cursor: pointer;
-    }
-    #ctrl-bgm-slider::-moz-range-thumb {
-      width: 14px; height: 14px; border-radius: 50%;
-      background: #88f; cursor: pointer; border: none;
-    }
-    #ctrl-bgm-label { font-size: 0.7em; color: #88a; min-width: 2.5em; text-align: right; }
+    .vol-step-btn:hover { color: #bbf; border-color: #55a; }
+    .vol-step-btn:active { color: #fff; }
     #metadata-overlay {
       display: none; position: fixed; inset: 0;
       background: rgba(0,0,0,0.75); z-index: 700;
@@ -2642,7 +2715,7 @@ _HTML = r"""<!DOCTYPE html>
   <div id="question-box" class="box" style="display:none">
     <div id="waiting">
       <div id="waiting-msg">&#9203; Waiting for next question&hellip;</div>
-      <div id="waiting-rules" style="display:none"><div id="waiting-rules-header"></div><div id="waiting-rules-body"></div></div>
+      <div id="waiting-rules" style="display:none"><div id="waiting-rules-inner"><div id="waiting-rules-header"></div><div id="waiting-rules-body"></div></div></div>
       <div id="prev-question" style="display:none">
         <div id="prev-question-label">PREVIOUS QUESTION</div>
         <div id="prev-question-title"></div>
@@ -2651,12 +2724,6 @@ _HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div id="question-area" style="display:none">
-      <div id="host-answers-anchor-question">
-        <button id="host-toggle" onclick="_toggleHostPanel()">&#128065; Submitted Answers (0)</button>
-        <div id="host-panel">
-          <div id="host-answers"></div>
-        </div>
-      </div>
       <div id="q-card">
         <div id="q-title"></div>
         <div id="q-info"></div>
@@ -2665,14 +2732,20 @@ _HTML = r"""<!DOCTYPE html>
       <input id="free-input" placeholder="Your Answer&hellip;" autocomplete="off" style="display:none"/>      <div id="free-error" style="display:none; color:#f66; font-size:0.85em; margin-bottom:8px;"></div>      <button id="submit-btn" onclick="submitAnswer()">Submit</button>
       <button id="player-skip-btn" onclick="_playerRequestSkip()">&#x23ED; Skip this theme?</button>
       <div id="sent-msg">&#10003; Answer submitted!</div>
-      <div id="peer-answers-wrap" style="display:none">
-        <button id="peer-answers-toggle" onclick="_togglePeerAnswers()">&#128065; Submitted Answers (0)</button>
-        <div id="peer-answers-list"></div>
-      </div>
       <div id="buzzer-panel">
         <div id="buzzer-status">Buzzer idle.</div>
         <button id="buzz-btn" onclick="_pressBuzz()">BUZZ</button>
         <div id="buzzer-order"></div>
+      </div>
+      <div id="host-answers-anchor-question">
+        <button id="host-toggle" onclick="_toggleHostPanel()">&#128065; Submitted Answers (0)</button>
+        <div id="host-panel">
+          <div id="host-answers"></div>
+        </div>
+      </div>
+      <div id="peer-answers-wrap" style="display:none">
+        <button id="peer-answers-toggle" onclick="_togglePeerAnswers()">&#128065; Submitted Answers (0)</button>
+        <div id="peer-answers-list"></div>
       </div>
     </div>
     <div id="host-messages-anchor-question">
@@ -2692,14 +2765,23 @@ _HTML = r"""<!DOCTYPE html>
         <div id="host-messages-list"></div>
       </div>
     </div>
-    <div id="emoji-bar">
+    <div id="host-msg-card">
       <div id="host-msg-row">
         <input id="host-msg-input" maxlength="280" placeholder="Message host…" autocomplete="off" />
         <button id="host-msg-send" onclick="_sendHostMessage()">Send to Host</button>
       </div>
-      <p>React</p>
+    </div>
+    <div id="emoji-bar">
+      <p>React - Click to Send - Right Click to Create/Delete Sets</p>
       <div id="emoji-btns">
         <button id="emoji-add-btn" title="Edit reactions" onclick="_openEmojiPicker()">&#9998; Edit</button>
+      </div>
+      <div id="emoji-queue-preview">
+        <span id="emoji-queue-text"></span>
+        <button id="emoji-queue-send" onclick="_sendQueuedEmojis()">Send</button>
+        <button id="emoji-queue-save" onclick="_saveQueuedEmojiAsButton()" title="Save as emoji button">&#128190; Save</button>
+        <button id="emoji-queue-clear" onclick="_clearEmojiQueue()">&#x2715;</button>
+        <span id="emoji-queue-limit"></span>
       </div>
       <div id="emoji-status"></div>
     </div>
@@ -2950,6 +3032,7 @@ _HTML = r"""<!DOCTYPE html>
         <span class="ctrl-extras-sect-label">Queue</span>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt" onclick="_ctrlExtraClick('lt')">Lightning</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_dice" onclick="_ctrlExtraClick('lt_dice')">&#x1F3B2;</button>
+        <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="lt_settings" onclick="_ctrlExtraClick('lt_settings')">LT Settings</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="yt" onclick="_ctrlExtraClick('yt')">YouTube</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
@@ -2989,6 +3072,7 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')">Dock</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-start" data-extra-id="tgl_info_start" onclick="_ctrlExtraClick('tgl_info_start')" title="Toggle auto-show info at start">Info Start</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-end" data-extra-id="tgl_info_end" onclick="_ctrlExtraClick('tgl_info_end')" title="Toggle auto-show info at end">Info End</button>
+        <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="rules_file" onclick="_ctrlExtraClick('rules_file')" title="Select rules file">Rules</button>
         <button class="ctrl-bonus-btn ctrl-sect-session" id="ctrl-reset-session-btn" data-extra-id="reset_session_history" onclick="_ctrlExtraClick('reset_session_history')">Reset Session [0]</button>
         <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="end_session" onclick="_ctrlExtraClick('end_session')">End</button>
       </div>
@@ -3095,22 +3179,40 @@ _HTML = r"""<!DOCTYPE html>
         <div id="ctrl-vol-wrap">
           <button class="ctrl-btn ctrl-btn-sm" id="ctrl-vol-btn" onclick="_ctrlToggleVolume()" title="Volume">&#x1F50A;</button>
           <div id="ctrl-vol-slider-wrap" style="display:none">
-            <div id="ctrl-bzz-row">
-              <span id="ctrl-bzz-label-hd">BUZZ</span>
-              <input id="ctrl-bzz-slider" type="range" min="0" max="150" value="100"
+            <div id="ctrl-bzz-row" class="vol-row">
+              <span class="vol-hd" id="ctrl-bzz-label-hd">BUZZ</span>
+              <input id="ctrl-bzz-slider" class="vol-slider" type="range" min="0" max="150" value="100"
                      oninput="_ctrlBzzChange(this.value)">
-              <span id="ctrl-bzz-label">100%</span>
+              <button class="vol-step-btn" onclick="_ctrlBzzStep(-1)" oncontextmenu="_ctrlBzzStep(-1,1);return false;">&#x2212;</button>
+              <button class="vol-step-btn" onclick="_ctrlBzzStep(1)" oncontextmenu="_ctrlBzzStep(1,1);return false;">+</button>
+              <span class="vol-val" id="ctrl-bzz-label">100%</span>
             </div>
-            <div id="ctrl-bgm-row">
-              <span id="ctrl-bgm-label-hd">BGM</span>
-              <input id="ctrl-bgm-slider" type="range" min="0" max="150" value="100"
+            <hr class="vol-sep">
+            <div id="ctrl-strm-row" class="vol-row">
+              <span class="vol-hd" id="ctrl-strm-label-hd">STRM</span>
+              <input id="ctrl-strm-slider" class="vol-slider" type="range" min="-100" max="100" value="0"
+                     oninput="_ctrlStrmChange(this.value)">
+              <button class="vol-step-btn" onclick="_ctrlStrmStep(-1)" oncontextmenu="_ctrlStrmStep(-1,1);return false;">&#x2212;</button>
+              <button class="vol-step-btn" onclick="_ctrlStrmStep(1)" oncontextmenu="_ctrlStrmStep(1,1);return false;">+</button>
+              <span class="vol-val" id="ctrl-strm-label">+0</span>
+            </div>
+            <hr class="vol-sep">
+            <div id="ctrl-bgm-row" class="vol-row">
+              <span class="vol-hd" id="ctrl-bgm-label-hd">BGM</span>
+              <input id="ctrl-bgm-slider" class="vol-slider" type="range" min="0" max="150" value="100"
                      oninput="_ctrlBgmChange(this.value)">
-              <span id="ctrl-bgm-label">100%</span>
+              <button class="vol-step-btn" onclick="_ctrlBgmStep(-1)" oncontextmenu="_ctrlBgmStep(-1,1);return false;">&#x2212;</button>
+              <button class="vol-step-btn" onclick="_ctrlBgmStep(1)" oncontextmenu="_ctrlBgmStep(1,1);return false;">+</button>
+              <span class="vol-val" id="ctrl-bgm-label">100%</span>
             </div>
-            <div id="ctrl-vol-slider-row">
-              <input id="ctrl-vol-slider" type="range" min="0" max="100" value="100"
+            <hr class="vol-sep">
+            <div id="ctrl-vol-slider-row" class="vol-row">
+              <span class="vol-hd">VOL</span>
+              <input id="ctrl-vol-slider" class="vol-slider" type="range" min="0" max="100" value="100"
                      oninput="_ctrlVolumeChange(this.value)">
-              <span id="ctrl-vol-label">100</span>
+              <button class="vol-step-btn" onclick="_ctrlVolStep(-1)" oncontextmenu="_ctrlVolStep(-1,1);return false;">&#x2212;</button>
+              <button class="vol-step-btn" onclick="_ctrlVolStep(1)" oncontextmenu="_ctrlVolStep(1,1);return false;">+</button>
+              <span class="vol-val" id="ctrl-vol-label">100</span>
             </div>
           </div>
         </div>
@@ -3418,6 +3520,7 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('player-list-wrap').style.display = 'block';
       document.getElementById('history-btn').style.display = 'block';
       document.getElementById('emoji-bar').style.display = 'block';
+      document.getElementById('host-msg-card').style.display = 'block';
     }
 
     /* ══════════════════════════════════════════
@@ -4399,8 +4502,8 @@ _HTML = r"""<!DOCTYPE html>
       _placeHostAnswers();
       _renderHostMessages(_hostMessages);
       _refreshPlayerList(_lastPlayerList);
-      const msgRow = document.getElementById('host-msg-row');
-      if (msgRow) msgRow.style.display = 'none';
+      const hostMsgCard = document.getElementById('host-msg-card');
+      if (hostMsgCard) hostMsgCard.style.display = 'none';
       // Hide peer answers panel — host has their own answers view
       document.getElementById('peer-answers-wrap').style.display = 'none';
       document.getElementById('peer-answers-list').innerHTML = '';
@@ -4600,13 +4703,88 @@ _HTML = r"""<!DOCTYPE html>
     /* ── Host view helpers ── */
     function _applyRules(header, body) {
       const el = document.getElementById('waiting-rules');
-      if (header || body) {
-        document.getElementById('waiting-rules-header').textContent = header;
-        document.getElementById('waiting-rules-header').style.display = header ? 'block' : 'none';
-        document.getElementById('waiting-rules-body').textContent = body;
-        el.style.display = 'block';
+      if (!header && !body) { el.style.display = 'none'; return; }
+
+      // Shared markdown inline formatter (used for both header and body)
+      const mdPattern = /^#+ |^>+ |\*\*.+?\*\*|__[^_].+?__|~~.+?~~|(?<!\*)\*(?!\*).+?(?<!\*)\*(?!\*)|(?<!_)_(?!_).+?(?<!_)_(?!_)|^[-*] /m;
+      function _inlineToHtml(text) {
+        if (/^[-*] /.test(text)) text = '\u2022 ' + text.slice(2);
+        text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        text = text.replace(/~~(.+?)~~/g, '<s>$1</s>');
+        text = text.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+        text = text.replace(/__(.+?)__/g, '<u>$1</u>');
+        text = text.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<i>$1</i>');
+        text = text.replace(/(?<!_)_(?!_)(.+?)(?<!_)_(?!_)/g, '<i>$1</i>');
+        return text;
+      }
+      function _classicInline(raw) {
+        let html = raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        const boldPats = [];
+        for (const mod of ['', '+'])
+          for (const num of ['\u00bd','1','2','3','4','5'])
+            for (const pt of ['PT','PTs']) boldPats.push(mod + num + ' ' + pt);
+        boldPats.forEach(p => { html = html.split(p).join('<b>' + p + '</b>'); });
+        html = html.replace(/\(([^)]+)\)/g, '(<i>$1</i>)');
+        return html;
+      }
+
+      const hdrEl = document.getElementById('waiting-rules-header');
+      if (header) {
+        // Strip any leading markdown heading prefix (e.g. "# Title" → "Title")
+        const hM = header.match(/^#+\s+(.*)/);
+        const hdrText = hM ? hM[1] : header;
+        const useHeaderMd = mdPattern.test(hdrText);
+        hdrEl.innerHTML = useHeaderMd ? _inlineToHtml(hdrText) : _classicInline(hdrText);
+        hdrEl.style.display = 'block';
       } else {
-        el.style.display = 'none';
+        hdrEl.innerHTML = '';
+        hdrEl.style.display = 'none';
+      }
+
+      const bodyEl = document.getElementById('waiting-rules-body');
+      bodyEl.innerHTML = '';
+      el.style.display = 'block';
+      if (!body) return;
+
+      const useMarkdown = mdPattern.test(body);
+      const lines = body.split('\n');
+
+      if (useMarkdown) {
+        lines.forEach(raw => {
+          const div = document.createElement('div');
+          div.className = 'wr-line';
+          const indentM = raw.match(/^(>+) ?(.*)/);
+          let depth = 0, rest = raw;
+          if (indentM) { depth = indentM[1].length; rest = indentM[2]; }
+          if (depth) div.classList.add('wr-indent-' + Math.min(depth, 3));
+          const hM = rest.match(/^(#+) (.*)/);
+          if (hM) {
+            const level = Math.min(hM[1].length, 6);
+            div.classList.add('wr-h' + level);
+            div.innerHTML = _inlineToHtml(hM[2]) || '\u00a0';
+          } else {
+            div.innerHTML = _inlineToHtml(rest) || '\u00a0';
+          }
+          bodyEl.appendChild(div);
+        });
+      } else {
+        // Classic auto-format: bold point patterns, italicise parentheticals,
+        // first non-empty line after a blank gets italic+underline (section header).
+        let sectionHeaderIdx = -1;
+        for (let i = 1; i < lines.length; i++) {
+          if (lines[i-1].trim() === '' && lines[i].trim() !== '') { sectionHeaderIdx = i; break; }
+        }
+        lines.forEach((raw, idx) => {
+          const div = document.createElement('div');
+          div.className = 'wr-line';
+          if (!raw.trim()) { div.innerHTML = '\u00a0'; bodyEl.appendChild(div); return; }
+          if (idx === sectionHeaderIdx) {
+            div.innerHTML = '<i><u>' + _classicInline(raw) + '</u></i>';
+          } else {
+            div.innerHTML = _classicInline(raw);
+          }
+          bodyEl.appendChild(div);
+        });
       }
     }
 
@@ -4819,9 +4997,67 @@ _HTML = r"""<!DOCTYPE html>
         btn.className = 'emoji-btn';
         btn.textContent = emoji;
         btn.onclick = () => _sendEmoji(emoji);
+        const isSet = [...new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(emoji)].length > 1;
+        if (isSet) {
+          btn.title = 'Right-click to delete';
+          btn.oncontextmenu = (e) => {
+            e.preventDefault();
+            const list = _loadSavedEmojis().filter(e => e !== emoji);
+            _saveSavedEmojis(list);
+            _rebuildEmojiBar();
+          };
+        } else {
+          btn.oncontextmenu = (e) => { e.preventDefault(); _queueEmoji(emoji, btn); };
+        }
         container.insertBefore(btn, editBtn);
       });
       _updateEmojiStatusUI();
+    }
+    let _emojiSendQueue = [];
+    const _EMOJI_QUEUE_MAX = 5;
+    function _updateEmojiQueueUI() {
+      const preview = document.getElementById('emoji-queue-preview');
+      const text = document.getElementById('emoji-queue-text');
+      const limit = document.getElementById('emoji-queue-limit');
+      if (_emojiSendQueue.length > 0) {
+        if (preview) preview.classList.add('active');
+      } else {
+        if (preview) preview.classList.remove('active');
+      }
+      if (text) text.textContent = _emojiSendQueue.join('');
+      if (limit) limit.textContent = _emojiSendQueue.length >= _EMOJI_QUEUE_MAX ? `(max ${_EMOJI_QUEUE_MAX})` : '';
+    }
+    function _queueEmoji(emoji, btn) {
+      const now = Date.now();
+      if (_emojiHostMuted || _emojiTimeoutUntilMs > now) { _updateEmojiStatusUI(); return; }
+      if (_emojiSendQueue.length >= _EMOJI_QUEUE_MAX) return;
+      _emojiSendQueue.push(emoji);
+      if (btn) btn.classList.add('queued');
+      _updateEmojiQueueUI();
+    }
+    function _clearEmojiQueue() {
+      _emojiSendQueue = [];
+      document.querySelectorAll('.emoji-btn.queued').forEach(b => b.classList.remove('queued'));
+      _updateEmojiQueueUI();
+    }
+    function _sendQueuedEmojis() {
+      if (!_emojiSendQueue.length) return;
+      const combined = _emojiSendQueue.join('');
+      _clearEmojiQueue();
+      const now = Date.now();
+      if (_emojiHostMuted || _emojiTimeoutUntilMs > now) { _updateEmojiStatusUI(); return; }
+      socket.emit('send_emoji', { emoji: combined });
+    }
+    function _saveQueuedEmojiAsButton() {
+      if (!_emojiSendQueue.length) return;
+      const combined = _emojiSendQueue.join('');
+      const list = _loadSavedEmojis();
+      if (!list.includes(combined)) {
+        list.push(combined);
+        _saveSavedEmojis(list);
+        _rebuildEmojiBar();
+      }
+      _clearEmojiQueue();
     }
     function _sendEmoji(emoji) {
       const now = Date.now();
@@ -4839,6 +5075,19 @@ _HTML = r"""<!DOCTYPE html>
       } catch(e) {}
       socket.emit('buzz_press', {});
     }
+
+    // Spacebar shortcut for buzzer (only when buzzer panel is visible and no input is focused)
+    document.addEventListener('keydown', e => {
+      if (e.code !== 'Space' && e.key !== ' ') return;
+      const focused = document.activeElement;
+      if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA' || focused.isContentEditable)) return;
+      const btn = document.getElementById('buzz-btn');
+      if (!btn || btn.disabled || btn.style.display === 'none') return;
+      const panel = document.getElementById('buzzer-panel');
+      if (!panel || panel.style.display === 'none') return;
+      e.preventDefault();
+      _pressBuzz();
+    });
 
     function _updateBuzzerUI() {
       const panel = document.getElementById('buzzer-panel');
@@ -4858,7 +5107,7 @@ _HTML = r"""<!DOCTYPE html>
       if (!shouldShow) return;
 
       if (isLocked) status.textContent = 'Buzzer locked.';
-      else if (isOpen) status.textContent = myIdx >= 0 ? ('Buzz received #' + (myIdx + 1)) : 'Buzzer open — press BUZZ';
+      else if (isOpen) status.textContent = myIdx >= 0 ? ('Buzz received #' + (myIdx + 1)) : 'Buzzer open — press BUZZ or Space Bar to buzz in!';
       else status.textContent = 'Buzzer idle.';
 
       btn.disabled = !inQuestion || !isOpen || isLocked || myIdx >= 0 || !playerName;
@@ -5234,6 +5483,11 @@ _HTML = r"""<!DOCTYPE html>
         toast.classList.remove('active');
         _hostMsgToastTimer = null;
       }, 6000);
+      toast.onclick = () => {
+        if (_hostMsgToastTimer) { clearTimeout(_hostMsgToastTimer); _hostMsgToastTimer = null; }
+        toast.classList.remove('active');
+        toast.onclick = null;
+      };
     }
 
     function _showToast(msg, ms = 3000) {
@@ -5456,7 +5710,6 @@ _HTML = r"""<!DOCTYPE html>
         _currentMetadata = null;
         if (_metadataOpen) {
           _renderMetadata(null);
-          _renderSeriesThemes(null);
         }
       }
     });
@@ -5531,6 +5784,8 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlAutoBonusListOpen = false;
       _ctrlDirListOpen = false;
       _ctrlBuzzSoundListOpen = false;
+      _ctrlRulesListOpen = false;
+      _ctrlLtSettingsListOpen = false;
       const overlay = document.getElementById('ctrl-list-popup-overlay');
       const box = document.getElementById('ctrl-list-popup-box');
       if (overlay) overlay.classList.remove('active');
@@ -5668,6 +5923,10 @@ _HTML = r"""<!DOCTYPE html>
       if (data.bzz_modifier !== undefined) {
         _ctrlBzzPct = Math.round(data.bzz_modifier * 100);
         _ctrlBzzRender();
+      }
+      if (data.strm_boost !== undefined) {
+        _ctrlStrmBoost = Math.round(data.strm_boost);
+        _ctrlStrmRender();
       }
       if (data.autoplay !== undefined) _ctrlSetAutoplayMode(data.autoplay);
       _ctrlRenderInfo(_currentMetadata);
@@ -6039,15 +6298,22 @@ _HTML = r"""<!DOCTYPE html>
     function _scFitScroll() {
       const sc = document.getElementById('sc-scroll');
       if (!sc) return;
+      // Clear max-height so scrollHeight is the true natural content height.
+      sc.style.maxHeight = '';
       const zoom = parseFloat(document.documentElement.style.zoom) || 1;
       const scTop = sc.getBoundingClientRect().top / zoom;
       const vh = window.innerHeight / zoom;
-      // Sum the height of siblings that come AFTER sc-scroll (e.g. add-player row)
       let belowH = 0;
       let el = sc.nextElementSibling;
       while (el) { belowH += el.getBoundingClientRect().height / zoom; el = el.nextElementSibling; }
-      const maxH = vh - scTop - belowH - 50;
-      sc.style.maxHeight = Math.max(80, maxH) + 'px';
+      const cap = Math.max(80, vh - scTop - belowH - 50);
+      if (sc.scrollHeight > cap) {
+        sc.style.maxHeight = cap + 'px';
+        sc.style.overflowY = 'auto';
+      } else {
+        // Content fits — hide scrollbar unconditionally to avoid subpixel rounding artifacts.
+        sc.style.overflowY = 'hidden';
+      }
     }
 
     function _scRender(data, forceRebuild = false) {
@@ -6812,6 +7078,8 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlAutoBonusListOpen = false;
       _ctrlDirListOpen = false;
       _ctrlBuzzSoundListOpen = false;
+      _ctrlRulesListOpen = false;
+      _ctrlLtSettingsListOpen = false;
       _ctrlListPopupClose();
     }
 
@@ -7216,8 +7484,104 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlSearchQuery = savedQuery;
     });
 
+    // ── Lightning settings preset selector ───────────────────────────────────
+    let _ctrlLtSettingsListOpen = false;
+    let _ctrlLtSettingsCurrentPreset = null;
+    let _ctrlLtSettingsPresets = [];
+
+    function _ctrlToggleLtSettingsList() {
+      const opening = !_ctrlLtSettingsListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlLtSettingsListOpen = true;
+        _ctrlListPopupOpen('Lightning Settings', 'lt_settings');
+        const list = document.getElementById('ctrl-list-popup-list');
+        if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading\u2026</div>';
+        socket.emit('host_action', {action: 'get_lightning_presets_list'});
+      }
+    }
+
+    function _ctrlRenderLtSettingsList() {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      const allEntries = [{name: '', label: 'Default'}].concat(
+        _ctrlLtSettingsPresets.map(p => ({name: p, label: p}))
+      );
+      allEntries.forEach(entry => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item';
+        const isCurrent = entry.name === (_ctrlLtSettingsCurrentPreset || '');
+        el.innerHTML =
+          '<span style="display:inline-block;width:1.2em;color:#4c8;font-size:0.9em">' +
+          (isCurrent ? '\u2713' : '') + '</span>' +
+          '<span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(entry.label) + '</span>';
+        if (isCurrent) el.style.cssText = 'background:#1a2a1a;border-left:2px solid #4a8;';
+        el.onclick = () => {
+          socket.emit('host_action', {action: 'select_lightning_preset', name: entry.name});
+          _ctrlListPopupClose();
+        };
+        list.appendChild(el);
+      });
+    }
+
+    socket.on('lightning_presets_list', data => {
+      _ctrlLtSettingsCurrentPreset = data.selected || null;
+      _ctrlLtSettingsPresets = data.presets || [];
+      if (!_ctrlLtSettingsListOpen) return;
+      _ctrlRenderLtSettingsList();
+    });
+
     // ── Buzzer sound preset selector ─────────────────────────────────────────
     let _ctrlBuzzSoundListOpen = false;
+    let _ctrlRulesListOpen = false;
+    let _ctrlRulesCurrentFile = null;
+
+    function _ctrlToggleRulesList() {
+      const opening = !_ctrlRulesListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlRulesListOpen = true;
+        _ctrlListPopupOpen('Rules File', 'rules');
+        const list = document.getElementById('ctrl-list-popup-list');
+        if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading\u2026</div>';
+        socket.emit('host_action', {action: 'get_rules_list'});
+      }
+    }
+
+    function _ctrlRenderRulesList(files, selected) {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!files || !files.length) {
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No rules files found</div>';
+        return;
+      }
+      files.forEach(f => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item';
+        const isCurrent = f === selected;
+        el.innerHTML =
+          '<span style="display:inline-block;width:1.2em;color:#4c8;font-size:0.9em">' +
+          (isCurrent ? '\u2713' : '') + '</span>' +
+          '<span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(f) + '</span>';
+        if (isCurrent) el.style.cssText = 'background:#1a2a1a;border-left:2px solid #4a8;';
+        el.onclick = () => {
+          socket.emit('host_action', {action: 'select_rules_file', file: f});
+          _ctrlListPopupClose();
+        };
+        list.appendChild(el);
+      });
+    }
+
+    let _ctrlRulesFileList = [];
+
+    socket.on('rules_list', data => {
+      _ctrlRulesCurrentFile = data.selected || null;
+      _ctrlRulesFileList = data.files || [];
+      if (!_ctrlRulesListOpen) return;
+      _ctrlRenderRulesList(_ctrlRulesFileList, _ctrlRulesCurrentFile);
+    });
 
     function _ctrlToggleBuzzSoundList() {
       const opening = !_ctrlBuzzSoundListOpen;
@@ -7296,6 +7660,9 @@ _HTML = r"""<!DOCTYPE html>
     const _ctrlAutoBonusOptions = [
       {label: 'Random',          value: 'random'},
       {divider: true},
+      {label: 'Free Form',       value: 'freeform'},
+      {label: 'Buzzer',          value: 'buzzer'},
+      {divider: true},
       {label: 'Multiple Choice', value: 'multiple'},
       {label: 'Year',            value: 'year'},
       {label: 'Score',           value: 'score'},
@@ -7305,9 +7672,6 @@ _HTML = r"""<!DOCTYPE html>
       {label: 'Studio',          value: 'studio'},
       {label: 'Artist',          value: 'artist'},
       {label: 'Song Title',      value: 'song'},
-      {divider: true},
-      {label: 'Free Form',       value: 'freeform'},
-      {label: 'Buzzer',          value: 'buzzer'},
     ];
     function _ctrlToggleAutoBonusList() {
       const opening = !_ctrlAutoBonusListOpen;
@@ -7456,6 +7820,14 @@ _HTML = r"""<!DOCTYPE html>
         document.querySelectorAll('[data-extra-id="auto_bonus"]').forEach(el =>
           el.classList.toggle('ctrl-toggle-active', _ctrlAutoBonusCurrent != null));
       }
+      if ('selected_rules_file' in data) {
+        _ctrlRulesCurrentFile = data.selected_rules_file || null;
+        if (_ctrlRulesListOpen) _ctrlRenderRulesList(_ctrlRulesFileList || [], _ctrlRulesCurrentFile);
+      }
+      if ('selected_light_mode_settings' in data) {
+        _ctrlLtSettingsCurrentPreset = data.selected_light_mode_settings || null;
+        if (_ctrlLtSettingsListOpen) _ctrlRenderLtSettingsList();
+      }
       const bonusToExtraId = {
         'multiple':   'b_multiple',
         'year':       'b_year',
@@ -7512,6 +7884,7 @@ _HTML = r"""<!DOCTYPE html>
       'lt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Lightning', title: 'Open lightning round type chooser' },
 
       'lt_dice':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F3B2;', title: 'Variety Lightning Round', ltMode: 'variety' },
+      'lt_settings':  { classes: 'ctrl-sect-queue',                            html: 'LT Settings', title: 'Select lightning settings template' },
       'yt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'YouTube',   title: 'YouTube videos', serverCtrl: true },
       'fl':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
       'search':       { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F50D;', title: 'Search themes' },
@@ -7560,6 +7933,7 @@ _HTML = r"""<!DOCTYPE html>
       'mark_peek':    { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x1F440;', title: 'Peek Mark' },
       'mark_mute_peek':{ classes: 'ctrl-mark-btn ctrl-sect-mark',             html: '&#x1F507;', title: 'Mute Peek Mark' },
       // Session
+      'rules_file':   { classes: 'ctrl-sect-session',                          html: 'Rules',     title: 'Select rules file' },
       'reset_session_history': { classes: 'ctrl-sect-session',                html: 'Reset Session [0]', title: 'Clear the current session history' },
       'end_session':  { classes: 'ctrl-sect-session',                         html: 'End',       title: 'End the current session' },
       // Scoreboard actions (invoke menu commands in main app)
@@ -7575,6 +7949,7 @@ _HTML = r"""<!DOCTYPE html>
       'lt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleLtList(); },
       'lt_stop':      () => socket.emit('host_action',{action:'stop_queues'}),
       'lt_dice':      () => { _ctrlCloseExtrasPopup(); socket.emit('host_action',{action:'invoke',id:'lightning_variety'}); },
+      'lt_settings':  () => { _ctrlCloseExtrasPopup(); _ctrlToggleLtSettingsList(); },
       'yt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleYouTubeList(); },
       'fl':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleFlList(); },
       'search':       () => { _ctrlCloseExtrasPopup(); _ctrlToggleSearchRow(); },
@@ -7622,6 +7997,7 @@ _HTML = r"""<!DOCTYPE html>
         socket.emit('host_action',{action:'reset_session_history'});
         _ctrlCloseExtrasPopup();
       },
+      'rules_file':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleRulesList(); },
       'end_session':  () => { socket.emit('host_action',{action:'invoke',id:'end_session'}); _ctrlCloseExtrasPopup(); },
       // Scoreboard actions — call main app menu registry via invoke
       'scoreboard_open_close': () => socket.emit('host_action',{action:'toggle_scoreboard'}),
@@ -7841,7 +8217,7 @@ _HTML = r"""<!DOCTYPE html>
     function _ctrlToggleVolume() {
       _ctrlVolOpen = !_ctrlVolOpen;
       const wrap = document.getElementById('ctrl-vol-slider-wrap');
-      if (wrap) wrap.style.display = _ctrlVolOpen ? 'flex' : 'none';
+      if (wrap) wrap.style.display = _ctrlVolOpen ? 'grid' : 'none';
       if (_ctrlVolOpen) {
         setTimeout(() => {
           function _volDismiss(e) {
@@ -7858,10 +8234,25 @@ _HTML = r"""<!DOCTYPE html>
       }
     }
 
+    function _snap5(val, dir, min, max) {
+      // Snap to nearest multiple of 5 in given direction, then step if already on one
+      const snapped = dir > 0
+        ? (val % 5 === 0 ? val + 5 : Math.ceil(val / 5) * 5)
+        : (val % 5 === 0 ? val - 5 : Math.floor(val / 5) * 5);
+      return Math.max(min, Math.min(max, snapped));
+    }
+
     function _ctrlVolumeChange(val) {
       const lbl = document.getElementById('ctrl-vol-label');
       if (lbl) lbl.textContent = val;
       socket.emit('host_action', { action: 'set_volume', volume: parseInt(val, 10) });
+    }
+    function _ctrlVolStep(dir, step) {
+      const sl = document.getElementById('ctrl-vol-slider');
+      const cur = parseInt(sl ? sl.value : 100, 10);
+      const next = step ? Math.max(0, Math.min(100, cur + dir * step)) : _snap5(cur, dir, 0, 100);
+      if (sl) sl.value = next;
+      _ctrlVolumeChange(next);
     }
 
     let _ctrlBzzPct = 100; // BZZ (buzz sound_volume) as percentage (0-150)
@@ -7877,6 +8268,11 @@ _HTML = r"""<!DOCTYPE html>
       if (lb) lb.textContent = _ctrlBzzPct + '%';
       socket.emit('host_action', { action: 'set_bzz_modifier', modifier: _ctrlBzzPct / 100 });
     }
+    function _ctrlBzzStep(dir, step) {
+      _ctrlBzzPct = step ? Math.max(0, Math.min(150, _ctrlBzzPct + dir * step)) : _snap5(_ctrlBzzPct, dir, 0, 150);
+      _ctrlBzzRender();
+      socket.emit('host_action', { action: 'set_bzz_modifier', modifier: _ctrlBzzPct / 100 });
+    }
 
     let _ctrlBgmPct = 100; // BGM modifier as percentage (0-150)
     function _ctrlBgmRender() {
@@ -7890,6 +8286,29 @@ _HTML = r"""<!DOCTYPE html>
       const lb = document.getElementById('ctrl-bgm-label');
       if (lb) lb.textContent = _ctrlBgmPct + '%';
       socket.emit('host_action', { action: 'set_bgm_modifier', modifier: _ctrlBgmPct / 100 });
+    }
+    function _ctrlBgmStep(dir, step) {
+      _ctrlBgmPct = step ? Math.max(0, Math.min(150, _ctrlBgmPct + dir * step)) : _snap5(_ctrlBgmPct, dir, 0, 150);
+      _ctrlBgmRender();
+      socket.emit('host_action', { action: 'set_bgm_modifier', modifier: _ctrlBgmPct / 100 });
+    }
+
+    let _ctrlStrmBoost = 0; // Stream volume boost as integer (-100 to +100)
+    function _ctrlStrmRender() {
+      const sl = document.getElementById('ctrl-strm-slider');
+      const lb = document.getElementById('ctrl-strm-label');
+      if (sl) sl.value = _ctrlStrmBoost;
+      if (lb) lb.textContent = (_ctrlStrmBoost >= 0 ? '+' : '') + _ctrlStrmBoost;
+    }
+    function _ctrlStrmChange(val) {
+      _ctrlStrmBoost = Math.max(-100, Math.min(100, Math.round(parseFloat(val) || 0)));
+      const lb = document.getElementById('ctrl-strm-label');
+      if (lb) lb.textContent = (_ctrlStrmBoost >= 0 ? '+' : '') + _ctrlStrmBoost;
+    }
+    function _ctrlStrmStep(dir, step) {
+      _ctrlStrmBoost = step ? Math.max(-100, Math.min(100, _ctrlStrmBoost + dir * step)) : _snap5(_ctrlStrmBoost, dir, -100, 100);
+      _ctrlStrmRender();
+      socket.emit('host_action', { action: 'set_strm_boost', boost: _ctrlStrmBoost });
     }
 
     function _ctrlAction(id) {
@@ -8292,6 +8711,36 @@ _HTML = r"""<!DOCTYPE html>
         box.innerHTML = '<span style="color:#555">No metadata available.</span>';
         return;
       }
+      // ── YouTube rendering ──────────────────────────────────────────────
+      if (d.type === 'youtube') {
+        if (themeHead) themeHead.innerHTML = '';
+        const lines = [];
+        function ytLine(label, value) {
+          if (value == null || value === '' || value === 'N/A') return;
+          lines.push('<div class="meta-row"><span class="meta-label">' + _escHtml(label) + '</span> ' + _escHtml(String(value)) + '</div>');
+        }
+        ytLine('TITLE:', d.title);
+        if (d.full_title && d.full_title !== d.title) ytLine('FULL TITLE:', d.full_title);
+        if (d.channel) {
+          const subStr = d.subscriber_count != null ? ' (' + Number(d.subscriber_count).toLocaleString() + ' subscribers)' : '';
+          lines.push('<div class="meta-row"><span class="meta-label">CHANNEL:</span> ' + _escHtml(d.channel + subStr) + '</div>');
+        }
+        ytLine('UPLOADED:', d.upload_date);
+        ytLine('DURATION:', d.duration);
+        if (d.view_count != null) {
+          let statsVal = Number(d.view_count).toLocaleString() + ' views';
+          if (d.like_count != null) statsVal += '&nbsp;&nbsp;<span class="meta-label">LIKES:</span> ' + Number(d.like_count).toLocaleString();
+          lines.push('<div class="meta-row"><span class="meta-label">VIEWS:</span> ' + statsVal + '</div>');
+        }
+        if (d.tags && d.tags.length) ytLine('TAGS:', d.tags.join(', '));
+        if (d.synopsis) {
+          const truncated = d.synopsis.length > 400 ? d.synopsis.slice(0, 400) + '…' : d.synopsis;
+          lines.push('<div class="meta-row"><span class="meta-label">DESCRIPTION:</span> ' + _escHtml(truncated) + '</div>');
+        }
+        box.innerHTML = lines.join('') || '<span style="color:#555">No data.</span>';
+        return;
+      }
+      // ── end YouTube rendering ──────────────────────────────────────────
       const lines = [];
       let themeHeadHtml = '';
       function favMarkHtml(isFavorite, extraCls) {
@@ -9075,6 +9524,11 @@ def push_skip_grant(name: str):
                 _socketio.emit('skip_grant_update', {'active': True}, to=sid)
     # Always push to all hosts so their row buttons refresh
     _socketio.emit('skip_grant_host_update', {'name': name})
+    if _on_skip_grant_callback is not None:
+        try:
+            _on_skip_grant_callback(name)
+        except Exception:
+            pass
 
 
 def remove_answer_by_name(name: str):
@@ -9155,6 +9609,11 @@ def get_served():
         except queue.Empty:
             break
     return names
+
+
+def get_connected_player_names():
+    """Return a list of currently connected player names (including hosts)."""
+    return list(_connected_players.values())
 
 
 def get_removals():
@@ -9273,12 +9732,28 @@ def push_youtube_list(videos: list, queued_id: str = None):
             _socketio.emit('youtube_list', payload, to=sid)
 
 
+def push_lightning_presets_list(presets: list, selected: str = None):
+    """Push lightning settings preset list to all host clients."""
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        payload = {'presets': presets, 'selected': selected}
+        for sid in list(_host_sids):
+            _socketio.emit('lightning_presets_list', payload, to=sid)
+
+
 def push_fixed_lightning_list(rounds: list, queued_name: str = None):
     """Push fixed lightning round list to all host clients."""
     if FLASK_AVAILABLE and _socketio and _host_sids:
         payload = {'rounds': rounds, 'queued_name': queued_name}
         for sid in list(_host_sids):
             _socketio.emit('fixed_lightning_list', payload, to=sid)
+
+
+def push_rules_list(files: list, selected_file: str = None):
+    """Push available rules files list to all host clients."""
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        payload = {'files': files, 'selected': selected_file}
+        for sid in list(_host_sids):
+            _socketio.emit('rules_list', payload, to=sid)
 
 
 def push_directory_groups(groups: list, stat_type: str, total: int, to_sid: str = None):
@@ -9347,7 +9822,7 @@ def push_up_next(data_dict: dict):
             _socketio.emit('up_next_update', _up_next, to=sid)
 
 
-def push_playback_state(current_ms: int, length_ms: int, playing: bool, volume: int = None, autoplay: int = None, bgm_modifier: float = None, bzz_modifier: float = None):
+def push_playback_state(current_ms: int, length_ms: int, playing: bool, volume: int = None, autoplay: int = None, bgm_modifier: float = None, bzz_modifier: float = None, strm_boost: int = None):
     """Push current playback position to all host clients (called ~1/sec from main app)."""
     global _playback_state
     _playback_state = {'current_ms': int(current_ms), 'length_ms': int(length_ms), 'playing': bool(playing)}
@@ -9359,6 +9834,8 @@ def push_playback_state(current_ms: int, length_ms: int, playing: bool, volume: 
         _playback_state['bgm_modifier'] = float(bgm_modifier)
     if bzz_modifier is not None:
         _playback_state['bzz_modifier'] = float(bzz_modifier)
+    if strm_boost is not None:
+        _playback_state['strm_boost'] = int(strm_boost)
     if FLASK_AVAILABLE and _socketio and _host_sids:
         for sid in list(_host_sids):
             _socketio.emit('playback_state', _playback_state, to=sid)
@@ -9400,7 +9877,13 @@ def set_buzz_callback(fn):
     _on_buzz_callback = fn
 
 
-def start(port=8080, ngrok_domain=None):
+def set_skip_grant_callback(fn):
+    """Register a callable(name: str) invoked when the skip grant changes. Empty string = cleared."""
+    global _on_skip_grant_callback
+    _on_skip_grant_callback = fn
+
+
+def start(port=8080, ngrok_domain=None, cloudflare_token=None, cloudflare_url=None):
     """Start the Flask/SocketIO server in a daemon thread, optionally launch ngrok.
 
     Returns True if server started, False if Flask is unavailable.
@@ -9432,10 +9915,12 @@ def start(port=8080, ngrok_domain=None):
         t.start()
         _server_thread = t
     _server_started = True
-    if ngrok_domain:
+    if cloudflare_token and cloudflare_url:
+        _start_cloudflared(cloudflare_token, cloudflare_url)
+    elif ngrok_domain:
         _start_ngrok(ngrok_domain, port)
     else:
-        print(f"[Web Server] Running locally on port {port} (no ngrok domain set.)")
+        print(f"[Web Server] Running locally on port {port} (no tunnel configured.)")
     return True
 
 
@@ -9448,7 +9933,7 @@ def stop():
     start() call) has no active server, causing all server-to-client emits to be
     silently discarded after restart.
     """
-    global _ngrok_process, _server_started
+    global _ngrok_process, _cloudflared_process, _server_started
     _server_started = False
     if _ngrok_process:
         try:
@@ -9456,6 +9941,12 @@ def stop():
         except Exception:
             pass
         _ngrok_process = None
+    if _cloudflared_process:
+        try:
+            _cloudflared_process.terminate()
+        except Exception:
+            pass
+        _cloudflared_process = None
     # Clear ephemeral connection state so the next start() is fresh.
     global _connected_players, _host_sids, _submitted_sids
     try:
@@ -10000,19 +10491,33 @@ def _build_app():
             dq = deque()
             _emoji_events_by_name[name] = dq
 
+        # Count emoji units: ZWJ sequences/flags count as 1, everything else per codepoint.
+        import re as _re
+        _egc = _re.compile(
+            r'[\U0001F1E0-\U0001F1FF]{2}'   # regional indicator flag pairs
+            r'|(?:[^\u200D\uFE0F\u20E3][\uFE0F\u20E3]?(?:\u200D[^\u200D\uFE0F\u20E3][\uFE0F]?)+)'  # ZWJ sequences
+            r'|[^\u200D\uFE0F\u20E3][\uFE0F\u20E3]?',  # single emoji (with optional variation/keycap)
+        )
+        emoji_unit_count = max(1, len(_egc.findall(emoji)))
+
         # Keep only recent events within longest relevant window.
+        # burst_dq tracks socket events (1 per send, regardless of set size) for click-rate detection.
+        # dq tracks emoji units (set size counts) for the rolling-window volume threshold.
         max_window = max(_EMOJI_WINDOW_SECONDS, _EMOJI_BURST_WINDOW_SECONDS)
         while dq and (now - dq[0]) > max_window:
             dq.popleft()
-        dq.append(now)
+        for _ in range(max(1, round(emoji_unit_count / 2))):
+            dq.append(now)
 
-        # Burst guard first.
-        burst_count = 0
-        for ts in reversed(dq):
-            if (now - ts) <= _EMOJI_BURST_WINDOW_SECONDS:
-                burst_count += 1
-            else:
-                break
+        # Burst guard: counts socket events, not emoji units, to detect rapid clicking/autoclicking.
+        burst_dq = _emoji_events_by_name.get(name + '__burst')
+        if burst_dq is None:
+            burst_dq = deque()
+            _emoji_events_by_name[name + '__burst'] = burst_dq
+        while burst_dq and (now - burst_dq[0]) > _EMOJI_BURST_WINDOW_SECONDS:
+            burst_dq.popleft()
+        burst_dq.append(now)
+        burst_count = len(burst_dq)
         if burst_count >= _EMOJI_BURST_THRESHOLD:
             _apply_emoji_timeout(name, short=True)
             emit('emoji_status', _get_emoji_status(name))
@@ -10181,3 +10686,20 @@ def _start_ngrok(domain, port):
         print(f'[Web Server] Live at: {public_url}')
     except FileNotFoundError:
         print('[Web Server] ngrok.exe not found in PATH or exe directory. Server is local-only.')
+
+
+def _start_cloudflared(token, public_url_str):
+    global _cloudflared_process, public_url
+    url = public_url_str.strip().rstrip('/')
+    if url and not url.startswith('http'):
+        url = 'https://' + url
+    try:
+        _cloudflared_process = subprocess.Popen(
+            [CLOUDFLARED_CMD, 'tunnel', 'run', '--token', token],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        public_url = url
+        print(f'[Web Server] Live at: {public_url}')
+    except FileNotFoundError:
+        print('[Web Server] cloudflared not found in PATH or exe directory. Server is local-only.')
