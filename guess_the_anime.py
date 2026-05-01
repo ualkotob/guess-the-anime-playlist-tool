@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "18.0"  # Update this when making releases
+APP_VERSION = "18.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -1432,7 +1432,6 @@ def fetch_anilist_metadata(anilist_id=None, mal_id=None):
         # Extract aniDB ID from externalLinks
         anidb_id_from_anilist = None
         external_links = media.get("externalLinks") or []
-        print(f" [AniList externalLinks: {[(l.get('site'), l.get('url')) for l in external_links]}]", end="")
         for link in external_links:
             if link.get("site") == "AniDB" and link.get("url"):
                 m = re.search(r'anidb\.net/anime/(\d+)', link["url"])
@@ -3318,7 +3317,7 @@ def _calc_plays_info(filename, data, pl, cur_idx):
                 and not item.startswith("[L]") and i < cur_idx]
     f_ago    = (cur_idx - max(f_prev)) if f_prev else None
 
-    file_plays = {"count": f_count, "ago": f_ago, "lightning": f_light}
+    file_plays = {"count": f_count-f_light, "ago": f_ago, "lightning": f_light}
 
     # ── series plays ──────────────────────────────────────────────────────────
     # Count ALL played entries sharing a series with this file, including the
@@ -3347,7 +3346,7 @@ def _calc_plays_info(filename, data, pl, cur_idx):
         # Only show series line when there are other-file entries
         if total > f_count:
             s_ago = (cur_idx - max(s_prev)) if s_prev else None
-            series_plays = {"count": total, "ago": s_ago, "lightning": s_light}
+            series_plays = {"count": total-s_light, "ago": s_ago, "lightning": s_light}
 
     return file_plays, series_plays
 
@@ -5473,12 +5472,37 @@ def load_youtube_video(index):
     show_youtube_playlist(True)
     up_next_text()
 
+def get_bonus_template_path(video_id):
+    return os.path.join("youtube", "bonus_templates", f"{video_id}.json")
+
+def load_bonus_template(video_id):
+    path = get_bonus_template_path(video_id)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f).get("questions", [])
+        except Exception:
+            return []
+    return []
+
+def save_bonus_template(video_id, questions):
+    os.makedirs(os.path.join("youtube", "bonus_templates"), exist_ok=True)
+    path = get_bonus_template_path(video_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"questions": questions}, f, indent=2, ensure_ascii=False)
+
 def update_youtube_metadata(data=None):
-    global youtube_queue
+    global youtube_queue, _yt_bonus_template_questions, _yt_bonus_template_triggered
+    global _yt_bonus_template_scored, _yt_bonus_current_question
     # Use provided data or fall back to youtube_queue
     youtube_data = data or youtube_queue
     if not youtube_data:
         return
+    video_id = youtube_data.get("url")
+    _yt_bonus_template_questions = load_bonus_template(video_id) if video_id else []
+    _yt_bonus_template_triggered = set()
+    _yt_bonus_template_scored = set()
+    _yt_bonus_current_question = None
         
     insert_column_line(left_column, "TITLE: ", get_youtube_display_title(youtube_data))
     insert_column_line(left_column, "FULL TITLE: ", youtube_data.get('title'))
@@ -5572,6 +5596,317 @@ def load_youtube_metadata():
         
         return True
     return False
+
+def open_youtube_bonus_template_editor(video_id):
+    """Open the bonus template editor for a YouTube video."""
+    top = tk.Toplevel()
+    top.title(f"Bonus Template Editor — {video_id}")
+    top.configure(bg=BACKGROUND_COLOR)
+    get_window_position_and_setup(top)
+
+    questions = list(load_bonus_template(video_id))
+    selected_idx = [0]
+
+    font_big = ("Arial", 14)
+    font_sm = ("Arial", 12)
+    fg = "white"
+    bg = BACKGROUND_COLOR
+    entry_bg = "#1a1a1a"
+
+    # --- Left panel: question list ---
+    left_frame = tk.Frame(top, bg=bg, width=240)
+    left_frame.pack(side="left", fill="y", padx=(8, 4), pady=8)
+    left_frame.pack_propagate(False)
+    tk.Label(left_frame, text="QUESTIONS", font=("Arial", 14, "bold"), bg=bg, fg=fg).pack(pady=(0, 4))
+    q_listbox = tk.Listbox(left_frame, bg="#111", fg=fg, selectbackground=HIGHLIGHT_COLOR,
+                            font=font_sm, width=28, activestyle="none", relief="flat",
+                            highlightthickness=1, highlightbackground="#444")
+    q_listbox.pack(fill="both", expand=True)
+
+    # --- Right panel: edit form ---
+    right_frame = tk.Frame(top, bg=bg)
+    right_frame.pack(side="left", fill="both", expand=True, padx=(4, 8), pady=8)
+
+    r = 0
+    tk.Label(right_frame, text="Header:", font=font_big, bg=bg, fg=fg).grid(row=r, column=0, sticky="w", pady=4)
+    h_var = tk.StringVar(value="Bonus Question")
+    tk.Entry(right_frame, textvariable=h_var, font=font_big, width=52,
+             bg=entry_bg, fg=fg, insertbackground=fg).grid(row=r, column=1, columnspan=3, sticky="ew", pady=4, padx=4)
+    r += 1
+
+    tk.Label(right_frame, text="Question:", font=font_big, bg=bg, fg=fg).grid(row=r, column=0, sticky="w", pady=4)
+    q_var = tk.StringVar()
+    tk.Entry(right_frame, textvariable=q_var, font=font_big, width=52,
+             bg=entry_bg, fg=fg, insertbackground=fg).grid(row=r, column=1, columnspan=3, sticky="ew", pady=4, padx=4)
+    r += 1
+
+    # --- Choices with checkboxes (checked = answer; single-select for now) ---
+    tk.Label(right_frame, text="Choices:", font=font_big, bg=bg, fg=fg).grid(row=r, column=0, sticky="nw", pady=4)
+    choices_frame = tk.Frame(right_frame, bg=bg)
+    choices_frame.grid(row=r, column=1, columnspan=3, sticky="ew", pady=4, padx=4)
+
+    MAX_CHOICES = 10
+    choice_checked = [tk.BooleanVar(value=False) for i in range(MAX_CHOICES)]
+    choice_text = [tk.StringVar() for _ in range(MAX_CHOICES)]
+    choice_btns = []
+    choice_rows = []
+    choice_entries = []
+
+    CORRECT_ROW_BG    = "#33aa33"   # bright green frame — visible as outline
+    CORRECT_ENTRY_BG  = "#0d2b0d"   # dark green entry
+    INCORRECT_ROW_BG  = bg
+    INCORRECT_ENTRY_BG = entry_bg
+
+    def _apply_row_style(i, is_correct):
+        row_bg   = CORRECT_ROW_BG   if is_correct else INCORRECT_ROW_BG
+        e_bg     = CORRECT_ENTRY_BG if is_correct else INCORRECT_ENTRY_BG
+        btn_bg   = "#226622"        if is_correct else "#662222"
+        btn_text = "CORRECT"        if is_correct else "INCORRECT"
+        choice_rows[i].configure(bg=row_bg)
+        choice_entries[i].configure(bg=e_bg)
+        choice_btns[i].configure(text=btn_text, bg=btn_bg)
+
+    def on_correct_toggle(idx):
+        """Toggle clicked choice; clicking CORRECT again deselects it."""
+        currently_correct = choice_checked[idx].get()
+        for i, cv in enumerate(choice_checked):
+            cv.set(False)
+            _apply_row_style(i, False)
+        if not currently_correct:
+            choice_checked[idx].set(True)
+            _apply_row_style(idx, True)
+
+    for j in range(MAX_CHOICES):
+        init_correct = False
+        row_bg = INCORRECT_ROW_BG
+        row_f = tk.Frame(choices_frame, bg=row_bg, padx=1, pady=1)
+        row_f.pack(fill="x", pady=1)
+        choice_rows.append(row_f)
+        e_bg = INCORRECT_ENTRY_BG
+        ent = tk.Entry(row_f, textvariable=choice_text[j], font=font_sm, width=46,
+                       bg=e_bg, fg=fg, insertbackground=fg)
+        ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        choice_entries.append(ent)
+        init_bg_btn = "#662222"
+        init_text = "INCORRECT"
+        btn = tk.Button(row_f, text=init_text, font=font_sm, bg=init_bg_btn, fg=fg,
+                        width=10, command=lambda idx=j: on_correct_toggle(idx))
+        btn.pack(side="left")
+        choice_btns.append(btn)
+    r += 1
+
+    # --- Start + End Time on the same row ---
+    tk.Label(right_frame, text="Start / End (s):", font=font_big, bg=bg, fg=fg).grid(row=r, column=0, sticky="w", pady=4)
+    times_frame = tk.Frame(right_frame, bg=bg)
+    times_frame.grid(row=r, column=1, columnspan=3, sticky="w", pady=4, padx=4)
+
+    st_var = tk.DoubleVar(value=0.0)
+    tk.Button(times_frame, text="−", font=font_big, bg="#333", fg=fg, width=2,
+              command=lambda: st_var.set(round(st_var.get() - 0.1, 1))).pack(side="left")
+    tk.Entry(times_frame, textvariable=st_var, font=font_big, width=7,
+             bg=entry_bg, fg=fg, insertbackground=fg, justify="center").pack(side="left", padx=2)
+    tk.Button(times_frame, text="+", font=font_big, bg="#333", fg=fg, width=2,
+              command=lambda: st_var.set(round(st_var.get() + 0.1, 1))).pack(side="left")
+    tk.Button(times_frame, text="NOW", font=font_sm, bg="#333", fg=fg,
+              command=lambda: st_var.set(round(projected_vlc_time / 1000, 1))).pack(side="left", padx=(4, 2))
+    tk.Button(times_frame, text="GO", font=font_sm, bg="#224466", fg=fg,
+              command=lambda: seek_to(int(st_var.get() * 1000))).pack(side="left", padx=(0, 16))
+
+    tk.Label(times_frame, text="→", font=font_big, bg=bg, fg="#aaa").pack(side="left", padx=(0, 8))
+
+    et_var = tk.DoubleVar(value=0.0)
+    tk.Button(times_frame, text="−", font=font_big, bg="#333", fg=fg, width=2,
+              command=lambda: et_var.set(round(et_var.get() - 0.1, 1))).pack(side="left")
+    tk.Entry(times_frame, textvariable=et_var, font=font_big, width=7,
+             bg=entry_bg, fg=fg, insertbackground=fg, justify="center").pack(side="left", padx=2)
+    tk.Button(times_frame, text="+", font=font_big, bg="#333", fg=fg, width=2,
+              command=lambda: et_var.set(round(et_var.get() + 0.1, 1))).pack(side="left")
+    tk.Button(times_frame, text="NOW", font=font_sm, bg="#333", fg=fg,
+              command=lambda: et_var.set(round(projected_vlc_time / 1000, 1))).pack(side="left", padx=(4, 2))
+    tk.Button(times_frame, text="GO", font=font_sm, bg="#224466", fg=fg,
+              command=lambda: seek_to(int(et_var.get() * 1000))).pack(side="left", padx=(0, 0))
+    r += 1
+
+    tk.Label(right_frame, text="Points:", font=font_big, bg=bg, fg=fg).grid(row=r, column=0, sticky="w", pady=4)
+    pts_var = tk.DoubleVar(value=1.0)
+    tk.Spinbox(right_frame, textvariable=pts_var, from_=0.5, to=10.0, increment=0.5,
+               font=font_big, width=8, bg=entry_bg, fg=fg,
+               buttonbackground="#333", relief="flat").grid(row=r, column=1, sticky="w", pady=4, padx=4)
+    r += 1
+
+    # --- Footer buttons (own row below Points) ---
+    btn_frame = tk.Frame(right_frame, bg=bg)
+    btn_frame.grid(row=r, column=0, columnspan=4, sticky="ew", pady=(12, 4))
+
+    def refresh_listbox():
+        q_listbox.delete(0, tk.END)
+        for i, q in enumerate(questions):
+            label = f"{i + 1}. {q.get('question', '(empty)')[:28]}"
+            q_listbox.insert(tk.END, label)
+        if 0 <= selected_idx[0] < len(questions):
+            q_listbox.selection_clear(0, tk.END)
+            q_listbox.selection_set(selected_idx[0])
+            q_listbox.see(selected_idx[0])
+
+    def load_to_form(idx):
+        if 0 <= idx < len(questions):
+            q = questions[idx]
+            h_var.set(q.get("header", "Bonus Question") or "Bonus Question")
+            q_var.set(q.get("question", ""))
+            choices = q.get("choices", [])
+            answer = q.get("answer", "")
+            for i in range(MAX_CHOICES):
+                if i < len(choices):
+                    choice_text[i].set(choices[i])
+                    is_correct = choices[i] == answer
+                    choice_checked[i].set(is_correct)
+                    if choice_btns:
+                        _apply_row_style(i, is_correct)
+                else:
+                    choice_text[i].set("")
+                    choice_checked[i].set(False)
+                    if choice_btns:
+                        _apply_row_style(i, False)
+            # If nothing is checked but choices exist, default to first
+            if choices and not any(cv.get() for cv in choice_checked):
+                pass  # allow no answer to be selected
+            st_var.set(float(q.get("start_time", 0.0)))
+            et_var.set(float(q.get("end_time", 0.0)))
+            pts_var.set(float(q.get("points", 1.0)))
+
+    def save_form_to_questions():
+        if 0 <= selected_idx[0] < len(questions):
+            all_choices = [choice_text[i].get().strip() for i in range(MAX_CHOICES) if choice_text[i].get().strip()]
+            answer = ""
+            for i in range(MAX_CHOICES):
+                if choice_checked[i].get() and choice_text[i].get().strip():
+                    answer = choice_text[i].get().strip()
+                    break
+            if not answer and all_choices:
+                answer = all_choices[0]
+            questions[selected_idx[0]] = {
+                "header": h_var.get().strip() or "Bonus Question",
+                "question": q_var.get().strip(),
+                "answer": answer,
+                "choices": all_choices,
+                "start_time": round(float(st_var.get()), 1),
+                "end_time": round(float(et_var.get()), 1),
+                "points": float(pts_var.get()),
+            }
+
+    def on_listbox_select(event):
+        sel = q_listbox.curselection()
+        if sel and sel[0] != selected_idx[0]:
+            save_form_to_questions()
+            selected_idx[0] = sel[0]
+            load_to_form(selected_idx[0])
+
+    q_listbox.bind("<<ListboxSelect>>", on_listbox_select)
+
+    def add_question():
+        save_form_to_questions()
+        questions.append({
+            "question": "",
+            "answer": "",
+            "choices": [],
+            "start_time": round(projected_vlc_time / 1000, 1),
+            "end_time": 0.0,
+            "points": 1.0,
+        })
+        selected_idx[0] = len(questions) - 1
+        refresh_listbox()
+        load_to_form(selected_idx[0])
+
+    def delete_question():
+        if not questions:
+            return
+        if not messagebox.askyesno("Delete Question", "Delete this question?", parent=top):
+            return
+        del questions[selected_idx[0]]
+        selected_idx[0] = max(0, selected_idx[0] - 1)
+        refresh_listbox()
+        load_to_form(selected_idx[0])
+
+    def _increment_hash_number(text):
+        """Increment the last #N in text by 1, e.g. '#13' → '#14'."""
+        return re.sub(r'#(\d+)(?!.*#\d)', lambda m: f'#{int(m.group(1)) + 1}', text)
+
+    def copy_forward():
+        save_form_to_questions()
+        try:
+            offset = float(copy_forward_var.get())
+        except ValueError:
+            offset = 0.0
+        if 0 <= selected_idx[0] < len(questions):
+            src = questions[selected_idx[0]]
+            new_q = {
+                "header": _increment_hash_number(src.get("header", "Bonus Question")),
+                "question": _increment_hash_number(src.get("question", "")),
+                "answer": "",
+                "choices": list(src.get("choices", [])),
+                "start_time": round(src.get("start_time", 0.0) + offset, 1),
+                "end_time": round(src.get("end_time", 0.0) + offset, 1),
+                "points": src.get("points", 1.0),
+            }
+        else:
+            new_q = {"header": "Bonus Question", "question": "", "answer": "", "choices": [], "start_time": 0.0, "end_time": 0.0, "points": 1.0}
+        questions.append(new_q)
+        selected_idx[0] = len(questions) - 1
+        refresh_listbox()
+        load_to_form(selected_idx[0])
+
+    def save_all():
+        save_form_to_questions()
+        save_bonus_template(video_id, questions)
+        if currently_playing.get("data", {}).get("url") == video_id:
+            global _yt_bonus_template_questions, _yt_bonus_template_triggered, _yt_bonus_template_scored
+            _yt_bonus_template_questions = list(questions)
+            _yt_bonus_template_triggered = set()
+            _yt_bonus_template_scored = set()
+        save_btn.configure(text="SAVED!")
+        top.after(600, lambda: save_btn.configure(text="SAVE"))
+
+    def calc_common_gap():
+        """Return the most common gap between consecutive question start_times (to 1 decimal)."""
+        starts = sorted(q.get("start_time", 0) for q in questions if q.get("start_time", 0) > 0)
+        if len(starts) < 2:
+            return 30
+        gaps = [round(starts[i + 1] - starts[i], 1) for i in range(len(starts) - 1)]
+        if not gaps:
+            return 30
+        return max(set(gaps), key=gaps.count)
+
+    def recalc_gap():
+        copy_forward_var.set(str(calc_common_gap()))
+
+    # --- Footer buttons ---
+    tk.Button(btn_frame, text="ADD QUESTION", font=font_big, bg="#226622", fg=fg,
+              command=add_question).pack(side="left", padx=8)
+    tk.Button(btn_frame, text="DELETE", font=font_big, bg="#662222", fg=fg,
+              command=delete_question).pack(side="left", padx=8)
+    tk.Button(btn_frame, text="COPY FORWARD", font=font_big, bg="#224466", fg=fg,
+              command=copy_forward).pack(side="left", padx=(16, 2))
+    copy_forward_var = tk.StringVar(value=str(calc_common_gap()) if len(questions) >= 2 else "30")
+    tk.Entry(btn_frame, textvariable=copy_forward_var, font=font_big, width=4,
+             bg=entry_bg, fg=fg, insertbackground=fg, justify="center").pack(side="left", padx=2)
+    tk.Label(btn_frame, text="s", font=font_big, bg=bg, fg=fg).pack(side="left")
+    tk.Button(btn_frame, text="⟳", font=font_big, bg="#333", fg=fg,
+              command=recalc_gap).pack(side="left", padx=(2, 0))
+    save_btn = tk.Button(btn_frame, text="SAVE", font=font_big, bg="#333", fg=fg,
+                         command=save_all)
+    save_btn.pack(side="right", padx=8)
+
+    if not questions:
+        questions.append({
+            "question": "",
+            "answer": "",
+            "choices": [],
+            "start_time": round(projected_vlc_time / 1000, 1),
+            "end_time": 0.0,
+            "points": 1.0,
+        })
+    refresh_listbox()
+    load_to_form(0)
 
 youtube_editor_window = None
 def open_youtube_editor():
@@ -5696,34 +6031,12 @@ def open_youtube_editor():
             channel_name = youtube_metadata.get("channels", {}).get(channel_id, {}).get("name", "Unknown")
             tk.Label(youtube_editor_window, text=channel_name, font=font_big, fg=fg_color, bg=BACKGROUND_COLOR, width=15, anchor="w").grid(row=video_row, column=1, padx=4, pady=4)
 
-            # Title (Entry + Refresh Button)
+            # Title (Entry)
             title_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
-
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            tk.Button(
-                title_frame,
-                text="🔗",  # Unicode refresh icon
-                font=font_big,
-                command=lambda u=url: webbrowser.open(u),
-                bg="black",
-                fg="white"
-            ).pack(side="left")
 
             title_var = tk.StringVar(value=get_youtube_display_title(video))
             title_entry = tk.Entry(title_frame, textvariable=title_var, font=font_big, width=40, bg="#222", fg=fg_color, insertbackground=fg_color)
             title_entry.pack(side="left")
-
-            def reset_title(event=None, var=title_var, v=video):
-                var.set(v.get("title"))
-
-            tk.Button(
-                title_frame,
-                text="⟳",  # Unicode refresh icon
-                font=font_big,
-                command=reset_title,
-                bg="black",
-                fg="white"
-            ).pack(side="left")
 
             title_frame.grid(row=video_row, column=2, padx=4, pady=4)
 
@@ -5747,15 +6060,6 @@ def open_youtube_editor():
                 fg="white"
             ).pack(side="left", padx=2)
 
-            tk.Button(
-                start_frame,
-                text="⟳",
-                font=font_big,
-                command=lambda v=start_var: v.set(0),
-                bg="black",
-                fg="white"
-            ).pack(side="left")
-
             start_frame.grid(row=video_row, column=3, padx=4)
 
             # End time (Entry + NOW + REFRESH)
@@ -5772,99 +6076,93 @@ def open_youtube_editor():
                 fg="white"
             ).pack(side="left")
 
-            tk.Button(
-                end_frame,
-                text="⟳",
-                font=font_big,
-                command=lambda v=end_var, dur=video.get("duration", 0): v.set(int(dur)),
-                bg="black",
-                fg="white"
-            ).pack(side="left")
-
             end_frame.grid(row=video_row, column=4, padx=4)
 
             filepath = os.path.join("youtube", video["filename"])
+            is_downloaded = os.path.exists(filepath)
 
             action_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
-            
+
             # Define play/stream function
             def play_youtube_video(vid):
                 save_all()
                 global youtube_queue
                 youtube_queue = get_youtube_metadata_from_index(key_id=vid)
                 play_video()
-            
-            if os.path.exists(filepath):
-                # Downloaded: Show Play button + Archive button
-                def archive_this(vid=video_id):
-                    video = youtube_metadata["videos"][vid]
-                    video["archived"] = True
-                    video["archived_date"] = datetime.now().strftime("%Y-%m-%d")
 
-                    # Ensure archive folder exists
-                    archive_folder = os.path.join("youtube", "archive")
-                    os.makedirs(archive_folder, exist_ok=True)
+            def archive_this(vid=video_id):
+                video = youtube_metadata["videos"][vid]
+                video["archived"] = True
+                video["archived_date"] = datetime.now().strftime("%Y-%m-%d")
+                archive_folder = os.path.join("youtube", "archive")
+                os.makedirs(archive_folder, exist_ok=True)
+                old_path = os.path.join("youtube", video.get("filename", ""))
+                new_path = os.path.join(archive_folder, video.get("filename", ""))
+                if os.path.exists(old_path):
+                    try:
+                        shutil.move(old_path, new_path)
+                    except Exception as e:
+                        print(f"Error archiving file: {e}")
+                save_youtube_metadata()
+                youtube_editor_window.after(0, refresh_ui)
 
-                    # Move the file
-                    old_path = os.path.join("youtube", video.get("filename", ""))
-                    new_path = os.path.join(archive_folder, video.get("filename", ""))
-
-                    if os.path.exists(old_path):
-                        try:
-                            shutil.move(old_path, new_path)
-                            print(f"Moved to archive: {new_path}")
-                        except Exception as e:
-                            print(f"Error archiving file: {e}")
-                    save_youtube_metadata()
-                    refresh_ui()
-                
-                # Play button (local file)
-                tk.Button(action_frame, text="▶", font=font_big, bg="green", fg="white", command=lambda vid=video_id: play_youtube_video(vid)).pack(side="left", padx=2)
-                tk.Button(action_frame, text="ARCHIVE", font=font_big, bg="#333", fg="white", command=archive_this).pack(side="left", padx=2)
-            else:
-                # Not Downloaded: Show Stream button + Download button
-                # Stream button (plays from YouTube)
-                tk.Button(action_frame, text=stream_icon, font=font_big, bg="blue", fg="white", command=lambda vid=video_id: play_youtube_video(vid)).pack(side="left", padx=2)
-                
-                # Download button
-                dl_btn = tk.Button(
-                    action_frame,
-                    text="DOWNLOAD",
-                    font=font_big,
-                    bg="black",
-                    fg="white"
-                )
-                dl_btn.config(command=lambda vid=video_id, b=dl_btn: download_youtube_video(vid, b, refresh_ui))
-                dl_btn.pack(side="left", padx=2)
-                
             def delete_this(vid=video_id):
                 video = youtube_metadata["videos"].get(vid)
                 if not video:
                     messagebox.showerror("Error", f"Video {vid} not found in metadata.")
                     return
-
                 filename = video.get("filename", "")
-                filepath = os.path.join("youtube", filename)
-                filesize = os.path.getsize(filepath) / (1024 * 1024) if os.path.exists(filepath) else 0
+                fpath = os.path.join("youtube", filename)
+                filesize = os.path.getsize(fpath) / (1024 * 1024) if os.path.exists(fpath) else 0
                 filesize_str = f"{filesize:.2f} MB"
-
                 confirm_message = f"Delete video {vid}?\n\nFile: {filename}\nSize: {filesize_str}"
                 if messagebox.askyesno("Confirm Delete (CANNOT BE UNDONE)", confirm_message, parent=youtube_editor_window):
-                    # Remove from metadata
                     youtube_metadata["videos"].pop(vid, None)
-
-                    # Attempt to delete the file
-                    if os.path.exists(filepath):
+                    if os.path.exists(fpath):
                         try:
-                            os.remove(filepath)
-                            print(f"Deleted file: {filepath}")
+                            os.remove(fpath)
                         except Exception as e:
-                            print(f"Failed to delete file {filepath}: {e}")
-
+                            print(f"Failed to delete file {fpath}: {e}")
                     save_youtube_metadata()
-                    refresh_ui()
+                    youtube_editor_window.after(0, refresh_ui)
 
-            tk.Button(action_frame, text="❌", font=font_big, fg="red", bg="black", command=delete_this).pack(side="left", padx=2)
+            btn_ref = [None]
+
+            def open_actions_menu(event, vid=video_id, vid_data=video, dl=is_downloaded, sv=start_var, ev=end_var, tv=title_var, bref=btn_ref):
+                url = f"https://www.youtube.com/watch?v={vid}"
+                menu = tk.Menu(youtube_editor_window, tearoff=0, bg="#222", fg="white",
+                               activebackground="#444", activeforeground="white", bd=0,
+                               font=font_big)
+                if dl:
+                    menu.add_command(label="▶  Play Now", command=lambda: play_youtube_video(vid))
+                else:
+                    menu.add_command(label="▶  Stream Now", command=lambda: play_youtube_video(vid))
+                    def _do_download(v=vid):
+                        download_youtube_video(v, bref[0], refresh_ui)
+                    menu.add_command(label="⬇  Download", command=_do_download)
+                menu.add_separator()
+                menu.add_command(label="🔗  Open in Browser", command=lambda: webbrowser.open(url))
+                menu.add_separator()
+                menu.add_command(label="⟳  Reset Title", command=lambda: tv.set(vid_data.get("title", "")))
+                menu.add_command(label="⟳  Reset Start", command=lambda: sv.set(0))
+                menu.add_command(label="⟳  Reset End",   command=lambda: ev.set(int(vid_data.get("duration", 0))))
+                menu.add_separator()
+                menu.add_command(label="📝  Edit Bonus Template", command=lambda v=vid: open_youtube_bonus_template_editor(v))
+                menu.add_separator()
+                if dl:
+                    menu.add_command(label="📦  Archive", command=lambda: archive_this(vid))
+                menu.add_command(label="❌  Delete", foreground="#f77", command=lambda: delete_this(vid))
+                menu.post(event.x_root, event.y_root)
+
+            btn_color = "#1a5c1a" if is_downloaded else "#1a3a5c"
+            actions_btn = tk.Button(action_frame, text="ACTIONS ▾", font=font_big,
+                                    bg=btn_color, fg="white",
+                                    activebackground=btn_color, activeforeground="white",
+                                    relief="flat", bd=0)
+            actions_btn.bind("<Button-1>", open_actions_menu)
+            actions_btn.pack(side="left", padx=2)
+            btn_ref[0] = actions_btn
+
             action_frame.grid(row=video_row, column=5, padx=4)
             row_widgets.append(action_frame)
             # Store the widget row
@@ -8051,6 +8349,7 @@ def load_config():
             popout_columns = int(config.get("popout_columns", 5))
             shortcuts_config = config.get("shortcuts", {})
             globals()["tutorial_shown"] = config.get("tutorial_shown", False)
+            web_server.set_host_password(HOST_PASSWORD)
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -13387,7 +13686,7 @@ def get_light_round_time():
         start_time = fixed_current_round.get("start_time")
         if fixed_current_round.get("type") not in ["regular", "peek", "blind", "song"]:
             start_time = max(start_time - light_round_length, 1.1)
-        if start_time:
+        if start_time is not None:
             return start_time
     length = player.get_length()/1000
     buffer = 10
@@ -13417,18 +13716,27 @@ light_blind_one_second_count = None
 stream_start_time = 0
 current_light_mode = None
 current_light_variant = None
+_light_answer_wall_start = None  # wall-clock time when the answer phase began (set on first tick)
+_wall_time = __import__('time').time  # alias so the 'time' parameter inside update_light_round doesn't shadow it
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
     global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count, current_light_mode
+    global _light_answer_wall_start
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
         if time < 1 and not frame_light_round_started:
             player.pause()
             setup_frame_light_round()
         return
-    if time > 1 and light_round_start_time != None and light_round_started:
-        if time >= light_round_start_time+light_round_length+light_round_answer_length:
+    if (time > 1 or _light_answer_wall_start is not None) and light_round_start_time != None and light_round_started:
+        # Once the wall clock is set we're permanently in the answer phase regardless of VLC position
+        # (seeking the theme backwards must not flip us back into question-phase logic)
+        _in_answer_phase = _light_answer_wall_start is not None or time >= light_round_start_time + light_round_length
+        if _in_answer_phase and _light_answer_wall_start is None:
+            _light_answer_wall_start = _wall_time()
+        _answer_elapsed = (_wall_time() - _light_answer_wall_start) if _light_answer_wall_start is not None else 0
+        if _in_answer_phase and _answer_elapsed >= light_round_answer_length:
             light_round_transition()
-        elif(time >= light_round_start_time+light_round_length):
+        elif _in_answer_phase:
             start_str = "next"
             blind_length = lightning_mode_settings.get("blind", {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
             BLIND_ONE_SECOND_TIME = 4
@@ -13523,9 +13831,18 @@ def update_light_round(time):
                             top_info(_ans_display, width_max=max_width_size)
                     if image_answer_source:
                         top_info(image_answer_source, width_max=max_width_size)
+                    # For fixed rounds where start_time means the theme's answer entry point
+                    # (i.e. non-regular/peek/blind/song types), seek the theme to start_time and unmute
+                    # so the theme plays during the answer phase regardless of where VLC currently is.
+                    _seek_types = ["regular", "peek", "blind", "song"]
+                    if (fixed_current_round and fixed_current_round.get("start_time") is not None
+                            and fixed_current_round.get("type") not in _seek_types):
+                        player.set_time(int(fixed_current_round["start_time"] * 1000))
+                        player.play()
+                        toggle_mute(False, True)
                 if not light_mode or (fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("current_index") == fixed_lightning_round_playlist_data.get("round_count") - 1):
                     start_str = "end"
-                set_countdown(start_str + " in..." + str(round(light_round_answer_length-(time - (light_round_start_time+light_round_length)))))
+                set_countdown(start_str + " in..." + str(round(light_round_answer_length - _answer_elapsed)))
         else:
             time_left = (light_round_length-(time - light_round_start_time))
             if time_left < 1 and light_speed_modifier != 1:
@@ -13770,7 +14087,7 @@ def update_light_round(time):
                 set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 set_countdown(round(time_left/light_speed_modifier), inverse=character_round_answer)
-    if light_mode and time < 1:
+    if light_mode and time < 1 and _light_answer_wall_start is None:
         toggle_coming_up_popup(False, "Lightning Round")
         if not light_round_started:
             light_round_started = True
@@ -14175,6 +14492,9 @@ def get_char_types_by_popularity(data=None, mode=""):
 def clean_up_light_round(new_round=False):
     global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay
     global frame_light_round_started, light_muted, character_round_answer, light_cover_image, light_trivia_answer, light_blind_one_second_count
+    global _light_answer_wall_start
+    if new_round:
+        _light_answer_wall_start = None
     mismatched_player.stop()
     mismatched_player.set_media(None)  # Reset the media
     if new_round or not fixed_current_round or not fixed_current_round.get("clip_for_answer"):
@@ -14212,7 +14532,8 @@ def clean_up_light_round(new_round=False):
     send_scoreboard_command("show")
 
 def light_round_transition():
-    global video_stopped, light_round_started
+    global video_stopped, light_round_started, _light_answer_wall_start
+    _light_answer_wall_start = None
     light_round_started = False
     if autoplay_toggle == 2:
         stop()
@@ -22460,7 +22781,10 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 plus_btn.pack(side="left", padx=(0, 5))
                 
                 default_btn = tk.Button(duration_frame, text="DEFAULT", font=font_entry, bg="black", fg="white", width=9)
-                default_btn.pack(side="left")
+                default_btn.pack(side="left", padx=(0, 5))
+
+                calc_btn = tk.Button(duration_frame, text="CALC FROM NOW", font=font_entry, bg="black", fg="white")
+                calc_btn.pack(side="left")
                 
                 def increment_duration(e=entry):
                     try:
@@ -22481,10 +22805,25 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 def set_to_default(e=entry, d=default_duration):
                     e.delete(0, tk.END)
                     e.insert(0, str(d))
+
+                def calc_from_now(e=entry):
+                    try:
+                        now = player.get_time() / 1000.0
+                        start_widget = field_widgets.get("start_time")
+                        if start_widget:
+                            start = float(start_widget[1].get() or 0)
+                        else:
+                            start = 0.0
+                        duration = max(0, round(now - start))
+                        e.delete(0, tk.END)
+                        e.insert(0, str(duration))
+                    except:
+                        pass
                 
                 plus_btn.config(command=increment_duration)
                 minus_btn.config(command=decrement_duration)
                 default_btn.config(command=set_to_default)
+                calc_btn.config(command=calc_from_now)
                 
                 tk.Label(duration_frame, text="(sec)", font=("Arial", 8), bg=BACKGROUND_COLOR, 
                         fg="gray").pack(side="left", padx=(5, 0))
@@ -23166,8 +23505,8 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     messagebox.showwarning("Invalid Value", f"'{field_name.replace('_', ' ').title()}' must be a number.")
                     return False
             
-            # Only add non-empty values (or toggles which can be False, or area_selector which can be a dict)
-            if value or field_type == "toggle" or (field_type == "area_selector" and value is not None):
+            # Only add non-empty values (or toggles which can be False, or area_selector which can be a dict, or numeric zero)
+            if value or value == 0 or field_type == "toggle" or (field_type == "area_selector" and value is not None):
                 new_round_data[field_name] = value
         
         # Save to round info
@@ -23242,6 +23581,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         }
         
         # Queue the test round
+        temp_round_info['is_test'] = True
         fixed_lightning_queue = temp_round_info
         fixed_lightning_round_playlist_data = None  # Reset any existing data
         play_video(playlist["current_index"])
@@ -24215,6 +24555,11 @@ BONUS_SETTINGS_DEFAULT = {
 
 guessing_extra = None
 showing_bonus_answer = False
+_yt_bonus_template_questions = []
+_yt_bonus_template_triggered = set()
+_yt_bonus_template_scored = set()
+_yt_bonus_current_question = None
+_yt_bonus_pts = 1.0
 def _fmt_pt(v):
     """Format a point value as a display string, e.g. 1.0 → '1 PT', 2.0 → '2 PTs'."""
     n = int(v) if v == int(v) else v
@@ -24572,6 +24917,16 @@ def guess_extra(extra = None):
                 _fr.get("trivia_question", "") or "",
                 choices=choices)
             _bonus_correct_answer = correct_answer
+        elif guessing_extra == "yt_bonus":
+            _q = _yt_bonus_current_question or {}
+            _q_answer = _q.get("answer", "")
+            _q_choices = _q.get("choices", [])
+            if not _q_choices:
+                _q_choices = [_q_answer]
+            _q_text = _q.get("question", "")
+            _q_header = _q.get("header", "") or "Bonus Question"
+            web_server.push_question(_q_header, _q_text, choices=_q_choices)
+            _bonus_correct_answer = _q_answer
         elif guessing_extra == "freeform":
             toggle_coming_up_popup(True,
                 ROUND_PREFIX + "Free Form",
@@ -25042,6 +25397,7 @@ def play_video(index=playlist["current_index"]):
             fixed_lightning_round_playlist_data["current_index"] += skip_direction
         index = fixed_lightning_round_playlist_data["current_index"]
         if index < 0 or index >= len(fixed_lightning_round_playlist_data.get("rounds", [])):
+            _was_test = fixed_lightning_round_playlist_data.get('is_test', False)
             fixed_lightning_round_playlist_data = None
             fixed_lightning_queue = None
             fixed_current_round = None
@@ -25051,7 +25407,10 @@ def play_video(index=playlist["current_index"]):
             update_playlist_display()
             
             toggle_light_mode()
-            play_video(playlist["current_index"] + skip_direction)
+            if _was_test:
+                stop()
+            else:
+                play_video(playlist["current_index"] + skip_direction)
             return
         fixed_current_round = fixed_lightning_round_playlist_data.get("rounds", [])[index]
         filename = fixed_current_round.get("theme")
@@ -25416,7 +25775,6 @@ def play_filename(playlist_entry, fullscreen=True):
             root.after(500, player_play)
         else:
             if cover_media_switch and light_round_number == 1:
-                print("Applying image color to overlay for media switch")
                 black_overlay.configure(bg=_image_color)
             player_play()
             set_volume(volume_level)
@@ -26179,6 +26537,8 @@ def play_next():
     set_skip_direction(1)
     if playlist_loaded or playlist_changed:
         play_video(playlist["current_index"])
+    elif fixed_lightning_round_playlist_data or fixed_lightning_queue:
+        play_video(playlist["current_index"])
     else:
         if playlist["current_index"] + 1 >= len(playlist["playlist"]):
             _promote_or_generate_next()
@@ -26248,6 +26608,7 @@ _web_playback_counter = 0   # throttle web playback state pushes to ~1/sec
 def update_seek_bar():
     """Function to update the seek bar"""
     global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms, skip_fade_in_elapsed_ms
+    global _yt_bonus_current_question, _yt_bonus_pts, _yt_bonus_template_triggered, _yt_bonus_template_scored
     try:
         if not player.is_playing():
             vlc_time = player.get_time()
@@ -26268,7 +26629,11 @@ def update_seek_bar():
             skip_jump_ms = int(max(0, float(skip_jump_seconds)) * 1000)
             skip_triggered = False
             if not light_round_started and guessing_extra and web_server.is_running():
-                _time_left = ((player.get_length() - projected_vlc_time) // 1000) - (8 if auto_info_end else 0)
+                if (guessing_extra == "yt_bonus" and _yt_bonus_current_question
+                        and _yt_bonus_current_question.get("end_time", 0) > 0):
+                    _time_left = max(0.0, _yt_bonus_current_question["end_time"] - projected_vlc_time / 1000)
+                else:
+                    _time_left = ((player.get_length() - projected_vlc_time) // 1000) - (8 if auto_info_end else 0)
                 web_server.push_timer(_time_left, paused=True)
             if currently_playing.get("type") != "youtube" and not light_round_started and skip_play_ms > 0 and skip_jump_ms > 0:
                 if last_skip_anchor_ms is None or last_seek_time or projected_vlc_time < last_skip_anchor_ms:
@@ -26332,8 +26697,30 @@ def update_seek_bar():
                             player.pause()
                             play_next()
                         elif (yt_end_time - time) <= 8:
-                            if (not is_title_window_up() or title_info_only) and auto_info_end:
+                            if (not is_title_window_up() or title_info_only) and auto_info_end and not guessing_extra:
                                 toggle_title_popup(True)
+                        # Bonus template auto-trigger
+                        for _bq_i, _bq in enumerate(_yt_bonus_template_questions):
+                            _bq_start = _bq.get("start_time", 0)
+                            _bq_end = _bq.get("end_time", 0)
+                            if _bq_i not in _yt_bonus_template_triggered and time >= _bq_start:
+                                if _bq_end > 0 and time >= _bq_end:
+                                    # Already past this question's window — skip silently
+                                    _yt_bonus_template_triggered.add(_bq_i)
+                                    _yt_bonus_template_scored.add(_bq_i)
+                                else:
+                                    _yt_bonus_template_triggered.add(_bq_i)
+                                    _yt_bonus_current_question = _bq
+                                    _yt_bonus_pts = float(_bq.get("points", 1))
+                                    guess_extra("yt_bonus")
+                                break
+                            elif (_bq_i in _yt_bonus_template_triggered and
+                                  _bq_i not in _yt_bonus_template_scored and
+                                  _bq_end > 0 and time >= _bq_end):
+                                _yt_bonus_template_scored.add(_bq_i)
+                                if guessing_extra == "yt_bonus":
+                                    guess_extra("yt_bonus")
+                                break
                     else:
                         if not light_round_started and (length - time) <= 8:
                             if (not is_title_window_up() or title_info_only) and auto_info_end:
@@ -34277,6 +34664,15 @@ def _score_bonus_answers(answers, q_type, correct):
 
     elif q_type == "fixed_mc":
         _pts = float((fixed_current_round or {}).get("mc_points", 1))
+        seen = set()
+        for entry in answers:
+            name = entry["name"].strip()
+            if name and name not in seen:
+                seen.add(name)
+                result[name] = _pts if entry["answer"].strip().lower() == str(correct).strip().lower() else 0.0
+
+    elif q_type == "yt_bonus":
+        _pts = float(_yt_bonus_pts)
         seen = set()
         for entry in answers:
             name = entry["name"].strip()
