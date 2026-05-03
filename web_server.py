@@ -1595,16 +1595,29 @@ _HTML = r"""<!DOCTYPE html>
       background: #1a2040; color: #88aaff; border-color: #3355aa;
     }
     #sc-submit-btn:hover { background: #253060; border-color: #4466cc; }
-    #player-skip-btn {
-      width: 100%; padding: 30px 13px; height: 120px;
-      border: 2px solid #4a3a7a; border-radius: 10px;
-      background: #2a1a5a; color: #ffffff;
-      font-size: 2.2em; font-weight: bold;
-      cursor: pointer; display: none;
-      align-items: center; justify-content: center;
-      margin-top: 10px;
+    #player-skip-area {
+      display: none; flex-direction: row; gap: 8px;
+      margin-top: 10px; align-items: stretch;
     }
-    #player-skip-btn:hover { background: #3a2a7a; border-color: #7755cc; }
+    .player-skip-choice {
+      padding: 22px 13px; height: 88px;
+      border-radius: 10px;
+      font-weight: bold;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .player-skip-choice.confirm {
+      flex: 3;
+      font-size: 1.8em;
+      border: 2px solid #4a3a7a; background: #2a1a5a; color: #ffffff;
+    }
+    .player-skip-choice.confirm:hover { background: #3a2a7a; border-color: #7755cc; }
+    .player-skip-choice.decline {
+      flex: 1;
+      font-size: 1.2em;
+      border: 2px solid #3a2020; background: #2a0f0f; color: #cc8888;
+    }
+    .player-skip-choice.decline:hover { background: #3a1515; border-color: #7a3333; }
     .sc-skip-btn {
       font-size: 0.78em; line-height: 1; padding: 0 10px; border-radius: 3px;
       border: 1px solid #2a3a4a; background: #111820; color: #3a6080;
@@ -2730,7 +2743,10 @@ _HTML = r"""<!DOCTYPE html>
       </div>
       <div id="choices-area"></div>
       <input id="free-input" placeholder="Your Answer&hellip;" autocomplete="off" style="display:none"/>      <div id="free-error" style="display:none; color:#f66; font-size:0.85em; margin-bottom:8px;"></div>      <button id="submit-btn" onclick="submitAnswer()">Submit</button>
-      <button id="player-skip-btn" onclick="_playerRequestSkip()">&#x23ED; Skip this theme?</button>
+      <div id="player-skip-area">
+        <button class="player-skip-choice confirm" onclick="_playerRequestSkip()">&#x23ED; Skip to end?</button>
+        <button class="player-skip-choice decline" onclick="_playerDeclineSkip()">&#x274C;</button>
+      </div>
       <div id="sent-msg">&#10003; Answer submitted!</div>
       <div id="buzzer-panel">
         <div id="buzzer-status">Buzzer idle.</div>
@@ -4300,9 +4316,9 @@ _HTML = r"""<!DOCTYPE html>
       _toggleBtnRef = null;
       document.getElementById('waiting').style.display = 'none';
       document.getElementById('question-area').style.display = 'block';
-      // Hide player skip button on new question (grant resets server-side too)
-      const skipBtnReset = document.getElementById('player-skip-btn');
-      if (skipBtnReset) skipBtnReset.style.display = 'none';
+      // Hide player skip area on new question (grant resets server-side too)
+      const skipAreaReset = document.getElementById('player-skip-area');
+      if (skipAreaReset) skipAreaReset.style.display = 'none';
       // Ensure per-question UI is visible again (may have been hidden during a clear)
       const qCardShow = document.getElementById('q-card'); if (qCardShow) qCardShow.style.display = '';
       const choicesAreaShow = document.getElementById('choices-area'); if (choicesAreaShow) { choicesAreaShow.style.display = ''; choicesAreaShow.innerHTML = ''; }
@@ -4580,7 +4596,7 @@ _HTML = r"""<!DOCTYPE html>
       const choicesArea = document.getElementById('choices-area'); if (choicesArea) { choicesArea.innerHTML = ''; choicesArea.style.display = 'none'; }
       const freeInput = document.getElementById('free-input'); if (freeInput) freeInput.style.display = 'none';
       const submitBtn = document.getElementById('submit-btn'); if (submitBtn) submitBtn.style.display = 'none';
-      const skipBtnClear = document.getElementById('player-skip-btn'); if (skipBtnClear) skipBtnClear.style.display = 'none';
+      const skipAreaClear = document.getElementById('player-skip-area'); if (skipAreaClear) skipAreaClear.style.display = 'none';
       _applyRules((data && data.rules_header) || '', (data && data.rules_body) || '');
       _showPrevQuestion();
       // Update host toggle to indicate these are previous answers
@@ -8317,15 +8333,21 @@ _HTML = r"""<!DOCTYPE html>
 
     function _playerRequestSkip() {
       socket.emit('player_skip_request', {});
-      const btn = document.getElementById('player-skip-btn');
-      if (btn) btn.style.display = 'none';
+      const area = document.getElementById('player-skip-area');
+      if (area) area.style.display = 'none';
+    }
+
+    function _playerDeclineSkip() {
+      socket.emit('player_skip_decline', {});
+      const area = document.getElementById('player-skip-area');
+      if (area) area.style.display = 'none';
     }
 
     // Received by the granted player only
     socket.on('skip_grant_update', data => {
       const active = !!(data && data.active);
-      const skipBtn = document.getElementById('player-skip-btn');
-      if (skipBtn) skipBtn.style.display = active ? 'flex' : 'none';
+      const skipArea = document.getElementById('player-skip-area');
+      if (skipArea) skipArea.style.display = active ? 'flex' : 'none';
     });
 
     // Received by all hosts so they can refresh the row button states
@@ -9883,6 +9905,11 @@ def set_skip_grant_callback(fn):
     _on_skip_grant_callback = fn
 
 
+def get_skip_grant_player() -> str:
+    """Return the name of the player currently holding the skip grant, or empty string."""
+    return _skip_grant_player
+
+
 def start(port=8080, ngrok_domain=None, cloudflare_token=None, cloudflare_url=None):
     """Start the Flask/SocketIO server in a daemon thread, optionally launch ngrok.
 
@@ -10605,12 +10632,22 @@ def _build_app():
             return
         # Consume the grant (one-time use)
         push_skip_grant('')
-        # Invoke next track via the host action callback
+        # Seek to last 3 seconds instead of skipping to next track
         if _host_action_callback is not None:
             try:
-                _host_action_callback('invoke', {'id': 'next', '_sid': None})
+                _host_action_callback('seek_near_end', {'_sid': None})
             except Exception:
                 pass
+
+    @_socketio.on('player_skip_decline')
+    def handle_player_skip_decline(data):
+        from flask import request as _req
+        name = _connected_players.get(_req.sid, '').strip()
+        if not name or name != _skip_grant_player:
+            return
+        if name in _banned_names or _req.remote_addr in _shadow_kicked_ips:
+            return
+        push_skip_grant('')
 
     @_socketio.on('host_action')
     def handle_host_action(data):

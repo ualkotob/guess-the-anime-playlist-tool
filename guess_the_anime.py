@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "18.1"  # Update this when making releases
+APP_VERSION = "18.2"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -766,7 +766,8 @@ CLOUDFLARE_TUNNEL_TOKEN = ""
 CLOUDFLARE_PUBLIC_URL = ""
 NGROK_AVAILABLE = web_server.NGROK_AVAILABLE
 CLOUDFLARED_AVAILABLE = web_server.CLOUDFLARED_AVAILABLE
-SCOREBOARD_AVAILABLE = os.path.isfile("scoreboard.exe") or os.path.isfile("scoreboard.py")
+SCOREBOARD_AVAILABLE = (os.path.isfile("scoreboard.exe") or os.path.isfile("scoreboard.py")
+                        or os.path.isfile("universal_scoreboard.exe") or os.path.isfile("universal_scoreboard.py"))
 LAUNCH_SCOREBOARD_ON_STARTUP = False
 AUTO_EXIT_SCOREBOARD = False
 CONFIG_FOLDER = "config"
@@ -4701,6 +4702,10 @@ def get_all_theme_from_series(data):
         def _is_duplicate_of_igdb(anime_id, anime):
             if str(anime_id).startswith("IGDB:"):
                 return False
+            # Only deduplicate entries that are actually games — an anime adaptation
+            # can share a title with a game (e.g. Scarlet Nexus) and must not be removed.
+            if not is_game(anime):
+                return False
             if anime.get("title", "").strip().lower() in igdb_match_keys:
                 return True
             fn_title = _filename_title_norm(anime_id)
@@ -6631,6 +6636,141 @@ def generate_animethemes_playlist(include_non_local=None):
     except Exception as e:
         messagebox.showerror("Error", f"Failed to fetch AnimeThemes playlist: {str(e)}")
 
+def generate_session_log_playlist():
+    """Create a playlist by matching themes from a saved session log (.txt) file."""
+    filepath = filedialog.askopenfilename(
+        title="Open Session Log",
+        initialdir="sessions" if os.path.isdir("sessions") else ".",
+        filetypes=[("Session log files", "*.txt"), ("All files", "*.*")]
+    )
+    if not filepath:
+        return
+
+    # Build title -> mal_id reverse map: English title, Japanese title, and all synonyms.
+    # Map title -> list of all mal_ids with that title (multiple entries can share a name,
+    # e.g. a game and its anime adaptation both titled "Scarlet Nexus").
+    title_to_mals = {}
+    for mal_id, data in anime_metadata.items():
+        for t in filter(None, [data.get("eng_title"), data.get("title"),
+                                *(data.get("synonyms") or [])]):
+            ts = str(t).strip()
+            if ts:
+                title_to_mals.setdefault(ts.lower(), []).append(mal_id)
+
+    # Build (mal_id, slug) -> [local_filename] map from file_metadata
+    mal_slug_to_files = {}
+    for mal_id, mal_data in file_metadata.items():
+        for slug, slug_data in mal_data.get("themes", {}).items():
+            for version_data in slug_data.values():
+                for fname in version_data.keys():
+                    if fname in directory_files:
+                        mal_slug_to_files.setdefault((mal_id, slug), []).append(fname)
+
+    def _unformat_slug(fmt):
+        if fmt.startswith("Opening "):
+            return "OP" + fmt[8:]
+        if fmt.startswith("Ending "):
+            return "ED" + fmt[7:]
+        return fmt
+
+    timestamp_re = re.compile(r'^\d{2}:\d{2}:\d{2}: ?')
+    skip_markers = ('[YOUTUBE VIDEO', '[FIXED LIGHTNING ROUNDS', '[SCOREBOARD]', '[BONUS?')
+    lightning_re = re.compile(r'^\[LIGHTNING ROUND #\d+\([^)]+\)\] - ')
+    # Greedy match of the LAST " - Opening/Ending N" in the line (before optional song paren or end).
+    # The leading (.*) is greedy so it finds the rightmost occurrence, correctly handling
+    # titles that contain " - " (e.g. "Re:Zero - Starting Life...") or "(" (e.g. "Show (TV)").
+    slug_op_ed_re = re.compile(r'^(.*) - ((?:Opening|Ending)\s*\d+)(?=\s*(?:\(|$))')
+    ext_re = re.compile(r'\s(\S+\.(?:webm|mkv|mp4|avi|mov))\s*$', re.IGNORECASE)
+
+    matched = []
+    unmatched_lines = []
+    total_lines = 0
+    try:
+        with open(filepath, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.rstrip('\n\r')
+                if not timestamp_re.match(line):
+                    continue
+                original_body = timestamp_re.sub('', line)
+                body = original_body
+                if any(body.startswith(m) for m in skip_markers):
+                    continue
+                is_lightning = bool(lightning_re.match(body))
+                body = lightning_re.sub('', body)
+                total_lines += 1
+
+                # Extract trailing filename hint (only appended when title was empty at log time)
+                filename_hint = None
+                fn_m = ext_re.search(body)
+                if fn_m:
+                    filename_hint = fn_m.group(1)
+                    body = body[:fn_m.start()]
+
+                # Extract title and slug.
+                # For OP/ED slugs: use the greedy regex which correctly handles " - " and "(" in titles.
+                # For other slugs: strip the trailing song paren then rfind ' - '.
+                title = None
+                slug = None
+                op_ed_m = slug_op_ed_re.match(body.strip())
+                if op_ed_m:
+                    title = op_ed_m.group(1).strip()
+                    slug = _unformat_slug(op_ed_m.group(2).strip())
+                else:
+                    body_stripped = re.sub(r'\s*\([^(]*\)\s*$', '', body).strip()
+                    sep = body_stripped.rfind(' - ')
+                    if sep != -1:
+                        title = body_stripped[:sep].strip()
+                        slug = body_stripped[sep + 3:].strip()
+
+                # Match: filename hint first, then metadata reverse lookup
+                found = None
+                if filename_hint and filename_hint in directory_files:
+                    found = filename_hint
+                elif title is not None and slug:
+                    for mal_id in title_to_mals.get(title.lower(), []):
+                        candidates = mal_slug_to_files.get((mal_id, slug), [])
+                        if candidates:
+                            found = candidates[0]
+                            break
+
+                if found:
+                    matched.append(f"[L]{found}" if is_lightning else found)
+                else:
+                    unmatched_lines.append(original_body.rstrip())
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to read session log:\n{e}")
+        return
+
+    unmatched = len(unmatched_lines)
+    if unmatched_lines:
+        print(f"[Session Log Playlist] {unmatched} unmatched lines:")
+        for ul in unmatched_lines:
+            print(f"  UNMATCHED: {ul}")
+
+    if not matched:
+        messagebox.showwarning(
+            "No Matches",
+            f"No matching local files found.\n"
+            f"({total_lines} theme lines parsed, {unmatched} unmatched)"
+        )
+        return
+
+    msg = f"{len(matched)} of {total_lines} theme lines matched to local files."
+    if unmatched:
+        msg += f"\n{unmatched} could not be matched."
+    msg += "\n\nCreate playlist?"
+    if not messagebox.askyesno("Create Playlist from Session Log", msg):
+        return
+
+    basename = os.path.splitext(os.path.basename(filepath))[0]
+    if basename.startswith("guess_the_anime_"):
+        playlist_name = basename[len("guess_the_anime_"):]
+    else:
+        playlist_name = basename
+
+    new_playlist(matched, playlist_name)
+
 def update_living_playlists():
     """Update all saved playlists with source metadata (living playlists) in background."""
     def update_in_background():
@@ -7207,11 +7347,28 @@ def _set_difficulty_from_menu(idx):
     _refresh_popout_toggles()
     save_config()
 
+def _clear_speculative_tail():
+    """Cancel downloads for and discard all speculative tail entries + shadow order counter."""
+    for f in playlist.get("speculative_tail", []):
+        clean = get_clean_filename(f)
+        if clean in active_downloads:
+            cancel_download(clean)
+    playlist["speculative_tail"] = []
+    playlist.pop("spec_order", None)
+
 def refresh_pop_time_groups(refetch_next=True):
     get_pop_time_groups(refetch=True)
     update_current_index(save=False)
     if refetch_next and playlist["current_index"] == len(playlist["playlist"])-2:
         refetch_next_track()
+    elif refetch_next:
+        # Not near the end — committed next stays, but speculative tail is stale so drop it.
+        _clear_speculative_tail()
+        # Schedule a fresh speculative prefetch after a short debounce.
+        global _refetch_debounce_id
+        if _refetch_debounce_id is not None:
+            root.after_cancel(_refetch_debounce_id)
+        _refetch_debounce_id = root.after(5000, _start_refetch_prefetch)
 
 _refetch_debounce_id = None
 
@@ -7238,12 +7395,7 @@ def refetch_next_track():
 
     # Cancel and clear the speculative tail + shadow order counters —
     # they were built for the old difficulty/filter and are now stale.
-    for f in playlist.get("speculative_tail", []):
-        clean = get_clean_filename(f)
-        if clean in active_downloads:
-            cancel_download(clean)
-    playlist["speculative_tail"] = []
-    playlist.pop("spec_order", None)
+    _clear_speculative_tail()
 
     # Cancel any pending refetch download timer
     if _refetch_debounce_id is not None:
@@ -8207,6 +8359,7 @@ def save_config():
         "popout_layout": popout_layout if popout_layout is not None else [],
         "metadata_last_updated": metadata_last_updated,
         "censors_last_updated": censors_last_updated,
+        "scoreboard_version_seen": scoreboard_version_seen,
         "popout_columns": popout_columns,
         "shortcuts": globals().get("shortcuts_config", {}),
         "playlist": playlist,
@@ -8241,7 +8394,7 @@ def _migrate_theme_flags(filter_dict):
 def load_config():
     """Function to load configuration"""
     global directory_files, directory, playlist, host, inverted_colors, scoreboard_rules
-    global metadata_last_updated, censors_last_updated, OVERLAY_COLOR_OPTIONS
+    global metadata_last_updated, censors_last_updated, OVERLAY_COLOR_OPTIONS, scoreboard_version_seen
     global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global bonus_settings, saved_bonus_settings, selected_bonus_settings
@@ -8343,6 +8496,7 @@ def load_config():
             send_scoreboard_colors()
             metadata_last_updated = config.get("metadata_last_updated", 0)
             censors_last_updated = config.get("censors_last_updated", 0)
+            scoreboard_version_seen = config.get("scoreboard_version_seen", "")
             # Popout layout — None means "use default"
             _saved_layout = config.get("popout_layout", None)
             popout_layout = _saved_layout if _saved_layout else None  # empty list → None (use default)
@@ -8910,6 +9064,15 @@ LOCAL_METADATA_PACKAGE = "metadata/metadata_package.zip"
 metadata_last_updated = 0
 censors_last_updated = 0
 
+# Track the latest scoreboard release tag we've already told the user about
+scoreboard_version_seen = ""
+# None = not yet checked, True = update available, False = up to date
+_scoreboard_update_available = None
+
+_SCOREBOARD_GITHUB_REPO = "ualkotob/universal-scoreboard"
+_SCOREBOARD_API_URL = f"https://api.github.com/repos/{_SCOREBOARD_GITHUB_REPO}/releases/latest"
+_SCOREBOARD_RELEASES_PAGE = f"https://github.com/{_SCOREBOARD_GITHUB_REPO}/releases"
+
 def check_for_metadata_updates():
     """Check if newer metadata is available on GitHub and prompt user to download."""
     global metadata_last_updated
@@ -8984,6 +9147,244 @@ def check_for_censor_updates():
     except Exception as e:
         # Silently fail - don't bother user if check fails
         print(f"Could not check for censor updates: {e}")
+
+# ── Universal Scoreboard integration ─────────────────────────────────────────
+
+def _scoreboard_fetch_latest_release():
+    """Return (tag, download_url, body) for the latest scoreboard release, or raise."""
+    resp = requests.get(_SCOREBOARD_API_URL, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    tag = data.get("tag_name", "")
+    body = data.get("body", "")
+    url = next(
+        (a["browser_download_url"] for a in data.get("assets", [])
+         if a["name"] == "universal_scoreboard.exe"),
+        None,
+    )
+    return tag, url, body
+
+def download_scoreboard():
+    """Show an explanation dialog, then download universal_scoreboard.exe on confirmation."""
+    confirmed = messagebox.askyesno(
+        "Download Universal Scoreboard",
+        "Universal Scoreboard is a separate overlay program that works alongside "
+        "the Guess the Anime! Playlist Tool.\n\n"
+        "It shows a live scoreboard for your players during sessions, lets you "
+        "adjust scores, archive past sessions, and more.\n\n"
+        "Download universal_scoreboard.exe from GitHub?\n"
+        "(~45 MB, saved next to this program)",
+    )
+    if not confirmed:
+        return
+
+    def _do_download():
+        try:
+            tag, url, _ = _scoreboard_fetch_latest_release()
+            if not url:
+                root.after(0, lambda: messagebox.showerror(
+                    "Download Failed",
+                    "Could not find universal_scoreboard.exe in the latest release.\n"
+                    f"Please download manually:\n{_SCOREBOARD_RELEASES_PAGE}",
+                ))
+                return
+
+            dest = "universal_scoreboard.exe"
+            with requests.get(url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                total = int(r.headers.get("content-length", 0))
+                downloaded = 0
+                with open(dest + ".tmp", "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                pct = int(downloaded * 100 / total)
+                                root.after(0, lambda p=pct: _sb_dl_progress(p))
+            os.replace(dest + ".tmp", dest)
+
+            global SCOREBOARD_AVAILABLE, scoreboard_version_seen, _scoreboard_update_available
+            SCOREBOARD_AVAILABLE = True
+            scoreboard_version_seen = tag
+            _scoreboard_update_available = False
+            save_config()
+
+            root.after(0, lambda: messagebox.showinfo(
+                "Download Complete",
+                f"universal_scoreboard.exe downloaded (version {tag}).\n\n"
+                "You can now launch it from the FILE menu → Open Scoreboard.",
+            ))
+            root.after(0, create_first_row_buttons)
+        except Exception as e:
+            try:
+                os.remove("universal_scoreboard.exe.tmp")
+            except OSError:
+                pass
+            root.after(0, lambda: messagebox.showerror(
+                "Download Failed",
+                f"Could not download the scoreboard:\n{e}\n\n"
+                f"Download manually from:\n{_SCOREBOARD_RELEASES_PAGE}",
+            ))
+        finally:
+            root.after(0, _sb_dl_close)
+
+    # Progress window
+    _sb_dl_win = tk.Toplevel(root)
+    _sb_dl_win.title("Downloading Scoreboard…")
+    _sb_dl_win.configure(bg="black")
+    _sb_dl_win.resizable(False, False)
+    _sb_dl_win.transient(root)
+    _sb_dl_win.grab_set()
+    get_window_position_and_setup(_sb_dl_win, offset_x=100, offset_y=100)
+    tk.Label(_sb_dl_win, text="Downloading universal_scoreboard.exe…",
+             bg="black", fg="white", font=("Arial", 11)).pack(padx=20, pady=(16, 6))
+    _sb_pct_var = tk.StringVar(value="0%")
+    tk.Label(_sb_dl_win, textvariable=_sb_pct_var,
+             bg="black", fg=HIGHLIGHT_COLOR, font=("Arial", 13, "bold")).pack(pady=(0, 16))
+
+    def _sb_dl_progress(pct):
+        try:
+            _sb_pct_var.set(f"{pct}%")
+            _sb_dl_win.update_idletasks()
+        except Exception:
+            pass
+
+    def _sb_dl_close():
+        try:
+            _sb_dl_win.grab_release()
+            _sb_dl_win.destroy()
+        except Exception:
+            pass
+
+    threading.Thread(target=_do_download, daemon=True).start()
+
+
+def check_for_scoreboard_update(silent_if_current=True):
+    """Check GitHub for a newer scoreboard release and prompt to update if found.
+
+    silent_if_current: if True, show no dialog when already up to date (used for startup).
+    """
+    global scoreboard_version_seen, _scoreboard_update_available
+    if not SCOREBOARD_AVAILABLE:
+        return
+    try:
+        tag, url, body = _scoreboard_fetch_latest_release()
+        if not tag:
+            return
+
+        # Local scoreboard is already on this version.
+        if tag == scoreboard_version_seen:
+            _scoreboard_update_available = False
+            if not silent_if_current:
+                messagebox.showinfo(
+                    "Scoreboard Up to Date",
+                    f"You already have the latest scoreboard (version {tag}).",
+                )
+            return
+
+        # Check if local exe exists and if so whether it's older
+        local_exists = os.path.isfile("universal_scoreboard.exe") or os.path.isfile("scoreboard.exe")
+        if local_exists and not scoreboard_version_seen and silent_if_current:
+            # Existing exe with unknown local version: avoid false startup prompts.
+            return
+        if not local_exists:
+            # py script — version comparison not possible, skip silent check
+            if silent_if_current:
+                return
+
+        _scoreboard_update_available = True
+
+        # New version available
+        result = messagebox.askyesno(
+            "Scoreboard Update Available",
+            f"A new version of Universal Scoreboard is available!\n\n"
+            f"Version: {tag}\n\n"
+            f"Release notes:\n{body[:300]}{'…' if len(body) > 300 else ''}\n\n"
+            "Download and install it now? (~45 MB)",
+        )
+        if result:
+            if url:
+                _install_scoreboard_update(tag, url)
+            else:
+                webbrowser.open(_SCOREBOARD_RELEASES_PAGE)
+    except Exception as e:
+        if not silent_if_current:
+            messagebox.showerror("Update Check Failed", f"Could not check scoreboard updates:\n{e}")
+        else:
+            print(f"Scoreboard update check failed: {e}")
+
+
+def _install_scoreboard_update(tag, url):
+    """Download the new scoreboard exe in the background, replacing the old one."""
+    dest_candidates = ["universal_scoreboard.exe", "scoreboard.exe"]
+    dest = next((f for f in dest_candidates if os.path.isfile(f)), "universal_scoreboard.exe")
+
+    def _close_running_scoreboard(timeout_seconds=4.0):
+        """Ask the running scoreboard to quit and wait briefly for it to exit."""
+        try:
+            if not is_scoreboard_running():
+                return True
+            send_scoreboard_command("quit")
+            deadline = time.time() + timeout_seconds
+            while time.time() < deadline:
+                if not is_scoreboard_running():
+                    return True
+                time.sleep(0.1)
+            return not is_scoreboard_running()
+        except Exception:
+            return False
+
+    def _do_install():
+        try:
+            if not _close_running_scoreboard():
+                root.after(0, lambda: messagebox.showerror(
+                    "Update Failed",
+                    "Could not close the running scoreboard automatically.\n\n"
+                    "Please close the scoreboard and try updating again.",
+                ))
+                return
+
+            with requests.get(url, stream=True, timeout=60) as r:
+                r.raise_for_status()
+                with open(dest + ".tmp", "wb") as f:
+                    for chunk in r.iter_content(chunk_size=65536):
+                        if chunk:
+                            f.write(chunk)
+            os.replace(dest + ".tmp", dest)
+
+            global scoreboard_version_seen, _scoreboard_update_available
+            scoreboard_version_seen = tag
+            _scoreboard_update_available = False
+            save_config()
+
+            root.after(0, lambda: messagebox.showinfo(
+                "Scoreboard Updated",
+                f"Universal Scoreboard updated to version {tag}.",
+            ))
+        except Exception as e:
+            try:
+                os.remove(dest + ".tmp")
+            except OSError:
+                pass
+            root.after(0, lambda: messagebox.showerror(
+                "Update Failed",
+                f"Could not install update:\n{e}\n\n"
+                f"Download manually:\n{_SCOREBOARD_RELEASES_PAGE}",
+            ))
+
+    threading.Thread(target=_do_install, daemon=True).start()
+
+
+def check_for_scoreboard_update_on_startup():
+    """Background check for a newer scoreboard release — silent if already current."""
+    def _bg():
+        try:
+            check_for_scoreboard_update(silent_if_current=True)
+        except Exception as e:
+            print(f"Scoreboard startup update check failed: {e}")
+    threading.Thread(target=_bg, daemon=True).start()
+
 
 def check_for_local_metadata_package():
     """Check if metadata package exists locally and prompt user to import it."""
@@ -16993,7 +17394,13 @@ def open_scoreboard():
     global scoreboard_visible_hint
     if is_scoreboard_running():
         return
-    if os.path.isfile("scoreboard.exe"):
+    if os.path.isfile("universal_scoreboard.exe"):
+        scoreboard_visible_hint = True
+        subprocess.Popen(["universal_scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif os.path.isfile("universal_scoreboard.py"):
+        scoreboard_visible_hint = True
+        subprocess.Popen([sys.executable, "universal_scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif os.path.isfile("scoreboard.exe"):
         scoreboard_visible_hint = True
         subprocess.Popen(["scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
     elif os.path.isfile("scoreboard.py"):
@@ -21545,61 +21952,65 @@ FIXED_LIGHTNING_ROUNDS = {
 }
 
 FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
-    "theme": {"type": "file", "required": True},
-    "start_time": {"type": "time", "required": False},
-    "duration": {"type": "duration", "required": False},
-    "answer_duration": {"type": "duration", "required": False},
-    "background_track": {"type": "music_track", "required": False, "show_if_muted": True},
-    "blind_variant": {"type": "dropdown", "required": False, "options": lightning_mode_settings_default.get("blind",{}).get("variants",{}), "default": "standard"},
-    "frame1": {"type": "time", "required": True},
-    "frame2": {"type": "time", "required": True},
-    "frame3": {"type": "time", "required": True},
-    "frame4": {"type": "time", "required": True},
-    "test_frame": {"type": "time", "required": False},
-    "synopsis_header": {"type": "text", "required": False, "default": "Synopsis"},
-    "synopsis_text": {"type": "textarea", "required": True, "height": 10},
-    "overlay_during_answer": {"type": "toggle", "required": False, "default": False},
-    "reveal_speed": {"type": "time", "required": False, "default": None},
-    "answer_header": {"type": "text", "required": False},
-    "trivia_header": {"type": "text", "required": False, "default": "Trivia"},
-    "trivia_question": {"type": "textarea", "required": True, "height": 10},
-    "trivia_answer": {"type": "text", "required": True},
-    "mc_choice_2": {"type": "text", "required": False},
-    "mc_choice_3": {"type": "text", "required": False},
-    "mc_choice_4": {"type": "text", "required": False},
-    "mc_points": {"type": "integer", "required": False, "default": 1},
-    "clip_header": {"type": "text", "required": False, "default": "Random Clip"},
-    "ost_header": {"type": "text", "required": False, "default": "SOUNDTRACK / OST"},
-    "clip_start_time": {"type": "time", "required": False},
-    "clip_url": {"type": "video_url", "required": True},
-    "clip_title": {"type": "text", "required": False},
-    "clip_author": {"type": "text", "required": False},
-    "censor_bottom": {"type": "toggle", "required": False, "default": False},
-    "clip_for_answer": {"type": "toggle", "required": False, "default": False},
-    "reveal_title_halfway": {"type": "toggle", "required": False, "default": True},
-    "music_icon": {"type": "text", "required": False},
-    "volume_adjustment": {"type": "integer", "required": False, "default": 0},
+    # Optional metadata per field:
+    # tooltip: Hover text shown on the field label in the fixed-round editor.
+    "theme": {"type": "file", "required": True, "tooltip": "Theme filename used for this round. Use SET TO CURRENT to capture the currently playing theme."},
+    "start_time": {"type": "time", "required": False, "tooltip": "Start timestamp in seconds for the round theme. In rounds that don't use theme during the question, this is when the theme will start during the answer phase."},
+    "duration": {"type": "duration", "required": False, "tooltip": "Main guessing duration in seconds before answer phase begins. Use CALC FROM NOW to automatically calculate based on current theme position from start_time."},
+    "answer_duration": {"type": "duration", "required": False, "tooltip": "Answer reveal duration in seconds. Use CALC FROM NOW to automatically calculate based on current theme position from start_time."},
+    "background_track": {"type": "music_track", "required": False, "show_if_muted": True, "tooltip": "Optional background music file to play for muted rounds. Will choose a random track each time if left empty."},
+    "blind_variant": {"type": "dropdown", "required": False, "options": lightning_mode_settings_default.get("blind",{}).get("variants",{}), "default": "standard", "tooltip": "Blind round variant behavior (for example standard, one-second, mismatch, etc.)."},
+    "frame1": {"type": "time", "required": True, "tooltip": "First frame timestamp in seconds."},
+    "frame2": {"type": "time", "required": True, "tooltip": "Second frame timestamp in seconds."},
+    "frame3": {"type": "time", "required": True, "tooltip": "Third frame timestamp in seconds."},
+    "frame4": {"type": "time", "required": True, "tooltip": "Fourth frame timestamp in seconds."},
+    "test_frame": {"type": "time", "required": False, "tooltip": "Extra frame timestamp fields to hold more frames for convenience when picking frames. Not used in actual rounds, just for creation/testing."},
+    "synopsis_header": {"type": "text", "required": False, "default": "Synopsis", "tooltip": "Header text shown above the synopsis overlay."},
+    "synopsis_text": {"type": "textarea", "required": True, "height": 10, "tooltip": "Synopsis body text revealed during the round."},
+    "overlay_during_answer": {"type": "toggle", "required": False, "default": False, "tooltip": "Keep the synopsis/trivia overlay visible during answer phase."},
+    "reveal_speed": {"type": "time", "required": False, "default": None, "tooltip": "Word reveal speed in seconds for synopsis/trivia text overlays. The text will be fully revealed at the timestamp entered here."},
+    "answer_header": {"type": "text", "required": False, "tooltip": "Optional answer header text shown in trivia answer phase."},
+    "trivia_header": {"type": "text", "required": False, "default": "Trivia", "tooltip": "Header text shown above the trivia question."},
+    "trivia_question": {"type": "textarea", "required": True, "height": 10, "tooltip": "Trivia prompt shown during the question phase."},
+    "trivia_answer": {"type": "text", "required": True, "tooltip": "Correct answer text for the trivia round."},
+    "mc_choice_2": {"type": "text", "required": False, "tooltip": "Optional multiple-choice distractor option #2."},
+    "mc_choice_3": {"type": "text", "required": False, "tooltip": "Optional multiple-choice distractor option #3."},
+    "mc_choice_4": {"type": "text", "required": False, "tooltip": "Optional multiple-choice distractor option #4."},
+    "mc_points": {"type": "integer", "required": False, "default": 1, "tooltip": "Points awarded for a correct trivia answer."},
+    "clip_header": {"type": "text", "required": False, "default": "Random Clip", "tooltip": "Overlay header text for clip rounds."},
+    "ost_header": {"type": "text", "required": False, "default": "SOUNDTRACK / OST", "tooltip": "Overlay header text for OST rounds."},
+    "clip_start_time": {"type": "time", "required": False, "tooltip": "Start timestamp in seconds for the clip/OST URL."},
+    "clip_url": {"type": "video_url", "required": True, "tooltip": "Direct video URL used in clip/OST rounds. GO TO URL opens browser, STREAM previews in player."},
+    "clip_title": {"type": "text", "required": False, "tooltip": "Display title for the clip source."},
+    "clip_author": {"type": "text", "required": False, "tooltip": "Display channel/author for the clip source."},
+    "censor_bottom": {"type": "toggle", "required": False, "default": False, "tooltip": "Apply bottom censor behavior during clip playback."},
+    "clip_for_answer": {"type": "toggle", "required": False, "default": False, "tooltip": "Reuse the clip media during answer phase instead of the normal answer flow."},
+    "reveal_title_halfway": {"type": "toggle", "required": False, "default": True, "tooltip": "Reveal the title halfway through the OST round."},
+    "music_icon": {"type": "text", "required": False, "tooltip": "Custom icon/text shown on music progress overlays."},
+    "volume_adjustment": {"type": "integer", "required": False, "default": 0, "tooltip": "Per-round volume offset applied during clip/OST playback."},
     # Image round fields
     "image_variant": {
         "type": "dropdown",
         "required": True,
         "options": lightning_mode_settings_default.get("image",{}).get("variants",{}),
-        "default": "standard"
+        "default": "standard",
+        "tooltip": "Reveal style for image/cover rounds (standard, slide, slice, tile, zoom, etc.)."
     },
-    "image_url": {"type": "image_url", "required": True},
-    "answer_image_url": {"type": "image_url", "required": False},
-    "answer_show_both": {"type": "toggle", "required": False, "default": False},
-    "cover_fill": {"type": "cover_fill", "required": False},
-    "cover_header": {"type": "text", "required": False, "default": "Cover"},
-    "image_source": {"type": "text", "required": False},
-    "image_header": {"type": "text", "required": False, "default": "Image"},
+    "image_url": {"type": "image_url", "required": True, "tooltip": "Primary image URL used by image/cover reveal rounds."},
+    "answer_image_url": {"type": "image_url", "required": False, "tooltip": "Optional alternate image URL shown for answer phase."},
+    "answer_show_both": {"type": "toggle", "required": False, "default": False, "tooltip": "If enabled, answer view can show both round and answer images."},
+    "cover_fill": {"type": "cover_fill", "required": False, "tooltip": "Helper button that fills Image URL from the selected theme's cover metadata."},
+    "cover_header": {"type": "text", "required": False, "default": "Cover", "tooltip": "Header text for cover rounds."},
+    "image_source": {"type": "text", "required": False, "tooltip": "Optional source/credit line shown for the image."},
+    "image_header": {"type": "text", "required": False, "default": "Image", "tooltip": "Header text for image rounds."},
     # Reveal-specific fields
     "slide_direction": {
         "type": "dropdown",
         "required": False,
         "options": {"top": "Top", "bottom": "Bottom", "left": "Left", "right": "Right"},
         "default": "top",
-        "show_if": {"image_variant": ["slide"]}
+        "show_if": {"image_variant": ["slide"]},
+        "tooltip": "Direction the slide reveal moves from."
     },
     # Blur-specific fields
     # "blur_steps": {
@@ -21619,56 +22030,62 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
         "type": "area_selector",
         "required": False,
         "default": None,
-        "show_if": {"image_variant": ["zoom"]}
+        "show_if": {"image_variant": ["zoom"]},
+        "tooltip": "Starting crop area for zoom reveal. Click SELECT AREA and drag on the image."
     },
     "image_ending_area": {
         "type": "area_selector",
         "required": False,
         "default": None,
-        "show_if": {"image_variant": ["zoom"]}
+        "show_if": {"image_variant": ["zoom"]},
+        "tooltip": "Ending crop area for zoom reveal. Used to control where zoom-out finishes."
     },
     # Slice-specific fields
     "slice_count": {
         "type": "integer",
         "required": False,
         "default": 10,
-        "show_if": {"image_variant": ["slice"]}
+        "show_if": {"image_variant": ["slice"]},
+        "tooltip": "Number of slices used by slice variant. Higher values create thinner slices."
     },
     "slice_vertical": {
         "type": "toggle",
         "required": False,
         "default": True,
-        "show_if": {"image_variant": ["slice"]}
+        "show_if": {"image_variant": ["slice"]},
+        "tooltip": "Slice orientation for slice variant. On = vertical slices, Off = horizontal slices."
     },
     # Tile-specific fields
     "tile_grid_size": {
         "type": "integer",
         "required": False,
         "default": 4,
-        "show_if": {"image_variant": ["tile"]}
+        "show_if": {"image_variant": ["tile"]},
+        "tooltip": "Grid dimension for tile variant (for example 4 means 4x4 tiles)."
     },
-    "song_title_reveal_time": {"type": "time", "required": False},
-    "song_artist_reveal_time": {"type": "time", "required": False},
-    "song_slug_reveal_time": {"type": "time", "required": False},
-    "song_music_reveal_time": {"type": "time", "required": False},
-    "episodes_header": {"type": "text", "required": False, "default": "Episode Titles"},
-    "episode1": {"type": "text", "required": True},
-    "episode2": {"type": "text", "required": False},
-    "episode3": {"type": "text", "required": False},
-    "episode4": {"type": "text", "required": False},
-    "episode5": {"type": "text", "required": False},
-    "episode6": {"type": "text", "required": False},
+    "song_title_reveal_time": {"type": "time", "required": False, "tooltip": "Seconds from round start when song title is revealed."},
+    "song_artist_reveal_time": {"type": "time", "required": False, "tooltip": "Seconds from round start when artist name is revealed."},
+    "song_slug_reveal_time": {"type": "time", "required": False, "tooltip": "Seconds from round start when OP/ED slug info is revealed."},
+    "song_music_reveal_time": {"type": "time", "required": False, "tooltip": "Seconds from round start when the music snippet reveal begins."},
+    "episodes_header": {"type": "text", "required": False, "default": "Episode Titles", "tooltip": "Header text shown above episode title clues."},
+    "episode1": {"type": "text", "required": True, "tooltip": "First episode title clue (required)."},
+    "episode2": {"type": "text", "required": False, "tooltip": "Second episode title clue."},
+    "episode3": {"type": "text", "required": False, "tooltip": "Third episode title clue."},
+    "episode4": {"type": "text", "required": False, "tooltip": "Fourth episode title clue."},
+    "episode5": {"type": "text", "required": False, "tooltip": "Fifth episode title clue."},
+    "episode6": {"type": "text", "required": False, "tooltip": "Sixth episode title clue."},
     "title_variant": {
         "type": "dropdown",
         "required": True,
         "options": lightning_mode_settings_default.get("title",{}).get("variants",{}),
-        "default": "reveal"
+        "default": "reveal",
+        "tooltip": "Title round mode (reveal, scramble, or swap)."
     },
-    "title_header": {"type": "text", "required": False, "default": "MUST SAY FULL TITLE"},
-    "reveal_starting_count": {"type": "integer", "required": False, "default": 0, "show_if": {"title_variant": ["reveal"]}},
-    "reveal_letter_order": {"type": "letter_select", "required": False, "show_if": {"title_variant": ["reveal"]}},
-    "scramble_place_order": {"type": "letter_order_select", "required": False, "show_if": {"title_variant": ["scramble"]}},
-    "swap_groups": {"type": "text", "required": False, "show_if": {"title_variant": ["swap"]}}
+    "title_header": {"type": "text", "required": False, "default": "MUST SAY FULL TITLE", "tooltip": "Header text shown for title rounds."},
+    "reveal_starting_count": {"type": "integer", "required": False, "default": 0, "show_if": {"title_variant": ["reveal"]}, "tooltip": "How many letters are shown immediately at the start of reveal mode."},
+    "reveal_letter_order": {"type": "letter_select", "required": False, "show_if": {"title_variant": ["reveal"]}, "tooltip": "Custom sequence of letters to reveal in reveal mode. Use SELECT LETTERS."},
+    "scramble_place_order": {"type": "letter_order_select", "required": False, "show_if": {"title_variant": ["scramble"]}, "tooltip": "Placement order for letters in scramble mode. Use SELECT ORDER to define it."},
+    "swap_groups": {"type": "text", "required": False, "show_if": {"title_variant": ["swap"]}, "tooltip": "Optional swap grouping/config text for swap variant behavior."}
 }
 
 FIXED_LIGHTNING_FOLDER = "fixed_playlists"
@@ -22713,8 +23130,21 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 label_text = "Ending Zoom Area"
             if is_required:
                 label_text += " *"
-            tk.Label(field_frame, text=label_text, font=font_label, bg=BACKGROUND_COLOR, 
-                    fg=fg_color, width=20, anchor="w").pack(side="left", padx=(0, 10))
+            label_widget = tk.Label(field_frame, text=label_text, font=font_label, bg=BACKGROUND_COLOR,
+                                   fg=fg_color, width=20, anchor="w")
+            label_widget.pack(side="left", padx=(0, 10))
+
+            # Show field-specific tooltip from config, with a useful fallback for unlabeled fields.
+            tooltip_text = field_info.get("tooltip", "")
+            if not tooltip_text:
+                type_label = field_type.replace("_", " ")
+                tooltip_parts = [f"{label_text.replace(' *', '')}", f"Type: {type_label}"]
+                if is_required:
+                    tooltip_parts.append("Required")
+                if "default" in field_info and field_info.get("default") not in (None, ""):
+                    tooltip_parts.append(f"Default: {field_info.get('default')}")
+                tooltip_text = "\n".join(tooltip_parts)
+            ToolTip(label_widget, tooltip_text)
             
             # Input widget based on field type
             if field_type == "file":
@@ -24528,7 +24958,7 @@ def prompt_title_top_info_text(event=None):
 BONUS_SETTINGS_DEFAULT = {
     "year":       {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
     "members":    {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.10, "included_in_random": True},
-    "popularity": {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.5, "included_in_random": True},
+    "popularity": {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.05, "included_in_random": True},
     "score":      {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
     "multiple":   {"points": 2.0, "lightning_points": 1.0, "included_in_random": True},
     "studio":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
@@ -26683,6 +27113,10 @@ def update_seek_bar():
                         direction = "down"
                     toggle_peek_overlay(direction=direction, progress=progress, gap=gap)
                 if length > 0:
+                    # Auto-revoke skip grant when already within the last 3 seconds
+                    if web_server.is_running() and web_server.get_skip_grant_player():
+                        if time >= length - 3:
+                            web_server.push_skip_grant('')
                     if not last_seek_time:
                         can_seek = False
                         seek_bar.config(to=length)
@@ -32274,6 +32708,9 @@ load_config()
 
 # Initialize themes cache
 os.makedirs(THEMES_CACHE_FOLDER, exist_ok=True)
+os.makedirs(RULES_FOLDER, exist_ok=True)
+if not os.path.isabs(directory) and not os.path.exists(directory):
+    os.makedirs(directory, exist_ok=True)
 load_cache_metadata()
 
 BACKGROUND_COLOR = "gray12"
@@ -32912,6 +33349,14 @@ def _get_menu_registry():
         "command": lambda: send_scoreboard_command("quit"),
         "condition": lambda: is_scoreboard_running(),
         "tooltip": "Send a quit command to the running scoreboard."},
+        {"id": "download_scoreboard", "icon": "⬇", "label": "Download Scoreboard",
+        "command": download_scoreboard,
+        "condition": lambda: not SCOREBOARD_AVAILABLE,
+        "tooltip": "Download the Universal Scoreboard — a companion overlay for tracking scores during sessions."},
+        {"id": "update_scoreboard", "icon": "🔄", "label": "Update Scoreboard",
+        "command": lambda: check_for_scoreboard_update(silent_if_current=False),
+        "condition": lambda: SCOREBOARD_AVAILABLE and _scoreboard_update_available is not False,
+        "tooltip": "Check for and install a newer version of the Universal Scoreboard."},
         {"label": "Scoreboard Actions", "icon": "⚙️",
         "condition": lambda: is_scoreboard_running(),
         "tooltip": "Control the scoreboard window.",
@@ -32948,6 +33393,10 @@ def _get_menu_registry():
          "button_label": "HELP",
          "command": show_tutorial_popup,
          "tooltip": "Open the Help & Tutorial window with a step-by-step guide to using the app."},
+        {"id": "github", "icon": "🔗", "label": "View on GitHub",
+         "button_label": "GITHUB",
+         "command": lambda: webbrowser.open("https://github.com/ualkotob/guess-the-anime-playlist-tool"),
+         "tooltip": "Open the GitHub repository for this app in your browser."},
         "---",
         {"id": "exit", "icon": "✕", "label": "Exit",
          "button_label": "EXIT", "command": lambda: on_app_close(),
@@ -33007,6 +33456,12 @@ def _get_menu_registry():
                    "command": lambda: generate_animethemes_playlist(include_non_local=True),
                    "tooltip": "Include non-local themes from metadata that will be streamed from AnimeThemes."},
               ]},
+             {"id": "create_session_log", "label": "From Session Log",
+              "button_label": "SESSION LOG",
+              "tooltip": ("Creates a playlist by matching themes from a saved session log file.\n\n"
+                          "Session .txt files are stored in the sessions/ folder.\n"
+                          "Themes are matched against your local files/metadata using title and slug."),
+              "command": generate_session_log_playlist},
              "---",
              {"id": "empty_playlist", "label": "Empty Playlist",
               "button_label": "EMPTY", "command": empty_playlist,
@@ -35110,6 +35565,10 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'seek':
             ms = int(data.get('position_ms', 0))
             seek_to(ms)
+        elif action == 'seek_near_end':
+            length_ms = player.get_length()
+            if length_ms > 3000:
+                seek_to(length_ms - 3000)
         elif action == 'set_volume':
             vol = max(0, min(100, int(data.get('volume', 100))))
             set_volume(vol)
@@ -36355,6 +36814,7 @@ root.after(1000, check_video_end)
 # Set initial volume
 root.after(1000, set_volume, volume_level)
 root.after(3000, check_for_updates_on_startup)
+root.after(3000, check_for_scoreboard_update_on_startup)
 root.after(1000, update_living_playlists)
 root.after(500, check_download_ui_updates)  # Start checking for download UI updates
 
