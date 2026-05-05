@@ -472,8 +472,9 @@ _HTML = r"""<!DOCTYPE html>
       display: inline-block; padding: 1px 7px; border-radius: 4px;
       margin: 1px 2px; font-size: 0.9em;
     }
-    .pq-tag-correct { background: #1a3a1a; color: #5c5; border: 1px solid #2a5a2a; }
-    .pq-tag-wrong   { background: #3a1a1a; color: #f66; border: 1px solid #5a2a2a; }
+    .tag-chip.pq-tag-correct { background: #1a3a1a; color: #55cc55; border: 2px solid #55cc55; }
+    .tag-chip.pq-tag-missed  { background: #0d1a0d; color: #55cc55; border: 2px dashed #55cc55; }
+    .tag-chip.pq-tag-wrong   { background: #3a1a1a; color: #ff6666; border: 2px solid #cc4444; }
     #q-card {
       background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
       padding: 14px 18px; margin-bottom: 18px;
@@ -1524,6 +1525,7 @@ _HTML = r"""<!DOCTYPE html>
         text-orientation: sideways;
         transform: rotate(180deg);
         gap: 2px;
+        overflow: hidden;
       }
       .ctrl-section.section-open > .ctrl-collapse-toggle .ctrl-collapse-label {
         font-size: 0.6em;
@@ -2732,8 +2734,7 @@ _HTML = r"""<!DOCTYPE html>
       <div id="prev-question" style="display:none">
         <div id="prev-question-label">PREVIOUS QUESTION</div>
         <div id="prev-question-title"></div>
-        <div id="prev-question-correct"></div>
-        <div id="prev-question-mine"></div>
+        <div id="prev-question-body"></div>
       </div>
     </div>
     <div id="question-area" style="display:none">
@@ -2788,7 +2789,7 @@ _HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <div id="emoji-bar">
-      <p>React - Click to Send - Right Click to Create/Delete Sets</p>
+      <p>React - Click to Send - Right Click / Long Press to Create/Delete Sets</p>
       <div id="emoji-btns">
         <button id="emoji-add-btn" title="Edit reactions" onclick="_openEmojiPicker()">&#9998; Edit</button>
       </div>
@@ -3050,6 +3051,7 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_dice" onclick="_ctrlExtraClick('lt_dice')">&#x1F3B2;</button>
         <button class="ctrl-bonus-btn ctrl-sect-queue" data-extra-id="lt_settings" onclick="_ctrlExtraClick('lt_settings')">LT Settings</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="yt" onclick="_ctrlExtraClick('yt')">YouTube</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="yt_arc" onclick="_ctrlExtraClick('yt_arc')">&#x1F4E6;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="directory" onclick="_ctrlExtraClick('directory')">&#x1F4C2;</button>
@@ -3088,6 +3090,7 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')">Dock</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-start" data-extra-id="tgl_info_start" onclick="_ctrlExtraClick('tgl_info_start')" title="Toggle auto-show info at start">Info Start</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-end" data-extra-id="tgl_info_end" onclick="_ctrlExtraClick('tgl_info_end')" title="Toggle auto-show info at end">Info End</button>
+        <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="load_playlist" onclick="_ctrlExtraClick('load_playlist')" title="Load a saved playlist">Playlist</button>
         <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="rules_file" onclick="_ctrlExtraClick('rules_file')" title="Select rules file">Rules</button>
         <button class="ctrl-bonus-btn ctrl-sect-session" id="ctrl-reset-session-btn" data-extra-id="reset_session_history" onclick="_ctrlExtraClick('reset_session_history')">Reset Session [0]</button>
         <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="end_session" onclick="_ctrlExtraClick('end_session')">End</button>
@@ -3333,6 +3336,8 @@ _HTML = r"""<!DOCTYPE html>
     let _prevQCorrect = null;        // previous question's correct answer (display string)
     let _prevQType = '';             // question type of previous question
     let _prevQCorrectTags = [];      // correct tag list for 'tags' type questions
+    let _prevQData = null;           // question_data payload from answer_reveal (choices/tags/rank_slider)
+    let _prevQAllAnswers = [];       // all submitted answers from answer_reveal (for rank peer marks)
     let _answersRevealed = false;    // whether answers have been revealed for the previous question
     let _toggleBtnRef = null;     // reference to active toggle button (year/score)
     let _isHost = false;
@@ -3882,6 +3887,18 @@ _HTML = r"""<!DOCTYPE html>
          Quadratic spreads the top-1000 range much more evenly than log.
          Left = worst (high #)   Right = best (#1 ★)
     ══════════════════════════════════════════ */
+    // Module-level helper: convert a rank value to a [0,1000] slider value.
+    // Shared by buildRankSlider() (interactive) and _showPrevQuestion() (read-only).
+    function _rankToSv(r, min, max, pivot) {
+      r = Math.max(min, Math.min(max, r));
+      if (r >= pivot) {
+        const t = Math.log(r / max) / Math.log(pivot / max);
+        return Math.round(t * 500);
+      } else {
+        const t = (r - min) / (pivot - min);
+        return Math.round(500 + (1 - Math.sqrt(t)) * 500);
+      }
+    }
     function buildRankSlider(area, cfg) {
       const min   = cfg.min ?? 1;
       const max   = cfg.max ?? 9999;
@@ -3892,16 +3909,7 @@ _HTML = r"""<!DOCTYPE html>
       // Right half: quadratic pivot→min  mapped to sv 500→1000
       //   t = (rank - min) / (pivot - min)  [0 at min, 1 at pivot]
       //   sv = 500 + (1 - sqrt(t)) * 500
-      function rankToSv(r) {
-        r = Math.max(min, Math.min(max, r));
-        if (r >= pivot) {
-          const t = Math.log(r / max) / Math.log(pivot / max);
-          return Math.round(t * 500);
-        } else {
-          const t = (r - min) / (pivot - min);
-          return Math.round(500 + (1 - Math.sqrt(t)) * 500);
-        }
-      }
+      function rankToSv(r) { return _rankToSv(r, min, max, pivot); }
       function svToRank(sv) {
         sv = Math.max(0, Math.min(1000, sv));
         if (sv <= 500) {
@@ -4573,6 +4581,8 @@ _HTML = r"""<!DOCTYPE html>
       _prevQCorrect      = data.correct       || '';
       _prevQType         = data.q_type        || '';
       _prevQCorrectTags  = data.correct_tags  || [];
+      _prevQData         = data.question_data || null;
+      _prevQAllAnswers   = data.all_answers   || [];
       _answersRevealed = true;
       // When answers are revealed, remove the ability to remove answers
       // from the host view (the 'x' button no longer does anything).
@@ -4691,28 +4701,175 @@ _HTML = r"""<!DOCTYPE html>
       const box = document.getElementById('prev-question');
       if (!_prevQCorrect) { box.style.display = 'none'; return; }
       document.getElementById('prev-question-title').textContent = _prevQTitle;
-      document.getElementById('prev-question-correct').textContent = 'Correct answer: ' + _prevQCorrect.replace(/,/g, ', ');
-      const mineDiv = document.getElementById('prev-question-mine');
-      if (_prevQType === 'tags') {
-        const myTags = _myLastAnswer ? _myLastAnswer.split(',').map(t => t.trim()).filter(Boolean) : [];
+      const body = document.getElementById('prev-question-body');
+      body.innerHTML = '';
+      const qd = _prevQData || {};
+      const myAnswer = _myLastAnswer || '';
+
+      if (qd.choices && qd.choices.length) {
+        /* ── Multiple choice: reuse locked choice-btn ── */
+        const pickedCorrectly = myAnswer && myAnswer === _prevQCorrect;
+        qd.choices.forEach((choice, i) => {
+          const btn = document.createElement('button');
+          btn.className = 'choice-btn';
+          btn.style.cssText = 'pointer-events:none; cursor:default;';
+          btn.textContent = '[' + String.fromCharCode(65 + i) + '] ' + choice;
+          if (choice === _prevQCorrect && pickedCorrectly) {
+            // Correct and player picked it — green fill
+            btn.style.background = '#1a3a1a'; btn.style.borderColor = '#2a6a2a'; btn.style.color = '#5c5';
+          } else if (choice === _prevQCorrect) {
+            // Correct but player missed it — green outline only
+            btn.style.background = '#0d1a0d'; btn.style.borderColor = '#55cc55';
+            btn.style.color = '#55cc55'; btn.style.borderStyle = 'dashed'; btn.style.borderWidth = '3px';
+          } else if (myAnswer && choice === myAnswer) {
+            // Player's wrong pick — red fill
+            btn.style.background = '#3a1a1a'; btn.style.borderColor = '#cc4444'; btn.style.color = '#ff6666'; btn.style.borderWidth = '3px';
+          } else {
+            btn.style.opacity = '0.45';
+          }
+          body.appendChild(btn);
+        });
+
+      } else if (qd.tags && qd.tags.length) {
+        /* ── Tags: reuse tag-chip with pq-tag-correct / pq-tag-wrong colouring ── */
         const correctSet = new Set(_prevQCorrectTags.map(t => t.trim().toLowerCase()));
-        if (!myTags.length) {
-          mineDiv.innerHTML = '';
-          mineDiv.style.color = '';
-          mineDiv.textContent = 'Your answer: No answer submitted';
-        } else {
-          mineDiv.style.color = '';
-          mineDiv.innerHTML = 'Your answer:\u00a0' + myTags.map(t =>
-            '<span class="pq-tag ' + (correctSet.has(t.toLowerCase()) ? 'pq-tag-correct' : 'pq-tag-wrong') + '">' + _escHtml(t) + '</span>'
-          ).join('');
+        const myTagSet   = new Set(myAnswer ? myAnswer.split(',').map(t => t.trim().toLowerCase()).filter(Boolean) : []);
+        const correctLine = document.createElement('div');
+        correctLine.style.cssText = 'color:#5c5; margin-bottom:8px; font-size:0.9em;';
+        correctLine.textContent = 'Correct: ' + _prevQCorrectTags.join(', ');
+        body.appendChild(correctLine);
+        const grid = document.createElement('div');
+        grid.className = 'tag-grid'; grid.style.pointerEvents = 'none';
+        qd.tags.forEach(tag => {
+          const tl = tag.toLowerCase();
+          const isCorrect = correctSet.has(tl);
+          const isMine    = myTagSet.has(tl);
+          const chip = document.createElement('div');
+          chip.textContent = tag;
+          if (isCorrect && isMine) {
+            chip.className = 'tag-chip pq-tag-correct';   // picked correctly
+          } else if (isCorrect) {
+            chip.className = 'tag-chip pq-tag-missed';    // correct but not picked
+          } else if (isMine) {
+            chip.className = 'tag-chip pq-tag-wrong';     // picked but wrong
+          } else {
+            chip.className = 'tag-chip'; chip.style.opacity = '0.25';  // irrelevant
+          }
+          grid.appendChild(chip);
+        });
+        body.appendChild(grid);
+        if (!myAnswer) {
+          const noAns = document.createElement('div');
+          noAns.style.cssText = 'color:#aaa; margin-top:8px; font-size:0.9em;';
+          noAns.textContent = 'Your answer: No answer submitted';
+          body.appendChild(noAns);
         }
+
+      } else if (qd.rank_slider) {
+        /* ── Rank slider: read-only track reusing rank-* CSS, with correct + mine + peer marks ── */
+        const rs     = qd.rank_slider;
+        const rsMin  = rs.min ?? 1;
+        const rsMax  = rs.max ?? 9999;
+        const rsPivot = Math.max(rsMin + 1, Math.min(rsMax - 1, 1000));
+        const correctRank = parseInt(String(_prevQCorrect).replace(/[^0-9]/g, ''), 10);
+        const myRank      = myAnswer ? parseInt(myAnswer, 10) : NaN;
+        // rank → left% on track (0% = #max worst, 100% = #1 best)
+        const rPct = r => (_rankToSv(r, rsMin, rsMax, rsPivot) / 1000) * 100;
+
+        // Summary line
+        const summary = document.createElement('div');
+        summary.style.cssText = 'margin-bottom:10px; font-size:0.95em;';
+        let sh = '<span style="color:#5c5">&#10003; Correct: #' + correctRank.toLocaleString() + '</span>';
+        if (!isNaN(myRank)) {
+          const ok = myRank === correctRank;
+          sh += '&ensp;<span style="color:' + (ok ? '#5c5' : '#f66') + '">' + (ok ? '&#10003;' : '&#10007;') +
+                ' Your guess: #' + myRank.toLocaleString() + '</span>';
+        } else {
+          sh += '&ensp;<span style="color:#aaa">Your guess: No answer submitted</span>';
+        }
+        summary.innerHTML = sh;
+        body.appendChild(summary);
+
+        // Track row — reuse .rank-slider-row / .rank-slider-wrap / .rank-slider-label
+        const row = document.createElement('div');
+        row.className = 'rank-slider-row';
+        const lbl1 = document.createElement('span');
+        lbl1.className = 'rank-slider-label'; lbl1.textContent = '#' + rsMax.toLocaleString();
+        const lbl2 = document.createElement('span');
+        lbl2.className = 'rank-slider-label'; lbl2.textContent = '#1 \u2605';
+        const wrap = document.createElement('div');
+        wrap.className = 'rank-slider-wrap';
+        const track = document.createElement('div');
+        track.style.cssText = 'width:100%; height:8px; background:#333; border-radius:4px; position:relative; overflow:visible;';
+
+        // Peer tick marks (reuse .rank-peer-tick)
+        (_prevQAllAnswers || []).forEach(a => {
+          const r = parseInt(a.answer, 10);
+          if (isNaN(r)) return;
+          const tick = document.createElement('div');
+          tick.className = 'rank-peer-tick';
+          tick.style.left = rPct(r) + '%';
+          tick.title = a.name + ': #' + r.toLocaleString();
+          track.appendChild(tick);
+        });
+
+        // Correct answer marker (green circle)
+        if (!isNaN(correctRank)) {
+          const m = document.createElement('div');
+          m.style.cssText = 'position:absolute; top:50%; left:' + rPct(correctRank) + '%;'
+            + 'transform:translate(-50%,-50%); width:18px; height:18px;'
+            + 'border-radius:50%; background:#1a5a1a; border:2px solid #5c5; z-index:2;';
+          m.title = 'Correct: #' + correctRank.toLocaleString();
+          track.appendChild(m);
+        }
+        // Player's guess marker (white circle, blue border; green if correct)
+        if (!isNaN(myRank)) {
+          const ok = myRank === correctRank;
+          const m = document.createElement('div');
+          m.style.cssText = 'position:absolute; top:50%; left:' + rPct(myRank) + '%;'
+            + 'transform:translate(-50%,-50%); width:14px; height:14px;'
+            + 'border-radius:50%; background:#fff; border:2px solid ' + (ok ? '#5c5' : '#3a7abf') + '; z-index:3;';
+          m.title = 'Your guess: #' + myRank.toLocaleString();
+          track.appendChild(m);
+        }
+        wrap.appendChild(track);
+        row.appendChild(lbl1); row.appendChild(wrap); row.appendChild(lbl2);
+        body.appendChild(row);
+
       } else {
-        const mine = _myLastAnswer ? _myLastAnswer.replace(/,/g, ', ') : '';
-        const isCorrect = mine && mine.trim().toLowerCase() === _prevQCorrect.trim().toLowerCase();
-        mineDiv.innerHTML = '';
-        mineDiv.textContent = mine ? ('Your answer: ' + mine) : 'Your answer: No answer submitted';
-        mineDiv.style.color = (mine && isCorrect) ? '#5c5' : '#aaa';
+        /* ── Numeric / free text: prominent answer display ── */
+        const correctLbl = document.createElement('div');
+        correctLbl.style.cssText = 'font-size:0.72em; font-weight:bold; letter-spacing:0.07em;'
+          + 'color:#5c5; margin-bottom:4px; text-transform:uppercase;';
+        correctLbl.textContent = 'Correct Answer';
+        body.appendChild(correctLbl);
+        const correctVal = document.createElement('div');
+        correctVal.style.cssText = 'font-size:1.6em; font-weight:bold; color:#fff;'
+          + 'padding:10px 14px; background:#1a3a1a; border:1px solid #2a6a2a;'
+          + 'border-radius:8px; margin-bottom:12px; text-align:center;';
+        correctVal.textContent = _prevQCorrect.replace(/,/g, ', ');
+        body.appendChild(correctVal);
+        const isCorrect = myAnswer && myAnswer.trim().toLowerCase() === _prevQCorrect.trim().toLowerCase();
+        const mineLbl = document.createElement('div');
+        mineLbl.style.cssText = 'font-size:0.72em; font-weight:bold; letter-spacing:0.07em;'
+          + 'color:' + (myAnswer ? (isCorrect ? '#5c5' : '#f66') : '#666') + '; margin-bottom:4px; text-transform:uppercase;';
+        mineLbl.textContent = 'Your Answer';
+        body.appendChild(mineLbl);
+        const mineVal = document.createElement('div');
+        if (myAnswer) {
+          mineVal.style.cssText = 'font-size:1.2em; font-weight:bold;'
+            + 'padding:8px 14px; border-radius:8px; text-align:center;'
+            + (isCorrect
+              ? 'color:#5c5; background:#1a3a1a; border:1px solid #2a6a2a;'
+              : 'color:#f66; background:#3a1a1a; border:1px solid #6a2a2a;');
+          mineVal.textContent = myAnswer.replace(/,/g, ', ');
+        } else {
+          mineVal.style.cssText = 'font-size:0.95em; color:#555; font-style:italic;';
+          mineVal.textContent = 'No answer submitted';
+        }
+        body.appendChild(mineVal);
       }
+
       box.style.display = 'block';
     }
 
@@ -5004,6 +5161,28 @@ _HTML = r"""<!DOCTYPE html>
         _emojiStatusTimer = setInterval(_updateEmojiStatusUI, 250);
       }
     }
+    // Binds both right-click and long-press (touch) to the same handler,
+    // using a shared flag so only one fires per gesture.
+    function _bindSecondaryAction(el, handler) {
+      let _lpFired = false;
+      let _lpTimer = null;
+      el.addEventListener('touchstart', () => {
+        _lpFired = false;
+        _lpTimer = setTimeout(() => { _lpFired = true; handler(); }, 500);
+      }, { passive: true });
+      el.addEventListener('touchend', e => {
+        clearTimeout(_lpTimer);
+        if (_lpFired) e.preventDefault();  // prevent the synthetic click from firing
+      });
+      el.addEventListener('touchmove', () => { clearTimeout(_lpTimer); }, { passive: true });
+      // contextmenu fires for right-click (desktop) and after long-press on some browsers.
+      // If long-press already handled it, skip; otherwise run handler.
+      el.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        if (_lpFired) { _lpFired = false; return; }
+        handler();
+      });
+    }
     function _rebuildEmojiBar() {
       const container = document.getElementById('emoji-btns');
       const editBtn = document.getElementById('emoji-add-btn');
@@ -5015,15 +5194,15 @@ _HTML = r"""<!DOCTYPE html>
         btn.onclick = () => _sendEmoji(emoji);
         const isSet = [...new Intl.Segmenter(undefined, {granularity: 'grapheme'}).segment(emoji)].length > 1;
         if (isSet) {
-          btn.title = 'Right-click to delete';
-          btn.oncontextmenu = (e) => {
-            e.preventDefault();
+          btn.title = 'Right-click or hold to delete';
+          _bindSecondaryAction(btn, () => {
             const list = _loadSavedEmojis().filter(e => e !== emoji);
             _saveSavedEmojis(list);
             _rebuildEmojiBar();
-          };
+          });
         } else {
-          btn.oncontextmenu = (e) => { e.preventDefault(); _queueEmoji(emoji, btn); };
+          btn.title = 'Right-click or hold to queue for set';
+          _bindSecondaryAction(btn, () => _queueEmoji(emoji, btn));
         }
         container.insertBefore(btn, editBtn);
       });
@@ -5741,6 +5920,8 @@ _HTML = r"""<!DOCTYPE html>
     let _ctrlPlaylistVisible = true;
     let _ctrlYtListOpen = false;
     let _ctrlYtCurrentId = null;
+    let _ctrlYtArcListOpen = false;
+    let _ctrlYtArcCurrentId = null;
     let _ctrlLtListOpen = false;
     let _ctrlLtCurrentMode = null;
     let _ctrlFlListOpen = false;
@@ -5794,6 +5975,7 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlListPopupDownInsideBox = false;
       _ctrlLtListOpen = false;
       _ctrlYtListOpen = false;
+      _ctrlYtArcListOpen = false;
       _ctrlFlListOpen = false;
       _ctrlSearchListOpen = false;
       _ctrlDiffListOpen = false;
@@ -5802,6 +5984,7 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlBuzzSoundListOpen = false;
       _ctrlRulesListOpen = false;
       _ctrlLtSettingsListOpen = false;
+      _ctrlPlaylistListOpen = false;
       const overlay = document.getElementById('ctrl-list-popup-overlay');
       const box = document.getElementById('ctrl-list-popup-box');
       if (overlay) overlay.classList.remove('active');
@@ -6011,6 +6194,7 @@ _HTML = r"""<!DOCTYPE html>
 
       if (_ctrlPlaylistVisible) _plOpen();
       _ctrlSyncSectionArrows();
+      requestAnimationFrame(_plTruncateSideways);
     }
 
     function _ctrlLoadPanels() {
@@ -7027,6 +7211,39 @@ _HTML = r"""<!DOCTYPE html>
       }
     }
 
+    function _ctrlToggleArchivedYouTubeList() {
+      const opening = !_ctrlYtArcListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlYtArcListOpen = true;
+        _ctrlListPopupOpen('Archived YouTube Videos', 'yt_arc');
+        socket.emit('request_archived_youtube_list');
+      }
+    }
+
+    socket.on('archived_youtube_list', data => {
+      _ctrlYtArcCurrentId = data.queued_id || null;
+      if (!_ctrlListPopupMode === 'yt_arc' && !_ctrlYtArcListOpen) return;
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!data.videos || !data.videos.length) {
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No archived videos available</div>';
+        return;
+      }
+      data.videos.forEach(v => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item' + (v.id === _ctrlYtArcCurrentId ? ' ctrl-yt-active' : '');
+        el.title = v.full_title;
+        el.innerHTML = '<span class="ctrl-popup-item-dur">[' + v.duration + ']</span><span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(v.title) + '</span>';
+        el.onclick = () => {
+          socket.emit('host_action', {action: 'queue_archived_youtube', video_id: v.id});
+          _ctrlListPopupClose();
+        };
+        list.appendChild(el);
+      });
+    });
+
     socket.on('youtube_list', data => {
       _ctrlYtCurrentId = data.queued_id || null;
       if (!_ctrlListPopupMode === 'yt' && !_ctrlYtListOpen) return;
@@ -7063,6 +7280,7 @@ _HTML = r"""<!DOCTYPE html>
       if (_ctrlPlaylistVisible) _plOpen();
       _ctrlSyncSectionArrows();
       _ctrlSavePanels();
+      requestAnimationFrame(_plTruncateSideways);
     }
 
     const _ctrlLtTypes = [
@@ -7088,6 +7306,7 @@ _HTML = r"""<!DOCTYPE html>
     function _ctrlCloseAllLists() {
       _ctrlLtListOpen = false;
       _ctrlYtListOpen = false;
+      _ctrlYtArcListOpen = false;
       _ctrlFlListOpen = false;
       _ctrlSearchListOpen = false;
       _ctrlDiffListOpen = false;
@@ -7096,6 +7315,7 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlBuzzSoundListOpen = false;
       _ctrlRulesListOpen = false;
       _ctrlLtSettingsListOpen = false;
+      _ctrlPlaylistListOpen = false;
       _ctrlListPopupClose();
     }
 
@@ -7348,14 +7568,25 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     const _ctrlDirStatTypes = [
-      {key:'artist',  label:'Themes by Artist'},
-      {key:'series',  label:'Themes by Series'},
-      {key:'season',  label:'Themes by Season'},
-      {key:'year',    label:'Themes by Year'},
-      {key:'studio',  label:'Themes by Studio'},
-      {key:'tag',     label:'Themes by Tag'},
-      {key:'type',    label:'Themes by Type'},
-      {key:'slug',    label:'Themes by Slug'},
+      {key:'artist',             label:'Themes by Artist',        header: true},
+      {key:'artist_alpha',       label:'  ↳ Alphabetical',        baseLabel:'Themes by Artist'},
+      {key:'artist',             label:'  ↳ Theme Total',         baseLabel:'Themes by Artist'},
+      {key:'series',             label:'Themes by Series',        header: true},
+      {key:'series_alpha',       label:'  ↳ Alphabetical',        baseLabel:'Themes by Series'},
+      {key:'series_popularity',  label:'  ↳ Popularity',          baseLabel:'Themes by Series'},
+      {key:'series',             label:'  ↳ Theme Total',         baseLabel:'Themes by Series'},
+      {key:'season',             label:'Themes by Season'},
+      {key:'year',               label:'Themes by Year'},
+      {key:'studio',             label:'Themes by Studio',        header: true},
+      {key:'studio_alpha',       label:'  ↳ Alphabetical',        baseLabel:'Themes by Studio'},
+      {key:'studio',             label:'  ↳ Theme Total',         baseLabel:'Themes by Studio'},
+      {key:'tag',                label:'Themes by Tag',           header: true},
+      {key:'tag_alpha',          label:'  ↳ Alphabetical',        baseLabel:'Themes by Tag'},
+      {key:'tag',                label:'  ↳ Theme Total',         baseLabel:'Themes by Tag'},
+      {key:'type',               label:'Themes by Type'},
+      {key:'slug',               label:'Themes by Slug',          header: true},
+      {key:'slug_alpha',         label:'  ↳ Alphabetical',        baseLabel:'Themes by Slug'},
+      {key:'slug',               label:'  ↳ Theme Total',         baseLabel:'Themes by Slug'},
     ];
 
     function _ctrlToggleDirectoryList() {
@@ -7368,7 +7599,8 @@ _HTML = r"""<!DOCTYPE html>
           // Restore to last-used stat type (or group if one was open)
           _ctrlDirStatType = saved.statType;
           _ctrlDirGroupLabel = saved.groupLabel || null;
-          const statLabel = (_ctrlDirStatTypes.find(t => t.key === saved.statType) || {}).label || 'Directory';
+          const _savedEntry = _ctrlDirStatTypes.find(t => t.key === saved.statType) || {};
+          const statLabel = _ctrlDirDisplayLabel(_savedEntry) || 'Directory';
           _ctrlListPopupOpen(statLabel + ' — Loading…', 'dir_type');
           const list = document.getElementById('ctrl-list-popup-list');
           if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
@@ -7385,29 +7617,48 @@ _HTML = r"""<!DOCTYPE html>
       }
     }
 
+    function _ctrlDirDisplayLabel(t) {
+      return t.baseLabel || t.label;
+    }
+
     function _ctrlRenderDirStatTypes() {
       const list = document.getElementById('ctrl-list-popup-list');
       if (!list) return;
       list.innerHTML = '';
       const saved = _ctrlDirLoadPos();
       if (saved.statType) {
-        // Show a quick "last used" hint at top
-        const hint = document.createElement('div');
-        hint.style.cssText = 'padding:2px 10px 5px;font-size:0.75em;color:#557;';
-        const savedLabel = (_ctrlDirStatTypes.find(t => t.key === saved.statType) || {}).label || saved.statType;
-        hint.textContent = 'Last: ' + savedLabel + (saved.groupLabel ? ' › ' + saved.groupLabel : '');
-        list.appendChild(hint);
+        // Show a quick "last used" hint at top — prefer sub-entry over header when keys collide
+        const allMatches = _ctrlDirStatTypes.filter(t => t.key === saved.statType);
+        const savedEntry = allMatches.find(t => t.baseLabel) || allMatches[0] || {};
+        const hintLabel = savedEntry.baseLabel
+          ? savedEntry.baseLabel + ' › ' + savedEntry.label.replace(/^\s*↳\s*/, '')
+          : (savedEntry.header ? '' : savedEntry.label);
+        if (hintLabel) {
+          const hint = document.createElement('div');
+          hint.style.cssText = 'padding:2px 10px 5px;font-size:0.75em;color:#557;';
+          hint.textContent = 'Last: ' + hintLabel + (saved.groupLabel ? ' › ' + saved.groupLabel : '');
+          list.appendChild(hint);
+        }
       }
       _ctrlDirStatTypes.forEach(t => {
         const el = document.createElement('div');
+        if (t.header) {
+          el.style.cssText = 'padding:6px 10px 1px;font-size:0.8em;color:#778;font-weight:bold;cursor:default;user-select:none;';
+          el.textContent = t.label;
+          list.appendChild(el);
+          return;
+        }
+        const isSub = !!t.baseLabel;
         el.className = 'ctrl-popup-item';
+        if (isSub) el.style.cssText = 'padding-left:1.8em;font-size:0.88em;color:#aab;';
         el.textContent = t.label;
         el.onclick = () => {
           _ctrlDirStatType = t.key;
           _ctrlDirGroupLabel = null;
           _ctrlDirSavePos(t.key, null);
           const titleEl = document.getElementById('ctrl-list-popup-title');
-          if (titleEl) titleEl.textContent = t.label + ' — Loading…';
+          const displayLabel = _ctrlDirDisplayLabel(t);
+          if (titleEl) titleEl.textContent = displayLabel + ' — Loading…';
           list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
           socket.emit('host_action', {action: 'get_directory_groups', stat_type: t.key});
         };
@@ -7421,7 +7672,8 @@ _HTML = r"""<!DOCTYPE html>
       if (!list) return;
       list.innerHTML = '';
       const titleEl = document.getElementById('ctrl-list-popup-title');
-      const statLabel = (_ctrlDirStatTypes.find(t => t.key === data.stat_type) || {}).label || 'Directory';
+      const _statEntry = _ctrlDirStatTypes.find(t => t.key === data.stat_type) || {};
+      const statLabel = _ctrlDirDisplayLabel(_statEntry) || 'Directory';
       if (titleEl) titleEl.textContent = statLabel + ' (' + (data.groups ? data.groups.length : 0) + ')';
       // Back button
       const back = document.createElement('div');
@@ -7469,7 +7721,8 @@ _HTML = r"""<!DOCTYPE html>
       list.innerHTML = '';
       const titleEl = document.getElementById('ctrl-list-popup-title');
       const groupLabel = data.group_label || _ctrlDirGroupLabel || '';
-      const statLabel = (_ctrlDirStatTypes.find(t => t.key === data.stat_type) || {}).label || 'Directory';
+      const _statEntry2 = _ctrlDirStatTypes.find(t => t.key === data.stat_type) || {};
+      const statLabel = _ctrlDirDisplayLabel(_statEntry2) || 'Directory';
       const results = Array.isArray(data.results) ? data.results : [];
       if (titleEl) titleEl.textContent = _ctrlEscapeHtml(groupLabel) + ' (' + results.length + ')';
       // Back button → returns to group list
@@ -7598,6 +7851,94 @@ _HTML = r"""<!DOCTYPE html>
       if (!_ctrlRulesListOpen) return;
       _ctrlRenderRulesList(_ctrlRulesFileList, _ctrlRulesCurrentFile);
     });
+
+    // ── Playlist list ──────────────────────────────────────────────────────
+    let _ctrlPlaylistListOpen = false;
+    let _ctrlPlaylistHasUnsaved = false;
+
+    function _ctrlConfirmYesNo(message, onYes, onNo) {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:9999;display:flex;align-items:center;justify-content:center';
+      const box = document.createElement('div');
+      box.style.cssText = 'background:#1a1a2e;border:1px solid #334;border-radius:8px;padding:20px 24px;max-width:340px;width:90%;color:#ccc;font-size:0.95em;text-align:center';
+      const msg = document.createElement('div');
+      msg.style.cssText = 'margin-bottom:18px;line-height:1.5';
+      msg.textContent = message;
+      const btns = document.createElement('div');
+      btns.style.cssText = 'display:flex;gap:10px;justify-content:center';
+      const yes = document.createElement('button');
+      yes.textContent = 'Yes';
+      yes.style.cssText = 'padding:6px 22px;background:#2a5;color:#fff;border:none;border-radius:5px;cursor:pointer;font-size:0.95em';
+      const no = document.createElement('button');
+      no.textContent = 'No';
+      no.style.cssText = 'padding:6px 22px;background:#444;color:#ccc;border:none;border-radius:5px;cursor:pointer;font-size:0.95em';
+      yes.onclick = () => { document.body.removeChild(overlay); if (onYes) onYes(); };
+      no.onclick  = () => { document.body.removeChild(overlay); if (onNo)  onNo();  };
+      btns.appendChild(yes);
+      btns.appendChild(no);
+      box.appendChild(msg);
+      box.appendChild(btns);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+    }
+
+    function _ctrlTogglePlaylistList() {
+      const opening = !_ctrlPlaylistListOpen;
+      _ctrlCloseAllLists();
+      if (opening) {
+        _ctrlPlaylistListOpen = true;
+        _ctrlListPopupOpen('Load Playlist', 'load_playlist');
+        const list = document.getElementById('ctrl-list-popup-list');
+        if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading\u2026</div>';
+        socket.emit('host_action', {action: 'get_playlist_list'});
+      }
+    }
+
+    function _ctrlRenderPlaylistList(names, current) {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      if (!names || !names.length) {
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No saved playlists found</div>';
+        return;
+      }
+      names.forEach(name => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item';
+        const isCurrent = name === current;
+        el.innerHTML =
+          '<span style="display:inline-block;width:1.2em;color:#4c8;font-size:0.9em">' +
+          (isCurrent ? '\u2713' : '') + '</span>' +
+          '<span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(name) + '</span>';
+        if (isCurrent) el.style.cssText = 'background:#1a2a1a;border-left:2px solid #4a8;';
+        el.onclick = () => {
+          if (_ctrlPlaylistHasUnsaved && name !== current) {
+            _ctrlConfirmYesNo(
+              'Save changes to "' + current + '" before loading "' + name + '"?',
+              () => {
+                socket.emit('host_action', {action: 'select_playlist', name: name, save_first: true});
+                _ctrlListPopupClose();
+              },
+              () => {
+                socket.emit('host_action', {action: 'select_playlist', name: name, save_first: false});
+                _ctrlListPopupClose();
+              }
+            );
+          } else {
+            socket.emit('host_action', {action: 'select_playlist', name: name, save_first: false});
+            _ctrlListPopupClose();
+          }
+        };
+        list.appendChild(el);
+      });
+    }
+
+    socket.on('playlist_list', data => {
+      if (!_ctrlPlaylistListOpen) return;
+      _ctrlPlaylistHasUnsaved = data.changed || false;
+      _ctrlRenderPlaylistList(data.names || [], data.current || null);
+    });
+    // ── End playlist list ──────────────────────────────────────────────────
 
     function _ctrlToggleBuzzSoundList() {
       const opening = !_ctrlBuzzSoundListOpen;
@@ -7902,6 +8243,7 @@ _HTML = r"""<!DOCTYPE html>
       'lt_dice':      { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F3B2;', title: 'Variety Lightning Round', ltMode: 'variety' },
       'lt_settings':  { classes: 'ctrl-sect-queue',                            html: 'LT Settings', title: 'Select lightning settings template' },
       'yt':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'YouTube',   title: 'YouTube videos', serverCtrl: true },
+      'yt_arc':       { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F4E6;', title: 'Archived YouTube videos', serverCtrl: true },
       'fl':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
       'search':       { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F50D;', title: 'Search themes' },
       'directory':    { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F4C2;', title: 'Browse directory (by artist, season, series…)' },
@@ -7950,6 +8292,7 @@ _HTML = r"""<!DOCTYPE html>
       'mark_mute_peek':{ classes: 'ctrl-mark-btn ctrl-sect-mark',             html: '&#x1F507;', title: 'Mute Peek Mark' },
       // Session
       'rules_file':   { classes: 'ctrl-sect-session',                          html: 'Rules',     title: 'Select rules file' },
+      'load_playlist':{ classes: 'ctrl-sect-session',                          html: 'Playlist',  title: 'Load a saved playlist' },
       'reset_session_history': { classes: 'ctrl-sect-session',                html: 'Reset Session [0]', title: 'Clear the current session history' },
       'end_session':  { classes: 'ctrl-sect-session',                         html: 'End',       title: 'End the current session' },
       // Scoreboard actions (invoke menu commands in main app)
@@ -7967,6 +8310,7 @@ _HTML = r"""<!DOCTYPE html>
       'lt_dice':      () => { _ctrlCloseExtrasPopup(); socket.emit('host_action',{action:'invoke',id:'lightning_variety'}); },
       'lt_settings':  () => { _ctrlCloseExtrasPopup(); _ctrlToggleLtSettingsList(); },
       'yt':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleYouTubeList(); },
+      'yt_arc':       () => { _ctrlCloseExtrasPopup(); _ctrlToggleArchivedYouTubeList(); },
       'fl':           () => { _ctrlCloseExtrasPopup(); _ctrlToggleFlList(); },
       'search':       () => { _ctrlCloseExtrasPopup(); _ctrlToggleSearchRow(); },
       'directory':    () => { _ctrlCloseExtrasPopup(); _ctrlToggleDirectoryList(); },
@@ -8013,6 +8357,7 @@ _HTML = r"""<!DOCTYPE html>
         socket.emit('host_action',{action:'reset_session_history'});
         _ctrlCloseExtrasPopup();
       },
+      'load_playlist': () => { _ctrlCloseExtrasPopup(); _ctrlTogglePlaylistList(); },
       'rules_file':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleRulesList(); },
       'end_session':  () => { socket.emit('host_action',{action:'invoke',id:'end_session'}); _ctrlCloseExtrasPopup(); },
       // Scoreboard actions — call main app menu registry via invoke
@@ -8534,13 +8879,37 @@ _HTML = r"""<!DOCTYPE html>
       }
     }
 
+    function _plTruncateSideways() {
+      const label = document.getElementById('ctrl-playlist-label');
+      if (!label || label.dataset.playlistName == null) return;
+      const section = document.getElementById('ctrl-section-playlist');
+      const sideways = window.innerWidth >= 1000 && section && section.classList.contains('section-open');
+      const name = label.dataset.playlistName;
+      label.innerHTML = '\u203A ' + name;
+      if (!sideways || !name) return;
+      const avail = section.getBoundingClientRect().height;
+      if (label.getBoundingClientRect().height <= avail) return;
+      let lo = 0, hi = name.length;
+      while (lo < hi - 1) {
+        const mid = (lo + hi) >> 1;
+        label.innerHTML = '\u203A ' + name.slice(0, mid) + '\u2026';
+        if (label.getBoundingClientRect().height <= avail) lo = mid; else hi = mid;
+      }
+      label.innerHTML = '\u203A ' + (lo > 0 ? name.slice(0, lo) + '\u2026' : '\u2026');
+    }
+    window.addEventListener('resize', () => requestAnimationFrame(_plTruncateSideways));
+
     socket.on('playlist_info', data => {
       _plTotal        = data.total || 0;
       _plCurrentIndex = (data.current_index != null) ? data.current_index : -1;
       _plCache.clear();
       _plPending.clear();
       const label = document.getElementById('ctrl-playlist-label');
-      if (label) label.innerHTML = '&#x203A; ' + (data.label || 'Playlist');
+      if (label) {
+        label.dataset.playlistName = data.label || 'Playlist';
+        label.innerHTML = '\u203A ' + label.dataset.playlistName;
+        requestAnimationFrame(_plTruncateSideways);
+      }
       const counter = document.getElementById('ctrl-playlist-counter');
       if (counter) counter.textContent = data.counter || '';
       const spacer = document.getElementById('pl-spacer');
@@ -9313,7 +9682,7 @@ _HTML = r"""<!DOCTYPE html>
       if (_moreSubTab === 'episodes') {
         if (!d.episode_info || !d.episode_info.length)
           return '<span style="color:#555">No episode data available.</span>';
-        return d.episode_info.map(([num, title]) =>
+        return d.episode_info.slice().sort((a, b) => Number(a[0]) - Number(b[0])).map(([num, title]) =>
           '<div class="more-ep"><span class="more-ep-num">EP ' + _escHtml(String(num)) + '</span>' + _escHtml(title) + '</div>'
         ).join('');
       }
@@ -9570,12 +9939,25 @@ def reveal_answer(correct_display: str, q_type: str = '', correct_tags: list = N
     """Broadcast the correct answer for the just-completed question to all clients."""
     if not FLASK_AVAILABLE or _socketio is None:
         return
-    title = (_current_question or {}).get('title', '')
+    q = _current_question or {}
+    title = q.get('title', '')
+    # Build a display-only question_data subset (no initial/interactive fields)
+    question_data = {}
+    if q.get('choices'):
+        question_data['choices'] = q['choices']
+    if q.get('tags'):
+        question_data['tags'] = q['tags']
+        question_data['tags_max'] = q.get('tags_max', len(q['tags']))
+    if q.get('rank_slider'):
+        rs = q['rank_slider']
+        question_data['rank_slider'] = {'min': rs.get('min', 1), 'max': rs.get('max', 9999)}
     _socketio.emit('answer_reveal', {
         'question': title,
         'correct': correct_display,
         'q_type': q_type,
         'correct_tags': correct_tags or [],
+        'question_data': question_data,
+        'all_answers': list(_submitted_answers),
     })
 
 
@@ -9754,6 +10136,14 @@ def push_youtube_list(videos: list, queued_id: str = None):
             _socketio.emit('youtube_list', payload, to=sid)
 
 
+def push_archived_youtube_list(videos: list, queued_id: str = None):
+    """Push archived YouTube video list to all host clients."""
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        payload = {'videos': videos, 'queued_id': queued_id}
+        for sid in list(_host_sids):
+            _socketio.emit('archived_youtube_list', payload, to=sid)
+
+
 def push_lightning_presets_list(presets: list, selected: str = None):
     """Push lightning settings preset list to all host clients."""
     if FLASK_AVAILABLE and _socketio and _host_sids:
@@ -9776,6 +10166,14 @@ def push_rules_list(files: list, selected_file: str = None):
         payload = {'files': files, 'selected': selected_file}
         for sid in list(_host_sids):
             _socketio.emit('rules_list', payload, to=sid)
+
+
+def push_playlist_list(names: list, current: str = None, changed: bool = False):
+    """Push available saved playlist names to all host clients."""
+    if FLASK_AVAILABLE and _socketio and _host_sids:
+        payload = {'names': names, 'current': current, 'changed': changed}
+        for sid in list(_host_sids):
+            _socketio.emit('playlist_list', payload, to=sid)
 
 
 def push_directory_groups(groups: list, stat_type: str, total: int, to_sid: str = None):
@@ -10671,6 +11069,17 @@ def _build_app():
         if _host_action_callback is not None:
             try:
                 _host_action_callback('get_youtube_list', {'_sid': _req.sid})
+            except Exception:
+                pass
+
+    @_socketio.on('request_archived_youtube_list')
+    def handle_request_archived_youtube_list():
+        from flask import request as _req
+        if _req.sid not in _host_sids:
+            return
+        if _host_action_callback is not None:
+            try:
+                _host_action_callback('get_archived_youtube_list', {'_sid': _req.sid})
             except Exception:
                 pass
 

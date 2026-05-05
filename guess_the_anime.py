@@ -3,7 +3,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "18.2"  # Update this when making releases
+APP_VERSION = "18.3"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -849,6 +849,8 @@ SETTINGS_SCHEMA = [
     {"key": "CLOUDFLARE_TUNNEL_TOKEN", "config_key": "cloudflare_tunnel_token", "label": "Cloudflare Tunnel Token:", "type": "password", "default": "", "width": 30, "requires_cloudflared": True, "tooltip": "Token from the Cloudflare Zero Trust dashboard (Networks → Tunnels). Takes priority over ngrok when set."},
     {"key": "CLOUDFLARE_PUBLIC_URL",   "config_key": "cloudflare_public_url",   "label": "Cloudflare Public URL:",   "type": "str",      "default": "", "width": 30, "requires_cloudflared": True, "tooltip": "The public HTTPS URL for your Cloudflare tunnel (e.g. https://gta.yourdomain.com). Must match the hostname configured in the Cloudflare dashboard."},
     {"key": "HOST_PASSWORD",      "config_key": "host_password",      "label": "Host Password:",         "type": "password", "default": "", "width": 30, "requires_tunnel": True, "tooltip": "If set, entering this password on the join screen grants host view (live answer panel + metadata). Leave blank to disable."},
+    # Toggles persistence
+    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, and Desktop Black toggles across restarts."},
 ]
 
 # Initialise all schema settings to their defaults at module level so they always
@@ -2622,6 +2624,24 @@ def aired_to_season_year(aired_str, start=True):
             if mon_num:
                 from datetime import datetime as _dt
                 return _dt(int(m.group(3)), mon_num, int(m.group(2)))
+        # Month + year only: "Oct 2005" / "October 2005" — default to 1st of month
+        m = re.match(r'([A-Za-z]+)\s+(\d{4})', date_str)
+        if m:
+            mon_key = m.group(1)[:3].lower()
+            mon_num = _MONTHS.get(mon_key)
+            if mon_num:
+                from datetime import datetime as _dt
+                return _dt(int(m.group(2)), mon_num, 1)
+        # ISO date: "2005-10-28" or "2005-10-28T00:00:00+00:00"
+        m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', date_str)
+        if m:
+            from datetime import datetime as _dt
+            return _dt(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        # Year only: "2005"
+        m = re.match(r'^(\d{4})$', date_str.strip())
+        if m:
+            from datetime import datetime as _dt
+            return _dt(int(m.group(1)), 1, 1)
         # Fallback: try strptime formats
         for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y"):
             try:
@@ -3091,7 +3111,7 @@ def refresh_all_igdb_metadata():
 #        *METADATA DISPLAY
 # =========================================
 
-LISTS_TO_CLOSE = ['load_playlist', 'merge_playlist', 'load_system_playlist', 'delete_playlist', 'load_filters', 'delete_filters', 'sort', 'show_fixed_lightning_list', 'show_youtube_playlist']
+LISTS_TO_CLOSE = ['load_playlist', 'merge_playlist', 'load_system_playlist', 'delete_playlist', 'load_filters', 'delete_filters', 'sort', 'show_fixed_lightning_list', 'show_youtube_playlist', 'show_archived_youtube_playlist']
 
 def clear_metadata():
     """Function to clear metadata fields"""
@@ -5373,6 +5393,7 @@ def check_youtube_video_playing():
 
 _youtube_playlist = {}
 def show_youtube_playlist(update = False):
+
     global _youtube_playlist
     all_videos = {}
     
@@ -5477,6 +5498,72 @@ def load_youtube_video(index):
     show_youtube_playlist(True)
     up_next_text()
 
+_archived_youtube_playlist = {}
+def show_archived_youtube_playlist(update=False):
+    global _archived_youtube_playlist
+    all_videos = {}
+
+    for video_id, video in youtube_metadata.get("videos", {}).items():
+        if not video.get("archived", False):
+            continue
+        filename = video["filename"]
+        video_copy = video.copy()
+        video_copy['video_id'] = video_id
+        archive_path = os.path.join("youtube", "archive", filename)
+        video_copy['downloaded'] = os.path.exists(archive_path)
+        all_videos[video_id] = video_copy
+
+    # Sort by archived_date (newest first)
+    def get_archived_sort_key(item):
+        _, video = item
+        archived_date = video.get("archived_date")
+        if archived_date:
+            try:
+                return datetime.fromisoformat(archived_date)
+            except (ValueError, TypeError):
+                pass
+        return datetime(1900, 1, 1)
+
+    sorted_videos = sorted(all_videos.items(), key=get_archived_sort_key, reverse=True)
+    all_videos = dict(sorted_videos)
+
+    selected = -1
+    if youtube_queue:
+        queue_video_id = youtube_queue.get('url')
+        for index, (key, value) in enumerate(all_videos.items()):
+            if key == queue_video_id:
+                selected = index
+                youtube_queue['index'] = selected
+                break
+
+    _archived_youtube_playlist = all_videos
+    show_list("youtube", right_column, all_videos, get_youtube_title, load_archived_youtube_video, selected, update, title="ARCHIVED YOUTUBE VIDEOS")
+
+def load_archived_youtube_video(index):
+    global youtube_queue
+    video = get_youtube_metadata_from_index(key_id=list(_archived_youtube_playlist.keys())[index])
+    if video and youtube_queue != video:
+        unload_youtube_video()
+        youtube_queue = video
+        title = get_youtube_display_title(youtube_queue)
+        try:
+            image = load_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
+        except:
+            image = None
+        details = (
+            "Created by: " + youtube_queue.get("name") + " (" + str(f"{youtube_queue.get("subscriber_count"):,}") + " subscribers)" + "\n"
+            "Uploaded: " + str(f"{datetime.strptime(youtube_queue.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}") + " | Duration: " + str(format_seconds(get_youtube_duration(youtube_queue))) + " mins\n\n"
+            "1 PT for the first correct answer."
+        )
+        if player.is_playing():
+            toggle_coming_up_popup(True, title, details, image, queue=True)
+        else:
+            play_video()
+    else:
+        unload_youtube_video()
+    show_archived_youtube_playlist(True)
+    up_next_text()
+
 def get_bonus_template_path(video_id):
     return os.path.join("youtube", "bonus_templates", f"{video_id}.json")
 
@@ -5568,8 +5655,7 @@ def save_youtube_metadata():
     if not os.path.exists(metadata_folder):
         os.makedirs(metadata_folder)
 
-    with open(YOUTUBE_METADATA_FILE, "w") as f:
-        json.dump(youtube_metadata, f, indent=4)
+    _atomic_json_write(YOUTUBE_METADATA_FILE, youtube_metadata, indent=4)
 
 def load_youtube_metadata():
     global youtube_metadata
@@ -6863,6 +6949,38 @@ def update_living_playlists():
     # Run in background thread
     thread = threading.Thread(target=update_in_background, daemon=True)
     thread.start()
+
+def _playlist_has_unsaved_changes():
+    """Return True if the current playlist has unsaved changes, without showing any dialog."""
+    if not playlist.get("name"):
+        return len(playlist.get("playlist", [])) > 15
+    if playlist.get("name") in SYSTEM_PLAYLISTS:
+        return False
+    playlist_name = playlist["name"]
+    saved_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
+    if not os.path.exists(saved_path):
+        return True
+    try:
+        with open(saved_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        saved = convert_infinity_markers(saved)
+        current_data = {
+            "playlist": playlist["playlist"],
+            "infinite": playlist.get("infinite", False),
+            "difficulty": playlist.get("difficulty", 2),
+            "order": playlist.get("order", 0),
+            "filter": playlist.get("filter", {}),
+        }
+        saved_data = {
+            "playlist": saved.get("playlist", []),
+            "infinite": saved.get("infinite", False),
+            "difficulty": saved.get("difficulty", 2),
+            "order": saved.get("order", 0),
+            "filter": saved.get("filter", {}),
+        }
+        return current_data != saved_data
+    except Exception:
+        return True
 
 def confirm_save_playlist(text=""):
     # If playlist has no name, always ask to save
@@ -8302,8 +8420,27 @@ def _save_popout_layout_preset(name, layout_list, columns):
     """Write a single popout layout preset to POPOUT_LAYOUTS_FOLDER/<name>.json."""
     os.makedirs(POPOUT_LAYOUTS_FOLDER, exist_ok=True)
     path = os.path.join(POPOUT_LAYOUTS_FOLDER, f"{name}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"layout": layout_list, "columns": columns}, f, indent=4)
+    _atomic_json_write(path, {"layout": layout_list, "columns": columns}, indent=4)
+
+def _atomic_json_write(path, data, **dump_kwargs):
+    """Write *data* as JSON to *path* atomically.
+
+    Writes to a sibling .tmp file first, then uses os.replace() to swap it in.
+    os.replace() is atomic on both Windows (same-volume) and POSIX, so a crash
+    mid-write will leave the original file intact rather than corrupting it.
+    """
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, **dump_kwargs)
+        os.replace(tmp, path)
+    except Exception:
+        # Clean up the temp file if anything went wrong, then re-raise
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 def _save_settings_presets(folder, saved_dict, default_dict, update_fn=None, convert_inf=False):
     """Sync all presets in saved_dict to individual JSON files in folder.
@@ -8319,8 +8456,7 @@ def _save_settings_presets(folder, saved_dict, default_dict, update_fn=None, con
         if convert_inf:
             data = convert_infinities_to_markers(data)
         try:
-            with open(os.path.join(folder, f"{name}.json"), "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=4)
+            _atomic_json_write(os.path.join(folder, f"{name}.json"), data, indent=4)
         except Exception as e:
             print(f"Failed to save preset '{name}': {e}")
     # Remove orphan files
@@ -8365,6 +8501,15 @@ def save_config():
         "playlist": playlist,
         "directory_files": directory_files,
         "tutorial_shown": globals().get("tutorial_shown", False),
+        "set_toggles": {
+            "censors_enabled": censors_enabled,
+            "auto_info_start": auto_info_start,
+            "auto_info_end": auto_info_end,
+            "auto_refresh_toggle": auto_refresh_toggle,
+            "disable_shortcuts": disable_shortcuts,
+            "desktop_black": desktop_black_overlay is not None,
+            "progress_bar_enabled": progress_bar_enabled,
+        },
     }
     
     # Convert infinities and diff infinite_settings against defaults before saving
@@ -8374,8 +8519,7 @@ def save_config():
         config["playlist"]["infinite_settings"] = convert_infinities_to_markers(inf_diff)
     
     update_current_index(save = False)
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=4, allow_nan=False)
+    _atomic_json_write(CONFIG_FILE, config, indent=4, allow_nan=False)
 
 _THEME_FLAG_MIGRATIONS = {
     "OVERLAP": "OVERLAP (Without Censors)",
@@ -8403,6 +8547,7 @@ def load_config():
     global popout_layout, popout_columns, shortcuts_config
     # Schema settings (non_webm_opengl, OPENAI_API_KEY, etc.) used in post-processing below
     global non_webm_opengl, OPENAI_API_KEY, selected_rules_file, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, volume_level, cover_media_switch
+    global censors_enabled, auto_info_start, auto_info_end, auto_refresh_toggle, disable_shortcuts, tutorial_shown, _restore_desktop_black, keep_set_toggles, progress_bar_enabled
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -8502,8 +8647,23 @@ def load_config():
             popout_layout = _saved_layout if _saved_layout else None  # empty list → None (use default)
             popout_columns = int(config.get("popout_columns", 5))
             shortcuts_config = config.get("shortcuts", {})
-            globals()["tutorial_shown"] = config.get("tutorial_shown", False)
+            tutorial_shown = config.get("tutorial_shown", False)
             web_server.set_host_password(HOST_PASSWORD)
+            if keep_set_toggles:
+                _t = config.get("set_toggles", {})
+                if "censors_enabled" in _t:
+                    censors_enabled = bool(_t["censors_enabled"])
+                if "auto_info_start" in _t:
+                    auto_info_start = bool(_t["auto_info_start"])
+                if "auto_info_end" in _t:
+                    auto_info_end = bool(_t["auto_info_end"])
+                if "auto_refresh_toggle" in _t:
+                    auto_refresh_toggle = bool(_t["auto_refresh_toggle"])
+                if "disable_shortcuts" in _t:
+                    disable_shortcuts = bool(_t["disable_shortcuts"])
+                if "progress_bar_enabled" in _t:
+                    progress_bar_enabled = bool(_t["progress_bar_enabled"])
+                _restore_desktop_black = bool(_t.get("desktop_black", False))
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -8968,7 +9128,7 @@ def save_metadata():
 
 def save_metadata_overrides():
     save_metadata_atomic(FILE_METADATA_OVERRIDES_FILE, file_metadata_overrides)
-    save_metadata_compressed(ANIME_METADATA_OVERRIDES_FILE, anime_metadata_overrides)
+    save_metadata_atomic(ANIME_METADATA_OVERRIDES_FILE, anime_metadata_overrides)
 
 def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
     """Load metadata from compressed version first, fallback to regular file."""
@@ -9026,12 +9186,11 @@ def load_metadata():
                     anime_metadata[entry]["season"] = aired_to_season_year(anime_metadata[entry].get("release"))
                 anime_metadata[entry]["popularity"] = estimate_manual_popularity(anime_metadata[entry].get("members"))
                 anime_metadata[entry]["rank"] = estimate_manual_rank(anime_metadata[entry].get("score"))
-    # Load anime_metadata_overrides
-    data, is_compressed = load_metadata_compressed(ANIME_METADATA_OVERRIDES_FILE, name="metadata overrides")
-    if data is not None:
-        anime_metadata_overrides = data
-        suffix = " (compressed)" if is_compressed else ""
-        print("Loaded anime metadata overrides for " + str(len(anime_metadata_overrides)) + " entries..." + suffix)
+    # Load anime_metadata_overrides (plain JSON only — never stored as .gz)
+    if os.path.exists(ANIME_METADATA_OVERRIDES_FILE):
+        with open(ANIME_METADATA_OVERRIDES_FILE, "r", encoding="utf-8") as f:
+            anime_metadata_overrides = json.load(f)
+        print("Loaded anime metadata overrides for " + str(len(anime_metadata_overrides)) + " entries...")
         deep_merge(anime_metadata, anime_metadata_overrides)
     
     # Load anilist_metadata
@@ -9423,15 +9582,24 @@ def export_metadata_package():
             (ANILIST_METADATA_FILE, "metadata/anilist_metadata.json"),
             (ANIME_METADATA_OVERRIDES_FILE, "metadata/anime_metadata_overrides.json"),
         ]
-        
+        # anime_metadata_overrides is always plain JSON — separate it out
+        plain_json_files = [(ANIME_METADATA_OVERRIDES_FILE, "metadata/anime_metadata_overrides.json")]
+        compressed_files = files_to_export[:-1]  # all except overrides
+
         # Check for .gz versions first
         files_found = []
         files_missing = []
-        
-        for source_file, zip_path in files_to_export:
+
+        for source_file, zip_path in compressed_files:
             if os.path.exists(source_file + '.gz'):
                 files_found.append((source_file + '.gz', zip_path + '.gz'))
             elif os.path.exists(source_file):
+                files_found.append((source_file, zip_path))
+            else:
+                files_missing.append(source_file)
+
+        for source_file, zip_path in plain_json_files:
+            if os.path.exists(source_file):
                 files_found.append((source_file, zip_path))
             else:
                 files_missing.append(source_file)
@@ -9513,8 +9681,7 @@ def import_censors(prompt=True):
                 os.makedirs(folder)
             
             # Replace the existing file
-            with open(ramuns_censors_file, "w") as f:
-                json.dump(new_censors, f, indent=4)
+            _atomic_json_write(ramuns_censors_file, new_censors, indent=4)
             
             # Update the global censor_list
             other_censor_lists.append(new_censors)
@@ -10474,8 +10641,7 @@ def _write_playlist(name):
     playlist_to_save = copy.deepcopy(playlist)
     if playlist_to_save.get("infinite_settings"):
         playlist_to_save["infinite_settings"] = convert_infinities_to_markers(playlist_to_save["infinite_settings"])
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(playlist_to_save, f, indent=4)
+    _atomic_json_write(filename, playlist_to_save, indent=4)
     update_playlist_name(name)
     save_config()
     print(f"Playlist saved as {filename}")
@@ -11710,7 +11876,7 @@ def season_stats():
     _run_stat_in_background("THEMES BY SEASON", compute)
 
 
-def artist_stats():
+def artist_stats(sort='count'):
     def compute():
         artist_to_filenames = {}
         for filename in get_cached_deduplicated_files():
@@ -11723,11 +11889,13 @@ def artist_stats():
                     for artist in song.get("artist", []):
                         artist_to_filenames.setdefault(artist, []).append(filename)
                     break
+        if sort == 'alpha':
+            return sorted(artist_to_filenames.items(), key=lambda x: x[0].lower())
         return sorted(artist_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
     _run_stat_in_background("THEMES BY ARTIST", compute)
 
 
-def series_stats():
+def series_stats(sort='count'):
     def compute():
         series_to_filenames = {}
         for filename in get_cached_deduplicated_files():
@@ -11738,30 +11906,56 @@ def series_stats():
                     series_to_filenames.setdefault(s, []).append(filename)
             else:
                 series_to_filenames.setdefault(series, []).append(filename)
+        if sort == 'alpha':
+            return sorted(series_to_filenames.items(), key=lambda x: x[0].lower())
+        if sort == 'popularity':
+            def _series_pop(item):
+                _, files = item
+                ranks = [get_metadata(fn).get("popularity") for fn in files]
+                ranks = [r for r in ranks if r is not None]
+                return min(ranks) if ranks else float('inf')
+            return sorted(series_to_filenames.items(), key=_series_pop)
         return sorted(series_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
     _run_stat_in_background("THEMES BY SERIES", compute)
 
 
-def studio_stats():
+def studio_stats(sort='count'):
     def compute():
         studio_to_filenames = {}
         for filename in get_cached_deduplicated_files():
             data = get_metadata(filename)
             for studio in data.get("studios", []):
                 studio_to_filenames.setdefault(studio, []).append(filename)
+        if sort == 'alpha':
+            return sorted(studio_to_filenames.items(), key=lambda x: x[0].lower())
         return sorted(studio_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
     _run_stat_in_background("THEMES BY STUDIO", compute)
 
 
-def tag_stats():
+def tag_stats(sort='count'):
     def compute():
         tag_to_filenames = {}
         for filename in get_cached_deduplicated_files():
             data = get_metadata(filename)
             for tag in get_tags(data):
                 tag_to_filenames.setdefault(tag, []).append(filename)
+        if sort == 'alpha':
+            return sorted(tag_to_filenames.items(), key=lambda x: x[0].lower())
         return sorted(tag_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
     _run_stat_in_background("THEMES BY TAG", compute)
+
+
+def slug_stats(sort='count'):
+    def compute():
+        slug_to_filenames = {}
+        for filename in get_cached_deduplicated_files():
+            data = get_metadata(filename)
+            slug = data.get("slug", "Unknown")
+            slug_to_filenames.setdefault(slug, []).append(filename)
+        if sort == 'alpha':
+            return sorted(slug_to_filenames.items(), key=lambda x: x[0].lower())
+        return sorted(slug_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+    _run_stat_in_background("THEMES BY SLUG", compute)
 
 
 def type_stats():
@@ -11773,17 +11967,6 @@ def type_stats():
             type_to_filenames.setdefault(t, []).append(filename)
         return sorted(type_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
     _run_stat_in_background("THEMES BY TYPE", compute)
-
-
-def slug_stats():
-    def compute():
-        slug_to_filenames = {}
-        for filename in get_cached_deduplicated_files():
-            data = get_metadata(filename)
-            slug = data.get("slug", "Unknown")
-            slug_to_filenames.setdefault(slug, []).append(filename)
-        return sorted(slug_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
-    _run_stat_in_background("THEMES BY SLUG", compute)
 
 
 _current_stat_groups = {}
@@ -11825,17 +12008,6 @@ def get_series_totals(refetch=True, check_all=True):
                 series_counter[series] += 1
         series_totals = series_counter
     return series_totals
-
-STAT_TYPES = [
-    {"name":"THEMES BY YEAR",   "func": year_stats},
-    {"name":"THEMES BY SEASON", "func": season_stats},
-    {"name":"THEMES BY ARTIST", "func": artist_stats},
-    {"name":"THEMES BY SERIES", "func": series_stats},
-    {"name":"THEMES BY STUDIO", "func": studio_stats},
-    {"name":"THEMES BY TAG",    "func": tag_stats},
-    {"name":"THEMES BY TYPE",   "func": type_stats},
-    {"name":"THEMES BY SLUG",   "func": slug_stats},
-]
 
 # =========================================
 #           *FILTERING PLAYLISTS
@@ -12201,8 +12373,7 @@ def show_filter_popup():
             return
         filter_path = os.path.join(FILTERS_FOLDER, f"{filter_name}.json")
         try:
-            with open(filter_path, "w") as file:
-                json.dump({"name": filter_name, "filter": filters}, file, indent=4)
+            _atomic_json_write(filter_path, {"name": filter_name, "filter": filters}, indent=4)
             messagebox.showinfo("Success", f"Filter '{filter_name}' saved successfully!")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save filter: {e}")
@@ -14160,8 +14331,9 @@ def update_light_round(time):
                     set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 if not is_title_window_up():
-                    player.set_fullscreen(False)
-                    player.set_fullscreen(True)
+                    if not fixed_current_round or (fixed_current_round and not fixed_current_round.get("clip_for_answer")):
+                        player.set_fullscreen(False)
+                        player.set_fullscreen(True)
                     char_answer = copy.copy(character_round_answer)
                     cover_answer = light_cover_image
                     image_answer_source = None  # source text shown as answer (no header, width_max=0.55)
@@ -14190,7 +14362,8 @@ def update_light_round(time):
                     trivia_answer = light_trivia_answer
                     if mismatch_visuals:
                         top_info_data = "MISMATCHED VISUALS:\n" + mismatch_visuals
-                    elif last_streamed[0] == currently_playing.get("filename") and last_streamed[1] and last_streamed[1] != "Trailer":
+                    elif (last_streamed[0] == currently_playing.get("filename") and last_streamed[1] and last_streamed[1] != "Trailer"
+                            and not (fixed_current_round and fixed_current_round.get("clip_source_as_song"))):
                         top_info_data = f"YOUTUBE VIDEO:\n{last_streamed[1]}\nby {last_streamed[3] or ''}"
                     elif image_answer_source:
                         top_info_data = None  # will be shown via top_info(image_answer_source) below
@@ -14513,6 +14686,8 @@ def update_light_round(time):
             if light_mode == 'blind':
                 if fixed_current_round:
                     blind_mode = fixed_current_round.get("blind_variant", "standard")
+                    if fixed_current_round.get("blind_header"):
+                        top_info(fixed_current_round.get("blind_header"))
                 else:
                     blind_variants = lightning_mode_settings.get("blind",{}).get("variants",{})
                     standard, double_speed, mismatch, one_second = blind_variants.get("standard"), blind_variants.get("double_speed"), blind_variants.get("mismatch"), blind_variants.get("one_second")
@@ -15239,7 +15414,7 @@ def set_variety_light_mode(queue=None, excluded_modes=[]):
 
     if not testing_variety:
         unselect_light_modes()
-        toggle_light_mode(next_round, False)
+        toggle_light_mode(next_round, False, False)
         variety_light_mode_enabled = True
     return next_round, forced
 
@@ -21689,6 +21864,35 @@ music_icon_label = None
 pulse_step = 0
 progress_bar_ready = False  # Tracks when progress bar is fully initialized
 
+def _get_fixed_playlist_progress(current_round_elapsed_secs):
+    """Return (elapsed*100, total*100) across the whole fixed playlist, or None if not active.
+
+    Scales the progress bar to show the position within the entire fixed round
+    playlist rather than just the current round.  Each round contributes its
+    question duration plus its answer duration to the total.
+    """
+    if not fixed_lightning_round_playlist_data:
+        return None
+    rounds = fixed_lightning_round_playlist_data.get("rounds", [])
+    current_idx = fixed_lightning_round_playlist_data.get("current_index", 0)
+    if not rounds:
+        return None
+    total = 0.0
+    elapsed = 0.0
+    for i, r in enumerate(rounds):
+        rtype = r.get("type", "regular")
+        default_dur = lightning_mode_settings.get(rtype, {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
+        default_ans = lightning_mode_settings["_misc_settings"].get("answer_length", LIGHT_ROUND_ANSWER_LENGTH_DEFAULT)
+        dur = float(r.get("duration", default_dur))
+        ans = float(r.get("answer_duration", default_ans))
+        total += dur + ans
+        if i < current_idx:
+            elapsed += dur + ans
+        elif i == current_idx:
+            elapsed += min(float(current_round_elapsed_secs), dur + ans)
+    return (round(elapsed * 100), round(total * 100))
+
+
 def set_progress_overlay(current_time=None, total_length=None, destroy=False):
     global progress_overlay, light_progress_bar, music_icon_label, progress_bar_ready
 
@@ -21844,6 +22048,7 @@ FIXED_LIGHTNING_ROUNDS = {
         "background_track"
     ],
     "blind": [
+        "blind_header",
         "music_icon",
         "blind_variant"
     ],
@@ -21853,6 +22058,7 @@ FIXED_LIGHTNING_ROUNDS = {
         "clip_url",
         "clip_title",
         "clip_author",
+        "clip_source_as_song",
         "censor_bottom",
         "clip_for_answer",
         "volume_adjustment"
@@ -21911,6 +22117,7 @@ FIXED_LIGHTNING_ROUNDS = {
         "clip_url",
         "clip_title",
         "clip_author",
+        "clip_source_as_song",
         "clip_for_answer",
         "reveal_title_halfway",
         "music_icon",
@@ -21984,8 +22191,10 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "clip_title": {"type": "text", "required": False, "tooltip": "Display title for the clip source."},
     "clip_author": {"type": "text", "required": False, "tooltip": "Display channel/author for the clip source."},
     "censor_bottom": {"type": "toggle", "required": False, "default": False, "tooltip": "Apply bottom censor behavior during clip playback."},
+    "clip_source_as_song": {"type": "toggle", "required": False, "default": False, "tooltip": "Show clip title and author as song name and artist in the info popup instead of the stored song metadata."},
     "clip_for_answer": {"type": "toggle", "required": False, "default": False, "tooltip": "Reuse the clip media during answer phase instead of the normal answer flow."},
     "reveal_title_halfway": {"type": "toggle", "required": False, "default": True, "tooltip": "Reveal the title halfway through the OST round."},
+    "blind_header": {"type": "text", "required": False, "default": "", "tooltip": "Header text for blind rounds."},
     "music_icon": {"type": "text", "required": False, "tooltip": "Custom icon/text shown on music progress overlays."},
     "volume_adjustment": {"type": "integer", "required": False, "default": 0, "tooltip": "Per-round volume offset applied during clip/OST playback."},
     # Image round fields
@@ -24634,6 +24843,20 @@ def toggle_title_popup(show, info_type=None):
     title_font = ("Arial", scl(50), "bold")
     bottom_font = ("Arial", scl(15), "bold")
     data = currently_playing.get("data")
+    _use_clip_as_song = bool(
+        fixed_current_round and
+        fixed_current_round.get("type") in ("ost", "clip") and
+        fixed_current_round.get("clip_source_as_song")
+    )
+    if _use_clip_as_song and data:
+        _clip_title = fixed_current_round.get("clip_title") or ""
+        _clip_author = fixed_current_round.get("clip_author") or ""
+        _patched_songs = [
+            dict(s, title=_clip_title, artist=[_clip_author] if _clip_author else s.get("artist"))
+            if s.get("slug") == data.get("slug") else s
+            for s in data.get("songs", [])
+        ]
+        data = dict(data, songs=_patched_songs)
     if data:
         if currently_playing.get("type") == "youtube":
             title = get_youtube_display_title(data)
@@ -24701,7 +24924,10 @@ def toggle_title_popup(show, info_type=None):
                 score = f"MAL Score: {data.get("score")} (#{data.get("rank")})"
             if info_type != "title_only":
                 title_row = title
-                top_row = f"{marks}{theme}{version_num}{overall_theme_num_display(currently_playing.get("filename"))} | {song} | {aired}"
+                if _use_clip_as_song:
+                    top_row = f"{theme}{version_num}{overall_theme_num_display(currently_playing.get('filename'))} | {song} | {aired}"
+                else:
+                    top_row = f"{marks}{theme}{version_num}{overall_theme_num_display(currently_playing.get('filename'))} | {song} | {aired}"
 
                 if info_type == "artist":
                     artists = get_song_string(data, type="artist")
@@ -25871,8 +26097,11 @@ def play_video(index=playlist["current_index"]):
             set_rules("anime")
         
         video_path = os.path.join("youtube", youtube_queue.get("filename"))
+        archive_path = os.path.join("youtube", "archive", youtube_queue.get("filename"))
         if os.path.exists(video_path):
             stream_youtube(video_path)
+        elif os.path.exists(archive_path):
+            stream_youtube(archive_path)
         else:
             # Stream from YouTube URL using yt-dlp
             video_id = youtube_queue.get('video_id') or youtube_queue.get('url')
@@ -26833,14 +27062,14 @@ def update_current_index(value = None, save = True):
             if fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("rounds"):
                 fixed_rounds = fixed_lightning_round_playlist_data.get("rounds", [])
                 fixed_index = fixed_lightning_round_playlist_data.get("current_index", 0)
-                web_server.push_playlist_info(len(fixed_rounds), fixed_index, counter=(f'{fixed_index+1}/{len(fixed_rounds)}' if fixed_rounds else '0/0'), label='Fixed Playlist')
+                web_server.push_playlist_info(len(fixed_rounds), fixed_index, counter=(f'{fixed_index+1}/{len(fixed_rounds)}' if fixed_rounds else '0/0'), label=fixed_lightning_round_playlist_data.get('name') or 'Fixed Playlist')
             elif playlist.get('infinite', False):
                 out_of = total_infinite_files - len(cached_skipped_themes)
-                web_server.push_playlist_info(-1, -1, counter=f'\u221e/{out_of}', label='Playlist')
+                web_server.push_playlist_info(-1, -1, counter=f'\u221e/{out_of}', label=playlist.get('name') or 'Playlist')
             else:
                 out_of = len(playlist['playlist'])
                 cur = playlist['current_index']
-                web_server.push_playlist_info(out_of, cur, counter=f'{cur+1}/{out_of}', label='Playlist')
+                web_server.push_playlist_info(out_of, cur, counter=f'{cur+1}/{out_of}', label=playlist.get('name') or 'Playlist')
     except NameError:
         pass  # root isn't defined yet — possibly too early in startup
 
@@ -27039,7 +27268,8 @@ def update_seek_bar():
     """Function to update the seek bar"""
     global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms, skip_fade_in_elapsed_ms
     global _yt_bonus_current_question, _yt_bonus_pts, _yt_bonus_template_triggered, _yt_bonus_template_scored
-    try:
+    # try:
+    if True:
         if not player.is_playing():
             vlc_time = player.get_time()
             if vlc_time != last_vlc_time or last_vlc_time != projected_vlc_time:
@@ -27165,19 +27395,19 @@ def update_seek_bar():
                         update_light_round(time)
                         apply_censors(time, length)
                 update_progress_bar(projected_vlc_time, player.get_length(), currently_playing.get("filename"))
-    except Exception as e:
-        error_str = str(e)
-        if not playing_next_error:
-            if error_str == last_error:
-                last_error_count += 1
-                print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
-            else:
-                last_error = error_str
-                last_error_count = 1
-                if last_error_count > 20:
-                    playing_next_error = True
-                    play_next()
-                print(f"\nError: {error_str} x 1", flush=True)
+    # except Exception as e:
+    #     error_str = str(e)
+    #     if not playing_next_error:
+    #         if error_str == last_error:
+    #             last_error_count += 1
+    #             print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
+    #         else:
+    #             last_error = error_str
+    #             last_error_count = 1
+    #             if last_error_count > 20:
+    #                 playing_next_error = True
+    #                 play_next()
+    #             print(f"\nError: {error_str} x 1", flush=True)
     # Push playback state to web host clients ~every 1 second
     global _web_playback_counter
     _web_playback_counter += 1
@@ -27314,7 +27544,27 @@ def update_progress_bar(current_time, total_time, filename=None):
     if not progress_bar:
         create_progress_bar()
         progress_bar.update_idletasks()
-    
+
+    # During lightning rounds, override current_time/total_time to show round
+    # progress (question + answer phases) rather than raw video position.
+    # For fixed playlists this extends across the entire playlist.
+    if light_round_started and light_round_start_time is not None:
+        if _light_answer_wall_start is not None:
+            _current_round_elapsed = light_round_length + (_wall_time() - _light_answer_wall_start)
+        else:
+            _current_round_elapsed = max(0.0, projected_vlc_time / 1000.0 - light_round_start_time)
+        if fixed_lightning_round_playlist_data:
+            _pl = _get_fixed_playlist_progress(_current_round_elapsed)
+            if _pl:
+                current_time = _pl[0] * 10  # hundredths of sec → ms
+                total_time = _pl[1] * 10
+                filename = None
+        else:
+            _round_total = light_round_length + light_round_answer_length
+            current_time = min(_current_round_elapsed, _round_total) * 1000
+            total_time = _round_total * 1000
+            filename = None
+
     """Updates the progress bar based on video time, accounting for skip censors."""
     if progress_bar and total_time > 0:
         # Calculate effective time excluding skip censors
@@ -27375,6 +27625,7 @@ def update_progress_bar(current_time, total_time, filename=None):
         height = progress_bar.winfo_height()
         progress_bar.configure(width=progress_width)
         progress_bar.geometry(f"+{0}+{root.winfo_screenheight() - height}")  # Adjust for bottom spacing
+        progress_bar.lift()
 
 # =========================================
 #            *BLIND SCREEN
@@ -28201,8 +28452,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
     def save_censor_func():
         global censor_list
         censor_list[filename] = current_censors
-        with open(CENSOR_JSON_FILE, "w") as f:
-            json.dump(censor_list, f, indent=4)
+        _atomic_json_write(CENSOR_JSON_FILE, censor_list, indent=4)
         update_censor_button_count()
 
     def refresh_ui():
@@ -28724,10 +28974,9 @@ def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
     if not os.path.exists(PLAYLISTS_FOLDER):
         os.makedirs(PLAYLISTS_FOLDER)
 
-    with open(playlist_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
-        if not quiet:
-            print(f"{filename} {type_string} playlist '{playlist_name}'.")
+    _atomic_json_write(playlist_path, data, indent=4)
+    if not quiet:
+        print(f"{filename} {type_string} playlist '{playlist_name}'.")
 
     if playlist.get("name") == playlist_name:
         if filename in theme_list:
@@ -29310,7 +29559,7 @@ def show_playlist(update = False):
         rounds = fixed_lightning_round_playlist_data.get("rounds", [])
         rounds_dict = convert_fixed_rounds_to_dict(rounds)
         current_index = fixed_lightning_round_playlist_data.get("current_index", 0)
-        show_list("playlist", right_column, rounds_dict, get_fixed_round_title, play_fixed_round_by_index, current_index, update, right_click_func=None, title="FIXED LIGHTNING ROUNDS")
+        show_list("playlist", right_column, rounds_dict, get_fixed_round_title, play_fixed_round_by_index, current_index, update, right_click_func=None, title=fixed_lightning_round_playlist_data.get("name") or "FIXED LIGHTNING ROUNDS")
     else:
         def _playlist_right_click(index):
             if not (0 <= index < len(playlist["playlist"])):
@@ -29324,7 +29573,7 @@ def show_playlist(update = False):
                 remove_func=lambda i=index: remove_theme(i),
             )
 
-        show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=_playlist_right_click, title="PLAYLIST")
+        show_list("playlist", right_column, convert_playlist_to_dict(playlist["playlist"]), get_title, play_video, playlist["current_index"], update, right_click_func=_playlist_right_click, title=playlist.get("name") or "PLAYLIST")
 
 def convert_fixed_rounds_to_dict(rounds):
     """Convert fixed lightning rounds to dict for display"""
@@ -30966,6 +31215,8 @@ def toggle_mute(muted=None, lightning=False):
         light_muted = muted
         if not disable_video_audio:
             player.audio_set_mute(muted)
+            if not muted:
+                set_volume(volume_level)
         play_background_music(muted and not currently_streaming and light_mode not in ['clip', 'ost'])
     else:
         if muted == None:
@@ -33277,17 +33528,38 @@ def _get_menu_registry():
     # ── DIRECTORY ────────────────────────────────────────────────────────────
     "directory": [
         {"id": "dir_by_artist", "icon": "🎤", "label": "Themes by Artist",
-         "command": artist_stats, "tooltip": "List all themes grouped by artist."},
+         "tooltip": "List all themes grouped by artist.",
+         "submenu": [
+             {"id": "dir_by_artist_alpha", "label": "Alphabetical",  "command": lambda: artist_stats('alpha'), "tooltip": "Sort artists alphabetically."},
+             {"id": "dir_by_artist_count", "label": "Theme Total",   "command": lambda: artist_stats('count'), "tooltip": "Sort artists by number of themes (most first)."},
+         ]},
         {"id": "dir_by_season", "icon": "🌸", "label": "Themes by Season",
          "command": season_stats, "tooltip": "List all themes grouped by season."},
         {"id": "dir_by_series", "icon": "📚", "label": "Themes by Series",
-         "command": series_stats, "tooltip": "List all themes grouped by series."},
+         "tooltip": "List all themes grouped by series.",
+         "submenu": [
+             {"id": "dir_by_series_alpha",      "label": "Alphabetical",  "command": lambda: series_stats('alpha'),      "tooltip": "Sort series alphabetically."},
+             {"id": "dir_by_series_popularity", "label": "Popularity",    "command": lambda: series_stats('popularity'), "tooltip": "Sort series by MAL popularity rank (most popular first)."},
+             {"id": "dir_by_series_count",      "label": "Theme Total",   "command": lambda: series_stats('count'),      "tooltip": "Sort series by number of themes (most first)."},
+         ]},
         {"id": "dir_by_slug",   "icon": "🔑", "label": "Themes by Slug",
-         "command": slug_stats,   "tooltip": "List all themes grouped by slug (OP1, ED2, etc.)."},
+         "tooltip": "List all themes grouped by slug (OP1, ED2, etc.).",
+         "submenu": [
+             {"id": "dir_by_slug_alpha", "label": "Alphabetical",  "command": lambda: slug_stats('alpha'), "tooltip": "Sort slugs alphabetically."},
+             {"id": "dir_by_slug_count", "label": "Theme Total",   "command": lambda: slug_stats('count'), "tooltip": "Sort slugs by number of themes (most first)."},
+         ]},
         {"id": "dir_by_studio", "icon": "🏢", "label": "Themes by Studio",
-         "command": studio_stats, "tooltip": "List all themes grouped by studio."},
+         "tooltip": "List all themes grouped by studio.",
+         "submenu": [
+             {"id": "dir_by_studio_alpha", "label": "Alphabetical",  "command": lambda: studio_stats('alpha'), "tooltip": "Sort studios alphabetically."},
+             {"id": "dir_by_studio_count", "label": "Theme Total",   "command": lambda: studio_stats('count'), "tooltip": "Sort studios by number of themes (most first)."},
+         ]},
         {"id": "dir_by_tag",    "icon": "🏷",  "label": "Themes by Tag",
-         "command": tag_stats,    "tooltip": "List all themes grouped by tag."},
+         "tooltip": "List all themes grouped by tag.",
+         "submenu": [
+             {"id": "dir_by_tag_alpha", "label": "Alphabetical",  "command": lambda: tag_stats('alpha'), "tooltip": "Sort tags alphabetically."},
+             {"id": "dir_by_tag_count", "label": "Theme Total",   "command": lambda: tag_stats('count'), "tooltip": "Sort tags by number of themes (most first)."},
+         ]},
         {"id": "dir_by_type",   "icon": "📺", "label": "Themes by Type",
          "command": type_stats,   "tooltip": "List all themes grouped by format/type."},
         {"id": "dir_by_year",   "icon": "📅", "label": "Themes by Year",
@@ -33654,6 +33926,9 @@ def _get_menu_registry():
         {"id": "show_youtube", "icon": "▶", "label": "YouTube Videos",
          "button_label": "YOUTUBE", "shortcut": True, "command": show_youtube_playlist,
          "tooltip": "Browse and queue a YouTube video to play after the current theme."},
+        {"id": "show_archived_youtube", "icon": "📦", "label": "Archived YouTube Videos",
+         "button_label": "ARCHIVED YT", "command": show_archived_youtube_playlist,
+         "tooltip": "Browse and queue an archived YouTube video."},
         {"id": "manage_youtube", "icon": "🎥", "label": "Manage YouTube Videos",
          "button_label": "MANAGE YT", "command": open_youtube_editor,
          "tooltip": "Add, edit, and archive YouTube videos for queuing."},
@@ -35506,7 +35781,7 @@ def _invoke_registry_by_id(item_id: str):
 def _handle_host_action(action: str, data: dict):
     """Dispatch remote control commands from the web host controller."""
     def _dispatch():
-        global youtube_queue, fixed_lightning_queue, search_queue, _buzz_preset_index, selected_rules_file, scoreboard_rules, lightning_mode_settings, selected_light_mode_settings
+        global youtube_queue, fixed_lightning_queue, search_queue, _buzz_preset_index, selected_rules_file, scoreboard_rules, lightning_mode_settings, selected_light_mode_settings, playlist, playlist_changed, playlist_loaded
         try:
             _sid = data.get('_sid')
         except Exception:
@@ -35535,7 +35810,7 @@ def _handle_host_action(action: str, data: dict):
                     "items": rounds,
                     "current_index": current_index,
                     "counter": f'{current_index + 1}/{len(rounds)}' if rounds else '0/0',
-                    "label": 'Fixed Playlist',
+                    "label": fixed_lightning_round_playlist_data.get('name') or 'Fixed Playlist',
                 }
             items = playlist.get("playlist", [])
             current_index = playlist.get("current_index", -1)
@@ -35550,7 +35825,7 @@ def _handle_host_action(action: str, data: dict):
                 "items": items,
                 "current_index": current_index,
                 "counter": counter,
-                "label": 'Playlist',
+                "label": playlist.get('name') or 'Playlist',
             }
 
         if action == 'invoke':
@@ -35639,6 +35914,57 @@ def _handle_host_action(action: str, data: dict):
             videos.sort(key=lambda v: v.pop("_date"), reverse=True)
             queued_id = (youtube_queue or {}).get("url")
             web_server.push_youtube_list(videos, queued_id)
+        elif action == 'get_archived_youtube_list':
+            def _fmt_arc(seconds):
+                m, s = divmod(int(seconds), 60)
+                return f"{m}:{s:02}"
+            def _arc_date(vid):
+                ad = vid.get("archived_date")
+                if ad:
+                    try: return datetime.fromisoformat(ad)
+                    except (ValueError, TypeError): pass
+                return datetime(1900, 1, 1)
+            videos = []
+            for vid_id, vid in youtube_metadata.get("videos", {}).items():
+                if not vid.get("archived", False):
+                    continue
+                full_title = (vid.get("custom_title") or vid.get("title") or "")
+                short_title = re.sub(
+                    r'(can you guess the|guess the|how well do you know|can you|guess|their|from the|from|by|with|its|just)\s*',
+                    '', full_title, flags=re.IGNORECASE
+                ).strip()
+                start = vid.get("start") or 0
+                end = vid.get("end") or vid.get("duration") or 0
+                dur = _fmt_arc(round(end - start)) if end else _fmt_arc(vid.get("duration") or 0)
+                videos.append({"id": vid_id, "title": short_title or full_title, "full_title": full_title, "duration": dur, "_date": _arc_date(vid)})
+            videos.sort(key=lambda v: v.pop("_date"), reverse=True)
+            queued_id = (youtube_queue or {}).get("url")
+            web_server.push_archived_youtube_list(videos, queued_id)
+        elif action == 'queue_archived_youtube':
+            video_id = str(data.get('video_id', '')).strip()
+            if video_id:
+                video = get_youtube_metadata_from_index(key_id=video_id)
+                if video and youtube_queue != video:
+                    unload_youtube_video()
+                    youtube_queue = video
+                    title = get_youtube_display_title(youtube_queue)
+                    try:
+                        image = load_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
+                    except Exception:
+                        image = None
+                    details = (
+                        f"Created by: {youtube_queue.get('name')} "
+                        f"({youtube_queue.get('subscriber_count', 0):,} subscribers)\n"
+                        f"Duration: {format_seconds(get_youtube_duration(youtube_queue))} mins\n\n"
+                        "1 PT for the first correct answer."
+                    )
+                    if player.is_playing():
+                        toggle_coming_up_popup(True, title, details, image, queue=True)
+                    else:
+                        play_video()
+                else:
+                    unload_youtube_video()
+                up_next_text()
         elif action == 'queue_youtube':
             video_id = str(data.get('video_id', '')).strip()
             if video_id:
@@ -35695,6 +36021,31 @@ def _handle_host_action(action: str, data: dict):
                 save_config()
                 set_rules()
                 _push_web_toggles()
+        elif action == 'get_playlist_list':
+            names = list(get_playlists_dict(exclude_system=True).values())
+            web_server.push_playlist_list(names, playlist.get('name'), changed=_playlist_has_unsaved_changes())
+        elif action == 'select_playlist':
+            target = str(data.get('name', '')).strip()
+            all_pl = get_playlists_dict(exclude_system=True)
+            if target and target in all_pl.values():
+                filename = os.path.join(PLAYLISTS_FOLDER, f"{target}.json")
+                if os.path.exists(filename):
+                    if data.get('save_first') and playlist.get('name'):
+                        _write_playlist(playlist['name'])
+                    with open(filename, "r", encoding="utf-8") as _f:
+                        _data = json.load(_f)
+                    _data = convert_infinity_markers(_data)
+                    playlist_changed = False
+                    playlist = _data
+                    update_playlist_name()
+                    print(f"Loaded playlist: {target}")
+                    playlist_loaded = True
+                    if playlist.get("infinite"):
+                        refresh_pop_time_groups(False)
+                    if target.lower() == "missing artists":
+                        check_missing_artists()
+                    update_current_index()
+                    save_config()
         elif action == 'get_lightning_presets_list':
             presets = sorted(saved_lightning_mode_settings.keys())
             web_server.push_lightning_presets_list(presets, selected_light_mode_settings)
@@ -35779,9 +36130,18 @@ def _handle_host_action(action: str, data: dict):
             stat_type = str(data.get('stat_type', '')).strip()
             sid = data.get('_sid')
             def _run_dir_groups(st=stat_type, _sid=sid):
+                # Parse base type and optional sort suffix
+                _sort = 'count'
+                _base = st
+                for _suffix in ('_alpha', '_popularity'):
+                    if st.endswith(_suffix):
+                        _sort = _suffix[1:]  # strip leading '_'
+                        _base = st[:-len(_suffix)]
+                        break
+
                 groups_raw = []
                 try:
-                    if st == 'artist':
+                    if _base == 'artist':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             fd = get_file_metadata_by_name(fn)
@@ -35793,8 +36153,11 @@ def _handle_host_action(action: str, data: dict):
                                     for artist in song.get('artist', []):
                                         d.setdefault(artist, []).append(fn)
                                     break
-                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
-                    elif st == 'series':
+                        if _sort == 'alpha':
+                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                        else:
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif _base == 'series':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
@@ -35803,8 +36166,17 @@ def _handle_host_action(action: str, data: dict):
                                 for s in series: d.setdefault(s, []).append(fn)
                             else:
                                 d.setdefault(series, []).append(fn)
-                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
-                    elif st == 'season':
+                        if _sort == 'alpha':
+                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                        elif _sort == 'popularity':
+                            def _spop(item):
+                                ranks = [get_metadata(fn).get('popularity') for fn in item[1]]
+                                ranks = [r for r in ranks if r is not None]
+                                return min(ranks) if ranks else float('inf')
+                            groups_raw = sorted(d.items(), key=_spop)
+                        else:
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif _base == 'season':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
@@ -35818,7 +36190,7 @@ def _handle_host_action(action: str, data: dict):
                                 return (int(yr), {'Winter':0,'Spring':1,'Summer':2,'Fall':3}.get(sn, 4))
                             except: return (9999, 4)
                         groups_raw = [(s, d[s]) for s in sorted(d, key=_sk, reverse=True)]
-                    elif st == 'year':
+                    elif _base == 'year':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
@@ -35841,34 +36213,43 @@ def _handle_host_action(action: str, data: dict):
                             elif g == 'Pre-60s': return -1950
                             else: return 9999
                         groups_raw = [(g, d[g]) for g in sorted(d, key=_yk)]
-                    elif st == 'studio':
+                    elif _base == 'studio':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             for studio in meta.get('studios', []):
                                 d.setdefault(studio, []).append(fn)
-                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
-                    elif st == 'tag':
+                        if _sort == 'alpha':
+                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                        else:
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif _base == 'tag':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             for tag in get_tags(meta):
                                 d.setdefault(tag, []).append(fn)
-                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
-                    elif st == 'type':
+                        if _sort == 'alpha':
+                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                        else:
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif _base == 'type':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             t = get_format(meta) or 'Unknown'
                             d.setdefault(t, []).append(fn)
                         groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
-                    elif st == 'slug':
+                    elif _base == 'slug':
                         d = {}
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             slug = meta.get('slug', 'Unknown')
                             d.setdefault(slug, []).append(fn)
-                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                        if _sort == 'alpha':
+                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                        else:
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
                 except Exception as e:
                     print(f"[directory_groups error] {e}")
                 total = sum(len(files) for _, files in groups_raw)
@@ -35884,7 +36265,9 @@ def _handle_host_action(action: str, data: dict):
                 # Rebuild the group's file list (same logic as above but for one group)
                 try:
                     files = []
-                    if st == 'artist':
+                    # Strip sort suffix — 'series_alpha' → 'series', 'artist_alpha' → 'artist', etc.
+                    _base = st.removesuffix('_alpha').removesuffix('_popularity')
+                    if _base == 'artist':
                         for fn in get_cached_deduplicated_files():
                             fd = get_file_metadata_by_name(fn)
                             if not fd: continue
@@ -35895,7 +36278,7 @@ def _handle_host_action(action: str, data: dict):
                                     if gl in song.get('artist', []):
                                         files.append(fn)
                                     break
-                    elif st == 'series':
+                    elif _base == 'series':
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             series = meta.get('series') or meta.get('title', 'Unknown')
@@ -35903,13 +36286,13 @@ def _handle_host_action(action: str, data: dict):
                                 if gl in series: files.append(fn)
                             else:
                                 if series == gl: files.append(fn)
-                    elif st == 'season':
+                    elif _base == 'season':
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             s = meta.get('season') or 'Unknown'
                             if s == 'N/A': s = 'Unknown'
                             if s == gl: files.append(fn)
-                    elif st == 'year':
+                    elif _base == 'year':
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             season = meta.get('season', '')
@@ -35925,19 +36308,19 @@ def _handle_host_action(action: str, data: dict):
                             else:
                                 g = 'Unknown'
                             if g == gl: files.append(fn)
-                    elif st == 'studio':
+                    elif _base == 'studio':
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             if gl in meta.get('studios', []): files.append(fn)
-                    elif st == 'tag':
+                    elif _base == 'tag':
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             if gl in get_tags(meta): files.append(fn)
-                    elif st == 'type':
+                    elif _base == 'type':
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             if (get_format(meta) or 'Unknown') == gl: files.append(fn)
-                    elif st == 'slug':
+                    elif _base == 'slug':
                         for fn in get_cached_deduplicated_files():
                             meta = get_metadata(fn)
                             if meta.get('slug', 'Unknown') == gl: files.append(fn)
@@ -36818,6 +37201,10 @@ root.after(3000, check_for_scoreboard_update_on_startup)
 root.after(1000, update_living_playlists)
 root.after(500, check_download_ui_updates)  # Start checking for download UI updates
 
+# Restore desktop black overlay if it was active at last save
+if _restore_desktop_black:
+    root.after(1500, lambda: toggle_desktop_black_overlay(True))
+
 def on_app_close():
     """Safely destroy hidden root-parented widgets before closing to avoid TclError."""
     # Cancel any pending tooltip after() callback so it can't fire on a destroyed widget
@@ -36845,6 +37232,10 @@ def on_app_close():
     # quit() exits the mainloop cleanly before destroy() tears down the widgets
     try:
         web_server.stop()
+    except Exception:
+        pass
+    try:
+        save_config()
     except Exception:
         pass
     if AUTO_EXIT_SCOREBOARD and is_scoreboard_running():
