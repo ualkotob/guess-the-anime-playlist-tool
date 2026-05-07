@@ -1,9 +1,10 @@
+# -*- coding: utf-8 -*-
 # =========================================
 #      GUESS THE ANIME - PLAYLIST TOOL
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "18.3"  # Update this when making releases
+APP_VERSION = "19.0"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -30,7 +31,7 @@ from ctypes import wintypes
 import threading
 from tkinter import filedialog, messagebox, simpledialog, ttk, StringVar, font, Menu
 import webbrowser
-from PIL import Image, ImageTk, ImageFilter, ImageFont, ImageDraw
+from PIL import Image, ImageTk, ImageFilter, ImageFont, ImageDraw, ImageColor
 import threading  # For asynchronous metadata loading
 from tinytag import TinyTag
 from yt_dlp import YoutubeDL
@@ -98,26 +99,6 @@ _APP_ICON_B64 = (
     "58d6fYBEYNpZsgoA+B96i9z9MuacjQAAAABJRU5ErkJggg=="
 )
 
-# Helper function for VLC error messages
-def _vlc_error_exit(error_details=None):
-    """Display VLC error message and exit."""
-    print("\n" + "="*60)
-    print(" ERROR: VLC is not installed or configured properly")
-    print(" This application requires VLC media player.")
-    if error_details:
-        print(f" Error details: {error_details}")
-    print("")
-    print(" Download VLC from: https://www.videolan.org/vlc/")
-    print(" After installing, restart this application.")
-    print("="*60 + "\n")
-    input("Press Enter to exit...")
-    sys.exit(1)
-
-# Try to import VLC with helpful error message if it fails
-try:
-    import vlc
-except Exception as e:
-    _vlc_error_exit(str(e))
 
 # =========================================
 #        *MODAL DIALOG SHORTCUT GUARD
@@ -147,174 +128,499 @@ simpledialog.askstring = _wrap_modal_dialog(simpledialog.askstring)
 simpledialog.askinteger = _wrap_modal_dialog(simpledialog.askinteger)
 simpledialog.askfloat = _wrap_modal_dialog(simpledialog.askfloat)
 
-# Explicitly load libvlc.dll and its dependencies
-vlc_path = r'C:\Program Files\VideoLAN\VLC'  # Replace with your VLC installation path
 
-# Check if VLC is installed
-if not os.path.exists(vlc_path):
-    print(f"\n{'='*60}\n WARNING: VLC installation not found at default path!\n{'='*60}\n Expected path: {vlc_path}\n")
-    
-    # Check common alternative paths
-    alternative_paths = [
-        r'C:\Program Files (x86)\VideoLAN\VLC',
-        os.path.expandvars(r'%LOCALAPPDATA%\Programs\VideoLAN\VLC')
-    ]
-    
-    found_path = None
-    for alt_path in alternative_paths:
-        if os.path.exists(alt_path):
-            found_path = alt_path
-            print(f" Found VLC at: {alt_path}\n Using alternative VLC installation path.\n{'='*60}\n")
-            vlc_path = alt_path
-            break
-    
-    if not found_path:
-        _vlc_error_exit()
+# =========================================
+#      *MPV DLL AUTO-DOWNLOAD + IMPORT
+# =========================================
 
-try:
-    os.add_dll_directory(vlc_path)  # Add VLC directory to DLL search path
-except Exception as e:
-    _vlc_error_exit(str(e))
+MPV_DLL_NAME = "libmpv-2.dll"
+_MPV_RELEASE_API = "https://api.github.com/repos/zhongfly/mpv-winbuild/releases/latest"
 
-hw_acc_enabled = True
-current_vout = None  # Track current video output module
+def _get_app_dir():
+    """Return the directory containing the running exe (frozen) or script (dev)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        return os.path.dirname(os.path.abspath(sys.argv[0]))
 
-def load_vlc_parameters(override_vout=None):
-    """Load VLC parameters from file, optionally overriding --vout.
+def _mpv_dll_path():
+    return os.path.join(_get_app_dir(), MPV_DLL_NAME)
 
-    If override_vout is provided, any existing --vout argument is removed and
-    replaced with the requested one. Passing override_vout=None leaves any file
-    value as-is. Passing override_vout="automatic" removes explicit --vout.
+def ensure_mpv_dll():
+    """Return path to mpv-2.dll, downloading it automatically if missing.
+
+    Safe to call before the Tk root window exists: creates a transient hidden
+    root if needed and cleans it up afterwards.
     """
-    global hw_acc_enabled
-    param_file = os.path.join("config", "vlc-parameters.txt")
-    if os.path.isfile(param_file):
-        with open(param_file, "r", encoding="utf-8") as f:
-            print("Loaded custom vlc parameters.")
-            parameters = [line.strip() for line in f if line.strip()]
-            if '--avcodec-hw=none' in parameters:
-                hw_acc_enabled = False
-    else:
-        parameters = [
-            "--no-xlib",
-            "-q",
-            "--fullscreen",
-            # "--vout=opengl"
-        ]
+    import io as _io
+    import queue as _queue
+    import shutil as _shutil
+    import subprocess as _subprocess
+    import tempfile as _tempfile
 
-    if override_vout is not None:
-        parameters = [p for p in parameters if not p.startswith('--vout=')]
-        if override_vout and override_vout != 'automatic':
-            parameters.append(f'--vout={override_vout}')
-    return parameters
+    dll = _mpv_dll_path()
+    if os.path.exists(dll):
+        return dll
 
-instance = None
-player = None
-
-def _recreate_vlc(params, restore_media=None, restore_time=0, was_playing=False):
-    """Internal helper to safely recreate VLC instance/player."""
-    global instance, player
-    # Stop old player
+    # ── ensure there is a Tk root so messagebox / Toplevel work ──────────────
+    _temp_root = None
     try:
-        if player:
-            player.stop()
+        if tk._default_root is None:
+            _temp_root = tk.Tk()
+            _temp_root.withdraw()
     except Exception:
         pass
-    # Release old instance (after stopping)
+
     try:
-        if instance:
-            instance.release()
-    except Exception:
-        pass
-    # Create new instance; python-vlc expects args expanded
-    instance = vlc.Instance(*params)
-    player_new = instance.media_player_new()
-    if restore_media is not None:
-        try:
-            player_new.set_media(restore_media)
-            if was_playing:
-                player_new.play()
-            else:
-                player_new.play()
-        except Exception as e:
-            print(f"Failed to restore media after vout change: {e}")
-        # Seek back to prior time (some modules need slight delay)
-        if restore_time > 0:
-            def _seek_back():
+        if not messagebox.askyesno(
+            "mpv not found",
+            f"{MPV_DLL_NAME} was not found in the application folder.\n\n"
+            "Download it automatically from GitHub? (~30 MB)\n\n"
+            "This is required to play media.",
+            icon="warning"
+        ):
+            messagebox.showerror(
+                "Cannot continue",
+                f"{MPV_DLL_NAME} is required. Exiting."
+            )
+            sys.exit(1)
+
+        # ── progress dialog ───────────────────────────────────────────────────
+        dlg = tk.Toplevel()
+        dlg.title("Downloading mpv…")
+        dlg.resizable(False, False)
+        dlg.attributes("-topmost", True)
+        dlg.protocol("WM_DELETE_WINDOW", lambda: None)   # block accidental close
+        tk.Label(dlg, text=f"Downloading {MPV_DLL_NAME}, please wait…",
+                 font=("Arial", 11)).pack(padx=24, pady=(16, 4))
+        status_var = tk.StringVar(value="Connecting…")
+        tk.Label(dlg, textvariable=status_var, font=("Arial", 9), fg="#aaa").pack(padx=24)
+        pb = ttk.Progressbar(dlg, length=360, mode="determinate")
+        pb.pack(padx=24, pady=(6, 18))
+        dlg.update_idletasks()
+        sw, sh = dlg.winfo_screenwidth(), dlg.winfo_screenheight()
+        dlg.geometry(f"410x115+{(sw-410)//2}+{(sh-115)//2}")
+        dlg.update()
+
+        q = _queue.Queue()
+        err_ref = [None]
+        ok_ref  = [None]
+
+        def _worker():
+            try:
+                q.put(("status", "Fetching release info…"))
+                resp = requests.get(
+                    _MPV_RELEASE_API, timeout=15,
+                    headers={"User-Agent": "GuessTheAnime/auto-mpv-dl"}
+                )
+                resp.raise_for_status()
+                assets = resp.json().get("assets", [])
+
+                # Prefer mpv-dev-x86_64-*.7z (no lgpl, no v3, no debug)
+                asset_url = None
+                asset_name = None
+                for a in assets:
+                    n = a["name"]
+                    if (n.startswith("mpv-dev-x86_64-") and n.endswith(".7z")
+                            and "lgpl" not in n and "v3" not in n):
+                        asset_url = a["browser_download_url"]
+                        asset_name = n
+                        break
+                if not asset_url:
+                    names = [a['name'] for a in assets]
+                    raise RuntimeError(
+                        "No mpv-dev-x86_64 .7z found in the latest GitHub release.\n"
+                        f"Available assets: {names}\n"
+                        "https://github.com/zhongfly/mpv-winbuild/releases"
+                    )
+
+                q.put(("status", f"Downloading {os.path.basename(asset_url)}…"))
+                resp = requests.get(
+                    asset_url, stream=True, timeout=180,
+                    headers={"User-Agent": "GuessTheAnime/auto-mpv-dl"}
+                )
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length", 0))
+                buf = _io.BytesIO()
+                downloaded = 0
+                for chunk in resp.iter_content(chunk_size=131072):
+                    if chunk:
+                        buf.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            q.put(("progress", downloaded, total))
+
+                q.put(("status", "Extracting libmpv-2.dll…"))
+                buf.seek(0)
+                tmp_dir = _tempfile.mkdtemp(prefix="gta_mpv_")
                 try:
-                    player_new.set_time(restore_time)
-                    if not was_playing:
-                        player_new.pause()
-                except Exception:
-                    pass
+                    tmp_7z_path = os.path.join(tmp_dir, "mpv-dev.7z")
+                    with open(tmp_7z_path, "wb") as _f:
+                        _f.write(buf.read())
+
+                    # Find 7-Zip (installed) or download 7zr.exe (standalone, ~400 KB)
+                    exe_7z = (_shutil.which("7z") or _shutil.which("7za") or
+                              next((p for p in [
+                                  r"C:\Program Files\7-Zip\7z.exe",
+                                  r"C:\Program Files (x86)\7-Zip\7z.exe",
+                              ] if os.path.exists(p)), None))
+                    if not exe_7z:
+                        q.put(("status", "Downloading 7zr.exe (one-time, ~400 KB)…"))
+                        exe_7z = os.path.join(tmp_dir, "7zr.exe")
+                        r7z = requests.get(
+                            "https://www.7-zip.org/a/7zr.exe",
+                            timeout=30,
+                            headers={"User-Agent": "GuessTheAnime/auto-mpv-dl"}
+                        )
+                        r7z.raise_for_status()
+                        with open(exe_7z, "wb") as _f:
+                            _f.write(r7z.content)
+
+                    q.put(("status", "Extracting libmpv-2.dll…"))
+                    out_dir = os.path.dirname(dll)
+                    result = _subprocess.run(
+                        [exe_7z, "e", tmp_7z_path, MPV_DLL_NAME,
+                         f"-o{out_dir}", "-y"],
+                        capture_output=True, text=True
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(
+                            f"7-Zip extraction failed (code {result.returncode}):\n"
+                            f"{result.stderr or result.stdout}"
+                        )
+                finally:
+                    _shutil.rmtree(tmp_dir, ignore_errors=True)
+                if os.path.exists(dll):
+                    ok_ref[0] = dll
+                if not ok_ref[0]:
+                    raise RuntimeError(
+                        f"{MPV_DLL_NAME} was not found inside the downloaded archive."
+                    )
+                q.put(("done", dll))
+            except Exception as exc:
+                err_ref[0] = str(exc)
+                q.put(("error", str(exc)))
+
+        def _poll():
             try:
-                # root may not yet exist at time; guard usage
-                if 'root' in globals() and root:
-                    root.after(200, _seek_back)
-                else:
-                    # Fallback simple timer
-                    threading.Timer(0.2, _seek_back).start()
+                while True:
+                    msg = q.get_nowait()
+                    kind = msg[0]
+                    if kind == "progress":
+                        _, dl, tot = msg
+                        pb["value"] = dl / tot * 100
+                        status_var.set(f"{dl/1048576:.1f} / {tot/1048576:.1f} MB")
+                    elif kind == "status":
+                        status_var.set(msg[1])
+                    elif kind in ("done", "error"):
+                        dlg.destroy()
+                        return
             except Exception:
-                threading.Timer(0.2, _seek_back).start()
-    player = player_new
-    return player
+                pass
+            dlg.after(80, _poll)
 
-def create_vlc_instance(vout=None):
-    """Create the initial VLC instance; call once at startup.
+        threading.Thread(target=_worker, daemon=True).start()
+        dlg.after(80, _poll)
+        dlg.wait_window()
 
-    vout: desired video output module (e.g., 'opengl', 'direct3d11').
+        if err_ref[0]:
+            messagebox.showerror(
+                "Download failed",
+                f"Could not download {MPV_DLL_NAME}:\n\n{err_ref[0]}\n\n"
+                "Please download it manually and place it next to the exe:\n"
+                "https://github.com/zhongfly/mpv-winbuild/releases\n"
+                "(get mpv-dev-x86_64-*.7z, extract mpv-2.dll)"
+            )
+            sys.exit(1)
+
+        return dll
+
+    finally:
+        if _temp_root:
+            try:
+                _temp_root.destroy()
+            except Exception:
+                pass
+
+
+# Ensure libmpv-2.dll is present, then import
+ensure_mpv_dll()
+# Add app dir to PATH so python-mpv can find the DLL via ctypes
+_app_dir = _get_app_dir()
+if _app_dir not in os.environ.get("PATH", ""):
+    os.environ["PATH"] = _app_dir + os.pathsep + os.environ.get("PATH", "")
+try:
+    import mpv as _mpv_module
+    mpv = _mpv_module
+except Exception as _mpv_err:
+    try:
+        messagebox.showerror(
+            "mpv load error",
+            f"Failed to load mpv:\n\n{_mpv_err}\n\n"
+            "Please ensure libmpv-2.dll is in the application folder."
+        )
+    except Exception:
+        print(f"FATAL: Failed to load mpv: {_mpv_err}")
+    sys.exit(1)
+
+
+# =========================================
+#      *MEDIA PLAYER WRAPPER
+# =========================================
+
+class MediaPlayer:
     """
-    global current_vout
-    current_vout = vout
-    params = load_vlc_parameters(override_vout=vout)
-    return _recreate_vlc(params)
+    Unified media-player abstraction - Phase 2: mpv backend.
 
-def set_vout(vout_module=None, reload_current=False):
-    """Change the video output module at runtime by recreating the VLC instance.
-
-    vout_module: Name of the module (e.g., 'opengl', 'direct3d11', 'direct3d9', 'automatic').
-    reload_current: Attempt to preserve current media & playback position.
+    All time values are in milliseconds (consistent with the rest of the app).
+    Volume uses the 0-200 scale that the app has always used (mpv 0-100 is doubled).
     """
-    global current_vout, player
-    if not non_webm_opengl:
-        return
-    if vout_module == current_vout:
-        print(f"VLC vout already '{vout_module}', no change.")
-        return
 
-    media = None
-    was_playing = False
-    cur_time = 0
-    if reload_current and player is not None:
+    def __init__(self, mpv_player):
+        self._p = mpv_player          # underlying mpv.MPV instance
+        # Register double-click to toggle fullscreen (mirrors Player default behaviour)
         try:
-            media = player.get_media()
-            if media:
-                media.retain()  # keep reference
-            state = player.get_state()
-            was_playing = state == vlc.State.Playing
-            try:
-                cur_time = player.get_time()
-            except Exception:
-                cur_time = 0
+            self._p.command('keybind', 'MBTN_LEFT_DBL', 'cycle fullscreen')
         except Exception:
-            media = None
-
-    new_vout = None if vout_module in (None, 'automatic', '') else vout_module
-    params = load_vlc_parameters(override_vout=new_vout)
-    current_vout = new_vout
-    _recreate_vlc(params, restore_media=media, restore_time=cur_time, was_playing=was_playing)
-
-    if media:
+            pass
+        # Close button stops playback (hides window) without destroying the player instance
         try:
-            media.release()
+            self._p.command('keybind', 'CLOSE_WIN', 'stop')
         except Exception:
             pass
 
-# Create initial player (automatic / file-defined vout)
+    # ---- Core playback ----
+    def play(self):
+        """Resume playback (does NOT load a new file)."""
+        try:
+            self._p.pause = False
+        except Exception:
+            pass
+
+    def pause(self):
+        try:
+            self._p.pause = True
+        except Exception:
+            pass
+
+    def stop(self):
+        try:
+            self._p.stop()
+        except Exception:
+            pass
+
+    def is_playing(self) -> bool:
+        try:
+            return (not self._p.pause) and (not self._p.core_idle) and (self._p.time_pos is not None)
+        except Exception:
+            return False
+
+    # ---- Time (all in milliseconds) ----
+    def get_time_ms(self) -> int:
+        try:
+            return max(0, int((self._p.time_pos or 0) * 1000))
+        except Exception:
+            return 0
+
+    def set_time_ms(self, ms: int):
+        try:
+            self._p.seek(ms / 1000.0, 'absolute+exact')
+        except Exception:
+            pass
+
+    def get_length_ms(self) -> int:
+        try:
+            return max(0, int((self._p.duration or 0) * 1000))
+        except Exception:
+            return 0
+
+    # ---- Time: compat shims (same unit — ms) ----
+    def get_time(self) -> int:    return self.get_time_ms()
+    def set_time(self, ms: int):  self.set_time_ms(ms)
+    def get_length(self) -> int:  return self.get_length_ms()
+
+    # ---- Volume: 0-200 scale (app convention) ----
+    def set_volume(self, v: int):
+        try:
+            self._p.volume = max(0.0, min(100.0, v / 2.0))
+        except Exception:
+            pass
+
+    def get_volume(self) -> int:
+        try:
+            return int((self._p.volume or 0) * 2)
+        except Exception:
+            return 0
+
+    # ---- Volume: compat shims ----
+    def audio_set_volume(self, v: int):    self.set_volume(v)
+    def audio_get_volume(self) -> int:     return self.get_volume()
+
+    def audio_set_mute(self, muted: bool):
+        try:
+            self._p.mute = bool(muted)
+        except Exception:
+            pass
+
+    def audio_get_mute(self) -> bool:
+        try:
+            return bool(self._p.mute)
+        except Exception:
+            return False
+
+    # ---- Speed ----
+    def set_speed(self, rate: float):
+        try:
+            self._p.speed = rate
+        except Exception:
+            pass
+
+    def set_rate(self, rate: float):  self.set_speed(rate)  # compat
+
+    # ---- Fullscreen ----
+    def set_fullscreen(self, b: bool):
+        try:
+            self._p.fullscreen = bool(b)
+        except Exception:
+            pass
+
+    def toggle_fullscreen(self):
+        try:
+            self._p.fullscreen = not self._p.fullscreen
+        except Exception:
+            pass
+
+    # ---- Video info ----
+    def get_video_size(self) -> tuple:
+        try:
+            w, h = self._p.width, self._p.height
+            if w and h:
+                return (w, h)
+        except Exception:
+            pass
+        return (0, 0)
+
+    def video_get_size(self, track=0) -> tuple:
+        return self.get_video_size()
+
+    # ---- Media loading ----
+    def load(self, path: str, opts: list = None):
+        """Load and play a file/URL. opts is ignored (mpv handles format detection)."""
+        self.set_media(path)
+
+    def unload(self):
+        """Stop and clear current media."""
+        try:
+            self._p.stop()
+        except Exception:
+            pass
+
+    def get_path(self) -> str:
+        """Return the path/URL of the currently loaded file, or None."""
+        try:
+            return self._p.path
+        except Exception:
+            return None
+
+    def set_media(self, path_or_none):
+        """Load path/URL and start playing, or stop if None."""
+        if path_or_none is None:
+            self.unload()
+        else:
+            try:
+                self._p.play(str(path_or_none))
+            except Exception:
+                pass
+
+    def get_media(self):
+        """Return the currently loaded path string (compat shim)."""
+        return self.get_path()
+
+    # ---- State compat (no-op with mpv) ----
+    def get_state(self):
+        return None
+
+    # ---- Window embedding (Phase 3) ----
+    def set_hwnd(self, hwnd: int):
+        try:
+            self._p.wid = str(hwnd)
+        except Exception:
+            pass
+
+
+instance = None   # unused after Phase 2; kept for compat references
+player = None
+
+def _mpv_opts(**extra):
+    """Return common mpv.MPV constructor keyword arguments."""
+    return dict(
+        keep_open='yes',
+        idle='yes',
+        input_default_bindings=False,
+        input_vo_keyboard=False,
+        osc=False,
+        force_media_title='Guess the Anime! - Playlist Tool',
+        **extra
+    )
+
+# Create the main mpv player instance
 try:
-    create_vlc_instance()
-except Exception as e:
-    _vlc_error_exit(str(e))
+    player = MediaPlayer(mpv.MPV(**_mpv_opts(force_window='no')))
+    # When mpv goes idle without Python having called stop() (e.g. user closes the
+    # window via CLOSE_WIN → mpv stop), schedule our Python stop() on the main thread.
+    # Debounced: ignore transient idle-active=True flips that occur during seeks.
+    _idle_stop_after_id = None
+    def _on_player_idle(name, is_idle):
+        global _idle_stop_after_id
+        if is_idle and globals().get('currently_playing'):
+            # Snapshot currently_playing now (on mpv thread) so the 400ms callback
+            # isn't fooled by later state changes.
+            _cp_snapshot = globals().get('currently_playing')
+            def _do_idle_stop(snapshot=_cp_snapshot):
+                global _idle_stop_after_id
+                _idle_stop_after_id = None
+                # Only call stop() if currently_playing hasn't changed since we fired
+                # (i.e. stop() wasn't already called by something else).
+                if globals().get('currently_playing') is snapshot and snapshot:
+                    try:
+                        globals()['stop']()
+                    except Exception:
+                        pass
+            try:
+                root = globals().get('root')
+                if root:
+                    _idle_stop_after_id = root.after(200, _do_idle_stop)
+            except Exception:
+                pass
+        elif not is_idle:
+            # idle-active went False (seek completed / playback resumed) — cancel pending stop
+            try:
+                root = globals().get('root')
+                if root and _idle_stop_after_id is not None:
+                    root.after_cancel(_idle_stop_after_id)
+                    _idle_stop_after_id = None
+            except Exception:
+                pass
+    player._p.observe_property('idle-active', _on_player_idle)
+
+    def _on_fullscreen_change(name, is_fs):
+        # Sync autoplay_fullscreen whenever the user toggles fullscreen in mpv
+        # (double-click, TAB keybind, etc.) so the next play follows the new state.
+        try:
+            root = globals().get('root')
+            if root:
+                root.after(0, lambda: globals().update({'autoplay_fullscreen': bool(is_fs)}))
+        except Exception:
+            pass
+    player._p.observe_property('fullscreen', _on_fullscreen_change)
+except Exception as _e:
+    try:
+        messagebox.showerror("mpv error", f"Failed to create mpv player:\n{_e}")
+    except Exception:
+        print(f"FATAL: Failed to create mpv player: {_e}")
+    sys.exit(1)
 
 # =========================================
 #            FFMPEG AVAILABILITY CHECK
@@ -745,8 +1051,6 @@ title_top_info_txt = ""
 end_session_txt = ""
 inverted_colors = False
 inverted_positions = False
-non_webm_opengl = False
-cover_media_switch = True
 scale_main_ui = False
 auto_fetch_missing = False
 special_round_warning = True
@@ -823,8 +1127,6 @@ SETTINGS_SCHEMA = [
     {"key": "OVERLAY_TEXT_COLOR",        "config_key": "text_color",  "label": "Text Color:",       "type": "color", "default": "white", "tooltip": "Text color displayed in overlay windows."},
     # Booleans
     {"key": "inverted_positions",    "config_key": "inverted_positions",    "label": "Inverted Positions:",      "type": "bool", "default": False, "tooltip": "Swaps alignment of some elements to adjust for scoreboard position. Enable if scoreboard is aligned right."},
-    {"key": "non_webm_opengl",       "config_key": "non_webm_opengl",       "label": "Non-WebM OpenGL:",          "type": "bool", "default": False, "tooltip": "Uses OpenGL for non-WebM video playback (may improve performance)."},
-    {"key": "cover_media_switch",     "config_key": "cover_media_switch",     "label": "Cover Media Switch:",        "type": "bool", "default": True,  "tooltip": "Shows a black screen briefly when switching themes to hide the VLC surface flash."},
     {"key": "scale_main_ui",         "config_key": "scale_main_ui",         "label": "Scale Main UI:",            "type": "bool", "default": False, "tooltip": "Scales the main UI based on screen resolution. Requires restart.", "after_save": "restart_warning"},
     {"key": "auto_fetch_missing",    "config_key": "auto_fetch_missing",    "label": "Auto Fetch Missing:",       "type": "bool", "default": False, "tooltip": "Automatically fetches metadata if it's not found while playing themes."},
     {"key": "special_round_warning", "config_key": "special_round_warning", "label": "Special Round Warning:",   "type": "bool", "default": True,  "tooltip": "Shows a warning before special rounds begin."},
@@ -850,7 +1152,7 @@ SETTINGS_SCHEMA = [
     {"key": "CLOUDFLARE_PUBLIC_URL",   "config_key": "cloudflare_public_url",   "label": "Cloudflare Public URL:",   "type": "str",      "default": "", "width": 30, "requires_cloudflared": True, "tooltip": "The public HTTPS URL for your Cloudflare tunnel (e.g. https://gta.yourdomain.com). Must match the hostname configured in the Cloudflare dashboard."},
     {"key": "HOST_PASSWORD",      "config_key": "host_password",      "label": "Host Password:",         "type": "password", "default": "", "width": 30, "requires_tunnel": True, "tooltip": "If set, entering this password on the join screen grants host view (live answer panel + metadata). Leave blank to disable."},
     # Toggles persistence
-    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, and Desktop Black toggles across restarts."},
+    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, Fullscreen, and Desktop Black toggles across restarts."},
 ]
 
 # Initialise all schema settings to their defaults at module level so they always
@@ -1441,7 +1743,6 @@ def fetch_anilist_metadata(anilist_id=None, mal_id=None):
                 if m:
                     anidb_id_from_anilist = m.group(1)
                     break
-        print(f" [aniDB from AniList: {anidb_id_from_anilist}]", end="")
         if anidb_id_from_anilist:
             metadata["anidb_id"] = anidb_id_from_anilist
 
@@ -5374,20 +5675,15 @@ def get_youtube_display_title(data):
     return data.get("custom_title") or data.get("title")
 
 def stream_youtube(youtube_url):
-    """Streams a YouTube video in VLC using yt-dlp to get a direct URL."""
-    if current_vout != 'opengl':
-        set_vout(vout_module='opengl')
-    media = instance.media_new(youtube_url)
-    player.set_media(media)
-    player.play()
+    """Streams a YouTube video using mpv."""
+    player.set_media(youtube_url)
+    player_play()
     check_youtube_video_playing()
 
 def check_youtube_video_playing():
     if player.is_playing():
         global video_stopped
         video_stopped = False
-        player.set_fullscreen(False)
-        player.set_fullscreen(True)
     else:
         root.after(1000, check_youtube_video_playing)
 
@@ -5481,8 +5777,8 @@ def load_youtube_video(index):
         youtube_queue = video
         title = get_youtube_display_title(youtube_queue)
         try:
-            image = load_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
-        except:
+            image = load_pil_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
+        except Exception:
             image = None
         details = (
             "Created by: " + youtube_queue.get("name") + " (" + str(f"{youtube_queue.get("subscriber_count"):,}") + " subscribers)" + "\n"
@@ -5547,8 +5843,8 @@ def load_archived_youtube_video(index):
         youtube_queue = video
         title = get_youtube_display_title(youtube_queue)
         try:
-            image = load_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
-        except:
+            image = load_pil_image_from_url(youtube_queue.get('thumbnail'), size=(400, 225))
+        except Exception:
             image = None
         details = (
             "Created by: " + youtube_queue.get("name") + " (" + str(f"{youtube_queue.get("subscriber_count"):,}") + " subscribers)" + "\n"
@@ -5799,7 +6095,7 @@ def open_youtube_bonus_template_editor(video_id):
     tk.Button(times_frame, text="+", font=font_big, bg="#333", fg=fg, width=2,
               command=lambda: st_var.set(round(st_var.get() + 0.1, 1))).pack(side="left")
     tk.Button(times_frame, text="NOW", font=font_sm, bg="#333", fg=fg,
-              command=lambda: st_var.set(round(projected_vlc_time / 1000, 1))).pack(side="left", padx=(4, 2))
+              command=lambda: st_var.set(round(projected_player_time / 1000, 1))).pack(side="left", padx=(4, 2))
     tk.Button(times_frame, text="GO", font=font_sm, bg="#224466", fg=fg,
               command=lambda: seek_to(int(st_var.get() * 1000))).pack(side="left", padx=(0, 16))
 
@@ -5813,7 +6109,7 @@ def open_youtube_bonus_template_editor(video_id):
     tk.Button(times_frame, text="+", font=font_big, bg="#333", fg=fg, width=2,
               command=lambda: et_var.set(round(et_var.get() + 0.1, 1))).pack(side="left")
     tk.Button(times_frame, text="NOW", font=font_sm, bg="#333", fg=fg,
-              command=lambda: et_var.set(round(projected_vlc_time / 1000, 1))).pack(side="left", padx=(4, 2))
+              command=lambda: et_var.set(round(projected_player_time / 1000, 1))).pack(side="left", padx=(4, 2))
     tk.Button(times_frame, text="GO", font=font_sm, bg="#224466", fg=fg,
               command=lambda: seek_to(int(et_var.get() * 1000))).pack(side="left", padx=(0, 0))
     r += 1
@@ -5900,7 +6196,7 @@ def open_youtube_bonus_template_editor(video_id):
             "question": "",
             "answer": "",
             "choices": [],
-            "start_time": round(projected_vlc_time / 1000, 1),
+            "start_time": round(projected_player_time / 1000, 1),
             "end_time": 0.0,
             "points": 1.0,
         })
@@ -5992,7 +6288,7 @@ def open_youtube_bonus_template_editor(video_id):
             "question": "",
             "answer": "",
             "choices": [],
-            "start_time": round(projected_vlc_time / 1000, 1),
+            "start_time": round(projected_player_time / 1000, 1),
             "end_time": 0.0,
             "points": 1.0,
         })
@@ -6135,7 +6431,7 @@ def open_youtube_editor():
             end_var = tk.StringVar(value=str(video.get("end", 0) or video.get("duration")))
 
             def set_now(var):
-                var.set(int(projected_vlc_time / 1000))
+                var.set(int(projected_player_time / 1000))
 
             # Start time (Entry + NOW + REFRESH)
             start_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
@@ -8314,7 +8610,6 @@ def _migrate_old_file_structure():
 
     Explicit files:
       files/config.json          → config/config.json
-      files/vlc-parameters.txt   → config/vlc-parameters.txt
       files/cache_metadata.json  → themes_cache/cache_metadata.json
       files/censors.json         → censors/censors.json
       files/ramuns_censors.json  → censors/ramuns_censors.json
@@ -8329,7 +8624,6 @@ def _migrate_old_file_structure():
     if os.path.exists("files"):
         explicit = [
             (os.path.join("files", "config.json"),         CONFIG_FILE),
-            (os.path.join("files", "vlc-parameters.txt"),  os.path.join(CONFIG_FOLDER, "vlc-parameters.txt")),
             (os.path.join("files", "cache_metadata.json"), CACHE_METADATA_FILE),
             (os.path.join("files", "censors.json"),        CENSOR_JSON_FILE),
             (os.path.join("files", "ramuns_censors.json"), os.path.join(CENSORS_FOLDER, "ramuns_censors.json")),
@@ -8509,6 +8803,7 @@ def save_config():
             "disable_shortcuts": disable_shortcuts,
             "desktop_black": desktop_black_overlay is not None,
             "progress_bar_enabled": progress_bar_enabled,
+            "autoplay_fullscreen": autoplay_fullscreen,
         },
     }
     
@@ -8545,8 +8840,8 @@ def load_config():
     global INVERSE_OVERLAY_BACKGROUND_COLOR, INVERSE_OVERLAY_TEXT_COLOR, MIDDLE_OVERLAY_BACKGROUND_COLOR
     global stream_instance, ost_stream_instance
     global popout_layout, popout_columns, shortcuts_config
-    # Schema settings (non_webm_opengl, OPENAI_API_KEY, etc.) used in post-processing below
-    global non_webm_opengl, OPENAI_API_KEY, selected_rules_file, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, volume_level, cover_media_switch
+    # Schema settings loaded via config keys below
+    global OPENAI_API_KEY, selected_rules_file, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, volume_level
     global censors_enabled, auto_info_start, auto_info_end, auto_refresh_toggle, disable_shortcuts, tutorial_shown, _restore_desktop_black, keep_set_toggles, progress_bar_enabled
     try:
         if os.path.exists(CONFIG_FILE):
@@ -8598,23 +8893,7 @@ def load_config():
                 bonus_settings = copy.deepcopy(saved_bonus_settings[selected_bonus_settings])
             
             inverted_colors = config.get("inverted_colors", False)
-            stream_params = [
-                "--aout=directsound",
-                "--video-on-top",
-                "--no-xlib",
-                "-q",
-                "--fullscreen"
-            ]
-            ost_params = [
-                "--aout=directsound",
-                "--no-xlib",
-                "-q"
-            ]
-            if non_webm_opengl:
-                stream_params.insert(-1, "--vout=opengl")
-                ost_params.insert(-1, "--vout=opengl")
-            stream_instance = vlc.Instance(*stream_params)
-            ost_stream_instance = vlc.Instance(*ost_params)
+            # mpv players do not need per-load recreation
             try:
                 set_volume(volume_level)
             except Exception as e:
@@ -8663,6 +8942,8 @@ def load_config():
                     disable_shortcuts = bool(_t["disable_shortcuts"])
                 if "progress_bar_enabled" in _t:
                     progress_bar_enabled = bool(_t["progress_bar_enabled"])
+                if "autoplay_fullscreen" in _t:
+                    autoplay_fullscreen = bool(_t["autoplay_fullscreen"])
                 _restore_desktop_black = bool(_t.get("desktop_black", False))
     except Exception as e:
         os.remove(CONFIG_FILE)
@@ -10055,7 +10336,6 @@ def show_tutorial_popup():
                         ("p",   "This tool is designed to run on Windows 10 or later. "
                                 "It may work on other platforms but I haven't tested it."),
                         ("ul",  [
-                            "VLC media player is required for playback. Make sure to install it before using the app.",
                             "(Optional) FFMPEG installed and added to PATH for youtube video downloading and file editing.",
                             "(Optional) Cloudflare or ngrok for using the Web Server (Players join online)."
                         ]),
@@ -14196,11 +14476,10 @@ def toggle_light_mode(type=None, queue=True, show_popup=True):
             popout_buttons_by_name["lightning_start"].configure(text="⏹️ STOP")
         if show_popup and light_round_number == 0:
             image_path = "banners/" + type + "_lightning_round.webp"
-            image_tk = None
+            pil_banner = None
             if os.path.exists(image_path):
-                image = Image.open(image_path)
-                image = image.resize((400, 225), Image.LANCZOS)  # Resize if needed
-                image_tk = ImageTk.PhotoImage(image)  # Convert to Tkinter format
+                pil_banner = Image.open(image_path).convert("RGBA")
+                pil_banner = pil_banner.resize((400, 225), Image.LANCZOS)
             mode_length = lightning_mode_settings.get(light_mode, {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
             if "c. " in light_mode:
                 mode_type = 'character'
@@ -14217,7 +14496,7 @@ def toggle_light_mode(type=None, queue=True, show_popup=True):
                 mode_length = f"{min_length} - {max_length}"
             mode_desc = f"{mode.get('desc')}\nYou have {mode_length} seconds to guess.\n\n1 PT for the first to guess the {mode_type}!"
 
-            toggle_coming_up_popup(True, f"{light_mode.replace('c.', 'Character')} Lightning Round", mode_desc, image_tk, queue=True)
+            toggle_coming_up_popup(True, f"{light_mode.replace('c.', 'Character')} Lightning Round", mode_desc, pil_banner, queue=True)
 
 def unselect_light_modes():
     global light_mode, variety_light_mode_enabled
@@ -14294,13 +14573,19 @@ def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
     global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count, current_light_mode
     global _light_answer_wall_start
+    # During clip/OST rounds the stream runs in player on its own timeline.
+    # Synthesise a fake player-time so all threshold logic keeps working unchanged.
+    # Activate as soon as currently_streaming is set (use 0 elapsed until _stream_wall_start is seeded).
+    if currently_streaming and light_round_start_time is not None:
+        elapsed = (_wall_time() - _stream_wall_start) if _stream_wall_start is not None else 0
+        time = light_round_start_time + elapsed
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
         if time < 1 and not frame_light_round_started:
             player.pause()
             setup_frame_light_round()
         return
     if (time > 1 or _light_answer_wall_start is not None) and light_round_start_time != None and light_round_started:
-        # Once the wall clock is set we're permanently in the answer phase regardless of VLC position
+        # Once the wall clock is set we're permanently in the answer phase regardless of Player position
         # (seeking the theme backwards must not flip us back into question-phase logic)
         _in_answer_phase = _light_answer_wall_start is not None or time >= light_round_start_time + light_round_length
         if _in_answer_phase and _light_answer_wall_start is None:
@@ -14331,9 +14616,9 @@ def update_light_round(time):
                     set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 if not is_title_window_up():
-                    if not fixed_current_round or (fixed_current_round and not fixed_current_round.get("clip_for_answer")):
-                        player.set_fullscreen(False)
-                        player.set_fullscreen(True)
+                    # if not fixed_current_round or (fixed_current_round and not fixed_current_round.get("clip_for_answer")):
+                    #     player.set_fullscreen(False)
+                    #     player.set_fullscreen(True)
                     char_answer = copy.copy(character_round_answer)
                     cover_answer = light_cover_image
                     image_answer_source = None  # source text shown as answer (no header, width_max=0.55)
@@ -14377,6 +14662,8 @@ def update_light_round(time):
                         top_info_data = f"IMAGE SOURCE:\n{domain}"
                     else:
                         top_info_data = None
+                    if light_mode == 'ost' and not (fixed_current_round and fixed_current_round.get("clip_for_answer")):
+                        _show_ost_cover()  # hide video during transition; removed by stop_stream
                     toggle_title_popup(True)
                     set_black_screen(False)
                     update_light_round_number()
@@ -14405,12 +14692,21 @@ def update_light_round(time):
                             top_info(_ans_display, width_max=max_width_size)
                     if image_answer_source:
                         top_info(image_answer_source, width_max=max_width_size)
+                    # For clip_for_answer rounds the stream keeps playing; seek it forward
+                    # to where the answer portion begins (stream_start_time + round_length),
+                    # but only if the player isn't already there (avoids stutter on natural end).
+                    if (fixed_current_round and fixed_current_round.get("clip_for_answer")
+                            and stream_start_time is not None):
+                        _clip_answer_target_ms = int((stream_start_time + light_round_length) * 1000)
+                        if abs(player.get_time() - _clip_answer_target_ms) > 2000:
+                            player.set_time(_clip_answer_target_ms)
                     # For fixed rounds where start_time means the theme's answer entry point
                     # (i.e. non-regular/peek/blind/song types), seek the theme to start_time and unmute
-                    # so the theme plays during the answer phase regardless of where VLC currently is.
+                    # so the theme plays during the answer phase regardless of where Player currently is.
                     _seek_types = ["regular", "peek", "blind", "song"]
                     if (fixed_current_round and fixed_current_round.get("start_time") is not None
-                            and fixed_current_round.get("type") not in _seek_types):
+                            and fixed_current_round.get("type") not in _seek_types
+                            and not fixed_current_round.get("clip_for_answer")):
                         player.set_time(int(fixed_current_round["start_time"] * 1000))
                         player.play()
                         toggle_mute(False, True)
@@ -14477,7 +14773,7 @@ def update_light_round(time):
                 word_count = max(1, round(len(synopsis_words) * progress))
                 shown_text = " ".join(synopsis_words[:word_count])
                 toggle_synopsis_overlay(text=shown_text)
-            elif emoji_overlay_window:
+            elif current_light_mode == 'emoji' or emoji_overlay_window:
                 # Reveal emojis one by one over the round
                 emojis = get_emoji_clues_for_title(currently_playing.get("data"))
                 elapsed = light_round_length - max(0, time_left)
@@ -14486,7 +14782,7 @@ def update_light_round(time):
                 toggle_emoji_overlay(emojis=emojis, max_emojis=emoji_count)
             elif light_progress_bar:
                 set_progress_overlay(round((time - light_round_start_time)*100), light_round_length*100)
-                if stream_player.is_playing() and (not fixed_current_round or fixed_current_round.get("reveal_title_halfway")):
+                if currently_streaming and (not fixed_current_round or fixed_current_round.get("reveal_title_halfway")):
                     half_time = (light_round_length / 2)
                     track_name = extract_track_name_from_youtube_title(last_streamed[1], currently_playing.get("data", {}))
                     if track_name.strip() != "":
@@ -14507,7 +14803,7 @@ def update_light_round(time):
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval)+starting_letters)
                 set_frame_number(f"{word_num}/{final_count} REVEALS", inverse=character_round_answer)
                 toggle_title_overlay(get_title_light_string(word_num))
-            elif scramble_overlay_root:
+            elif scramble_overlay_root or current_light_variant == 'scramble':
                 if fixed_current_round and fixed_current_round.get("scramble_place_order"):
                     order_count = len([x for x in fixed_current_round["scramble_place_order"].split(",") if x.strip().isdigit()])
                     total_letters = min(order_count, len(scramble_overlay_letters))
@@ -14525,7 +14821,7 @@ def update_light_round(time):
                     word_num = total_letters
                 set_frame_number(f"{word_num}/{total_letters} PLACEMENTS", inverse=character_round_answer)
                 toggle_scramble_overlay(num_letters=word_num)
-            elif swap_overlay_root:
+            elif swap_overlay_root or current_light_variant == 'swap':
                 # Total swaps you want to show, based on number of pairs
                 if len(swap_pairs) <= 2:
                     total_swaps = 0
@@ -14661,9 +14957,10 @@ def update_light_round(time):
                 set_countdown(round(blind_length - light_blind_one_second_count))
             else:
                 set_countdown(round(time_left/light_speed_modifier), inverse=character_round_answer)
-    if light_mode and time < 1 and _light_answer_wall_start is None:
-        toggle_coming_up_popup(False, "Lightning Round")
-        if not light_round_started:
+    if light_mode and _light_answer_wall_start is None:
+        if time < 1:
+            toggle_coming_up_popup(False, "Lightning Round")
+        if not light_round_started and time < 1:
             light_round_started = True
             current_light_mode = light_mode
             if light_mode in ['regular', 'peek']:
@@ -14696,34 +14993,78 @@ def update_light_round(time):
                     for m in blind_modes:
                         if blind_variants.get(m):
                             allowed_blind_modes.append(m)
-                    allowed_blind_modes = allowed_blind_modes or blind_modes
+                    # Only fall back to the full list for non-mismatch modes; mismatch
+                    # requires its own setup and shouldn't be selected unless enabled.
+                    allowed_blind_modes = allowed_blind_modes or [m for m in blind_modes if m != 'mismatch']
                     blind_mode = random.choice(allowed_blind_modes)
-                if (fixed_current_round or mismatch) and blind_mode == "mismatch":
-                    media = instance.media_new(directory_files.get(get_mismatched_theme()))
-                    mismatched_player.set_media(media)
-                    mismatched_player.play()
-                    mismatched_player.set_fullscreen(False)
-                    mismatched_player.set_fullscreen(True)
-                    spawn_pulsating_music_note(root.winfo_screenwidth() // 2, root.winfo_screenheight() // 2)
-                    def wait_for_mismatch(filename):
-                        if filename != currently_playing.get("filename"):
+                if blind_mode == "mismatch":
+                    # Explicitly init the round here — the mismatch seek moves the
+                    # player past position 1s so the normal time < 1 gate won't fire.
+                    if not light_round_started:
+                        light_round_started = True
+                        set_progress_overlay(0, light_round_length * 100)
+                    # Mute the player directly (not toggle_mute — that triggers background music)
+                    # so the theme audio doesn't play from position 0 while we load the
+                    # mismatch video and seek to light_round_start_time.
+                    player.audio_set_mute(True)
+                    def _start_mismatch_after_theme(theme_path):
+                        global _mismatch_active, _mismatch_vid_track_id, _mismatch_orig_vid
+                        if currently_playing.get("filename") != _cur_fn:
+                            player.audio_set_mute(False)
                             return
-                        elif mismatched_player.is_playing() and mismatched_player.get_length() > 0:
-                            def mismatch_overlay():
-                                top_info("MISMATCHED VISUALS")
-                                set_frame_number("GUESS BY MUSIC ONLY")
-                                update_light_round_number()
+                        if not theme_path:
+                            player.audio_set_mute(False)
+                            return
+                        # Add the mismatch video as an external track on the main player.
+                        # Stay paused through video-add AND the seek so mpv's internal
+                        # sync operations don't interrupt the audio pipeline.
+                        try:
+                            _mismatch_orig_vid = player._p.vid
+                            _was_paused = player._p.pause
+                            if not _was_paused:
+                                player._p.pause = True
+                            player._p.command('video-add', theme_path, 'select')
+                            # Seek to round start while still paused — no audio disruption
+                            try:
+                                player._p.seek(int(float(light_round_start_time)), 'absolute')
+                            except Exception:
+                                pass
+                            # Find the newly added external video track ID
+                            _mismatch_vid_track_id = None
+                            try:
+                                tracks = player._p.track_list or []
+                                ext_vids = [t for t in tracks if t.get('type') == 'video' and t.get('external')]
+                                if ext_vids:
+                                    _mismatch_vid_track_id = ext_vids[-1].get('id')
+                            except Exception:
+                                pass
+                            # Always unpause — we want the round playing regardless of initial state
+                            player._p.pause = False
+                        except Exception as e:
+                            print(f"[mismatch] exception in video-add block: {e}")
+                            player.audio_set_mute(False)
+                            return
+                        # Unmute now that we're at the right position with the right video
+                        player.audio_set_mute(False)
+                        set_volume(volume_level)
+                        _mismatch_active = True
+                        _mnx, _mny, _mnw, _mnh = _get_mpv_window_rect()
+                        _mn_fs = max(scl(100), int(_mnh * 0.15)) if _mnh else scl(100)
+                        spawn_pulsating_music_note(_mnx + _mnw // 2, _mny + _mnh // 2, font_size=_mn_fs)
+                        set_black_screen(False)
+                        top_info("MISMATCHED VISUALS")
+                        set_frame_number("GUESS BY MUSIC ONLY")
+                        update_light_round_number()
+                        if pulsating_note_window:
+                            try:
                                 pulsating_note_window.attributes("-topmost", True)
-                            def set_mismatch_start():
-                                mismatched_player.set_time(int(float(light_round_start_time))*1000)
-                                mismatched_player.set_fullscreen(False)
-                                mismatched_player.set_fullscreen(True)
-                            set_mismatch_start()
-                            for time in [500, 1000, 1500, 2000]:
-                                root.after(time, mismatch_overlay)
-                        else:
-                            root.after(100, wait_for_mismatch, filename)
-                    wait_for_mismatch(currently_playing.get("filename"))
+                            except Exception:
+                                pass
+                    _cur_fn = currently_playing.get("filename")
+                    def _theme_worker():
+                        theme_path = directory_files.get(get_mismatched_theme())
+                        root.after(0, _start_mismatch_after_theme, theme_path)
+                    threading.Thread(target=_theme_worker, daemon=True).start()
                 else:
                     if not fixed_current_round:
                         is_op = is_slug_op(currently_playing.get('data', {}).get('slug', ""))
@@ -14887,33 +15228,35 @@ def update_light_round(time):
                     else:
                         stream_start_time = fixed_current_round.get("clip_start_time", 0) if fixed_current_round else 0
                     test_print(f"Length: {length} | Stream Start Time: {stream_start_time}")
-                    # stream_player.set_time(int(float(stream_start_time))*1000)
-                    player.pause()
+                    # player is already loading the stream (set_media called in stream_url)
                     test_print(currently_streaming)
                     def wait_for_stream(filename, count):
-                        global stream_start_time
+                        global stream_start_time, _stream_wall_start
                         test_print(F"Waiting...{count}")
-                        stream_player.set_time(int(float(stream_start_time))*1000)
                         def restart_player():
-                            stream_player.stop()
-                            stream_player.play()
+                            player.stop()
+                            player.play()
                             root.after(100, wait_for_stream, filename, 0)
                         if filename != currently_playing.get("filename") or not currently_streaming:
                             return
-                        elif stream_player.is_playing() and stream_player.get_length() > 0:
+                        elif player.is_playing() and player.get_length() > 0:
                             # If length was unknown when stream started, calculate start time now
-                            actual_length = stream_player.get_length() / 1000
+                            actual_length = player.get_length() / 1000
                             if stream_start_time == 0 and not (fixed_current_round and fixed_current_round.get("clip_start_time")):
                                 stream_start_time = get_stream_start_time(actual_length)
                                 test_print(f"Deferred stream start time: {stream_start_time} (length={actual_length})")
                             def stream_overlay():
+                                global black_overlay
                                 if light_mode == 'ost':
+                                    if not black_overlay:  # already up — skip re-application
+                                        set_black_screen(True)  # OST is audio-only; hide video with blind overlay
                                     if fixed_current_round and fixed_current_round.get("ost_header"):
                                         top_info(fixed_current_round.get("ost_header").upper())
                                     else:
                                         top_info("SOUNDTRACK / OST")
-                                    set_progress_overlay(0, light_round_length*100)
                                 else:
+                                    # Clear the blind that play_filename raised before the clip loaded
+                                    set_black_screen(False)
                                     if (fixed_current_round and fixed_current_round.get("censor_bottom")) or (not fixed_current_round and last_streamed[3] and "Crunchyroll" in last_streamed[3]):
                                         toggle_outer_edge_overlay()
                                     if fixed_current_round and fixed_current_round.get("clip_header"):
@@ -14924,18 +15267,30 @@ def update_light_round(time):
                                         top_info("RANDOM CLIP", 40)
                                 update_light_round_number()
                             def set_stream_start():
-                                stream_player.set_time(int(float(stream_start_time))*1000)
+                                global _stream_wall_start, black_overlay
+                                # For OST rounds raise the blind immediately so the video is
+                                # never visible; stream_overlay will confirm it later.
+                                if light_mode == 'ost' and not black_overlay:
+                                    set_black_screen(True)
+                                player.set_time(int(float(stream_start_time))*1000)
+                                # Wall clock anchored at the moment we seek to stream_start_time;
+                                # update_light_round synthesizes fake player-time from this.
+                                _stream_wall_start = _wall_time()
+                                # Unmute now so the stream is audible immediately on seek.
+                                toggle_mute(False, True)
+                                # Initialise the OST progress bar exactly once right here so it
+                                # starts from 0 without any later stream_overlay call resetting it.
+                                if light_mode == 'ost':
+                                    set_progress_overlay(0, light_round_length*100)
                                 volume_adjustment = fixed_current_round.get("volume_adjustment", 0) if fixed_current_round else 0
                                 _stream_volume_level = int(volume_level * (1 + ((stream_volume_boost + volume_adjustment) / 100)))
-                                stream_player.audio_set_volume(_stream_volume_level)
-                                stream_player.set_fullscreen(False)
-                                stream_player.set_fullscreen(True)
+                                player.audio_set_volume(_stream_volume_level)
                             def start_player():
-                                test_print(f"{stream_player.get_time()} =?= {int(float(stream_start_time))*1000}")
-                                if stream_player.get_time() == int(float(stream_start_time))*1000:
+                                test_print(f"{player.get_time()} =?= {int(float(stream_start_time))*1000}")
+                                if player.get_time() == int(float(stream_start_time))*1000:
+                                    # Seek didn't take — restart the stream from the beginning
                                     restart_player()
-                                else:
-                                    player.play()
+                                # else: stream is playing from the right position, nothing to do
                             root.after(2000, start_player)
                             set_stream_start()
                             for time in [500, 1000, 1500, 2000]:
@@ -14955,11 +15310,14 @@ def update_light_round(time):
             if fixed_current_round and fixed_current_round.get("mc_choice_2"):
                 guess_extra("fixed_mc")
             append_lightning_history()
-        player.set_time(int(float(light_round_start_time))*1000)
-        set_countdown(int(light_round_length), inverse=character_round_answer)
-        set_light_round_number()
-        if light_mode != 'peek':
-            update_light_round_number(inverse=character_round_answer)
+            set_countdown(int(light_round_length), inverse=character_round_answer)
+            set_light_round_number()
+            if light_mode != 'peek':
+                update_light_round_number(inverse=character_round_answer)
+        if not currently_streaming and light_round_started:
+            #only if not already at time
+            if light_round_start_time is not None and projected_player_time < int(float(light_round_start_time))*1000:
+                player.set_time(int(float(light_round_start_time))*1000)
 
 def apply_reveal_mode(reveal_mode, image_source=None, slide_direction=None, slice_vertical=None, slice_count=None, tile_grid_size=None):
     """
@@ -15068,13 +15426,28 @@ def get_char_types_by_popularity(data=None, mode=""):
 def clean_up_light_round(new_round=False):
     global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay
     global frame_light_round_started, light_muted, character_round_answer, light_cover_image, light_trivia_answer, light_blind_one_second_count
-    global _light_answer_wall_start
+    global _light_answer_wall_start, _mismatch_active, _mismatch_vid_track_id, _mismatch_orig_vid
+    global _mismatch_hwnd, _main_hwnd, _note_hwnd
     if new_round:
         _light_answer_wall_start = None
-    mismatched_player.stop()
-    mismatched_player.set_media(None)  # Reset the media
+    _uninstall_mismatch_hook()
+    _mismatch_hwnd = 0
+    _main_hwnd = 0
+    _note_hwnd = 0
+    # Restore original video track (don't video-remove — that reinitializes VO and causes a glitch;
+    # just switching the track ID is seamless and the orphaned external track is dropped on next load)
+    _was_mismatch = _mismatch_active
+    if _mismatch_active:
+        _mismatch_active = False
+        try:
+            if _mismatch_orig_vid is not None:
+                player._p.vid = _mismatch_orig_vid
+        except Exception:
+            pass
+        _mismatch_vid_track_id = None
+        _mismatch_orig_vid = None
     if new_round or not fixed_current_round or not fixed_current_round.get("clip_for_answer"):
-        stop_stream()
+        stop_stream(restore=not new_round)
         light_muted = False
         if not disable_video_audio:
             toggle_mute(False, True)
@@ -15103,8 +15476,6 @@ def clean_up_light_round(new_round=False):
         toggle_synopsis_overlay(destroy=True)
     for info in [set_frame_number, top_info]:
         info()
-    if black_overlay:
-        black_overlay.attributes("-topmost", True)
     send_scoreboard_command("show")
 
 def light_round_transition():
@@ -15711,50 +16082,54 @@ def update_frame_light_round(currently_playing_filename):
 
 clues_overlay = None  # Store the overlay window
 clues_overlay_labels = {}  # Store references to value labels by name
-def toggle_clues_overlay(destroy=False):
+def toggle_clues_overlay(destroy=False, quick_destroy=False, _saved_labels=None):
     global clues_overlay, clues_overlay_labels
 
     if destroy:
         if clues_overlay:
-            screen_width = root.winfo_screenwidth()
-            animate_window(clues_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
+            clues_overlay.destroy()
         clues_overlay = None
         clues_overlay_labels = {}
+        return
+
+    if quick_destroy:
+        _saved = {k: lbl.cget("text") for k, lbl in clues_overlay_labels.items()}
+        if clues_overlay:
+            clues_overlay.destroy()
+        clues_overlay = None
+        clues_overlay_labels = {}
+        toggle_clues_overlay(_saved_labels=_saved)
         return
 
     data = currently_playing.get("data")
     if not data or clues_overlay:
         return
 
-    # Prepare values
-    season = data.get('season', "").replace(" ", "\n")
-    studio = "\n".join(data.get("studios", []))
-    tags = "\n".join(get_tags(data))
-    score = f"{data.get('score')}\n#{data.get('rank')}"
-    _members_num = _safe_int(data.get('members', 0), 0)
-    popularity = f"{_members_num:,}\n#{data.get('popularity') or 'N/A'}"
-    episodes = str(data.get("episodes") or "Airing")
+    if _saved_labels is None:
+        _saved_labels = {}
+
+    # Prepare always-visible values
     type_ = get_format(data)
     source = data.get("source", "")
-    theme = data.get("slug")
+    season = data.get('season', "").replace(" ", "\n")
+    studio = "\n".join(data.get("studios", []))
     song = get_song_string(data)
 
-    # Create overlay
+    mx, my, mw, mh = _get_mpv_window_rect()
+    _ws_mod = min(mw / 2560, mh / 1440)
+    def ws(n): return max(1, int(n * _ws_mod))
+
+    overlay_width = round(mw * 0.7)
+    overlay_height = round(mh * 0.8)
+    x = mx + (mw - overlay_width) // 2
+    y = my + (mh - overlay_height) // 2
+
     clues_overlay = tk.Toplevel(root)
     clues_overlay.overrideredirect(True)
     clues_overlay.attributes("-topmost", True)
     clues_overlay.attributes("-alpha", 0.8)
     clues_overlay.configure(bg=OVERLAY_BACKGROUND_COLOR)
-
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    overlay_width = round(screen_width * 0.7)
-    overlay_height = round(screen_height * 0.8)
-    x = (screen_width - overlay_width) // 2
-    y = (screen_height - overlay_height) // 2
-
-    clues_overlay.geometry(f"{overlay_width}x{overlay_height}+{-screen_width}+{y}")
-    clues_overlay.update_idletasks()
+    clues_overlay.geometry(f"{overlay_width}x{overlay_height}+{x}+{y}")
 
     # Grid layout
     clues_overlay.grid_columnconfigure(0, weight=1)
@@ -15766,17 +16141,21 @@ def toggle_clues_overlay(destroy=False):
     clues_overlay.grid_rowconfigure(3, weight=1)
 
     def create_box(row, column, title, value, key, columnspan=1, rowspan=1):
-        frame = tk.Frame(clues_overlay, bg=OVERLAY_BACKGROUND_COLOR, padx=scl(20), pady=scl(20), highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=scl(4))
-        frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan, sticky="nsew", padx=scl(10), pady=scl(10))
-
+        # On rebuild, restore previously revealed text
+        display_value = _saved_labels.get(key, value)
+        frame = tk.Frame(clues_overlay, bg=OVERLAY_BACKGROUND_COLOR, padx=ws(20), pady=ws(20),
+                         highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=ws(4))
+        frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan,
+                   sticky="nsew", padx=ws(10), pady=ws(10))
         if title:
-            tk.Label(frame, text=title.upper(), font=("Arial", scl(50), "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR).pack(anchor="center")
-
-        val_size = 70 - max(0, (value.count('\n') - 5) * 5)
-        label = tk.Label(frame, text=value, font=("Arial", scl(val_size)), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                         wraplength=((overlay_width // 3) * columnspan - scl(10)), justify="center")
+            tk.Label(frame, text=title.upper(), font=("Arial", ws(50), "bold", "underline"),
+                     fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR).pack(anchor="center")
+        val_size = 70 - max(0, (display_value.count('\n') - 5) * 5)
+        label = tk.Label(frame, text=display_value, font=("Arial", ws(val_size)),
+                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
+                         wraplength=((overlay_width // 3) * columnspan - ws(10)), justify="center")
         label.pack(fill="both", expand=True)
-        clues_overlay_labels[key] = label  # Store reference
+        clues_overlay_labels[key] = label
 
     create_box(0, 0, "Type", type_, "Type")
     create_box(0, 1, "Source", source, "Source")
@@ -15788,31 +16167,45 @@ def toggle_clues_overlay(destroy=False):
     create_box(2, 1, "Members", "", "Members")
     create_box(3, 0, None, "", "Song", columnspan=3)
 
-    animate_window(clues_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)
+    _register_overlay_for_tracking(clues_overlay, overlay_width, overlay_height,
+                                   on_size_change=lambda: toggle_clues_overlay(quick_destroy=True))
 
 # =========================================
 #          *SONG LIGHTNING ROUND
 # =========================================
 
 song_overlay_boxes = {}
-def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show_music=True, destroy=False):
+_song_last_flags = {"show_title": True, "show_artist": True, "show_theme": True, "show_music": True}
+
+def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show_music=True, destroy=False, quick_destroy=False):
     """Toggles the Song Lightning Round overlay with three separate boxes."""
-    global song_overlay_boxes, music_icon_label
-    
+    global song_overlay_boxes, music_icon_label, _song_last_flags
+
     if destroy:
         for box in song_overlay_boxes.values():
-            if box:
-                screen_width = root.winfo_screenwidth()
-                animate_window(box, screen_width, box.winfo_y(), steps=20, delay=5, bounce=False, fade=None, destroy=True)
+            if box and box.winfo_exists():
+                box.destroy()
         song_overlay_boxes = {}
         return
 
-    # Get screen dimensions
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    box_width = round(screen_width * 0.70)
+    if quick_destroy:
+        flags = dict(_song_last_flags)
+        for box in song_overlay_boxes.values():
+            if box and box.winfo_exists():
+                box.destroy()
+        song_overlay_boxes = {}
+        toggle_song_overlay(**flags)
+        return
 
-    center_x = (screen_width - box_width) // 2
+    # Save flags for rebuild
+    _song_last_flags = {"show_title": show_title, "show_artist": show_artist,
+                        "show_theme": show_theme, "show_music": show_music}
+
+    mx, my, mw, mh = _get_mpv_window_rect()
+    _ws_mod = min(mw / 2560, mh / 1440)
+    def ws(n): return max(1, int(n * _ws_mod))
+
+    box_width = round(mw * 0.70)
 
     # Load current song data
     data = currently_playing.get("data", {})
@@ -15821,58 +16214,74 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
     artist = get_song_string(data, "artist_string")
     theme_label = format_slug(slug).upper()  # e.g. "OPENING 2"
 
-    # Each box: { key: (title, text, y_position, show?) }
+    # Shared resize callback — same object so tracker deduplication fires it only once
+    def _song_resize_cb(): toggle_song_overlay(quick_destroy=True)
+
+    # Each box: { key: (title, text, x_offset_frac, y_frac, font_size, show?) }
+    # x_offset_frac: fraction of mw added to center (matches original screen_width//10 * x_offset)
     boxes = {
-        "theme":   (theme_label, None, 0, int(screen_height * 0.28), scl(60), show_theme),
-        "title":   ("SONG TITLE", song, 0, int(screen_height * 0.4), scl(120), show_title),
-        "artist":  ("SONG ARTIST", artist, 0, int(screen_height * 0.65), scl(80), show_artist),
-        "music":  ("             \n\n", None, 2, int(screen_height * 0.12), scl(70), show_music)
+        "theme":  (theme_label,       None,   0.0, 0.28, ws(60),  show_theme),
+        "title":  ("SONG TITLE",      song,   0.0, 0.40, ws(120), show_title),
+        "artist": ("SONG ARTIST",     artist, 0.0, 0.65, ws(80),  show_artist),
+        "music":  ("             \n\n", None,  0.2, 0.12, ws(70),  show_music),
     }
 
-    for key, (title, text, x_offset, y, font_size, show) in boxes.items():
+    for key, (title, text, x_offset_frac, y_frac, font_size, show) in boxes.items():
         if show:
-            if key not in song_overlay_boxes or (key != "music" and not song_overlay_boxes[key].winfo_exists()):
+            if key not in song_overlay_boxes or not song_overlay_boxes.get(key) or not song_overlay_boxes[key].winfo_exists():
                 box = tk.Toplevel(root)
                 box.overrideredirect(True)
                 box.attributes("-topmost", True)
                 box.attributes("-alpha", 0.85)
-                box.configure(bg=OVERLAY_BACKGROUND_COLOR, padx=scl(20), pady=scl(20), highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=scl(4))
+                box.configure(bg=OVERLAY_BACKGROUND_COLOR, padx=ws(20), pady=ws(20),
+                               highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=ws(4))
 
                 song_overlay_boxes[key] = box
 
-                # Title label
                 if key == "music":
-                    title_lbl = tk.Label(box, text=title, font=("Arial", font_size, "bold"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
-                else:
-                    title_lbl = tk.Label(box, text=title, font=("Arial", scl(60), "bold", "underline"), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
-                if text:
-                    title_lbl.pack(anchor="center")
-                else:
+                    # Whitespace title sizes the box; note floats centered on top
+                    title_lbl = tk.Label(box, text=title, font=("Arial", font_size, "bold"),
+                                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
                     title_lbl.pack(anchor="center", fill="both", expand=True)
-
-                if key == "music":
-                    text_lbl = tk.Label(box, text="🎵", font=("Arial", scl(1000)), bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100,255))
-                    text_lbl.place(relx=0.5, rely=0.5, anchor="center")
-                    # Start pulsating the music icon
-                    pulsate_music_icon(text_lbl)
-                elif text:
-                    # Text label (optional)
-                    text_lbl = tk.Label(box, text=text, font=("Arial", font_size), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, justify="center")
-                    text_lbl.pack(fill="both", expand=True)
-                    adjust_font_size(text_lbl, box_width, base_size=font_size, min_size=scl(20))
-
-                box.update_idletasks()
-                box.geometry(f"+{-screen_width}+{y}")  # Adjust for bottom spacing
-                box.update_idletasks()
-                window_width = box.winfo_reqwidth()
-                if key == "music":
-                    song_overlay_boxes[key].geometry(f"+{((screen_width - window_width) // 2) + round((screen_width//10)*x_offset)}+{y}")
+                    _note_base = ws(160)
+                    _note_max  = ws(200)
+                    note_lbl = tk.Label(box, text="🎵", font=("Segoe UI Emoji", _note_base),
+                                        bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
+                    note_lbl.place(relx=0.5, rely=0.5, anchor="center")
+                    pulsate_music_icon(note_lbl, sizes=(_note_base, _note_max), _font="Segoe UI Emoji")
                 else:
-                    animate_window(song_overlay_boxes[key], ((screen_width - window_width) // 2) + round((screen_width//10)*x_offset), y, steps=20, delay=5, bounce=False, fade=None)
-        elif key in song_overlay_boxes:
-            if song_overlay_boxes[key].winfo_x() == center_x:  # Only animate out if it's on screen
-                animate_window(song_overlay_boxes[key], screen_width, y, steps=20, delay=5, bounce=False, fade=None, destroy=True)
-                song_overlay_boxes[key] = None
+                    title_lbl = tk.Label(box, text=title, font=("Arial", ws(60), "bold", "underline"),
+                                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
+                    if text:
+                        title_lbl.pack(anchor="center")
+                    else:
+                        title_lbl.pack(anchor="center", fill="both", expand=True)
+                    if text:
+                        text_lbl = tk.Label(box, text=text, font=("Arial", font_size),
+                                            fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, justify="center")
+                        text_lbl.pack(fill="both", expand=True)
+                        adjust_font_size(text_lbl, box_width, base_size=font_size, min_size=ws(20))
+
+                # Measure at off-screen position (10000,10000 is safely off any screen)
+                box.geometry(f"+10000+10000")
+                box.update_idletasks()
+                window_width = box.winfo_reqwidth() or box_width
+                window_height = box.winfo_reqheight() or ws(200)
+                # For the music box: the note is placed via .place() so it doesn't
+                # contribute to winfo_reqwidth/height. Expand the window to fit it.
+                if key == "music":
+                    note_px = round(ws(200) * root.winfo_fpixels("1i") / 72.0)
+                    window_width = max(window_width, note_px + ws(40))
+                    window_height = max(window_height, note_px + ws(40))
+                y = my + int(mh * y_frac)
+                x = mx + (mw - window_width) // 2 + round(mw * x_offset_frac)
+                x = max(mx, min(x, mx + mw - window_width))  # clamp to mpv monitor
+                box.geometry(f"{window_width}x{window_height}+{x}+{y}")
+                _register_overlay_for_tracking(box, window_width, window_height,
+                                               on_size_change=_song_resize_cb)
+        elif key in song_overlay_boxes and song_overlay_boxes[key] and song_overlay_boxes[key].winfo_exists():
+            song_overlay_boxes[key].destroy()
+            song_overlay_boxes[key] = None
 
 # =========================================
 #       *TRIVIA LIGHTNING ROUND
@@ -16109,7 +16518,14 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
     global emoji_overlay_window, emoji_overlay_labels, emoji_overlay_frame
 
     NUM_EMOJI_SLOTS = 6
-    SLOT_SIZE = scl(200)
+
+    _emx, _emy, _emw, _emh = _get_mpv_window_rect()
+    if not _emw:
+        _emx, _emy, _emw, _emh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    _ws_mod = min(_emw / 2560, _emh / 1440)
+    def ws(n): return max(1, int(n * _ws_mod))
+
+    SLOT_SIZE = ws(200)
 
     if destroy:
         if emoji_overlay_window and emoji_overlay_window.winfo_exists():
@@ -16130,12 +16546,10 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
 
     # Create overlay and labels only once
     if not (emoji_overlay_window and emoji_overlay_window.winfo_exists()):
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
-        overlay_w = int(screen_w * 0.7)
-        overlay_h = int(screen_h * 0.35)
-        x = (screen_w - overlay_w) // 2
-        y = (screen_h - overlay_h) // 2
+        overlay_w = int(_emw * 0.7)
+        overlay_h = int(_emh * 0.35)
+        x = _emx + (_emw - overlay_w) // 2
+        y = _emy + (_emh - overlay_h) // 2
 
         emoji_overlay_window = tk.Toplevel(root)
         emoji_overlay_window.overrideredirect(True)
@@ -16143,14 +16557,16 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
         emoji_overlay_window.attributes("-alpha", 0.9)
         emoji_overlay_window.configure(bg=OVERLAY_BACKGROUND_COLOR)
         emoji_overlay_window.geometry(f"{overlay_w}x{overlay_h}+{x}+{y}")
+        _register_overlay_for_tracking(emoji_overlay_window, overlay_w, overlay_h,
+                                       on_size_change=lambda: toggle_emoji_overlay(destroy=True))
 
         frame = tk.Frame(
             emoji_overlay_window,
             bg=OVERLAY_BACKGROUND_COLOR,
-            padx=scl(20),
-            pady=scl(20),
+            padx=ws(20),
+            pady=ws(20),
             highlightbackground=OVERLAY_TEXT_COLOR,
-            highlightthickness=scl(4)
+            highlightthickness=ws(4)
         )
         frame.grid(row=0, column=0, sticky="nsew")
         emoji_overlay_window.grid_rowconfigure(0, weight=1)
@@ -16159,16 +16575,16 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
         title_label = tk.Label(
             frame,
             text=title,
-            font=("Arial", scl(70), "bold", "underline"),
+            font=("Arial", ws(70), "bold", "underline"),
             fg=OVERLAY_TEXT_COLOR,
             bg=OVERLAY_BACKGROUND_COLOR,
             anchor="w",
             justify="left"
         )
-        title_label.grid(row=0, column=0, sticky="w", pady=(0, scl(20)))
+        title_label.grid(row=0, column=0, sticky="w", pady=(0, ws(20)))
 
         emoji_row = tk.Frame(frame, bg=OVERLAY_BACKGROUND_COLOR)
-        emoji_row.grid(row=1, column=0, sticky="nsew", padx=scl(20), pady=scl(10))
+        emoji_row.grid(row=1, column=0, sticky="nsew", padx=ws(20), pady=ws(10))
         frame.grid_rowconfigure(1, weight=1)
         frame.grid_columnconfigure(0, weight=1)
 
@@ -16177,11 +16593,11 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
             label = tk.Label(
                 emoji_row,
                 text="",
-                width=SLOT_SIZE // scl(20),
-                height=SLOT_SIZE // scl(40),
+                width=SLOT_SIZE // ws(20),
+                height=SLOT_SIZE // ws(40),
                 bg=OVERLAY_BACKGROUND_COLOR
             )
-            label.grid(row=0, column=i, padx=scl(10), pady=scl(10), sticky="nsew")
+            label.grid(row=0, column=i, padx=ws(10), pady=ws(10), sticky="nsew")
             emoji_row.grid_columnconfigure(i, weight=1, minsize=SLOT_SIZE)
             emoji_overlay_labels.append(label)
         emoji_row.grid_rowconfigure(0, weight=1, minsize=SLOT_SIZE)
@@ -16198,9 +16614,9 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
                 label.image = img  # Keep reference
             else:
                 normalized_emoji = unicodedata.normalize('NFC', emoji_char)
-                label.config(image="", text=normalized_emoji, font=("Segoe UI Emoji", scl(120)), fg=OVERLAY_TEXT_COLOR)
+                label.config(image="", text=normalized_emoji, font=("Segoe UI Emoji", ws(120)), fg=OVERLAY_TEXT_COLOR)
         else:
-            label.config(image="", text="", font=("Arial", scl(1)), fg=OVERLAY_BACKGROUND_COLOR)
+            label.config(image="", text="", font=("Arial", ws(1)), fg=OVERLAY_BACKGROUND_COLOR)
 
 
 # =========================================
@@ -16264,6 +16680,7 @@ def get_light_synopsis_string(words = None):
 
 synopsis_overlay = None
 synopsis_label = None
+_synopsis_height_cache = {}   # {full_text_key: body_height_px} — avoids recreating temp Tk on every tick
 
 mc_choices_overlay = None
 _mc_last_choices = []       # choices list from the most recent MC round
@@ -16272,198 +16689,234 @@ _mc_answer_phase = False    # True while the highlighted MC overlay is being kep
 
 _mc_cell_widgets = []  # list of (cell_frame, label_widget, choice_str)
 
-def toggle_mc_choices_overlay(choices=None, destroy=False, highlight=False, correct=None):
-    """Bottom-anchored overlay showing 4 multiple-choice options for fixed rounds.
-
-    Args:
-        choices:   List of answer strings to display (normal mode).
-        destroy:   If True, destroys the overlay and returns.
-        highlight: If True, recolor the correct answer cell in-place without rebuilding.
-        correct:   The correct answer string; stored for later highlight calls.
-    """
+def toggle_mc_choices_overlay(choices=None, destroy=False, highlight=False, correct=None, quick_destroy=False):
+    """ASS OSD — MC choices drawn inline with the synopsis box in a single OSD call."""
     global mc_choices_overlay, _mc_last_choices, _mc_last_correct_answer, _mc_cell_widgets, _mc_answer_phase
+
     if destroy:
-        if mc_choices_overlay and mc_choices_overlay.winfo_exists():
-            mc_choices_overlay.destroy()
         mc_choices_overlay = None
         _mc_cell_widgets = []
+        _mc_last_choices = []
+        _mc_last_correct_answer = None
         _mc_answer_phase = False
+        _synopsis_osd_redraw(synopsis_text=synopsis_label if isinstance(synopsis_label, str) else None)
+        return
+
+    if quick_destroy:
+        mc_choices_overlay = None
+        _mc_cell_widgets = []
+        _synopsis_osd_redraw(synopsis_text=synopsis_label if isinstance(synopsis_label, str) else None)
         return
 
     if highlight:
-        # Recolor in-place — no rebuild, no flash
-        correct_answer = _mc_last_correct_answer
         _mc_answer_phase = True
-        if mc_choices_overlay and mc_choices_overlay.winfo_exists() and _mc_cell_widgets:
-            _is_trivia = light_trivia_answer or bool((fixed_current_round or {}).get("trivia_question"))
-            if _is_trivia:
-                back_color = MIDDLE_OVERLAY_BACKGROUND_COLOR
-                front_color = OVERLAY_BACKGROUND_COLOR
-            else:
-                back_color = OVERLAY_BACKGROUND_COLOR
-                front_color = OVERLAY_TEXT_COLOR
-            for cell_frame, label_widget, choice in _mc_cell_widgets:
-                is_correct = correct_answer and choice == correct_answer
-                cell_back = front_color if is_correct else back_color
-                cell_front = back_color if is_correct else front_color
-                if is_correct:
-                    cell_frame.configure(bg=cell_back, highlightbackground=cell_front)
-                    label_widget.configure(bg=cell_back, fg=cell_front)
-            return
-        # Overlay gone — fall through to rebuild with highlight
-        choices = _mc_last_choices
-        correct_answer = _mc_last_correct_answer
-    elif choices:
+        _synopsis_osd_redraw(synopsis_text=synopsis_label if isinstance(synopsis_label, str) else None)
+        return
+
+    if choices:
         if correct is not None:
             _mc_last_correct_answer = correct
         _mc_last_choices = list(choices)
-        correct_answer = correct
-    else:
-        return
-    if not choices:
+        _mc_answer_phase = False
+        _synopsis_osd_redraw(synopsis_text=synopsis_label if isinstance(synopsis_label, str) else None)
+
+def toggle_synopsis_overlay(text=None, destroy=False, quick_destroy=False):
+    """ASS OSD overlay for the Synopsis / Trivia lightning round."""
+    global synopsis_overlay, synopsis_label, synopsis_start_index, _synopsis_height_cache
+
+    if destroy or quick_destroy:
+        synopsis_overlay = None
+        synopsis_label = None
+        _synopsis_height_cache.clear()
+        try:
+            _osd_command('osd-overlay', _SYNOPSIS_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
         return
 
-    # Destroy any existing overlay before building a new one
-    if mc_choices_overlay and mc_choices_overlay.winfo_exists():
-        mc_choices_overlay.destroy()
-    mc_choices_overlay = None
-    _mc_cell_widgets = []
+    if text is None:
+        return
 
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    LABELS = ["A", "B", "C", "D"]
+    synopsis_label = text
+    _synopsis_osd_redraw(synopsis_text=text)
+
+
+def _synopsis_osd_redraw(synopsis_text=None):
+    """Redraws synopsis box + MC grid together in one OSD call."""
+    import tkinter.font as _tkfont
+
+    text = synopsis_text or ""
+
+    try:
+        osd_w = int(player._p.osd_width or 0) or DISPLAY_SCREEN_WIDTH
+        osd_h = int(player._p.osd_height or 0) or DISPLAY_SCREEN_HEIGHT
+    except Exception:
+        osd_w, osd_h = DISPLAY_SCREEN_WIDTH, DISPLAY_SCREEN_HEIGHT
+
+    osd_mod = min(osd_w / 2560, osd_h / 1440)
+    def ws_osd(n): return max(1, int(n * osd_mod))
+
+    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    if not mw_phys:
+        mw_phys, mh_phys = DISPLAY_SCREEN_WIDTH, DISPLAY_SCREEN_HEIGHT
+    phys_mod = min(mw_phys / 2560, mh_phys / 1440)
+    def ws_phys(n): return max(1, int(n * phys_mod))
+
     _is_trivia = light_trivia_answer or bool((fixed_current_round or {}).get("trivia_question"))
     if _is_trivia:
-        back_color = MIDDLE_OVERLAY_BACKGROUND_COLOR
-        front_color = OVERLAY_BACKGROUND_COLOR
+        bg_color = MIDDLE_OVERLAY_BACKGROUND_COLOR
+        fg_color = OVERLAY_BACKGROUND_COLOR
     else:
-        back_color = OVERLAY_BACKGROUND_COLOR
-        front_color = OVERLAY_TEXT_COLOR
-    _transparent_key = "#FE01FE"  # chroma-key color: transparent, never used as content color
-    overlay_width = round(screen_width * 0.7)
-    cell_padding_x = scl(12)
-    cell_padding_y = scl(10)
-    outer_pad = scl(10)
-    col_gap = scl(6) * 2   # padx on each side per cell
-    # Fixed cell width: half the overlay minus outer padding and per-cell gaps
-    cell_width = (overlay_width - outer_pad * 2 - col_gap * 2) // 2
-    mc_choices_overlay = tk.Toplevel(root)
-    mc_choices_overlay.overrideredirect(True)
-    mc_choices_overlay.attributes("-topmost", True)
-    mc_choices_overlay.attributes("-alpha", 0.9)
-    mc_choices_overlay.configure(bg=_transparent_key)
-    mc_choices_overlay.attributes("-transparentcolor", _transparent_key)
-    outer = tk.Frame(mc_choices_overlay, bg=_transparent_key, padx=outer_pad, pady=outer_pad,
-                     highlightthickness=0)
-    outer.pack(fill="both", expand=True)
-    max_len = max(len(c) for c in choices) if choices else 10
-    font_size = scl(max(38, min(60, round(60 - (max_len - 10) * (60 - 38) / 30))))
-    is_highlighting = highlight and correct_answer
-    for i, (label, choice) in enumerate(zip(LABELS, choices)):
-        row, col = divmod(i, 2)
-        is_correct = is_highlighting and choice == correct_answer
-        cell_back = front_color if is_correct else back_color
-        cell_front = back_color if is_correct else front_color
-        cell = tk.Frame(outer, bg=cell_back, highlightbackground=cell_front,
-                        highlightthickness=scl(4), padx=cell_padding_x, pady=cell_padding_y,
-                        width=cell_width)
-        cell.grid(row=row, column=col, padx=scl(6), pady=scl(4), sticky="nsew")
-        cell.grid_propagate(False)
-        lbl = tk.Label(cell, text=f"[{label}]  {choice}", font=("Arial", font_size),
-                       fg=cell_front, bg=cell_back,
-                       wraplength=cell_width - cell_padding_x * 2 - scl(10),
-                       justify="left", anchor="w")
-        lbl.pack(fill="both", expand=True, anchor="w")
-        _mc_cell_widgets.append((cell, lbl, choice))
-    outer.grid_columnconfigure(0, weight=1, uniform="mc_col")
-    outer.grid_columnconfigure(1, weight=1, uniform="mc_col")
-    mc_choices_overlay.update_idletasks()
-    w = overlay_width
-    h = mc_choices_overlay.winfo_reqheight()
-    x = (screen_width - w) // 2
-    # Position just below the synopsis/trivia overlay if it exists, else fall back to bottom
-    if synopsis_overlay and synopsis_overlay.winfo_exists():
-        synopsis_overlay.update_idletasks()
-        y = synopsis_overlay.winfo_y() + synopsis_overlay.winfo_height() + scl(10)
+        bg_color = OVERLAY_BACKGROUND_COLOR
+        fg_color = OVERLAY_TEXT_COLOR
+
+    bg_bgr = _color_str_to_ass_bgr(bg_color)
+    fg_bgr = _color_str_to_ass_bgr(fg_color)
+
+    if light_trivia_answer:
+        header = "TRIVIA:"
+    elif fixed_current_round and (fixed_current_round.get("synopsis_header") or fixed_current_round.get("trivia_header")):
+        header = ((fixed_current_round.get("synopsis_header") or fixed_current_round.get("trivia_header")).upper() + ":")
     else:
-        y = screen_height - h - scl(20)
-    mc_choices_overlay.geometry(f"{w}x{h}+{x}+{y}")
+        header = "SYNOPSIS:"
 
-def toggle_synopsis_overlay(text=None, destroy=False):
-    """
-    Toggles a centered overlay for the Synopsis Lightning Round.
-    
-    Args:
-        text (str): The synopsis text to display.
-        destroy (bool): If True, destroys the overlay.
-    """
-    global synopsis_overlay, synopsis_label, synopsis_start_index
+    bord_px        = ws_osd(4)
+    frame_pad      = ws_osd(20)
+    label_padx     = ws_osd(10)
+    label_pady_top = ws_osd(10)
 
-    if destroy:
-        if synopsis_overlay:
-            screen_width = root.winfo_screenwidth()
-            animate_window(synopsis_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
-        synopsis_overlay = None
-        return
+    fs_tk_body_render = ws_phys(70)
+    fs_tk_header      = ws_phys(70)
+    screen_dpi        = root.winfo_fpixels('1i')
 
-    if synopsis_overlay is None and text:
+    overlay_w_phys  = round(mw_phys * 0.7)
+    wraplength_phys = round(overlay_w_phys * 1.09)
+    box_w           = round(osd_w * 0.7)
+    log_to_osd      = osd_w / mw_phys if mw_phys else 1.0
 
-        
-        title_header_txt = "SYNOPSIS:"
-        back_color = OVERLAY_BACKGROUND_COLOR
-        front_color = OVERLAY_TEXT_COLOR
+    fs_body   = round(fs_tk_body_render * screen_dpi / 72)
+    fs_header_px = round(fs_tk_header * screen_dpi / 72)
 
-        if light_trivia_answer:
-            title_header_txt = "TRIVIA:"
-            back_color = MIDDLE_OVERLAY_BACKGROUND_COLOR
-            front_color = OVERLAY_BACKGROUND_COLOR
+    line_h_render = round(fs_tk_body_render * 1.35 * log_to_osd)
+    header_h      = round(fs_tk_header      * 1.35 * log_to_osd)
 
-        if fixed_current_round:
-            fixed_title = fixed_current_round.get("synopsis_header") or fixed_current_round.get("trivia_header")
-            if fixed_title:
-                title_header_txt = f"{fixed_title.upper()}:"
+    # Count synopsis body lines (cached per full text)
+    full_text = text
+    if text:
+        try:
+            full_text = get_light_synopsis_string() or text
+        except Exception:
+            pass
+    n_body_lines = 0
+    if full_text:
+        cache_key = (full_text, mw_phys, mh_phys, fs_tk_body_render)
+        if cache_key not in _synopsis_height_cache:
+            _mfnt = _tkfont.Font(family="Arial", size=fs_tk_body_render)
+            _sp = _mfnt.measure(' ')
+            _wl = wraplength_phys - ws_phys(5)
+            _n = 0
+            for _para in full_text.split('\n'):
+                _cur_w2, _has = 0, False
+                _para_lines = 1
+                for _w2 in _para.split():
+                    _ww2 = _mfnt.measure(_w2)
+                    _gap2 = _sp if _has else 0
+                    if _has and _cur_w2 + _gap2 + _ww2 > _wl:
+                        _para_lines += 1; _cur_w2 = _ww2
+                    else:
+                        _cur_w2 += _gap2 + _ww2
+                    _has = True
+                _n += _para_lines
+            _synopsis_height_cache[cache_key] = max(_n, 1)
+        n_body_lines = _synopsis_height_cache[cache_key]
 
-        synopsis_overlay = tk.Toplevel(root)
-        synopsis_overlay.overrideredirect(True)
-        synopsis_overlay.attributes("-topmost", True)
-        synopsis_overlay.attributes("-alpha", 0.9)
-        synopsis_overlay.configure(bg=back_color)
+    syn_box_h = (ws_osd(20) + bord_px + header_h + ws_osd(10) +
+                 n_body_lines * line_h_render + ws_osd(20) + bord_px) if full_text else 0
 
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        overlay_width = round(screen_width * 0.7)
-        wraplength = overlay_width - scl(60)
+    # MC grid geometry
+    mc_choices    = _mc_last_choices or []
+    has_mc        = bool(mc_choices)
+    mc_gap        = ws_osd(10) if (has_mc and syn_box_h) else 0
+    mc_box_h      = 0
+    mc_cell_h     = 0
+    mc_fs_body    = 0
+    mc_cell_w     = 0
+    mc_col_gap    = ws_osd(6)
+    mc_cell_pad_x = ws_osd(12)
+    mc_cell_pad_y = ws_osd(10)
+    if has_mc:
+        max_len    = max((len(c) for c in mc_choices), default=10)
+        fs_tk_mc   = ws_phys(max(38, min(60, round(60 - (max_len - 10) * (60 - 38) / 30))))
+        mc_fs_body = round(fs_tk_mc * screen_dpi / 72)
+        mc_cell_h  = round(fs_tk_mc * 1.35 * log_to_osd) + mc_cell_pad_y * 2
+        mc_rows    = (len(mc_choices) + 1) // 2
+        mc_box_h   = mc_rows * mc_cell_h + (mc_rows - 1) * ws_osd(12) + bord_px * 2 + ws_osd(8)
+        mc_cell_w  = (box_w - bord_px * 2 - mc_col_gap * 2) // 2
 
-        # 📏 Measure how tall the label will need to be
-        content_height = measure_text_height(get_light_synopsis_string(), wraplength-scl(5), font=("Arial", scl(60)))+scl(30)
-        overlay_height = content_height + scl(160)  # Add space for padding/title
+    total_h = syn_box_h + mc_gap + mc_box_h
+    bx      = (osd_w - box_w) // 2
+    syn_by  = osd_h // 2 - ws_osd(30) - total_h // 2
 
-        x = (screen_width - overlay_width) // 2
-        # If MC choices are present, shift the overlay upward to leave room below for the MC grid
-        has_mc = bool(fixed_current_round and fixed_current_round.get("mc_choice_2"))
-        mc_room = scl(100) if has_mc else 0
-        y = (screen_height - overlay_height) // 2 - scl(30) - mc_room
+    events = []
 
-        synopsis_overlay.geometry(f"{overlay_width}x{overlay_height}+{-screen_width}+{y}")
-        synopsis_overlay.update_idletasks()
+    # Synopsis box — single rect with ASS \bord for the border so the fill alpha
+    # composites directly against the video (not against a separate solid border rect).
+    if syn_box_h:
+        hx = bx + frame_pad
+        hy = syn_by + frame_pad
+        tx = hx + label_padx
+        ty = hy + header_h + label_pady_top
+        events.append(f"{{\\an7\\pos({bx},{syn_by})"
+                      f"\\1c&H{bg_bgr}&\\1a&H19&"
+                      f"\\3c&H{fg_bgr}&\\3a&H00&\\bord{bord_px}\\shad0\\p1}}"
+                      f"m 0 0 l {box_w} 0 {box_w} {syn_box_h} 0 {syn_box_h}{{\\p0}}")
+        events.append(f"{{\\an7\\pos({hx},{hy})\\1c&H{fg_bgr}&\\1a&H00&"
+                      f"\\3c&H000000&\\3a&H60&\\bord0\\shad1\\fs{fs_header_px}\\b1\\u1\\q2}}{header}")
+        _fnt2 = _tkfont.Font(family="Arial", size=fs_tk_body_render)
+        _sp_w2 = _fnt2.measure(' ')
+        _lines2 = []
+        for _para2 in text.split('\n'):
+            _cw2, _cwords2 = 0, []
+            for _word2 in _para2.split():
+                _ww2 = _fnt2.measure(_word2)
+                _gap2 = _sp_w2 if _cwords2 else 0
+                if _cwords2 and _cw2 + _gap2 + _ww2 > wraplength_phys:
+                    _lines2.append(' '.join(_cwords2)); _cwords2, _cw2 = [_word2], _ww2
+                else:
+                    _cwords2.append(_word2); _cw2 += _gap2 + _ww2
+            _lines2.append(' '.join(_cwords2))
+        events.append(f"{{\\an7\\pos({tx},{ty})\\1c&H{fg_bgr}&\\1a&H00&"
+                      f"\\3c&H000000&\\3a&H60&\\bord0\\shad1\\fs{fs_body}\\q2}}"
+                      + '\\N'.join(_lines2))
 
-        frame = tk.Frame(synopsis_overlay, bg=back_color, padx=scl(20), pady=scl(20), highlightbackground=front_color, highlightthickness=scl(4))
-        frame.pack(fill="both", expand=True)
+    # MC grid — same fix: single rect with \bord for border
+    if has_mc:
+        mc_by  = syn_by + syn_box_h + mc_gap
+        LABELS = ["A", "B", "C", "D"]
+        for i, (label, choice) in enumerate(zip(LABELS, mc_choices)):
+            row, col   = divmod(i, 2)
+            is_correct = (_mc_answer_phase and _mc_last_correct_answer and choice == _mc_last_correct_answer)
+            cell_bg_bgr = _color_str_to_ass_bgr(fg_color if is_correct else bg_color)
+            cell_fg_bgr = _color_str_to_ass_bgr(bg_color if is_correct else fg_color)
+            cx     = bx + bord_px + col * (mc_cell_w + mc_col_gap * 2)
+            cell_y = mc_by + bord_px + ws_osd(12) + row * (mc_cell_h + ws_osd(12))
+            cw, ch = mc_cell_w, mc_cell_h
+            events.append(f"{{\\an7\\pos({cx},{cell_y})"
+                          f"\\1c&H{cell_bg_bgr}&\\1a&H19&"
+                          f"\\3c&H{cell_fg_bgr}&\\3a&H00&\\bord{bord_px}\\shad0\\p1}}"
+                          f"m 0 0 l {cw} 0 {cw} {ch} 0 {ch}{{\\p0}}")
+            cell_tx = cx + mc_cell_pad_x
+            cell_ty = cell_y + mc_cell_pad_y
+            events.append(f"{{\\an7\\pos({cell_tx},{cell_ty})\\1c&H{cell_fg_bgr}&\\1a&H00&"
+                          f"\\3c&H000000&\\3a&H60&\\bord0\\shad1\\fs{mc_fs_body}\\q2}}"
+                          f"[{label}]  {choice}")
 
+    try:
+        _osd_command('osd-overlay', _SYNOPSIS_ASS_OSD_ID, 'ass-events',
+                     "\n".join(events), osd_w, osd_h, 2, 'no')
+    except Exception as e:
+        print(f"Synopsis OSD error: {e}")
 
-        title_label = tk.Label(frame, text=title_header_txt, font=("Arial", scl(70), "bold", "underline"),
-                               fg=front_color, bg=back_color, anchor="w", justify="left")
-        title_label.pack(anchor="w")
-
-        synopsis_label = tk.Label(frame, text=text, font=("Arial", scl(60)),
-                                  fg=front_color, bg=back_color, wraplength=wraplength,
-                                  justify="left", anchor="nw")
-        synopsis_label.pack(side="top", anchor="w", fill="x", padx=scl(10), pady=(scl(10), 0))
-
-        animate_window(synopsis_overlay, x, y, steps=20, delay=5, bounce=False, fade=None)
-
-    elif text is not None and synopsis_label and synopsis_label.winfo_exists():
-        synopsis_label.config(text=text)
 
 def measure_text_height(text, wraplength, font=("Arial", scl(60)), justify="left"):
     temp_root = tk.Tk()
@@ -16638,18 +17091,21 @@ def toggle_title_overlay(title_text=None, destroy=False):
     if not title_text:
         return
 
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    overlay_width = round(screen_width * 0.7)
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    _ws_mod = min(mw / 2560, mh / 1440)
+    def ws(n): return max(1, int(n * _ws_mod))
+    overlay_width = round(mw * 0.7)
 
-    title_font = ("Courier New", scl(80), "bold")
-    lines = get_title_text_lines(title_text, overlay_width - scl(40), font=title_font)
-    overlay_height = len(lines) * scl(100) + scl(320)
+    title_font = ("Courier New", ws(80), "bold")
+    lines = get_title_text_lines(title_text, overlay_width - ws(40), font=title_font)
+    overlay_height = len(lines) * ws(100) + ws(320)
 
-    x = (screen_width - overlay_width) // 2
-    y = (screen_height - overlay_height) // 2
+    x = (mw - overlay_width) // 2
+    y = (mh - overlay_height) // 2
 
-    spacing = scl(64)
+    spacing = ws(64)
     front_color = OVERLAY_TEXT_COLOR
     back_color = OVERLAY_BACKGROUND_COLOR
     if character_round_answer:
@@ -16665,7 +17121,7 @@ def toggle_title_overlay(title_text=None, destroy=False):
         title_overlay.attributes("-topmost", True)
         title_overlay.attributes("-alpha", 0.9)
         title_overlay.configure(bg=back_color)
-        title_overlay.geometry(f"{screen_width}x{screen_height}+0+0")
+        title_overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
 
         title_overlay_canvas = tk.Canvas(title_overlay, bg="pink", highlightthickness=0)
         title_overlay_canvas.pack(fill="both", expand=True)
@@ -16674,22 +17130,22 @@ def toggle_title_overlay(title_text=None, destroy=False):
         # Box and label
         title_overlay_canvas.create_rectangle(
             x, y, x + overlay_width, y + overlay_height,
-            fill=back_color, outline=front_color, width=scl(4)
+            fill=back_color, outline=front_color, width=ws(4)
         )
         title_txt = "TITLE:"
         if character_round_answer:
             title_txt = "CHARACTER NAME:"
         title_overlay_canvas.create_text(
-            x + scl(30), y + scl(30),
-            text=title_txt, font=("Arial", scl(70), "bold", "underline"),
+            x + ws(30), y + ws(30),
+            text=title_txt, font=("Arial", ws(70), "bold", "underline"),
             fill=front_color, anchor="nw"
         )
 
-        line_y = y + scl(270)
+        line_y = y + ws(270)
         idx = 0
         for line in lines:
             total_width = len(line) * spacing
-            line_x = screen_width // 2 - total_width // 2 + spacing // 2
+            line_x = mw // 2 - total_width // 2 + spacing // 2
             for char in line:
                 if char == " ":
                     title_overlay_items.append(None)
@@ -16700,7 +17156,7 @@ def toggle_title_overlay(title_text=None, destroy=False):
                 # Underscore (always shown)
                 underscore = title_overlay_canvas.create_text(
                     line_x, line_y,
-                    text="_", font=("Courier New", scl(65)),
+                    text="_", font=("Courier New", ws(65)),
                     fill=front_color, anchor="center"
                 )
                 title_overlay_items.append(underscore)
@@ -16715,9 +17171,10 @@ def toggle_title_overlay(title_text=None, destroy=False):
 
                 line_x += spacing
                 idx += 1
-            line_y += scl(100)
+            line_y += ws(100)
 
-    # Update letters on top of underscores
+        _register_overlay_for_tracking(title_overlay, mw, mh, centered=False,
+                                          on_size_change=lambda: toggle_title_overlay(destroy=True))
     flat_chars = [c for c in title_text if c != " "]
     i = 0
     for idx, letter_item in enumerate(title_overlay_letters):
@@ -16743,7 +17200,7 @@ scramble_animating = False
 scramble_title_text_items = []
 scramble_letter_placed_indices = set()
 
-def toggle_scramble_overlay(num_letters=0, destroy=False):
+def toggle_scramble_overlay(num_letters=0, destroy=False, rebuild=False):
     global scramble_overlay_letters, scramble_overlay_targets
     global scramble_overlay_root, scramble_title_text, scramble_title_canvas
     global scramble_letter_objects, scramble_animating
@@ -16762,6 +17219,125 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_canvas = None
         return
 
+    if rebuild and scramble_overlay_letters:
+        # Save logical state before destroying
+        saved_title_text = scramble_title_text
+        saved_placed = set(scramble_letter_placed_indices)
+        saved_letter_order = [(l["char"], l["index"]) for l in scramble_overlay_letters]
+        # Tear down old window
+        scramble_animating = False
+        if scramble_overlay_root:
+            scramble_overlay_root.destroy()
+        scramble_overlay_root = None
+        scramble_title_canvas = None
+        scramble_title_text_items.clear()
+        scramble_letter_placed_indices.clear()
+        scramble_overlay_letters.clear()
+        scramble_overlay_targets.clear()
+        scramble_letter_objects.clear()
+        # Determine colors
+        front_color = OVERLAY_TEXT_COLOR
+        back_color = OVERLAY_BACKGROUND_COLOR
+        if character_round_answer:
+            front_color = INVERSE_OVERLAY_TEXT_COLOR
+            back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
+        # Recreate window at new size
+        mx, my, mw, mh = _get_mpv_window_rect()
+        if not mw:
+            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+        _ws_mod = min(mw / 2560, mh / 1440)
+        def ws(n): return max(1, int(n * _ws_mod))
+        title_font = ("Courier New", ws(80), "bold")
+        lines = get_title_text_lines(saved_title_text, mw * 0.7 - ws(40), font=title_font)
+        overlay_width = round(mw * 0.7)
+        overlay_height = len(lines) * ws(100) + ws(320)
+        x = (mw - overlay_width) // 2
+        y = (mh - overlay_height) // 2
+        box_top = y
+        box_bottom = y + overlay_height
+        scramble_overlay_root = tk.Toplevel()
+        scramble_overlay_root.overrideredirect(True)
+        scramble_overlay_root.attributes("-topmost", True)
+        transparent_color = "pink"
+        scramble_overlay_root.configure(bg=transparent_color)
+        scramble_overlay_root.attributes("-transparentcolor", transparent_color)
+        scramble_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
+        scramble_title_canvas = tk.Canvas(scramble_overlay_root, bg=transparent_color, highlightthickness=0)
+        scramble_title_canvas.pack(fill="both", expand=True)
+        full_overlay_height = int(mh * 0.7)
+        full_y = (mh - full_overlay_height) // 2
+        scramble_title_canvas.create_rectangle(
+            x, full_y, x + overlay_width, full_y + full_overlay_height,
+            fill=back_color, outline=front_color, width=ws(4)
+        )
+        title_label_text = "CHARACTER NAME:" if character_round_answer else "TITLE:"
+        scramble_title_canvas.create_text(
+            x + ws(30), full_y + ws(30),
+            text=title_label_text,
+            font=("Arial", ws(70), "bold", "underline"),
+            fill=front_color, anchor="nw"
+        )
+        spacing = ws(64)
+        line_y = y + ws(270)
+        target_coords = {}
+        for line in lines:
+            line_chars = [c for c in line]
+            total_width = len(line_chars) * spacing
+            line_x = mw // 2 - total_width // 2 + spacing // 2
+            for c in line_chars:
+                if c == " ":
+                    line_x += spacing
+                    continue
+                text_item = scramble_title_canvas.create_text(
+                    line_x, line_y,
+                    text="_", font=("Courier New", ws(65)), fill=front_color, anchor="center"
+                )
+                target_coords[len(scramble_title_text_items)] = (line_x, line_y)
+                scramble_title_text_items.append(text_item)
+                line_x += spacing
+            line_y += ws(100)
+        margin_x = int(mw * 0.18)
+        top_range = (int(mh * 0.3), max(int(mh * 0.3) + 1, box_top + ws(150)))
+        bottom_range = (box_bottom, max(box_bottom + 1, mh - int(mh * 0.2)))
+        min_distance = ws(80)
+        letter_positions = []
+        for i, (char, idx) in enumerate(saved_letter_order):
+            if idx not in target_coords:
+                continue
+            tx, ty = target_coords[idx]
+            if idx in saved_placed:
+                start_x, start_y = tx, ty
+            else:
+                start_x_candidate = start_y_candidate = 0
+                for _ in range(50):
+                    if i % 2 == 0:
+                        start_y_candidate = random.randint(*top_range)
+                    else:
+                        start_y_candidate = random.randint(*bottom_range)
+                    start_x_candidate = random.randint(margin_x, mw - margin_x)
+                    if not any(abs(start_x_candidate - px) < min_distance and abs(start_y_candidate - py) < min_distance for px, py in letter_positions):
+                        break
+                start_x, start_y = start_x_candidate, start_y_candidate
+            letter_positions.append((start_x, start_y))
+            wiggle_x = random.choice([-1, 1]) * random.randint(1, 2)
+            wiggle_y = random.choice([-1, 1]) * random.randint(1, 2)
+            label = scramble_title_canvas.create_text(
+                start_x, start_y, text=char, font=title_font, fill=front_color
+            )
+            scramble_title_canvas.tag_raise(label)
+            scramble_overlay_letters.append({
+                "item": label, "char": char, "index": idx,
+                "target": (tx, ty), "wiggle": (wiggle_x, wiggle_y)
+            })
+            scramble_overlay_targets.append(idx)
+            scramble_letter_objects.append(label)
+        scramble_letter_placed_indices.update(saved_placed)
+        scramble_animating = True
+        animate_scramble_letters()
+        _register_overlay_for_tracking(scramble_overlay_root, mw, mh, centered=False,
+                                       on_size_change=lambda: toggle_scramble_overlay(rebuild=True))
+        return
+
     front_color = OVERLAY_TEXT_COLOR
     back_color = OVERLAY_BACKGROUND_COLOR
     if character_round_answer:
@@ -16770,16 +17346,19 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
 
     if not scramble_overlay_root:
         scramble_title_text = get_base_title()
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
-        title_font = ("Courier New", scl(80), "bold")
+        mx, my, mw, mh = _get_mpv_window_rect()
+        if not mw:
+            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+        _ws_mod = min(mw / 2560, mh / 1440)
+        def ws(n): return max(1, int(n * _ws_mod))
+        title_font = ("Courier New", ws(80), "bold")
         # Split title into lines
-        lines = get_title_text_lines(scramble_title_text, screen_w * 0.7 - scl(40), font=title_font)
-        overlay_width = round(screen_w * 0.7)
+        lines = get_title_text_lines(scramble_title_text, mw * 0.7 - ws(40), font=title_font)
+        overlay_width = round(mw * 0.7)
         # Adjust vertical spacing: line height * number of lines + padding
-        overlay_height = len(lines) * scl(100) + scl(320)
-        x = (screen_w - overlay_width) // 2
-        y = (screen_h - overlay_height) // 2
+        overlay_height = len(lines) * ws(100) + ws(320)
+        x = (mw - overlay_width) // 2
+        y = (mh - overlay_height) // 2
         box_top = y
         box_bottom = y + overlay_height
 
@@ -16790,27 +17369,27 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         transparent_color = "pink"
         scramble_overlay_root.configure(bg=transparent_color)
         scramble_overlay_root.attributes("-transparentcolor", transparent_color)
-        scramble_overlay_root.geometry(f"{screen_w}x{screen_h}+0+0")
+        scramble_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
 
         scramble_title_canvas = tk.Canvas(scramble_overlay_root, bg=transparent_color, highlightthickness=0)
         scramble_title_canvas.pack(fill="both", expand=True)
 
-        full_overlay_height = int(screen_h*0.7)
-        full_y = (screen_h - full_overlay_height) // 2
+        full_overlay_height = int(mh*0.7)
+        full_y = (mh - full_overlay_height) // 2
         # Draw box and label
         scramble_title_canvas.create_rectangle(
             # x, y, x + overlay_width, y + overlay_height,
             x, full_y, x + overlay_width, full_y + full_overlay_height,
-            fill=back_color, outline=front_color, width=scl(4)
+            fill=back_color, outline=front_color, width=ws(4)
         )
         title_text = "TITLE:"
         if character_round_answer:
             title_text = "CHARACTER NAME:"
         scramble_title_canvas.create_text(
             # x + 30, y + 40,
-            x + scl(30), full_y + scl(30),
+            x + ws(30), full_y + ws(30),
             text=title_text,
-            font=("Arial", scl(70), "bold", "underline"),
+            font=("Arial", ws(70), "bold", "underline"),
             fill=front_color,
             anchor="nw"
         )
@@ -16818,14 +17397,14 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_title_text_items.clear()
         scramble_letter_placed_indices.clear()
 
-        spacing = scl(64)  # Increased spacing to avoid overlap
-        line_y = y + scl(270)  # Moved text start down 20px for better centering
+        spacing = ws(64)  # Increased spacing to avoid overlap
+        line_y = y + ws(270)  # Moved text start down 20px for better centering
         target_coords = {}
 
         for line in lines:
             line_chars = [c for c in line]
             total_width = ((len(line_chars)) * spacing)
-            line_x = screen_w // 2 - total_width // 2
+            line_x = mw // 2 - total_width // 2
             line_x += spacing // 2
             for c in line_chars:
                 if c == " ":
@@ -16833,17 +17412,17 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
                     continue
                 text_item = scramble_title_canvas.create_text(
                     line_x, line_y,
-                    text="_", font=("Courier New", scl(65)), fill=front_color, anchor="center"
+                    text="_", font=("Courier New", ws(65)), fill=front_color, anchor="center"
                 )
                 target_coords[len(scramble_title_text_items)] = (line_x, line_y)
                 scramble_title_text_items.append(text_item)
                 line_x += spacing
-            line_y += scl(100)
+            line_y += ws(100)
 
         # Create floating letters
-        margin_x = int(screen_w * 0.18)
-        top_range = (int(screen_h*0.3), box_top + scl(150))  # start 100px from top, end 150px above box top
-        bottom_range = (box_bottom, screen_h - int(screen_h*0.2))  # start 100px below box bottom, leave 150px at bottom
+        margin_x = int(mw * 0.18)
+        top_range = (int(mh*0.3), box_top + ws(150))  # start 100px from top, end 150px above box top
+        bottom_range = (box_bottom, mh - int(mh*0.2))  # start 100px below box bottom, leave 150px at bottom
 
         floating_letters = [{"char": c, "index": i} for i, c in enumerate(scramble_title_text.replace(" ", "")) if c != " " and i in target_coords]
         if fixed_current_round and fixed_current_round.get("scramble_place_order"):
@@ -16863,7 +17442,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
         scramble_letter_objects.clear()
 
         letter_positions = []  # Store positions of already placed letters
-        min_distance = scl(80)      # Minimum allowed distance between letters
+        min_distance = ws(80)      # Minimum allowed distance between letters
         
         for i, letter in enumerate(floating_letters):
             idx = letter["index"]
@@ -16875,7 +17454,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
                     start_y = random.randint(*top_range)
                 else:
                     start_y = random.randint(*bottom_range)
-                start_x = random.randint(margin_x, screen_w - margin_x)
+                start_x = random.randint(margin_x, mw - margin_x)
 
                 too_close = False
                 for (px, py) in letter_positions:
@@ -16911,8 +17490,8 @@ def toggle_scramble_overlay(num_letters=0, destroy=False):
 
         scramble_animating = True
         animate_scramble_letters()
-
-    # Move into place
+        _register_overlay_for_tracking(scramble_overlay_root, mw, mh, centered=False,
+                                          on_size_change=lambda: toggle_scramble_overlay(rebuild=True))
     for i, letter in enumerate(scramble_overlay_letters):
         if i < num_letters:
             if letter["index"] not in scramble_letter_placed_indices:
@@ -16963,7 +17542,7 @@ swap_completed = 0
 swap_title_font = ("Courier New", scl(80), "bold")
 swap_overlay_letters = []
 
-def toggle_swap_overlay(num_swaps=0, destroy=False):
+def toggle_swap_overlay(num_swaps=0, destroy=False, rebuild=False):
     global swap_overlay_root, swap_overlay_canvas
     global swap_title_text, swap_title_items, swap_pairs
     global swap_animating, swap_completed, swap_overlay_letters
@@ -16979,6 +17558,98 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         swap_pairs.clear()
         return
 
+    if rebuild and swap_overlay_letters:
+        # Save logical state before destroying
+        saved_title_text = swap_title_text
+        saved_pairs = list(swap_pairs)
+        saved_completed = swap_completed
+        saved_letter_states = [(l["char"], l["index"], l["correct"]) for l in swap_overlay_letters]
+        # Tear down old window
+        swap_animating = False
+        if swap_overlay_root:
+            swap_overlay_root.destroy()
+        swap_overlay_root = None
+        swap_overlay_canvas = None
+        swap_title_items.clear()
+        swap_overlay_letters.clear()
+        swap_pairs.clear()
+        # Determine colors
+        front_color = OVERLAY_TEXT_COLOR
+        back_color = OVERLAY_BACKGROUND_COLOR
+        if character_round_answer:
+            front_color = INVERSE_OVERLAY_TEXT_COLOR
+            back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
+        # Recreate window at new size
+        mx, my, mw, mh = _get_mpv_window_rect()
+        if not mw:
+            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+        _ws_mod = min(mw / 2560, mh / 1440)
+        def ws(n): return max(1, int(n * _ws_mod))
+        swap_title_font_ws = ("Courier New", ws(80), "bold")
+        lines = get_title_text_lines(saved_title_text, mw * 0.7 - ws(40), font=swap_title_font_ws)
+        overlay_width = round(mw * 0.7)
+        overlay_height = len(lines) * ws(100) + ws(320)
+        x = (mw - overlay_width) // 2
+        y = (mh - overlay_height) // 2
+        swap_overlay_root = tk.Toplevel()
+        swap_overlay_root.overrideredirect(True)
+        swap_overlay_root.attributes("-topmost", True)
+        transparent_color = "pink"
+        swap_overlay_root.configure(bg=transparent_color)
+        swap_overlay_root.attributes("-transparentcolor", transparent_color)
+        swap_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
+        swap_overlay_canvas = tk.Canvas(swap_overlay_root, bg=transparent_color, highlightthickness=0)
+        swap_overlay_canvas.pack(fill="both", expand=True)
+        swap_overlay_canvas.create_rectangle(
+            x, y, x + overlay_width, y + overlay_height,
+            fill=back_color, outline=front_color, width=ws(4)
+        )
+        title_label_text = "CHARACTER NAME:" if character_round_answer else "TITLE:"
+        swap_overlay_canvas.create_text(
+            x + ws(30), y + ws(30),
+            text=title_label_text, font=("Arial", ws(70), "bold", "underline"),
+            fill=front_color, anchor="nw"
+        )
+        spacing = ws(64)
+        line_y = y + ws(270)
+        target_coords = {}
+        for line in lines:
+            total_width = len(line) * spacing
+            line_x = mw // 2 - total_width // 2 + spacing // 2
+            for c in line:
+                if c == " ":
+                    line_x += spacing
+                    continue
+                idx = len(swap_title_items)
+                text_item = swap_overlay_canvas.create_text(
+                    line_x, line_y,
+                    text="_", font=("Courier New", ws(65)),
+                    fill=front_color, anchor="center"
+                )
+                target_coords[idx] = (line_x, line_y)
+                swap_title_items.append(text_item)
+                line_x += spacing
+            line_y += ws(100)
+        # Restore saved letter states at new scaled positions
+        for char, idx, correct in saved_letter_states:
+            if idx not in target_coords:
+                continue
+            tx, ty = target_coords[idx]
+            fill = front_color if correct else "gray"
+            letter_item = swap_overlay_canvas.create_text(
+                tx, ty, text=char, font=swap_title_font_ws, fill=fill, anchor="center"
+            )
+            swap_overlay_letters.append({
+                "item": letter_item, "char": char, "index": idx,
+                "pos": (tx, ty), "correct": correct, "moving": False
+            })
+        swap_pairs.extend(saved_pairs)
+        swap_completed = saved_completed
+        swap_animating = True
+        _register_overlay_for_tracking(swap_overlay_root, mw, mh, centered=False,
+                                       on_size_change=lambda: toggle_swap_overlay(rebuild=True))
+        return
+
     front_color = OVERLAY_TEXT_COLOR
     back_color = OVERLAY_BACKGROUND_COLOR
     if character_round_answer:
@@ -16987,14 +17658,18 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
 
     if not swap_overlay_root:
         swap_title_text = get_base_title()
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
+        mx, my, mw, mh = _get_mpv_window_rect()
+        if not mw:
+            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+        _ws_mod = min(mw / 2560, mh / 1440)
+        def ws(n): return max(1, int(n * _ws_mod))
+        swap_title_font_ws = ("Courier New", ws(80), "bold")
 
-        lines = get_title_text_lines(swap_title_text, screen_w * 0.7 - scl(40), font=swap_title_font)
-        overlay_width = round(screen_w * 0.7)
-        overlay_height = len(lines) * scl(100) + scl(320)
-        x = (screen_w - overlay_width) // 2
-        y = (screen_h - overlay_height) // 2
+        lines = get_title_text_lines(swap_title_text, mw * 0.7 - ws(40), font=swap_title_font_ws)
+        overlay_width = round(mw * 0.7)
+        overlay_height = len(lines) * ws(100) + ws(320)
+        x = (mw - overlay_width) // 2
+        y = (mh - overlay_height) // 2
 
         swap_overlay_root = tk.Toplevel()
         swap_overlay_root.overrideredirect(True)
@@ -17002,27 +17677,27 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
         transparent_color = "pink"
         swap_overlay_root.configure(bg=transparent_color)
         swap_overlay_root.attributes("-transparentcolor", transparent_color)
-        swap_overlay_root.geometry(f"{screen_w}x{screen_h}+0+0")
+        swap_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
 
         swap_overlay_canvas = tk.Canvas(swap_overlay_root, bg=transparent_color, highlightthickness=0)
         swap_overlay_canvas.pack(fill="both", expand=True)
 
         swap_overlay_canvas.create_rectangle(
             x, y, x + overlay_width, y + overlay_height,
-            fill=back_color, outline=front_color, width=scl(4)
+            fill=back_color, outline=front_color, width=ws(4)
         )
         title_text = "TITLE:" if not character_round_answer else "CHARACTER NAME:"
         swap_overlay_canvas.create_text(
-            x + scl(30), y + scl(30),
-            text=title_text, font=("Arial", scl(70), "bold", "underline"),
+            x + ws(30), y + ws(30),
+            text=title_text, font=("Arial", ws(70), "bold", "underline"),
             fill=front_color, anchor="nw"
         )
 
         swap_title_items.clear()
         swap_overlay_letters.clear()
 
-        spacing = scl(64)
-        line_y = y + scl(270)
+        spacing = ws(64)
+        line_y = y + ws(270)
         target_coords = {}
         base_chars = []
         base_indices = []
@@ -17031,7 +17706,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
 
         for line in lines:
             total_width = len(line) * spacing
-            line_x = screen_w // 2 - total_width // 2 + spacing // 2
+            line_x = mw // 2 - total_width // 2 + spacing // 2
             for c in line:
                 if c == " ":
                     if current_word:
@@ -17047,7 +17722,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
 
                 text_item = swap_overlay_canvas.create_text(
                     line_x, line_y,
-                    text="_", font=("Courier New", scl(65)),
+                    text="_", font=("Courier New", ws(65)),
                     fill=front_color, anchor="center"
                 )
                 target_coords[idx] = (line_x, line_y)
@@ -17111,7 +17786,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
             letter_item = swap_overlay_canvas.create_text(
                 tx, ty,
                 text=char,
-                font=swap_title_font,
+                font=swap_title_font_ws,
                 fill=fill,
                 anchor="center"
             )
@@ -17126,6 +17801,8 @@ def toggle_swap_overlay(num_swaps=0, destroy=False):
 
         swap_completed = 0
         swap_animating = True
+        _register_overlay_for_tracking(swap_overlay_root, mw, mh, centered=False,
+                                          on_size_change=lambda: toggle_swap_overlay(rebuild=True))
 
     if swap_completed < num_swaps and swap_completed < len(swap_pairs):
         a, b = swap_pairs[swap_completed]
@@ -17285,152 +17962,132 @@ def choose_peek_direction():
     peek_light_direction = new_dir
 
 peeking = False
-peek_overlay1 = None
-peek_overlay2 = None
+peek_overlay1 = None   # kept for external truthiness checks (sentinel True when active)
+peek_overlay2 = None   # kept for external truthiness checks (sentinel True when active)
+_PEEK_ASS_OSD_ID = 50  # unique ID for osd-overlay (ASS-based) peek panels
+_GROW_ASS_OSD_ID = 51  # unique ID for osd-overlay (ASS-based) grow panel
+_PROGRESS_ASS_OSD_ID = 52  # unique ID for osd-overlay (ASS-based) thin progress bar
+_BLIND_ASS_OSD_ID = 53  # unique ID for osd-overlay (ASS-based) blind/black overlay
+_OUTER_EDGE_ASS_OSD_ID = 54  # unique ID for osd-overlay (ASS-based) bottom censor bar
+_EPISODE_ASS_OSD_ID = 55  # unique ID for osd-overlay (ASS-based) episode title grid
+_TAG_CLOUD_ASS_OSD_ID = 56  # unique ID for osd-overlay (ASS-based) tag cloud
+_OST_COVER_ASS_OSD_ID = 57  # unique ID for osd-overlay (ASS-based) OST answer transition cover
+_SYNOPSIS_ASS_OSD_ID   = 58  # unique ID for osd-overlay (ASS-based) synopsis / trivia box
+_INFO_POPUP_ASS_OSD_ID = 59  # unique ID for osd-overlay (ASS-based) anime info popup
+
 def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
-    """Toggles two fullscreen overlays that reveal the screen in a chosen direction by percentage.
+    """Toggles two black panels that reveal the video in a chosen direction by percentage.
+    Uses mpv's osd-overlay with ass-events type.  The text argument passed to mpv contains
+    only the ASS text-field payload (starting with '{'), NOT the full 'Dialogue: ...' header
+    line.  mpv wraps each line in a Dialogue event internally, so the payload is all that is
+    needed — and because the payload starts with '{', nothing shows as visible OSD text even
+    if mpv echoes the text argument through its status-message layer.
 
     Args:
         destroy (bool): Whether to remove the overlays.
         direction (str): 'left', 'right', 'up', or 'down'.
         progress (int): How much to reveal, from 0 (fully covered) to 100 (fully uncovered).
-        gap (int): The gap between the two overlays, as a percentage of the screen width/height.
+        gap (int): The gap between the two panels as a percentage of the video width/height.
     """
     global gap_modifier, peek_overlay1, peek_overlay2, peeking
 
     if destroy:
-        # Always destroy both overlays and reset state
-        if peek_overlay1:
-            try:
-                if peek_overlay1.winfo_exists():
-                    peek_overlay1.destroy()
-            except Exception:
-                pass
-            peek_overlay1 = None
-        if peek_overlay2:
-            try:
-                if peek_overlay2.winfo_exists():
-                    peek_overlay2.destroy()
-            except Exception:
-                pass
-            peek_overlay2 = None
+        try:
+            _osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
         gap_modifier = 0
         peeking = False
+        peek_overlay1 = None
+        peek_overlay2 = None
         return
 
     if not 0 <= progress <= 100:
         return
 
-    # If overlays exist but are not valid, destroy them before recreating
-    for overlay_var in ['peek_overlay1', 'peek_overlay2']:
-        overlay = globals()[overlay_var]
-        if overlay and not overlay.winfo_exists():
-            try:
-                overlay.destroy()
-            except Exception:
-                pass
-            globals()[overlay_var] = None
+    if peek_overlay1 is None:
+        peek_overlay1 = True  # sentinel — not a Tkinter window
+    if peek_overlay2 is None:
+        peek_overlay2 = True
 
-    # If overlays exist but direction or geometry changed drastically, destroy and recreate
-
-
-    if peek_overlay1 is None and peek_overlay2 is None:
-
-        image_color = "black"
-        # First overlay
-        if peek_overlay1 is None:
-            peek_overlay1 = tk.Toplevel(root)
-            peek_overlay1.overrideredirect(True)
-            peek_overlay1.attributes("-topmost", True)
-            peek_overlay1.configure(bg=image_color)
-
-        # Second overlay
-        if peek_overlay2 is None:
-            peek_overlay2 = tk.Toplevel(root)
-            peek_overlay2.overrideredirect(True)
-            peek_overlay2.attributes("-topmost", True)
-            peek_overlay2.configure(bg=image_color)
-            
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
-    if not has_video:
-        video_x, video_y, video_w, video_h = 0, 0, screen_width, screen_height
-
-    # Calculate the gap in pixels as a percentage of the screen size
-    gap_pixels = int((((gap+gap_modifier) / 100) * video_w))
-    # Initialize overlay dimensions and positions
-    first_width = first_height = first_x = first_y = None
-    second_width = second_height = second_x = second_y = None
-
-    cover_margin = scl(20)  # pixels to ensure full screen edge coverage
-
-    if direction == "left":
-        first_width = video_w * (1 - progress / 100)
-        first_height = video_h
-        first_x = video_x
-        first_y = video_y
-
-        second_width = max(0, video_w * (progress / 100) - gap_pixels)
-        second_height = video_h
-        second_x = video_x + first_width + gap_pixels
-        second_y = video_y
-
-    elif direction == "right":
-        first_width = video_w * (1 - progress / 100)
-        first_height = video_h
-        first_x = video_x + (video_w - first_width) + cover_margin  # Extra cover on edge
-        first_y = video_y
-
-        second_width = max(0, video_w * (progress / 100) - gap_pixels)
-        second_height = video_h
-        second_x = video_x
-        second_y = video_y
-
-    elif direction == "up":
-        first_width = video_w
-        first_height = video_h * (1 - progress / 100)
-        first_x = video_x
-        first_y = video_y
-
-        second_width = video_w
-        second_height = max(0, video_h * (progress / 100) - gap_pixels)
-        second_x = video_x
-        second_y = video_y + first_height + gap_pixels
-
-    elif direction == "down":
-        first_width = video_w
-        first_height = video_h * (1 - progress / 100)
-        first_x = video_x
-        first_y = video_y + (video_h - first_height) + cover_margin  # Extra cover on edge
-
-        second_width = video_w
-        second_height = max(0, video_h * (progress / 100) - gap_pixels)
-        second_x = video_x
-        second_y = video_y
-    else:
-        # If direction is invalid, do not proceed to use uninitialized variables
-        print("Invalid direction.")
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    if not osd_w or not vid_w:
         return
 
-    first_width = int(first_width)
-    first_height = int(first_height)
-    first_x = int(first_x)
-    first_y = int(first_y)
+    gap_pixels = int(((1 + gap_modifier) / 100) * vid_w)
 
-    second_width = int(second_width)
-    second_height = int(second_height)
-    second_x = int(second_x)
-    second_y = int(second_y)
+    # Compute the two panel rectangles in OSD pixel space
+    if direction == "left":
+        p1_x, p1_y = vid_x, vid_y
+        p1_w = int(vid_w * (1 - progress / 100))
+        p1_h = vid_h
+        p2_x = vid_x + int(vid_w * (1 - progress / 100)) + gap_pixels
+        p2_y = vid_y
+        p2_w = vid_w - int(vid_w * (1 - progress / 100)) - gap_pixels
+        p2_h = vid_h
 
-    if peek_overlay1 and peek_overlay2:
-        if direction == "right":
-            peek_overlay2.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
-            peek_overlay1.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
-        else:
-            peek_overlay1.geometry(f"{first_width}x{first_height}+{first_x}+{first_y}")
-            peek_overlay2.geometry(f"{second_width}x{second_height}+{second_x}+{second_y}")
-        lift_windows()
+    elif direction == "right":
+        p1_x = vid_x + int(vid_w * progress / 100) + gap_pixels
+        p1_y = vid_y
+        p1_w = vid_w - int(vid_w * progress / 100) - gap_pixels
+        p1_h = vid_h
+        p2_x, p2_y = vid_x, vid_y
+        p2_w = int(vid_w * progress / 100)
+        p2_h = vid_h
+
+    elif direction == "up":
+        p1_x, p1_y = vid_x, vid_y
+        p1_w = vid_w
+        p1_h = int(vid_h * (1 - progress / 100))
+        p2_x = vid_x
+        p2_y = vid_y + int(vid_h * (1 - progress / 100)) + gap_pixels
+        p2_w = vid_w
+        p2_h = vid_h - int(vid_h * (1 - progress / 100)) - gap_pixels
+
+    elif direction == "down":
+        p1_x = vid_x
+        p1_y = vid_y + int(vid_h * progress / 100) + gap_pixels
+        p1_w = vid_w
+        p1_h = vid_h - int(vid_h * progress / 100) - gap_pixels
+        p2_x, p2_y = vid_x, vid_y
+        p2_w = vid_w
+        p2_h = int(vid_h * progress / 100)
+
+    else:
+        return
+
+    # Build ASS drawing paths for filled black rectangles.
+    # \an7\pos(0,0) puts the origin at OSD top-left so m/l coords = OSD pixels.
+    # \p1 = drawing scale 1 (1 unit = 1 OSD pixel with res set to osd size).
+    # The payload starts with '{' so even if mpv echoes the text arg as a status
+    # message it will be entirely inside tags — nothing is visible.
+    shapes = []
+    if p1_w > 0 and p1_h > 0:
+        x1, y1, x2, y2 = int(p1_x), int(p1_y), int(p1_x + p1_w), int(p1_y + p1_h)
+        shapes.append(f"m {x1} {y1} l {x2} {y1} {x2} {y2} {x1} {y2}")
+    if p2_w > 0 and p2_h > 0:
+        x1, y1, x2, y2 = int(p2_x), int(p2_y), int(p2_x + p2_w), int(p2_y + p2_h)
+        shapes.append(f"m {x1} {y1} l {x2} {y1} {x2} {y2} {x1} {y2}")
+
+    if not shapes:
+        try:
+            _osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
+        return
+
+    # Pass only the ASS text-field payload — no 'Dialogue:' header prefix.
+    ass_payload = (
+        "{\\an7\\pos(0,0)\\1c&H000000&\\bord0\\shad0\\p1}"
+        + " ".join(shapes)
+        + "{\\p0}"
+    )
+
+    try:
+        _osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'ass-events',
+                          ass_payload, osd_w, osd_h, 0, 'no')
+    except Exception as e:
+        print(f"Peek OSD (ASS) error: {e}")
 
 # =========================================
 #          *EDGE LIGHTNING ROUND
@@ -17451,7 +18108,7 @@ def get_video_display_rect():
     if not vw or not vh:
         return 0, 0, screen_w, screen_h, False
     
-    if vw == 720 and vh == 480:
+    if (vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478):
         video_ar = 16 / 9
     else:
         video_ar = vw / vh
@@ -17480,48 +18137,31 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
             except Exception:
                 pass
             edge_overlay_after_id = None
-        if edge_overlay_box and edge_overlay_box.winfo_exists():
-            edge_overlay_box.destroy()
+        _clear_peek_osd()
         edge_overlay_box = None
         return
 
-    # Clamp block_percent
     block_percent = max(0, min(100, block_percent))
 
-    video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
-    if not has_video:
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    if not osd_w or not vid_w:
         if edge_overlay_after_id:
             try:
                 root.after_cancel(edge_overlay_after_id)
             except Exception:
                 pass
         edge_overlay_after_id = root.after(250, lambda: toggle_edge_overlay(block_percent=last_edge_block_percent))
+        return
 
-    # Determine uniform margin based on the smallest screen dimension
-    visible_percent = 100 - block_percent
-    margin = int(min(video_w, video_h) * (visible_percent / 100 / 2))
-
-    # Calculate final box size
-    width = max(0, video_w - margin * 2)
-    height = max(0, video_h - margin * 2)
-
-    x = video_x + margin
-    y = video_y + margin
-
-    # Create or update overlay
-    if not edge_overlay_box or not edge_overlay_box.winfo_exists():
-        edge_overlay_box = tk.Toplevel()
-        edge_overlay_box.overrideredirect(True)
-        edge_overlay_box.attributes("-topmost", True)
-        edge_overlay_box.configure(bg="black")
+    if edge_overlay_after_id:
         try:
-            player.set_fullscreen(False)
-            player.set_fullscreen(True)
-        except:
+            root.after_cancel(edge_overlay_after_id)
+        except Exception:
             pass
+        edge_overlay_after_id = None
 
-    edge_overlay_box.geometry(f"{width}x{height}+{x}+{y}")
-    lift_windows()
+    edge_overlay_box = True  # sentinel so external truthiness checks work
+    _draw_edge_osd(block_percent)
 
 scoreboard_colors_sent = False
 scoreboard_align_sent = False
@@ -17653,28 +18293,33 @@ grow_position = None
 
 def set_grow_position():
     global grow_position
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-
-    # Use a safe margin so the square never exceeds the screen
-    margin = int(min(screen_w, screen_h) * 0.3)
-
-    cx = random.randint(margin, screen_w - margin)
-    cy = random.randint(margin, screen_h - margin)
-
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_w, osd_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    if not osd_w:
+        osd_w, osd_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    margin = int(min(osd_w, osd_h) * 0.3)
+    cx = random.randint(margin, osd_w - margin)
+    cy = random.randint(margin, osd_h - margin)
     grow_position = (cx, cy)
 
 def move_grow_position(dx, dy):
-    """Move the grow overlay box by dx, dy pixels, constrained to the screen."""
+    """Move the grow overlay box by dx, dy pixels, constrained to the OSD canvas."""
     global grow_position
     if grow_position is None:
         return
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_w, osd_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    if not osd_w:
+        osd_w, osd_h = root.winfo_screenwidth(), root.winfo_screenheight()
     cx, cy = grow_position
-    cx = min(max(cx + dx, 0), screen_w)
-    cy = min(max(cy + dy, 0), screen_h)
+    cx = min(max(cx + dx, 0), osd_w)
+    cy = min(max(cy + dy, 0), osd_h)
     grow_position = (cx, cy)
     toggle_grow_overlay(block_percent=last_grow_block_percent, position=(cx, cy))
 
@@ -17683,62 +18328,43 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
     global grow_overlay_boxes, last_grow_block_percent, grow_position
 
     if destroy:
-        for box in grow_overlay_boxes.values():
-            if box and box.winfo_exists():
-                box.destroy()
+        try:
+            _osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
         grow_overlay_boxes.clear()
+        # Stop any in-progress smooth animation
+        global mouse_dragging_grow_overlay, animation_after_id
+        mouse_dragging_grow_overlay = False
+        if animation_after_id:
+            try:
+                root.after_cancel(animation_after_id)
+            except Exception:
+                pass
+            animation_after_id = None
         return
 
     last_grow_block_percent = block_percent
-
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-
     block_percent = max(0, min(100, block_percent))
-    visible_w = int(screen_w * (1 - block_percent / 100))
-    visible_h = int(screen_h * (1 - block_percent / 100))
 
-    # Determine center position
+    # Determine center position in OSD coordinates
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_w, osd_h = 0, 0
+    if not osd_w:
+        return
+
     if isinstance(position, tuple):
         cx, cy = position
         grow_position = (cx, cy)
-    else:  # center by default
-        cx, cy = screen_w // 2, screen_h // 2
+    else:
+        cx, cy = osd_w // 2, osd_h // 2
         grow_position = (cx, cy)
 
-    left = cx - visible_w // 2
-    right = cx + visible_w // 2
-    top = cy - visible_h // 2
-    bottom = cy + visible_h // 2
-
-    def update_or_create(name, x, y, w, h):
-        if name not in grow_overlay_boxes or not grow_overlay_boxes[name].winfo_exists():
-            box = tk.Toplevel()
-            box.overrideredirect(True)
-            box.attributes("-topmost", True)
-            box.configure(bg="black")
-            grow_overlay_boxes[name] = box
-        grow_overlay_boxes[name].geometry(f"{w}x{h}+{x}+{y}")
-
-    # Top
-    update_or_create("top", 0, 0, screen_w, max(0, top))
-    # Bottom
-    update_or_create("bottom", 0, bottom + 5, screen_w, max(0, screen_h - bottom + 20))
-    if bottom + 10 < screen_h:
-        update_or_create("bottom_buffer", 0, screen_h - 10, screen_w, 10)
-    else:
-        update_or_create("bottom_buffer", 0, screen_h, screen_w, 0)
-    # Left
-    update_or_create("left", 0, top - 100, max(0, left), max(0, visible_h + 200))
-    # Right
-    update_or_create("right", right, top - 100, max(0, screen_w - right + 5), max(0, visible_h + 200))
-    if right + 10 < screen_w:
-        update_or_create("right_buffer", screen_w - 10, top - 100, 10, max(0, visible_h + 200))
-    else:
-        update_or_create("right_buffer", screen_w, top - 100, 0, max(0, visible_h + 200))
-
-    if grow_overlay_boxes:
-        lift_windows()
+    _draw_grow_osd(block_percent, cx, cy)
+    grow_overlay_boxes = {"active": True}  # sentinel so external truthiness checks work
 
 # =========================================
 #          *MISMATCH LIGHTNING ROUND
@@ -17760,15 +18386,35 @@ def get_cached_sfw_themes():
                 else:
                     cached_sfw_themes["eds"].append(filename)
 
-instance2 = vlc.Instance(
-    "--no-audio", 
-    "--video-on-top",
-    "--no-xlib", 
-    "-q", 
-    "--fullscreen"
-)
-mismatched_player = instance2.media_player_new()
+instance2 = None  # unused after Phase 2 migration to mpv
+# mismatched_player removed — mismatch visuals now use mpv video-add on the main player
 mismatch_visuals = None
+
+_mismatch_active = False
+_mismatch_vid_track_id = None   # track ID of the external video added via video-add
+_mismatch_orig_vid = None        # original video track ID before mismatch was applied
+_mismatch_hwnd = 0   # unused (kept so references elsewhere don't error)
+_main_hwnd = 0
+_note_hwnd = 0
+
+def _install_mismatch_hook():
+    pass  # removed — no longer needed (video-add approach)
+
+def _uninstall_mismatch_hook():
+    pass  # removed — no longer needed
+
+def _mismatch_sync_poll():
+    pass  # removed — no longer needed
+
+def _osd_command(*args):
+    """Send an osd-overlay command to the main player."""
+    try:
+        player._p.command(*args)
+    except Exception:
+        pass
+
+def _position_mismatch_player():
+    pass  # removed — video-add renders in the main player window automatically
 def get_mismatched_theme():
     global mismatch_visuals
     match_data = currently_playing.get("data")
@@ -17884,8 +18530,18 @@ def spawn_pulsating_music_note(x=0, y=0, font_size=scl(100), destroy=False):
                                     bg="black", fg=generate_random_color(100, 255))
     pulsating_note_label.place(relx=0.5, rely=0.5, anchor="center")
 
+    # Cache the Win32 HWND so the WinEvent callback can move it without touching Python/Tkinter
+    global _note_hwnd
+    try:
+        import ctypes
+        pulsating_note_window.update_idletasks()
+        inner = pulsating_note_window.winfo_id()
+        _note_hwnd = ctypes.windll.user32.GetAncestor(inner, 2)  # GA_ROOT=2 → true top-level HWND
+    except Exception:
+        _note_hwnd = 0
+
     # Start animation
-    pulsate_music_icon(pulsating_note_label)
+    pulsate_music_icon(pulsating_note_label, sizes=(font_size, int(font_size * 1.2)))
 
 # =========================================
 #          *CHARACTER LIGHTNING ROUND
@@ -17992,13 +18648,14 @@ def toggle_character_overlay(num_characters=4, destroy=False):
     # Only use available characters
     num_characters = min(num_characters, len(character_round_characters), 4)
 
-    # Screen and layout setup
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    img_size = int(min(screen_width, screen_height) * 0.35)
-    in_between = (screen_width) // 80
-    margin_y = (screen_height - img_size * 2 - in_between) // 2
-    margin_x = (screen_width - img_size * 2 - in_between) // 2
+    # Layout relative to the mpv window for correct multi-monitor centering
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    img_size = int(min(mw, mh) * 0.35)
+    in_between = mw // 80
+    margin_y = (mh - img_size * 2 - in_between) // 2
+    margin_x = (mw - img_size * 2 - in_between) // 2
 
     # Grid positions: (col, row)
     grid_positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
@@ -18016,31 +18673,81 @@ def toggle_character_overlay(num_characters=4, destroy=False):
 
         character_overlay_boxes[key] = box
 
-        # Load and resize image
+        # Load and resize image to fit the current mpv-window-based img_size
         if i < len(character_round_characters):
             tk_img = character_round_characters[i]
         else:
             tk_img = character_round_image_cache_default[i]
+
+        # Rescale to the current img_size (images were cached at screen-size, not mpv-window-size)
+        try:
+            pil_img = ImageTk.getimage(tk_img)
+            pil_img = pil_img.resize((img_size, img_size), Image.LANCZOS)
+            tk_img = ImageTk.PhotoImage(pil_img)
+        except Exception:
+            pass
 
         # Set image and label
         label = tk.Label(box, image=tk_img, bg="black")
         label.image = tk_img
         label.pack()
 
-        # Compute position in grid
+        # Compute position in grid (offset by mpv window origin)
         col, row = grid_positions[i]
-        if col == 1:
-            x = in_between + col * (img_size + margin_x)
-        else:
-            x = margin_x + col * (img_size + margin_x)
-        if row == 1:
-            y = in_between + row * (img_size + margin_y)
-        else:
-            y = margin_y + row * (img_size + margin_y)
+        x = mx + margin_x + col * (img_size + in_between)
+        y = my + margin_y + row * (img_size + in_between)
 
         # Set size and position directly
         box.geometry(f"{img_size}x{img_size}+{x}+{y}")
         box.attributes("-alpha", 0.9)  # Ensure it's visible
+        _register_overlay_for_tracking(box, img_size, img_size, centered=False,
+                                       on_resize=_update_character_overlay_positions)
+
+_character_overlay_last_img_size = 0
+
+def _update_character_overlay_positions():
+    """Reposition (and rescale only when size changed) all character overlay boxes."""
+    global _character_overlay_last_img_size
+    if not character_overlay_boxes:
+        return
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    img_size = int(min(mw, mh) * 0.35)
+    in_between = mw // 80
+    margin_y = (mh - img_size * 2 - in_between) // 2
+    margin_x = (mw - img_size * 2 - in_between) // 2
+    grid_positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
+    size_changed = (img_size != _character_overlay_last_img_size)
+    if size_changed:
+        _character_overlay_last_img_size = img_size
+    for i, key in enumerate(sorted(character_overlay_boxes)):
+        box = character_overlay_boxes.get(key)
+        if not box or not box.winfo_exists():
+            continue
+        col, row = grid_positions[i % 4]
+        x = mx + margin_x + col * (img_size + in_between)
+        y = my + margin_y + row * (img_size + in_between)
+        # Only rescale images when the window size actually changed
+        if size_changed:
+            src_idx = int(key.split('_')[1]) if '_' in key else i
+            try:
+                if src_idx < len(character_round_characters):
+                    raw = character_round_characters[src_idx]
+                else:
+                    raw = character_round_image_cache_default[src_idx]
+                pil_img = ImageTk.getimage(raw)
+                pil_img = pil_img.resize((img_size, img_size), Image.LANCZOS)
+                tk_img = ImageTk.PhotoImage(pil_img)
+                lbl = box.winfo_children()
+                if lbl:
+                    lbl[0].configure(image=tk_img)
+                    lbl[0].image = tk_img
+            except Exception:
+                pass
+            _register_overlay_for_tracking(box, img_size, img_size, centered=False,
+                                           on_resize=_update_character_overlay_positions)
+        box.geometry(f"{img_size}x{img_size}+{x}+{y}")
 
 # =========================================
 #       *COVER LIGHTNING ROUND
@@ -18464,24 +19171,33 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
     return return_image(name, tk_img, gender, desc, queue=queue)
 
 character_image_overlay = None
+_character_image_overlay_label = None
+_character_image_overlay_source = None  # stores the last 'character' arg for resizing
+
 def toggle_character_image_overlay(character=None, destroy=False):
-    global character_image_overlay
+    global character_image_overlay, _character_image_overlay_label, _character_image_overlay_source
 
     if destroy or not character:
         if character_image_overlay and character_image_overlay.winfo_exists():
             character_image_overlay.destroy()
         character_image_overlay = None
+        _character_image_overlay_label = None
+        _character_image_overlay_source = None
         return
 
     if character_image_overlay and character_image_overlay.winfo_exists():
-        return  # Already shown
+        # Already shown — update source first so the new image is applied, then resize/reposition
+        _character_image_overlay_source = character
+        _update_character_image_overlay()
+        return
 
-    # Screen and scaling setup
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
+    # Sizing relative to the mpv window for correct multi-monitor centering
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    max_width = int(screen_w * width_percent)
-    max_height = int(screen_h * 0.7)
+    max_width = int(mw * width_percent)
+    max_height = int(mh * 0.7)
 
     # Get original image (single) or combine multiple images side-by-side
     if isinstance(character, (list, tuple)):
@@ -18536,8 +19252,8 @@ def toggle_character_image_overlay(character=None, destroy=False):
     height_scale = max_height / img_h
     scale = min(width_scale, height_scale)
     
-    new_w = int(img_w * scale)
-    new_h = int(img_h * scale)
+    new_w = max(1, int(img_w * scale))
+    new_h = max(1, int(img_h * scale))
     resized_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
 
     # White border
@@ -18553,13 +19269,85 @@ def toggle_character_image_overlay(character=None, destroy=False):
     character_image_overlay.attributes("-alpha", 0.95)
     character_image_overlay.configure(bg="black")
 
-    x = (screen_w - (new_w)) // 2
-    y = (screen_h - (new_h)) // 2 - int(screen_h * 0.025)  # Move up a bit more for better positioning
+    x = mx + (mw - new_w) // 2
+    y = my + (mh - new_h) // 2 - int(mh * 0.025)  # Move up a bit more for better positioning
     character_image_overlay.geometry(f"{new_w + scl(8)}x{new_h + scl(8)}+{x}+{y}")
 
-    label = tk.Label(character_image_overlay, image=tk_img, bg="black", borderwidth=0)
-    label.image = tk_img  # Keep a reference
-    label.pack()
+    _character_image_overlay_label = tk.Label(character_image_overlay, image=tk_img, bg="black", borderwidth=0)
+    _character_image_overlay_label.image = tk_img
+    _character_image_overlay_label.pack()
+    _character_image_overlay_source = character
+    _register_overlay_for_tracking(character_image_overlay, new_w + scl(8), new_h + scl(8), -0.025,
+                                   on_resize=_update_character_image_overlay)
+
+def _update_character_image_overlay():
+    """Resize and reposition the character image overlay to match the current mpv window."""
+    global character_image_overlay, _character_image_overlay_label, _character_image_overlay_source
+    if not character_image_overlay or not character_image_overlay.winfo_exists():
+        return
+    character = _character_image_overlay_source
+    if not character:
+        return
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    max_width = int(mw * width_percent)
+    max_height = int(mh * 0.7)
+    if isinstance(character, (list, tuple)):
+        pil_images = []
+        for img in character:
+            if not img:
+                continue
+            try:
+                rgba_img = ImageTk.getimage(img).convert("RGBA")
+                try:
+                    alpha_bbox = rgba_img.getchannel("A").getbbox()
+                    if alpha_bbox:
+                        rgba_img = rgba_img.crop(alpha_bbox)
+                except Exception:
+                    pass
+                pil_images.append(rgba_img)
+            except Exception:
+                continue
+        if not pil_images:
+            return
+        if len(pil_images) == 1:
+            pil_image = pil_images[0]
+        else:
+            target_height = max(img.height for img in pil_images)
+            normalized = []
+            for img in pil_images:
+                if img.height != target_height and img.height > 0:
+                    new_w2 = int(img.width * (target_height / img.height))
+                    img = img.resize((max(1, new_w2), target_height), Image.LANCZOS)
+                normalized.append(img)
+            total_width = sum(img.width for img in normalized)
+            combined = Image.new("RGBA", (total_width, target_height), (0, 0, 0, 0))
+            x_off = 0
+            for img in normalized:
+                combined.paste(img, (x_off, 0), img)
+                x_off += img.width
+            pil_image = combined
+    else:
+        pil_image = ImageTk.getimage(character)
+    img_w, img_h = pil_image.size
+    scale = min(max_width / img_w, max_height / img_h)
+    new_w = max(1, int(img_w * scale))
+    new_h = max(1, int(img_h * scale))
+    resized = pil_image.resize((new_w, new_h), Image.LANCZOS)
+    bordered = Image.new("RGB", (new_w + scl(8), new_h + scl(8)), "black")
+    bordered.paste(resized, (4, 4))
+    tk_img = ImageTk.PhotoImage(bordered)
+    win_w = new_w + scl(8)
+    win_h = new_h + scl(8)
+    x = mx + (mw - win_w) // 2
+    y = my + (mh - win_h) // 2 - int(mh * 0.025)
+    character_image_overlay.geometry(f"{win_w}x{win_h}+{x}+{y}")
+    _character_image_overlay_label.configure(image=tk_img)
+    _character_image_overlay_label.image = tk_img
+    _register_overlay_for_tracking(character_image_overlay, win_w, win_h, -0.025,
+                                   on_resize=_update_character_image_overlay)
 
 def generate_weighted_zoomed_parts(tk_img, num_parts=4, target_size=(400, 400)):
     """
@@ -18793,13 +19581,14 @@ def toggle_character_pixel_overlay(step=0, destroy=False):
     if not character_pixel_images or step >= len(character_pixel_images):
         return
 
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
 
     # Scale to 70% of height, keep aspect ratio
     img = ImageTk.getimage(character_pixel_images[step])
     img_w, img_h = img.size
-    scale = (screen_height * 0.7) / img_h
+    scale = (mh * 0.7) / img_h
     new_w, new_h = int(img_w * scale), int(img_h * scale)
 
     resized_img = img.resize((new_w, new_h), Image.LANCZOS)
@@ -18816,12 +19605,17 @@ def toggle_character_pixel_overlay(step=0, destroy=False):
         character_pixel_label.image = display_img
         character_pixel_label.pack()
 
-        x = (screen_width - new_w) // 2
-        y = (screen_height - new_h) // 2
+        x = mx + (mw - new_w) // 2
+        y = my + (mh - new_h) // 2
         character_pixel_overlay.geometry(f"{new_w}x{new_h}+{x}+{y}")
+        _register_overlay_for_tracking(character_pixel_overlay, new_w, new_h)
     else:
+        x = mx + (mw - new_w) // 2
+        y = my + (mh - new_h) // 2
+        character_pixel_overlay.geometry(f"{new_w}x{new_h}+{x}+{y}")
         character_pixel_label.configure(image=display_img)
         character_pixel_label.image = display_img
+        _register_overlay_for_tracking(character_pixel_overlay, new_w, new_h)
 
 # =========================================
 #          *REVEAL LIGHTNING ROUND
@@ -18875,11 +19669,12 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top")
         if not character_round_answer:
             return
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(screen_width * width_percent)
-    target_height = int(screen_height * 0.7)
+    target_width = int(mw * width_percent)
+    target_height = int(mh * 0.7)
 
     # Use smaller scale so image fits within both width and height
     scale_w = target_width / pil_img.width
@@ -18897,9 +19692,10 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top")
         reveal_image_window.attributes("-alpha", 0.98)
         reveal_image_window.configure(bg="white", highlightbackground="black", highlightthickness=4)
 
-        x = (screen_width - new_size[0]) // 2
-        y = (screen_height - new_size[1]) // 2
+        x = mx + (mw - new_size[0]) // 2
+        y = my + (mh - new_size[1]) // 2
         reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
+        _register_overlay_for_tracking(reveal_image_window, new_size[0], new_size[1])
 
         reveal_canvas = tk.Canvas(reveal_image_window, width=new_size[0], height=new_size[1], highlightthickness=0)
         reveal_canvas.pack()
@@ -18907,6 +19703,18 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top")
         reveal_canvas.image = tk_img
 
         reveal_cover_id = reveal_canvas.create_rectangle(0, 0, new_size[0], new_size[1], fill="black", outline="")
+
+    else:
+        # Resize window/canvas to current mpv window size, refresh image and cover rect
+        x = mx + (mw - new_size[0]) // 2
+        y = my + (mh - new_size[1]) // 2
+        reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
+        reveal_canvas.config(width=new_size[0], height=new_size[1])
+        reveal_canvas.delete("all")
+        reveal_canvas.create_image(0, 0, anchor="nw", image=tk_img)
+        reveal_canvas.image = tk_img
+        reveal_cover_id = reveal_canvas.create_rectangle(0, 0, new_size[0], new_size[1], fill="black", outline="")
+        _register_overlay_for_tracking(reveal_image_window, new_size[0], new_size[1])
 
     # Update cover size based on direction and percent
     if reveal_canvas and reveal_cover_id:
@@ -18946,11 +19754,12 @@ def toggle_character_blur_reveal_overlay(percent=1.0, destroy=False):
         if not character_round_answer:
             return
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(screen_width * width_percent)
-    target_height = int(screen_height * 0.7)
+    target_width = int(mw * width_percent)
+    target_height = int(mh * 0.7)
     
     # Use smaller scale so image fits within both width and height
     scale_w = target_width / pil_img.width
@@ -18972,17 +19781,24 @@ def toggle_character_blur_reveal_overlay(percent=1.0, destroy=False):
         blur_reveal_image_window.attributes("-alpha", 0.98)
         blur_reveal_image_window.configure(bg="white", highlightbackground="black", highlightthickness=4)
 
-        x = (screen_width - new_size[0]) // 2
-        y = (screen_height - new_size[1]) // 2
+        x = mx + (mw - new_size[0]) // 2
+        y = my + (mh - new_size[1]) // 2
         blur_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
+        _register_overlay_for_tracking(blur_reveal_image_window, new_size[0], new_size[1])
 
         blur_reveal_canvas = tk.Canvas(blur_reveal_image_window, width=new_size[0], height=new_size[1], highlightthickness=0)
         blur_reveal_canvas.pack()
         blur_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_blurred_img)
         blur_reveal_canvas.image = tk_blurred_img
     else:
+        x = mx + (mw - new_size[0]) // 2
+        y = my + (mh - new_size[1]) // 2
+        blur_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
+        blur_reveal_canvas.config(width=new_size[0], height=new_size[1])
+        blur_reveal_canvas.delete("all")
         blur_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_blurred_img)
         blur_reveal_canvas.image = tk_blurred_img
+        _register_overlay_for_tracking(blur_reveal_image_window, new_size[0], new_size[1])
 
 # =========================================
 #          *ZOOM LIGHTNING ROUND
@@ -19069,11 +19885,12 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
         if not character_round_answer:
             return
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(screen_width * width_percent)
-    target_height = int(screen_height * 0.7)
+    target_width = int(mw * width_percent)
+    target_height = int(mh * 0.7)
     
     # Use smaller scale so image fits within both width and height
     scale_w = target_width / pil_img.width
@@ -19184,17 +20001,24 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
         zoom_reveal_image_window.attributes("-alpha", 0.98)
         zoom_reveal_image_window.configure(bg="white", highlightbackground="black", highlightthickness=4)
 
-        x = (screen_width - new_size[0]) // 2
-        y = (screen_height - new_size[1]) // 2
+        x = mx + (mw - new_size[0]) // 2
+        y = my + (mh - new_size[1]) // 2
         zoom_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
+        _register_overlay_for_tracking(zoom_reveal_image_window, new_size[0], new_size[1])
 
         zoom_reveal_canvas = tk.Canvas(zoom_reveal_image_window, width=new_size[0], height=new_size[1], highlightthickness=0)
         zoom_reveal_canvas.pack()
         zoom_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_cropped_img)
         zoom_reveal_canvas.image = tk_cropped_img
     else:
+        x = mx + (mw - new_size[0]) // 2
+        y = my + (mh - new_size[1]) // 2
+        zoom_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
+        zoom_reveal_canvas.config(width=new_size[0], height=new_size[1])
+        zoom_reveal_canvas.delete("all")
         zoom_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_cropped_img)
         zoom_reveal_canvas.image = tk_cropped_img
+        _register_overlay_for_tracking(zoom_reveal_image_window, new_size[0], new_size[1])
 
 # =========================================
 #          *SLICE LIGHTNING ROUND
@@ -19286,11 +20110,12 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
             part, box = slice_overlay_parts[idx]
             composite.paste(part, box)
 
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_w = int(screen_w * width_percent)
-    target_h = int(screen_h * 0.7)
+    target_w = int(mw * width_percent)
+    target_h = int(mh * 0.7)
     scale_w = target_w / w
     scale_h = target_h / h
     scale = min(scale_w, scale_h)
@@ -19300,8 +20125,8 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
     tk_composite = ImageTk.PhotoImage(composite)
 
     # Create or update overlay window
-    x = (screen_w - img_w) // 2
-    y = (screen_h - img_h) // 2
+    x = mx + (mw - img_w) // 2
+    y = my + (mh - img_h) // 2
 
     if not slice_overlay_window or not slice_overlay_window.winfo_exists():
         slice_overlay_window = tk.Toplevel(root)
@@ -19310,6 +20135,7 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
         slice_overlay_window.attributes("-alpha", 0.98)
         slice_overlay_window.configure(bg="white", highlightbackground="black", highlightthickness=2)
         slice_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
+        _register_overlay_for_tracking(slice_overlay_window, img_w, img_h)
 
         slice_overlay_label = tk.Label(slice_overlay_window, image=tk_composite, bg="white")
         slice_overlay_label.image = tk_composite
@@ -19318,6 +20144,7 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
         slice_overlay_label.configure(image=tk_composite)
         slice_overlay_label.image = tk_composite
         slice_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
+        _register_overlay_for_tracking(slice_overlay_window, img_w, img_h)
                 
 # =========================================
 #        *TILE LIGHTNING ROUND
@@ -19454,11 +20281,12 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
             part, box, _ = tile_overlay_parts[idx]
             composite.paste(part, box)
 
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_w = int(screen_w * width_percent)
-    target_h = int(screen_h * 0.7)
+    target_w = int(mw * width_percent)
+    target_h = int(mh * 0.7)
     scale_w = target_w / w
     scale_h = target_h / h
     scale = min(scale_w, scale_h)
@@ -19467,8 +20295,8 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
     composite = composite.resize((img_w, img_h), Image.LANCZOS)
     tk_composite = ImageTk.PhotoImage(composite)
 
-    x = (screen_w - img_w) // 2
-    y = (screen_h - img_h) // 2
+    x = mx + (mw - img_w) // 2
+    y = my + (mh - img_h) // 2
 
     if not tile_overlay_window or not tile_overlay_window.winfo_exists():
         tile_overlay_window = tk.Toplevel(root)
@@ -19477,6 +20305,7 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
         tile_overlay_window.attributes("-alpha", 0.98)
         tile_overlay_window.configure(bg="white", highlightbackground="black", highlightthickness=2)
         tile_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
+        _register_overlay_for_tracking(tile_overlay_window, img_w, img_h)
 
         tile_overlay_label = tk.Label(tile_overlay_window, image=tk_composite, bg="gray")
         tile_overlay_label.image = tk_composite
@@ -19485,6 +20314,7 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
         tile_overlay_label.configure(image=tk_composite)
         tile_overlay_label.image = tk_composite
         tile_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
+        _register_overlay_for_tracking(tile_overlay_window, img_w, img_h)
 
 # =========================================
 #        *PROFILE LIGHTNING ROUND
@@ -19495,9 +20325,13 @@ profile_text_label = None
 profile_image_label = None
 profile_words_shown = 0
 
-def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=False):
+_profile_last_word_count = 0
+_profile_last_image_countdown = 15
+
+def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=False, quick_destroy=False):
     """Displays a character profile with gender, a word-by-word BIO, and delayed image reveal."""
     global profile_overlay_window, profile_text_label, profile_image_label, profile_words_shown
+    global _profile_last_word_count, _profile_last_image_countdown
 
     if destroy:
         if profile_overlay_window and profile_overlay_window.winfo_exists():
@@ -19505,16 +20339,32 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         profile_overlay_window = None
         return
 
+    if quick_destroy:
+        if profile_overlay_window and profile_overlay_window.winfo_exists():
+            profile_overlay_window.destroy()
+        profile_overlay_window = None
+        toggle_character_profile_overlay(
+            word_count=_profile_last_word_count,
+            image_countdown=_profile_last_image_countdown,
+        )
+        return
+
     if not character_round_answer:
         return
 
+    _profile_last_word_count = word_count
+    _profile_last_image_countdown = image_countdown
+
     name, img, gender, desc = character_round_answer
     word_count
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    mx, my, mw, mh = _get_mpv_window_rect()
+    if not mw:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    _ws_mod = min(mw / 2560, mh / 1440)
+    def ws(n): return max(1, int(n * _ws_mod))
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(screen_width * width_percent)
-    target_height = int(screen_height * 0.7)
+    target_width = int(mw * width_percent)
+    target_height = int(mh * 0.7)
 
     back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
     front_color = INVERSE_OVERLAY_TEXT_COLOR
@@ -19534,10 +20384,10 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     # Let's say text area should match image width roughly or be slightly narrower
     desc_width =  (target_width // 3)*2 # max(int(target_width - tk_scaled_img.width()), int(target_width // 3))
     image_width = target_width - desc_width
-    wraplength = desc_width - scl(20)
+    wraplength = desc_width - ws(20)
 
-    font_title = ("Arial", scl(60), "bold", "underline")
-    font_body = ("Arial", scl(50))
+    font_title = ("Arial", ws(60), "bold", "underline")
+    font_body = ("Arial", ws(50))
 
     if not profile_overlay_window or not profile_overlay_window.winfo_exists():
         # Create the main window
@@ -19547,9 +20397,11 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
         profile_overlay_window.attributes("-alpha", 0.95)
         profile_overlay_window.configure(bg=back_color, highlightbackground=front_color, highlightthickness=4)
 
-        x = (screen_width - target_width) // 2
-        y = (screen_height - target_height) // 2
+        x = mx + (mw - target_width) // 2
+        y = my + (mh - target_height) // 2
         profile_overlay_window.geometry(f"{target_width}x{target_height}+{x}+{y}")
+        _register_overlay_for_tracking(profile_overlay_window, target_width, target_height,
+                                       on_size_change=lambda: toggle_character_profile_overlay(quick_destroy=True))
 
         # Main layout container
         container = tk.Frame(profile_overlay_window, bg=back_color)
@@ -19566,11 +20418,11 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
 
         bio_label = tk.Label(left_frame, text="CHARACTER DESCRIPTION:", font=font_title, bg=back_color, fg=front_color,
                              wraplength=wraplength, justify="left", anchor="nw")
-        bio_label.pack(side="top", anchor="w", fill="x", padx=scl(10), pady=(scl(10), 0))
+        bio_label.pack(side="top", anchor="w", fill="x", padx=ws(10), pady=(ws(10), 0))
 
         profile_text_label = tk.Label(left_frame, text="", font=font_body, bg=back_color, fg=front_color,
                              wraplength=wraplength, justify="left", anchor="nw")
-        profile_text_label.pack(side="top", anchor="w", fill="x", padx=scl(10), pady=(scl(10), 0))
+        profile_text_label.pack(side="top", anchor="w", fill="x", padx=ws(10), pady=(ws(10), 0))
 
         # Right: Image or countdown
         profile_image_label = tk.Label(right_frame, bg=back_color)
@@ -19704,126 +20556,128 @@ def set_cloud_tags():
             {"name": "no tags found", "weight": 600}
         ]
     tag_cloud_tags = sorted(tags, key=lambda t: t["weight"], reverse=True)
-    weights = [t["weight"] for t in tag_cloud_tags]
-    min_w, max_w = min(weights), max(weights)
-
-    # Adjust font size range based on number of tags
-    min_font_size = scl(max(22, 60 - len(tag_cloud_tags)))
-    max_font_size = scl(max(min_font_size+40, 100 - len(tag_cloud_tags) // 4))  # Much larger range
-
-    font_range = max_font_size - min_font_size
-
-    def font_size(w):
-        # Normalize weight and amplify disparity with power function
-        normalized = (w - min_w) / (max_w - min_w + 1e-5)
-        amplified = normalized ** 2  # Square to increase the difference
-        return int(min_font_size + font_range * amplified)
 
     random.shuffle(tag_cloud_tags)
     if currently_playing.get("data", {}).get("season"):
         tag_cloud_tags.insert(0, {"name": currently_playing.get("data", {}).get("season")[-4:], "weight": 600})
-    for t in tag_cloud_tags:
-        t["font_size"] = font_size(t["weight"])
 
 # Globals
-tag_overlay_boxes = {}
 tag_cloud_positions = []
+_tag_cloud_last_osd_h = 0
+_tag_cloud_font_sizes = []  # parallel to tag_cloud_tags; recomputed when osd_h changes
+
+def _compute_tag_font_sizes(osd_h):
+    """Compute and cache font sizes for all tags based on current osd_h."""
+    global _tag_cloud_font_sizes, _tag_cloud_last_osd_h
+    _tag_cloud_last_osd_h = osd_h
+    weights = [t["weight"] for t in tag_cloud_tags]
+    if not weights:
+        _tag_cloud_font_sizes = []
+        return
+    min_w, max_w = min(weights), max(weights)
+    _fs_modifier = osd_h / 1440
+    n = len(tag_cloud_tags)
+    min_fs_ref = max(22, 60 - n)
+    max_fs_ref = max(min_fs_ref + 40, 100 - n // 4)
+    min_fs = max(10, round(min_fs_ref * _fs_modifier * 1.6))
+    max_fs = max(min_fs + round(20 * _fs_modifier * 1.6), round(max_fs_ref * _fs_modifier * 1.6))
+    fs_range = max_fs - min_fs
+    sizes = []
+    for t in tag_cloud_tags:
+        normalized = (t["weight"] - min_w) / (max_w - min_w + 1e-5)
+        amplified = normalized ** 2
+        sizes.append(max(10, int(min_fs + fs_range * amplified)))
+    _tag_cloud_font_sizes = sizes
 
 def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
-    global tag_overlay_boxes, tag_cloud_tags, tag_cloud_positions
+    global tag_cloud_tags, tag_cloud_positions, _tag_cloud_last_osd_h, _tag_cloud_font_sizes
 
     if destroy:
-        for box in tag_overlay_boxes.values():
-            if box and box.winfo_exists():
-                box.destroy()
-        tag_overlay_boxes.clear()
         tag_cloud_positions.clear()
+        _tag_cloud_font_sizes = []
+        _tag_cloud_last_osd_h = 0
+        try:
+            _osd_command('osd-overlay', _TAG_CLOUD_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
         return
 
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-    cx, cy = screen_w // 2, screen_h // 2
-    margin = scl(50)
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h:
+        return
+
+    num_tags = min(num_tags, len(tag_cloud_tags))
+    if not num_tags:
+        return
+
+    # Recompute font sizes (and clear cached positions) if osd_h changed
+    if osd_h != _tag_cloud_last_osd_h or len(_tag_cloud_font_sizes) != len(tag_cloud_tags):
+        _compute_tag_font_sizes(osd_h)
+        tag_cloud_positions.clear()
+
+    cx, cy = osd_w // 2, osd_h // 2
+    top_margin    = round(osd_h * 0.12)
+    bottom_margin = round(osd_h * 0.12)
+
+    def est_dims(fs, text):
+        w = round(len(text) * fs * 0.55)
+        h = round(fs * 1.3)
+        return w, h
 
     def boxes_overlap(a, b):
         ax, ay, aw, ah = a
         bx, by, bw, bh = b
         return not (ax + aw < bx or ax > bx + bw or ay + ah < by or ay > by + bh)
 
-    def find_non_overlapping_position(w, h):
-        top_margin = int(screen_h * 0.12)
-        bottom_margin = int(screen_h * 0.12)
-
-        angle = 0
-        radius = 0
-        max_radius = screen_w  # or a large enough value to expand fully
-
-        while radius < max_radius:
+    # Compute positions incrementally for any newly needed tags
+    while len(tag_cloud_positions) < num_tags:
+        i = len(tag_cloud_positions)
+        fs = _tag_cloud_font_sizes[i]
+        w, h = est_dims(fs, tag_cloud_tags[i]["name"])
+        angle, radius = 0.0, 0
+        px, py = cx - w // 2, cy - h // 2
+        while radius < max(osd_w, osd_h) * 2:
             x = int(cx + radius * math.cos(angle)) - w // 2
             y = int(cy + radius * math.sin(angle)) - h // 2
-
-            # Clamp y to margins
-            clamped_y = max(top_margin, min(y, screen_h - bottom_margin - h))
-
-            # If clamping adjusted y, it means hit vertical boundary
+            clamped_y = max(top_margin, min(y, osd_h - bottom_margin - h))
             if clamped_y != y:
                 y = clamped_y
-                # Push x outward to avoid collapsing horizontally
-                # Increase radius horizontally only, keep y fixed within margin
                 horizontal_direction = 1 if math.cos(angle) >= 0 else -1
-                # Push x farther out beyond current radius:
                 x = int(cx + (radius + 20) * horizontal_direction) - w // 2
-
             pos = (x, y, w, h)
-
             if all(not boxes_overlap(pos, p) for p in tag_cloud_positions):
-                tag_cloud_positions.append(pos)
-                return x, y
-
+                px, py = x, y
+                break
             angle += 0.5
             radius += 4
+        tag_cloud_positions.append((px, py, w, h))
 
-        # fallback to center but respect margins vertically
-        x = cx - w // 2
-        y = max(top_margin, min(cy - h // 2, screen_h - bottom_margin - h))
-        return x, y
-
-    
-    num_tags = min(num_tags, len(tag_cloud_tags))
+    # Build ASS payload for all visible tags
+    text_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+    bg_bgr   = _color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
+    lines = []
     for i in range(num_tags):
-        key = f"tag_{i}"
-        if key in tag_overlay_boxes and tag_overlay_boxes[key].winfo_exists():
-            continue
-
         tag = tag_cloud_tags[i]
-        font_size = tag["font_size"]
-
-        # Temporary window to get size
-        temp = tk.Toplevel()
-        temp.overrideredirect(True)
-        temp.attributes("-alpha", 0.0)
-        label = tk.Label(temp, text=tag["name"], font=("Arial", font_size, "bold"))
-        label.pack()
-        temp.update_idletasks()
-        w, h = temp.winfo_width(), temp.winfo_height()
-        temp.destroy()
-
-        x, y = find_non_overlapping_position(w, h)
-
-        box = tk.Toplevel()
-        box.overrideredirect(True)
-        box.attributes("-topmost", True)
-        box.attributes("-alpha", 0.9)
-        box.configure(bg=OVERLAY_BACKGROUND_COLOR)
-
-        label = tk.Label(
-            box, text=tag["name"],
-            font=("Arial", font_size, "bold"),
-            fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR
+        px, py, tw, th = tag_cloud_positions[i]
+        fs  = _tag_cloud_font_sizes[i]
+        tx  = px + tw // 2
+        ty  = py + th // 2
+        bord = max(2, round(fs * 0.12))
+        # Bold text; border acts as per-glyph background (perfectly consistent padding)
+        lines.append(
+            f"{{\\an5\\pos({tx},{ty})\\1c&H{text_bgr}&\\1a&H00&"
+            f"\\3c&H{bg_bgr}&\\3a&H40&\\bord{bord}\\shad0\\fs{fs}\\b1}}{tag['name']}"
         )
-        label.pack()
-        box.geometry(f"+{x}+{y}")
-        tag_overlay_boxes[key] = box
+    ass_payload = "\n".join(lines)
+    try:
+        _osd_command('osd-overlay', _TAG_CLOUD_ASS_OSD_ID, 'ass-events',
+                          ass_payload, osd_w, osd_h, 3, 'no')
+    except Exception as e:
+        print(f"Tag cloud OSD error: {e}")
 
 # =========================================
 #          *EPISODE LIGHTNING ROUND
@@ -19886,25 +20740,25 @@ def check_valid_episodes(data):
     return False
 
 def toggle_episode_overlay(num_episodes=6, destroy=False):
-    global episode_overlay_boxes, light_episode_names
-
-    max_boxes = 6
+    """Episode title grid drawn via mpv osd-overlay (ASS).  Reveals up to num_episodes boxes."""
+    global episode_overlay_boxes
 
     if destroy:
-        for i in range(max_boxes):
-            key = f"ep_{i}"
-            box = episode_overlay_boxes.get(key)
-            if box and box.winfo_exists():
-                box.destroy()
         episode_overlay_boxes.clear()
+        try:
+            _osd_command('osd-overlay', _EPISODE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
         return
 
-    # Get episode names to display
     num_episodes = min(num_episodes, len(light_episode_names))
+    if num_episodes == 0:
+        return
+
     total_episodes = len(light_episode_names)
     selected_episodes = light_episode_names[:num_episodes]
 
-    # Dynamically calculate grid layout based on number of episodes
+    # Grid layout (same rules as before)
     if total_episodes == 1:
         columns, rows = 1, 1
     elif total_episodes == 2:
@@ -19915,66 +20769,100 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
         columns, rows = 2, 2
     elif total_episodes == 5:
         columns, rows = 3, 2
-    else:  # 6 or more
+    else:
         columns, rows = 2, 3
 
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h:
+        return
 
-    grid_w = round(screen_w * 0.7)
-    grid_h = round(screen_h * 0.7)
+    modifier = min(osd_w / 2560, osd_h / 1440)
+    bord_px = max(2, round(4 * modifier))   # border thickness
+    gap = max(4, round(10 * modifier))       # gap between boxes
 
-    box_width = grid_w // columns
+    grid_w = round(osd_w * 0.7)
+    grid_h = round(osd_h * 0.7)
+    box_width  = grid_w // columns
     box_height = grid_h // rows
+    grid_start_x = (osd_w - box_width * columns) // 2
+    grid_start_y = (osd_h - box_height * rows)   // 2
 
-    # Calculate top-left corner to center the whole grid
-    grid_start_x = (screen_w - box_width * columns) // 2
-    grid_start_y = (screen_h - box_height * rows) // 2
+    pad_x = max(6, round(osd_w * 0.008))
+    pad_y = max(4, round(osd_h * 0.01))
 
-    for i in range(num_episodes):
-        if f"ep_{i}" in episode_overlay_boxes and episode_overlay_boxes[f"ep_{i}"].winfo_exists():
-            continue  # Don't re-create if already exists
-        
-        title = selected_episodes[i]
-        row = i // columns
+    bg_alpha  = "19"  # ~90% opaque
+    shd_alpha = "60"
+    base_fs = max(10, round(55 * modifier * 1.6))
+
+    text_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+    bg_bgr   = _color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
+    bord_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+
+    lines_payload = []
+    for i, ep in enumerate(selected_episodes):
+        title = ep
+        _text_bgr = text_bgr
+        _bg_bgr   = bg_bgr
+        if light_name_overlay and isinstance(ep, (list, tuple)):
+            _color_key = ep[0]
+            title = ep[1]
+            _bg_color = {"a": '#374151', "s": '#065F46', "m": '#1E3A8A'}.get(_color_key, '#374151')
+            _bg_bgr   = _color_str_to_ass_bgr(_bg_color)
+            _text_bgr = _color_str_to_ass_bgr("white")
+
         col = i % columns
+        row = i // columns
+        bx = grid_start_x + col * box_width
+        by = grid_start_y + row * box_height
+        # Inner box (inset by gap on each side)
+        ix, iy = bx + gap, by + gap
+        iw, ih = box_width - gap * 2, box_height - gap * 2
 
-        x = grid_start_x + col * box_width
-        y = grid_start_y + row * box_height
+        text_area_w = iw - (pad_x + bord_px) * 2
 
-        box = tk.Toplevel()
-        box.overrideredirect(True)
-        box.attributes("-topmost", True)
-        box.attributes("-alpha", 0.9)
-        box.configure(bg=OVERLAY_BACKGROUND_COLOR, highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=scl(4))
-        font_size = scl(55)
-        wrap = box_width - scl(40)
-        # Try to find the largest font size that fits within 3 lines
-        background = OVERLAY_BACKGROUND_COLOR
-        foreground = OVERLAY_TEXT_COLOR
-        if light_name_overlay:
-            background = {"a":'#374151',"s":'#065F46',"m":'#1E3A8A'}.get(title[0], '#374151')
-            foreground = "white"
-            title = title[1]
-        while font_size >= scl(10):
-            test_font = font.Font(family="Arial", size=font_size, weight="bold")
-            line_count = get_wrapped_line_count(title, test_font, wrap-scl(10))
-            if line_count <= 3:
-                break
-            font_size -= 1
-        label = tk.Label(
-            box,
-            text=title,
-            font=("Arial", font_size, "bold"),
-            fg=foreground,
-            bg=background,
-            wraplength=wrap,
-            justify="center"
+        # Shrink font until text fits in ≤3 wrapped lines
+        fs = base_fs
+        text_lines = _ass_wrap_text(str(title), fs, text_area_w)
+        while fs > 10 and len(text_lines) > 3:
+            fs -= 1
+            text_lines = _ass_wrap_text(str(title), fs, text_area_w)
+        ass_text = '\\N'.join(text_lines)
+
+        # Border rect
+        lines_payload.append(
+            f"{{\\an7\\pos({ix},{iy})"
+            f"\\1c&H{bord_bgr}&\\1a&H00&\\bord0\\shad0\\p1}}"
+            f"m 0 0 l {iw} 0 {iw} {ih} 0 {ih}{{\\p0}}"
         )
-        label.pack(expand=True, fill="both", padx=scl(10), pady=scl(10))
+        # Fill rect (inset by border width)
+        fx, fy = ix + bord_px, iy + bord_px
+        fw, fh = iw - bord_px * 2, ih - bord_px * 2
+        lines_payload.append(
+            f"{{\\an7\\pos({fx},{fy})"
+            f"\\1c&H{_bg_bgr}&\\1a&H{bg_alpha}&\\bord0\\shad0\\p1}}"
+            f"m 0 0 l {fw} 0 {fw} {fh} 0 {fh}{{\\p0}}"
+        )
+        # Text (centered in inner box)
+        cx = ix + iw // 2
+        cy = iy + ih // 2
+        lines_payload.append(
+            f"{{\\an5\\pos({cx},{cy})"
+            f"\\1c&H{_text_bgr}&\\1a&H00&"
+            f"\\3c&H000000&\\3a&H{shd_alpha}&\\bord0\\shad1"
+            f"\\fs{fs}\\b1}}{ass_text}"
+        )
+        episode_overlay_boxes[f"ep_{i}"] = True
 
-        box.geometry(f"{box_width - scl(20)}x{box_height - scl(20)}+{x}+{y}")
-        episode_overlay_boxes[f"ep_{i}"] = box
+    ass_payload = '\n'.join(lines_payload)
+    try:
+        _osd_command('osd-overlay', _EPISODE_ASS_OSD_ID, 'ass-events',
+                          ass_payload, osd_w, osd_h, 3, 'no')
+    except Exception as e:
+        print(f"Episode overlay OSD error: {e}")
 
 def get_wrapped_line_count(text, font, wraplength):
     words = text.split()
@@ -20977,21 +21865,12 @@ def check_file_availability(filename):
 # =========================================
 #          *CLIP/*TRAILER LIGHTNING ROUND
 # =========================================
-stream_instance = vlc.Instance(
-    "--aout=directsound",
-    "--video-on-top",
-    "--no-xlib", 
-    "-q", 
-    "--fullscreen"
-)
-ost_stream_instance = vlc.Instance(
-    "--aout=directsound",
-    "--no-xlib", 
-    "-q"
-)
-stream_player = stream_instance.media_player_new()
+stream_instance = None      # unused after Phase 2 migration to mpv
+ost_stream_instance = None  # unused after Phase 2 migration to mpv
 currently_streaming = None
 last_streamed = ["","","",""]
+_stream_theme_path = None   # theme filename to restore into player after stream ends
+_stream_wall_start = None   # wall-clock time when stream began playing (used for fake timing in update_light_round)
 last_image_source = ["", ""]  # [filename, image_url]
 
 def extract_youtube_id_from_trailer(trailer_data):
@@ -21075,7 +21954,7 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
             return None, 0
 
 def stream_url(url, name=None, channel=None, new_player=True):
-    global currently_streaming, last_streamed, preset_media, video_stopped, stream_player
+    global currently_streaming, last_streamed, preset_media, video_stopped, _stream_theme_path
     # Check for a locally cached file first (avoids live yt-dlp URL resolution)
     cache_path = _get_yt_cache_path(url)
     if cache_path and os.path.exists(cache_path) and not os.path.exists(cache_path + '.part'):
@@ -21117,35 +21996,67 @@ def stream_url(url, name=None, channel=None, new_player=True):
     if direct_stream:
         currently_streaming = [name, url, channel]
         last_streamed = [currently_playing.get("filename"), name, url, channel]
-        media = stream_instance.media_new(direct_stream)
-        media.parse_with_options(vlc.MediaParseFlag.local, timeout=5)
-        if new_player:
-            if light_mode == 'ost':
-                stream_player = ost_stream_instance.media_player_new()
-            else:
-                stream_player = stream_instance.media_player_new()
-            stream_player.set_media(media)
-            stream_player.play()
-            stream_player.set_fullscreen(False)
-            stream_player.set_fullscreen(True)
-        else:
-            video_stopped = True
-            if current_vout != "opengl":
-                set_vout("opengl")
-            time.sleep(2)
-            player.set_media(media)
-            player.play()
-            player.set_fullscreen(False)
+        # Save the FULL filepath (already stored in previous_media by play_filename) so
+        # stop_stream() can restore the theme.  currently_playing["filename"] is just the
+        # bare name and mpv can't resolve it on its own.
+        _stream_theme_path = previous_media
+        player.set_media(direct_stream)
+        # Clip/trailer: ensure fullscreen. OST: blind overlay hides the video.
+        if light_mode != 'ost':
             player.set_fullscreen(True)
     else:
         currently_streaming = None
     return length
 
-def stop_stream():
-    global currently_streaming
+def stop_stream(restore=True):
+    global currently_streaming, _stream_theme_path, _stream_wall_start, video_stopped
+    if not currently_streaming:
+        return  # no-op when no stream is active
     currently_streaming = None
-    stream_player.stop()
-    stream_player.set_media(None)  # Reset the media
+    _stream_wall_start = None
+    if _stream_theme_path and restore:
+        # Restore the main player to the theme file so it plays during the answer phase.
+        # Set video_stopped first so the idle-active observer doesn't misfire play_next().
+        video_stopped = True
+        restore_path = _stream_theme_path
+        _stream_theme_path = None
+        player.set_media(restore_path)   # set_media auto-plays from beginning
+        # Poll until mpv is actually playing the restored file, then seek to the answer
+        # entry point.  Polling avoids the visible stutter caused by playing from position 0
+        # for a fixed delay before seeking.  Capture start_time now so we can bail if a
+        # new round has already begun by the time the callback fires.
+        _expected_start = light_round_start_time
+        _target_ms = int((light_round_start_time + light_round_length) * 1000) if light_round_start_time is not None else None
+        def _seek_to_answer(attempt=0):
+            if (light_round_start_time != _expected_start
+                    or currently_streaming
+                    or _target_ms is None):
+                _hide_ost_cover()  # round changed — unblock in any case
+                return  # round changed or new stream started — abort
+            current_ms = player.get_time()
+            # Already within 1 s of the target — no seek needed (avoids stutter on re-entry)
+            if abs(current_ms - _target_ms) <= 1000:
+                _hide_ost_cover()
+                return
+            if player.is_playing():
+                player.set_time(_target_ms)
+                _hide_ost_cover()
+            elif attempt < 12:  # retry up to ~600 ms
+                try:
+                    root.after(50, _seek_to_answer, attempt + 1)
+                except Exception:
+                    _hide_ost_cover()
+        try:
+            root.after(50, _seek_to_answer)
+        except Exception:
+            _hide_ost_cover()
+    else:
+        if not restore:
+            # Caller is moving to a new round; play_video will load fresh media.
+            # Don't stop the player — let play_video do it cleanly.
+            _stream_theme_path = None
+        else:
+            player.stop()
 
 def play_trailer(url=None):
     url = url or currently_playing.get("data", {}).get("trailer")
@@ -21575,33 +22486,145 @@ def test_print(text):
     if test_printing:
         print(text)
 
+# ===== Overlay window tracker =====
+# Keeps Tkinter Toplevel overlays pinned over the mpv window as it moves/resizes.
+_tracked_overlay_windows = {}           # Toplevel -> (img_w, img_h, y_nudge_frac, centered, on_resize)
+_last_mpv_rect_tracker = (None, None, None, None)
+_overlay_tracker_running = False
+_overlay_tracker_sync_tick = 0   # counts 100ms ticks; forces positional re-sync every 5 ticks (500ms)
+
+def _register_overlay_for_tracking(win, img_w, img_h, y_nudge_frac=0.0, centered=True, on_resize=None, on_size_change=None):
+    """Register a Tkinter Toplevel so it automatically follows the mpv window.
+
+    centered=True     → on resize, re-centre using stored (img_w, img_h, y_nudge_frac).
+    centered=False    → on resize, shift by the same (dx, dy) delta as for moves.
+    on_resize         → optional no-arg callable; called instead of default geometry reposition
+                        whenever the mpv window changes (move OR resize) or on periodic sync.
+    on_size_change    → optional no-arg callable; called ONLY when the mpv window changes SIZE
+                        (dw or dh != 0). Pure moves still delta-shift the window normally.
+    """
+    global _overlay_tracker_running
+    _tracked_overlay_windows[win] = (img_w, img_h, y_nudge_frac, centered, on_resize, on_size_change)
+    if not _overlay_tracker_running:
+        _overlay_tracker_running = True
+        _do_overlay_tracker()
+
+def _do_overlay_tracker():
+    global _last_mpv_rect_tracker, _overlay_tracker_running, _overlay_tracker_sync_tick
+    # Prune destroyed windows
+    for w in list(_tracked_overlay_windows):
+        try:
+            if not w.winfo_exists():
+                del _tracked_overlay_windows[w]
+        except Exception:
+            _tracked_overlay_windows.pop(w, None)
+
+    if not _tracked_overlay_windows:
+        _overlay_tracker_running = False
+        _last_mpv_rect_tracker = (None, None, None, None)
+        _overlay_tracker_sync_tick = 0
+        return
+
+    mx, my, mw, mh = _get_mpv_window_rect()
+    lmx, lmy, lmw, lmh = _last_mpv_rect_tracker
+
+    _overlay_tracker_sync_tick += 1
+    periodic_sync = (_overlay_tracker_sync_tick >= 5)
+    if periodic_sync:
+        _overlay_tracker_sync_tick = 0
+
+    if mw and lmx is not None:
+        dx = mx - lmx
+        dy = my - lmy
+        dw = mw - lmw
+        dh = mh - lmh
+        changed = bool(dx or dy or dw or dh)
+
+        if changed or periodic_sync:
+            # Deduplicate on_resize callbacks — each unique callable runs once per tick
+            called_callbacks = set()
+            for win, (img_w, img_h, y_nudge, cent, on_resize, on_size_change) in list(_tracked_overlay_windows.items()):
+                try:
+                    if not win.winfo_exists():
+                        continue
+                    if on_size_change:
+                        # Only rebuild when the mpv window actually resized; otherwise delta-move
+                        if dw or dh:
+                            cb_id = id(on_size_change)
+                            if cb_id not in called_callbacks:
+                                called_callbacks.add(cb_id)
+                                on_size_change()
+                        elif changed:
+                            win.geometry(f"+{win.winfo_x() + dx}+{win.winfo_y() + dy}")
+                    elif on_resize:
+                        cb_id = id(on_resize)
+                        if cb_id not in called_callbacks:
+                            called_callbacks.add(cb_id)
+                            on_resize()
+                    elif cent:
+                        x = mx + (mw - img_w) // 2
+                        y = my + (mh - img_h) // 2 + int(mh * y_nudge)
+                        win.geometry(f"+{x}+{y}")
+                    elif changed:
+                        win.geometry(f"+{win.winfo_x() + dx}+{win.winfo_y() + dy}")
+                except Exception:
+                    pass
+
+    if mw:
+        _last_mpv_rect_tracker = (mx, my, mw, mh)
+
+    # Lift image overlay windows only when _mpv_tracker_poll is NOT running
+    # (i.e. no title popup). When _mpv_tracker_poll IS running it handles all
+    # lifting in the correct z-order (overlays first, then popup on top).
+    if _mpv_tracker_id is None:
+        for win in list(_tracked_overlay_windows):
+            try:
+                if win.winfo_exists():
+                    win.lift()
+            except Exception:
+                pass
+
+    root.after(100, _do_overlay_tracker)
+
 edge_overlay = None
 def toggle_outer_edge_overlay(destroy=False, pixels=65, color="black"):
+    """Bottom censor bar drawn via mpv osd-overlay (ASS).  Covers the bottom `pixels`
+    screen-pixels-equivalent of the video, e.g. to hide Crunchyroll watermarks."""
     global edge_overlay
 
     if destroy:
         if edge_overlay:
-            edge_overlay.destroy()
             edge_overlay = None
+            try:
+                _osd_command('osd-overlay', _OUTER_EDGE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            except Exception:
+                pass
         return
 
-    if edge_overlay:
-        edge_overlay.lift()
-        edge_overlay.attributes("-topmost", True)
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h:
         return
 
-    # Create the overlay window
-    edge_overlay = tk.Toplevel()
-    edge_overlay.overrideredirect(True)
-    edge_overlay.attributes("-topmost", True)
+    # Scale bar height from reference 1080p screen pixels to OSD pixels.
+    bar_h = max(1, round(pixels * osd_h / 1080))
+    bar_y = osd_h - bar_h
+    color_bgr = _color_str_to_ass_bgr(color)
 
-    screen_width = edge_overlay.winfo_screenwidth()
-    screen_height = edge_overlay.winfo_screenheight()
-    edge_overlay.geometry(f"{screen_width}x{pixels}+0+{screen_height - pixels}")
-
-    # Background frame (bottom only)
-    frame = tk.Frame(edge_overlay, bg=color)
-    frame.pack(fill="both", expand=True)
+    ass_payload = (
+        f"{{\\an7\\pos(0,{bar_y})"
+        f"\\1c&H{color_bgr}&\\1a&H00&\\bord0\\shad0\\p1}}"
+        f"m 0 0 l {osd_w} 0 {osd_w} {bar_h} 0 {bar_h}{{\\p0}}"
+    )
+    try:
+        _osd_command('osd-overlay', _OUTER_EDGE_ASS_OSD_ID, 'ass-events',
+                          ass_payload, osd_w, osd_h, 1, 'no')  # z=1, same as blind layer
+    except Exception:
+        return
+    edge_overlay = True  # sentinel — truthy while active
 
 # =========================================
 #          *OST LIGHTNING ROUND
@@ -21768,101 +22791,260 @@ def set_frame_number(value=None, inverse=False):
 def top_info(value=None, size=80, width_max=0.7, inverse=False):
     set_floating_text("Top Info", value, position="top center", size=size, width_max=width_max, inverse=inverse)
 
-floating_windows = {}  # Dictionary to store windows and labels
+# name → allocated osd-overlay ID (60–79); permanent for the app lifetime
+_floating_text_osd_alloc = {}
+
+# PIL font cache for accurate ASS text-width measurement (keyed by pixel size).
+_ass_font_cache = {}
+_ass_font_cache_regular = {}
+
+def _get_ass_font(fs, bold=True):
+    """Return a PIL ImageFont for Arial at *fs* pixels, cached across calls."""
+    cache = _ass_font_cache if bold else _ass_font_cache_regular
+    if fs not in cache:
+        from PIL import ImageFont
+        font = None
+        paths = (["C:/Windows/Fonts/arialbd.ttf", "C:/Windows/Fonts/arial.ttf"]
+                 if bold else
+                 ["C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/arialbd.ttf"])
+        for path in paths:
+            try:
+                font = ImageFont.truetype(path, fs)
+                break
+            except Exception:
+                pass
+        cache[fs] = font
+    return cache[fs]
+
+def _get_floating_osd_id(name):
+    """Return a stable osd-overlay ID for this name, allocating one from 60–79 if needed."""
+    if name not in _floating_text_osd_alloc:
+        next_id = 60 + len(_floating_text_osd_alloc)
+        if next_id > 79:
+            raise RuntimeError("Too many floating text OSD slots (max 20)")
+        _floating_text_osd_alloc[name] = next_id
+    return _floating_text_osd_alloc[name]
+
+def _color_str_to_ass_bgr(color_str):
+    """Convert a Tkinter color string to an ASS BBGGRR hex string (no & wrappers)."""
+    try:
+        r16, g16, b16 = root.winfo_rgb(color_str)
+        r, g, b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        r, g, b = 255, 255, 255
+    return f"{b:02X}{g:02X}{r:02X}"
+
+floating_windows = {}  # name → osd_id (int); tracks active floating text OSD slots
+
+def _ass_wrap_text(text, fs, max_w, bold=True):
+    """Word-wrap *text* into lines that fit within *max_w* OSD pixels at font size *fs*.
+    Uses the PIL font cache for accurate glyph widths; falls back to a char-count estimate.
+    Pass bold=False to measure with the regular (non-bold) Arial font."""
+    words = text.split()
+    if not words:
+        return ['']
+    fnt = _get_ass_font(fs, bold=bold)
+    lines, current_words, current_w = [], [], 0
+    sp_w = 0
+    try:
+        sp_w = round(fnt.getlength(' ')) if fnt else round(fs * 0.25)
+    except AttributeError:
+        sp_w = fnt.getsize(' ')[0] if fnt else round(fs * 0.25)
+    for word in words:
+        try:
+            word_w = round(fnt.getlength(word)) if fnt else round(len(word) * fs * 0.52)
+        except AttributeError:
+            word_w = fnt.getsize(word)[0] if fnt else round(len(word) * fs * 0.52)
+        gap = sp_w if current_words else 0
+        if current_words and current_w + gap + word_w > max_w:
+            lines.append(' '.join(current_words))
+            current_words = [word]
+            current_w = word_w
+        else:
+            current_words.append(word)
+            current_w += gap + word_w
+    if current_words:
+        lines.append(' '.join(current_words))
+    return lines
 
 def set_floating_text(name, value, position="top right", size=80, width_max=0.7, inverse=False, align="center"):
     """
-    Creates, updates, or removes a floating overlay window with text.
+    Creates, updates, or removes a floating OSD text overlay via mpv osd-overlay (ASS).
 
     Args:
-        name (str): A unique identifier for the floating window (e.g., "countdown", "light_round").
-        value (str or int): The text to display. If None or '0', the window is removed.
-        position (str): Where to place the window (e.g., "top left", "bottom center", "middle right").
-        align (str): Text alignment - "left", "center", or "right" (default: "center").
+        name (str): Unique identifier for this slot (e.g., "Countdown", "Lightning Round Number").
+        value (str or int): Text to display. None / "" / "0" / negative int removes the overlay.
+        position (str): One of the 9 grid positions ("top right", "bottom center", etc.).
+        size (int): Base font size in scl() units (reference 1440p).
+        width_max (float): Max fraction of OSD width before shrink-to-fit kicks in.
+        inverse (bool): Use inverse color scheme.
+        align (str): Ignored (alignment is implied by position anchor).
     """
     global floating_windows
-    size = scl(size)
-    if value is None or value == "" or isinstance(value, str) and value == '0' or isinstance(value, int) and value < 0:
+
+    is_empty = (value is None or value == "" or
+                (isinstance(value, str) and value == '0') or
+                (isinstance(value, int) and value < 0))
+
+    if is_empty:
         if name in floating_windows:
-            floating_windows[name]["window"].destroy()
-            del floating_windows[name]
+            osd_id = floating_windows.pop(name)
+            try:
+                _osd_command('osd-overlay', osd_id, 'none', '', 0, 0, 0, 'no')
+            except Exception:
+                pass
         return
 
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h:
+        return
+
+    osd_id = _get_floating_osd_id(name)
+    floating_windows[name] = osd_id
+
+    text = str(value)
+
+    # ASS hard newline is \N placed directly in the text stream (NOT inside {}).
+    # '{\\N}' in Python → {\N} in ASS → treated as an unrecognized tag (ignored).
+    # '\\N'   in Python → \N  in ASS → hard line break. ✓
+    lines = text.split('\n')
+    ass_text = '\\N'.join(lines)
+    max_line_len = max(len(l) for l in lines)
+    num_lines = len(lines)
+
+    # ASS \fsN with PlayResY=osd_h means N OSD pixels.  The old Tkinter labels used
+    # scl(size) *points* at 96 DPI → 1 pt = 96/72 px ≈ 1.33×, but Windows DPI scaling
+    # multiplies on top of that, so we use 1.6 to better match the original visual size.
+    modifier = min(osd_w / 2560, osd_h / 1440)
+    fs = max(10, round(size * modifier * 1.6))
+
+    # Fixed pad matching the original Tkinter overlay feel: ~1% of OSD height on each
+    # side, independent of font size so small and large text get the same border gap.
+    pad = max(6, round(osd_h * 0.01))
+
+    # Box sizing:
+    #   width  — measured via PIL ImageFont.getlength() for each line at size f,
+    #            so the box fits the actual rendered glyphs regardless of content.
+    #            Falls back to 0.52×fs×chars if the font file cannot be loaded.
+    #   height — 1.0 × fs per line (em-square; libass \N line spacing matches this).
+    def _metrics(f):
+        font = _get_ass_font(f)
+        if font is not None:
+            try:
+                tw = max((round(font.getlength(l or ' ')) for l in lines), default=f)
+            except AttributeError:
+                # Pillow < 9.2 fallback
+                tw = max((font.getsize(l or ' ')[0] for l in lines), default=f)
+        else:
+            tw = round(max_line_len * f * 0.52)
+        th = round(num_lines * f * 1.0)
+        return tw, th, pad
+
+    # Shrink-to-fit so the box stays within width_max of the OSD width.
+    max_px = osd_w * width_max
+    text_w, text_h, pad = _metrics(fs)
+    while fs > 10 and text_w + pad * 2 > max_px:
+        fs -= 1
+        text_w, text_h, pad = _metrics(fs)
+
+    box_w = text_w + pad * 2
+    box_h = text_h + pad * 2
+
+    # Colors (ASS uses BBGGRR order)
     if inverse:
-        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
-        front_color = INVERSE_OVERLAY_TEXT_COLOR
+        text_bgr = _color_str_to_ass_bgr(INVERSE_OVERLAY_TEXT_COLOR)
+        bg_bgr   = _color_str_to_ass_bgr(INVERSE_OVERLAY_BACKGROUND_COLOR)
     else:
-        back_color = OVERLAY_BACKGROUND_COLOR
-        front_color = OVERLAY_TEXT_COLOR
+        text_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+        bg_bgr   = _color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
 
-    if name not in floating_windows:
-        window = tk.Toplevel()
-        window.title(name)
-        window.overrideredirect(True)  # Remove window borders
-        window.attributes("-topmost", True)  # Keep it on top
-        window.wm_attributes("-alpha", 0.7)  # Semi-transparent background
-        window.configure(bg=back_color)
+    # Box top-left corner: place outward from the requested corner/edge.
+    # scl(10) ≡ round(10 * modifier) — matches the Tkinter overlay edge gap.
+    margin = max(4, round(10 * modifier))
+    if 'left'   in position: box_x = margin
+    elif 'right' in position: box_x = osd_w - margin - box_w
+    else:                     box_x = (osd_w - box_w) // 2
 
-        label = tk.Label(window, font=("Arial", size, "bold"), fg=front_color, bg=back_color, justify=align)
-        label.pack(padx=20, pady=10)
+    if 'top'    in position: box_y = margin
+    elif 'bottom' in position: box_y = osd_h - margin - box_h
+    else:                     box_y = (osd_h - box_h) // 2
 
-        floating_windows[name] = {"window": window, "label": label}
-
-        # Temporarily place at (0,0) before positioning update
-        window.geometry("+0+0")
-    
+    # Text anchor inside the box.
+    # For left-positioned overlays: \an4 (left-center anchor) at the pad-inset left edge
+    # → ASS left-aligns multi-line text and we don't need to estimate line widths.
+    # For all others: \an5 (center anchor) at box center.
+    cy = box_y + box_h // 2
+    if 'left' in position:
+        text_an = 4
+        tx = box_x + pad
+        ty = cy
     else:
-        window = floating_windows[name]["window"]
-        label = floating_windows[name]["label"]
+        text_an = 5
+        tx = box_x + box_w // 2
+        ty = cy
 
-    screen_width = window.winfo_screenwidth()
-    max_width = int(screen_width * width_max)
+    bg_alpha   = "33"  # ~80% opaque (ASS: 0x00=opaque, 0xFF=transparent)
+    shad_alpha = "60"  # subtle shadow
 
-    current_size = size
-    test_font = font.Font(family="Arial", size=current_size, weight="bold")
-    while test_font.measure(str(value)) + 40 > max_width and current_size > 10:
-        current_size -= 1
-        test_font.configure(size=current_size)
+    ass_payload = (
+        # Line 1: filled background rectangle (drawing coords relative to \pos)
+        f"{{\\an7\\pos({box_x},{box_y})"
+        f"\\1c&H{bg_bgr}&\\1a&H{bg_alpha}&\\bord0\\shad0\\p1}}"
+        f"m 0 0 l {box_w} 0 {box_w} {box_h} 0 {box_h}{{\\p0}}\n"
+        # Line 2: text positioned and aligned per text_an
+        f"{{\\an{text_an}\\pos({tx},{ty})"
+        f"\\1c&H{text_bgr}&\\1a&H00&"
+        f"\\3c&H000000&\\3a&H{shad_alpha}&\\bord0\\shad1"
+        f"\\fs{fs}\\b1}}{ass_text}"
+    )
 
-    # Update the label text
-    window.config(bg=back_color)
-    label.config(text=str(value), font=test_font, fg=front_color, bg=back_color, justify=align)
-
-    # Function to set position after Tkinter updates
-    def update_position():
-        window.update_idletasks()  # Ensure correct window size
-        screen_width = window.winfo_screenwidth()
-        screen_height = window.winfo_screenheight()
-        window_width = window.winfo_reqwidth()
-        window_height = window.winfo_reqheight()
-
-        positions = {
-            "top left": (20, 20),
-            "top center": ((screen_width - window_width) // 2, 20),
-            "top right": (screen_width - window_width - 20, 20),
-            "middle left": (20, (screen_height - window_height) // 2),
-            "center": ((screen_width - window_width) // 2, (screen_height - window_height) // 2),
-            "middle right": (screen_width - window_width - 20, (screen_height - window_height) // 2),
-            "bottom left": (20, screen_height - window_height - 20),
-            "bottom center": ((screen_width - window_width) // 2, screen_height - window_height - 20),
-            "bottom right": (screen_width - window_width - 20, screen_height - window_height - 20),
-        }
-
-        x, y = positions.get(position, positions["top right"])
-        window.update_idletasks()
-        window.geometry(f"+{x}+{y}")
-        window.update_idletasks()
-        window.geometry(f"+{x}+{y}")
-        window.lift()  # Bring to front
-
-    # Ensure window is correctly positioned **after** all updates
-    update_position()
+    try:
+        _osd_command('osd-overlay', osd_id, 'ass-events',
+                          ass_payload, osd_w, osd_h, 3, 'no')  # z=3, above blind and progress bar
+    except Exception as e:
+        print(f"Floating text OSD error ({name}): {e}")
 
 progress_overlay = None
 light_progress_bar = None
 music_icon_label = None
 pulse_step = 0
 progress_bar_ready = False  # Tracks when progress bar is fully initialized
+_progress_overlay_last_mpv_size = (0, 0)  # detect resize vs. move
+_pulse_sizes = (48, 60)  # (base_size, max_size) cached to avoid winfo_height() every frame
+
+def _progress_overlay_on_mpv_rect(mx, my, mw, mh):
+    """Reposition (and on resize, rebuild) the progress overlay to track the mpv window."""
+    global _progress_overlay_last_mpv_size
+    if progress_overlay is None:
+        return
+    if (mw, mh) != _progress_overlay_last_mpv_size:
+        # Window resized — rebuild so sizes/fonts scale correctly
+        _progress_overlay_last_mpv_size = (mw, mh)
+        # Capture the current bar progress before destroying so we can restore it
+        try:
+            _cur = light_progress_bar["value"] if light_progress_bar else 0
+            _tot = light_progress_bar["maximum"] if light_progress_bar else 1
+        except Exception:
+            _cur, _tot = 0, 1
+        set_progress_overlay(destroy=True)
+        set_progress_overlay(_cur, _tot)
+        return
+    # Window just moved — reposition only
+    try:
+        pw = progress_overlay.winfo_width()
+        ph = progress_overlay.winfo_height()
+        nx = mx + (mw - pw) // 2
+        ny = my + (mh - ph) // 2
+        cur_x = progress_overlay.winfo_x()
+        cur_y = progress_overlay.winfo_y()
+        if abs(nx - cur_x) > 2 or abs(ny - cur_y) > 2:
+            progress_overlay.geometry(f"+{nx}+{ny}")
+    except Exception:
+        pass
 
 def _get_fixed_playlist_progress(current_round_elapsed_secs):
     """Return (elapsed*100, total*100) across the whole fixed playlist, or None if not active.
@@ -21894,15 +23076,15 @@ def _get_fixed_playlist_progress(current_round_elapsed_secs):
 
 
 def set_progress_overlay(current_time=None, total_length=None, destroy=False):
-    global progress_overlay, light_progress_bar, music_icon_label, progress_bar_ready
+    global progress_overlay, light_progress_bar, music_icon_label, progress_bar_ready, _pulse_sizes
 
     if destroy:
+        _unregister_mpv_tracked_window("progress_overlay")
         if progress_overlay is not None:
-            screen_width = progress_overlay.winfo_screenwidth()
-            screen_height = progress_overlay.winfo_screenheight()
-            window_height = round((screen_height / 15) * 6)
-            animate_window(progress_overlay, screen_width, (screen_height - window_height) // 2,
-                           steps=20, delay=5, bounce=False, fade=None, destroy=True)
+            try:
+                progress_overlay.destroy()
+            except Exception:
+                pass
         progress_overlay = None
         light_progress_bar = None
         music_icon_label = None
@@ -21917,14 +23099,21 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         progress_overlay.attributes("-alpha", 0.8)
         progress_overlay.configure(bg=OVERLAY_TEXT_COLOR)  # outline colour
 
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
+        # Use mpv window rect for sizing/centering so it tracks the player window
+        mx, my, mw, mh = _get_mpv_window_rect() or (None, None, None, None)
+        if mw and mh:
+            screen_width, screen_height = mw, mh
+            _ox, _oy = mx, my
+        else:
+            screen_width = root.winfo_screenwidth()
+            screen_height = root.winfo_screenheight()
+            _ox, _oy = 0, 0
         width, height = round(screen_width * 0.7), round(screen_height * 0.5)
-        x = (screen_width - width) // 2
-        y = (screen_height - height) // 2
+        x = _ox + (screen_width - width) // 2
+        y = _oy + (screen_height - height) // 2
 
-        # Initially place off-screen
-        progress_overlay.geometry(f"{width}x{height}+{-screen_width}+{y}")
+        # Place directly at final position — no slide animation
+        progress_overlay.geometry(f"{width}x{height}+{x}+{y}")
         progress_overlay.update_idletasks()
 
         # Inner frame fills everything except a border matching the synopsis box thickness
@@ -21953,26 +23142,31 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
             music_icon = "🎼"
         else:
             music_icon = "🎵"
-        music_icon_label = tk.Label(_inner, text=music_icon, font=("Segoe UI Emoji", scl(100)),
+
+        # Font size = screen-percentage size (scl-based, same as original) scaled
+        # proportionally by how much of the screen the mpv window occupies.
+        # At fullscreen: ratio=1.0 → identical to the old scl(160)/scl(200) values.
+        _screen_h = root.winfo_screenheight()
+        _mpv_frac = screen_height / _screen_h if _screen_h else 1.0
+        _pulse_base = max(8, round(scl(160) * _mpv_frac))
+        _pulse_max  = max(10, round(scl(200) * _mpv_frac))
+        _pulse_sizes = (_pulse_base, _pulse_max)
+        music_icon_label = tk.Label(_inner, text=music_icon, font=("Segoe UI Emoji", _pulse_base),
                                     bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
 
         music_icon_label.place(x=0, rely=0.35, anchor="center")  # Temporarily place far left
 
-        def pulsate_music_icon_worker():
-            pulsate_music_icon(music_icon_label)
-        threading.Thread(target=pulsate_music_icon_worker, daemon=True).start()
-        # pulsate_music_icon(music_icon_label)
+        # Schedule pulsation on main thread — do NOT call Tkinter from a worker thread
+        root.after(50, pulsate_music_icon, music_icon_label)
 
-        # Animate to center, then mark ready and move icon
-        def finish_animation():
-            nonlocal current_time, total_length
-            progress_overlay.update_idletasks()
-            move_music_icon(current_time, total_length)
-            global progress_bar_ready
-            progress_bar_ready = True
-
-        animate_window(progress_overlay, x, y, steps=20, delay=5, bounce=False, fade=None,
-                       callback=finish_animation)
+        # Mark ready and position icon immediately (no animation callback needed)
+        progress_overlay.update_idletasks()
+        move_music_icon(current_time, total_length)
+        progress_bar_ready = True
+        _register_mpv_tracked_window("progress_overlay", progress_overlay,
+                                     _progress_overlay_on_mpv_rect, keep_topmost=False, lift_on_focus=True)
+        global _progress_overlay_last_mpv_size
+        _progress_overlay_last_mpv_size = (screen_width, screen_height)
 
     elif current_time is not None and total_length is not None:
         # Wait until layout is complete
@@ -21982,7 +23176,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         light_progress_bar["value"] = current_time
         progress_overlay.wm_attributes("-topmost", True)
 
-def pulsate_music_icon(label):
+def pulsate_music_icon(label, sizes=None, _step=None, _font="Arial", _interval=50):
     global pulse_step
 
     # Retry until the label exists
@@ -21990,22 +23184,30 @@ def pulsate_music_icon(label):
         return  # Stop if truly gone
 
     if not label.winfo_ismapped():
-        root.after(100, pulsate_music_icon, label)  # Wait and retry
+        root.after(100, pulsate_music_icon, label, sizes, _step, _font, _interval)  # Wait and retry
         return
 
     if not player.is_playing():
-        root.after(500, pulsate_music_icon, label)  # Check again later if paused
+        root.after(500, pulsate_music_icon, label, sizes, _step, _font, _interval)  # Check again later if paused
         return
 
-    base_size = scl(160)
-    max_size = scl(200)
+    base_size, max_size = sizes if sizes is not None else _pulse_sizes
     speed = 0.5
 
-    pulse_step += speed
-    new_size = int(base_size + (math.sin(pulse_step) * (max_size - base_size) / 2))
-    label.config(font=("Arial", new_size))
+    # Use a private step for non-global callers so shared pulse_step isn't double-incremented
+    if sizes is not None:
+        if _step is None:
+            _step = [0.0]
+        _step[0] += speed
+        step_val = _step[0]
+    else:
+        pulse_step += speed
+        step_val = pulse_step
+        _step = None
 
-    root.after(50, pulsate_music_icon, label)
+    new_size = int(base_size + (math.sin(step_val) * (max_size - base_size) / 2))
+    label.config(font=(_font, new_size))
+    root.after(_interval, pulsate_music_icon, label, sizes, _step, _font, _interval)
 
 def move_music_icon(current_time, total_length):
     if music_icon_label is None or light_progress_bar is None:
@@ -24521,19 +25723,23 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
 
 title_window = None  # Store the title popup window
 _title_popup_intent = False  # True as soon as we intend to show the popup (before window exists)
+_title_popup_info_type_cache = None  # last info_type shown; used by resize tracker
 title_row_label = None
 top_row_label = None
 bottom_row_label = None
 
 def adjust_font_size(label, max_width, base_size=scl(50), min_size=scl(20)):
-    """Adjusts the font size dynamically to fit within max_width."""
+    """Adjusts the font size dynamically to fit within max_width.
+    Uses Font.measure() for reliable text-width measurement without
+    depending on the widget being fully mapped on screen."""
+    text = label.cget("text")
     font_size = base_size
-    label.config(font=("Arial", font_size, "bold"))
-    
-    label.update_idletasks()  # Ensure geometry updates
-    while label.winfo_reqwidth() > max_width and font_size > min_size:
+    while font_size > min_size:
+        f = Font(family="Arial", size=font_size, weight="bold")
+        if f.measure(text) <= max_width:
+            break
         font_size -= 2
-        label.config(font=("Arial", font_size, "bold"))
+    label.config(font=("Arial", font_size, "bold"))
     return font_size
 
 def get_artist_themes_data(artist_name, current_filename=None, max_display=None, include_current=False):
@@ -24764,8 +25970,426 @@ def get_studio_entries_data(studio_name, current_filename=None, max_display=None
         "truncated": truncated,
     }
 
+def _get_mpv_window_rect():
+    """Return (x, y, w, h) of the mpv player **client area** on screen.
+    Using the client rect (not the full window rect) excludes the title bar and
+    window borders so that peek overlays align with the actual video area.
+    Falls back to (0, 0, screen_w, screen_h) if the window handle is unavailable."""
+    try:
+        import ctypes, ctypes.wintypes
+        hwnd = int(player._p.window_id or 0)
+        if hwnd:
+            # GetClientRect gives dimensions relative to the client origin (always 0,0)
+            client_rect = ctypes.wintypes.RECT()
+            ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(client_rect))
+            w = client_rect.right - client_rect.left
+            h = client_rect.bottom - client_rect.top
+            if w > 0 and h > 0:
+                # ClientToScreen converts the client (0,0) to screen coordinates
+                pt = ctypes.wintypes.POINT()
+                pt.x = 0
+                pt.y = 0
+                ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                return pt.x, pt.y, w, h
+    except Exception:
+        pass
+    sw = root.winfo_screenwidth()
+    sh = root.winfo_screenheight()
+    return 0, 0, sw, sh
+
+def _get_mpv_client_rect_logical():
+    """Return (x, y, w, h) of the mpv client area in Tkinter **logical** pixels.
+    Divides Win32 physical pixel coords by the per-monitor DPI scale so the
+    result can be passed directly to win.geometry() without position/size errors
+    on screens with DPI scaling != 100%.
+    Falls back to (0, 0, screen_w, screen_h) when the HWND is unavailable."""
+    try:
+        import ctypes, ctypes.wintypes
+        hwnd = int(player._p.window_id or 0)
+        if hwnd:
+            try:
+                dpi = ctypes.windll.shcore.GetDpiForWindow(hwnd)
+                scale = dpi / 96.0
+            except Exception:
+                scale = root.winfo_fpixels('1i') / 96.0
+            client = ctypes.wintypes.RECT()
+            ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(client))
+            w_phys = client.right - client.left
+            h_phys = client.bottom - client.top
+            if w_phys > 0 and h_phys > 0:
+                pt = ctypes.wintypes.POINT()
+                pt.x = 0
+                pt.y = 0
+                ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(pt))
+                return (round(pt.x / scale), round(pt.y / scale),
+                        round(w_phys / scale), round(h_phys / scale))
+    except Exception:
+        pass
+    return 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+# ── mpv window tracker ─────────────────────────────────────────────────────────
+# Register any Tkinter Toplevel to follow the mpv window as it moves/resizes.
+# Usage: _register_mpv_tracked_window(name, window, callback(mx,my,mw,mh))
+_mpv_tracked_windows = {}   # {name: {"window": win, "on_rect_change": fn, "keep_topmost": bool, "lift_on_focus": bool}}
+_mpv_tracker_id = None
+_mpv_tracker_last_rect = None
+_mpv_tracker_last_fg = False   # whether mpv was foreground on the last poll
+
+def _mpv_tracker_poll():
+    global _mpv_tracker_id, _mpv_tracker_last_rect, _mpv_tracker_last_fg
+    if not _mpv_tracked_windows:
+        _mpv_tracker_id = None
+        _mpv_tracker_last_rect = None
+        _mpv_tracker_last_fg = False
+        return
+    rect = _get_mpv_window_rect()
+    if rect != _mpv_tracker_last_rect:
+        _mpv_tracker_last_rect = rect
+        for name in list(_mpv_tracked_windows):
+            info = _mpv_tracked_windows.get(name)
+            if not info:
+                continue
+            win = info.get("window")
+            if win is not None:
+                try:
+                    exists = win.winfo_exists()
+                except Exception:
+                    exists = False
+                if not exists:
+                    _mpv_tracked_windows.pop(name, None)
+                    continue
+            try:
+                info["on_rect_change"](*rect)
+            except Exception:
+                pass
+    # Re-lift keep_topmost windows every poll.
+    # First lift image overlay windows (from _do_overlay_tracker), then keep_topmost
+    # windows on top of them so the title popup always wins z-order.
+    for win in list(_tracked_overlay_windows):
+        try:
+            if win.winfo_exists():
+                win.lift()
+        except Exception:
+            pass
+    for name in list(_mpv_tracked_windows):
+        info = _mpv_tracked_windows.get(name)
+        if not info or not info.get("keep_topmost"):
+            continue
+        win = info.get("window")
+        if win is None:
+            continue
+        try:
+            if win.winfo_exists():
+                win.lift()
+        except Exception:
+            pass
+    # Lift lift_on_focus windows only when mpv just became foreground
+    try:
+        import ctypes
+        fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
+        mpv_hwnd = int(player._p.window_id or 0)
+        mpv_fg = bool(mpv_hwnd and fg_hwnd == mpv_hwnd)
+    except Exception:
+        mpv_fg = False
+    if mpv_fg and not _mpv_tracker_last_fg:
+        for name in list(_mpv_tracked_windows):
+            info = _mpv_tracked_windows.get(name)
+            if not info or not info.get("lift_on_focus"):
+                continue
+            win = info.get("window")
+            if win is None:
+                continue
+            try:
+                if win.winfo_exists():
+                    win.lift()
+            except Exception:
+                pass
+    _mpv_tracker_last_fg = mpv_fg
+    _mpv_tracker_id = root.after(150, _mpv_tracker_poll)
+
+def _register_mpv_tracked_window(name, window, on_rect_change, keep_topmost=False, lift_on_focus=False):
+    global _mpv_tracker_id
+    _mpv_tracked_windows[name] = {"window": window, "on_rect_change": on_rect_change, "keep_topmost": keep_topmost, "lift_on_focus": lift_on_focus}
+    if _mpv_tracker_id is None:
+        _mpv_tracker_id = root.after(150, _mpv_tracker_poll)
+
+def _unregister_mpv_tracked_window(name):
+    _mpv_tracked_windows.pop(name, None)
+
+_title_popup_last_mpv_size = (0, 0)
+_title_popup_anim_after  = None   # root.after ID for slide animation
+_title_popup_anim_state  = None   # 'in' | 'out' | None
+_title_popup_anim_args   = None   # (top_row, title_row, bottom_row, bg_color, fg_color) for redraw
+
+def _blind_osd_on_mpv_rect(mx, my, mw, mh):
+    """Refresh the blind OSD when the mpv window size changes so it stays full-canvas."""
+    if black_overlay:
+        _set_blind_osd_alpha(_blind_osd_color_cache, 255)
+
+def _get_osd_video_rect():
+    """Return (osd_w, osd_h, vid_x, vid_y, vid_w, vid_h) in OSD pixel coordinates.
+    vid_x/y/w/h is the letterboxed video area within the OSD canvas.
+    Returns all zeros if OSD is not ready.
+    """
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return 0, 0, 0, 0, 0, 0
+    if not osd_w or not osd_h:
+        return 0, 0, 0, 0, 0, 0
+    try:
+        vw, vh = player.video_get_size(0)
+    except Exception:
+        vw, vh = 0, 0
+    if vw and vh:
+        if (vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478):
+            video_ar = 16.0 / 9.0
+        else:
+            video_ar = vw / vh
+        osd_ar = osd_w / osd_h
+        if video_ar >= osd_ar:
+            disp_w = osd_w
+            disp_h = int(osd_w / video_ar)
+            vid_x = 0
+            vid_y = (osd_h - disp_h) // 2
+        else:
+            disp_h = osd_h
+            disp_w = int(osd_h * video_ar)
+            vid_x = (osd_w - disp_w) // 2
+            vid_y = 0
+    else:
+        vid_x, vid_y, disp_w, disp_h = 0, 0, osd_w, osd_h
+    return osd_w, osd_h, vid_x, vid_y, disp_w, disp_h
+
+def _hide_title_popup_osd():
+    """Remove the anime info ASS overlay from the mpv canvas."""
+    try:
+        _osd_command('osd-overlay', _INFO_POPUP_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+    except Exception:
+        pass
+
+def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset=0):
+    """Render the anime info popup as an ASS osd-overlay at the bottom-center of the mpv canvas.
+
+    Mirrors the original tkinter layout:
+      top_row    — small bold text  (ASS fs ≈ scl(20))
+      title_row  — large bold text  (ASS fs ≈ scl(50), shrink-to-fit)
+      bottom_row — small bold text  (ASS fs ≈ scl(15))
+    A semi-transparent background box (alpha 0.8) is drawn beneath all rows.
+    y_offset > 0 shifts the box downward (used for slide-out below the screen).
+    """
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h:
+        return
+
+    modifier = min(osd_w / 2560, osd_h / 1440)
+
+    # Font sizes: match tkinter scl(20)/scl(50)/scl(15) scaled by osd modifier.
+    # The ×1.6 matches the conversion used in set_floating_text.
+    fs_top    = max(10, round(20 * modifier * 1.6))
+    fs_title  = max(14, round(50 * modifier * 1.6))
+    fs_bottom = max(10, round(15 * modifier * 1.6))
+
+    pad_x  = max(2, round(osd_h * 0.001))   # left/right padding (tight)
+    pad_y  = max(4, round(osd_h * 0.005))   # top/bottom padding (slightly more room)
+    margin = max(4, round(10 * modifier))
+    gap    = max(2, round(fs_top * 0.1))    # vertical gap between rows
+
+    def _line_h(fs, n):
+        return round(n * fs * 1.0)
+
+    def _measure_w(text_block, fs):
+        """Max rendered pixel width of any line in text_block at the given fs."""
+        fnt = _get_ass_font(fs)
+        max_w = 0
+        for line in text_block.split('\n'):
+            if not line:
+                continue
+            try:
+                w = round(fnt.getlength(line)) if fnt else round(len(line) * fs * 0.52)
+            except AttributeError:
+                w = fnt.getsize(line)[0] if fnt else round(len(line) * fs * 0.52)
+            if w > max_w:
+                max_w = w
+        return max_w or fs
+
+    # Shrink title font until it fits, matching adjust_font_size behaviour.
+    max_title_px = osd_w - round(osd_h * 0.25)
+    while fs_title > 14 and _measure_w(title_row, fs_title) + pad_x * 2 > max_title_px:
+        fs_title -= 1
+
+    top_lines    = top_row.count('\n') + 1    if top_row    else 0
+    title_lines  = title_row.count('\n') + 1  if title_row  else 0
+    bottom_lines = bottom_row.count('\n') + 1 if bottom_row else 0
+
+    row_h_top    = _line_h(fs_top,    top_lines)    if top_lines    else 0
+    row_h_title  = _line_h(fs_title,  title_lines)  if title_lines  else 0
+    row_h_bottom = _line_h(fs_bottom, bottom_lines)  if bottom_lines else 0
+
+    inner_h = (row_h_top
+               + (gap if top_lines and (title_lines or bottom_lines) else 0)
+               + row_h_title
+               + (gap if title_lines and bottom_lines else 0)
+               + row_h_bottom)
+    box_h = inner_h + 2 * pad_y
+
+    widths = []
+    if top_row:    widths.append(_measure_w(top_row,    fs_top))
+    if title_row:  widths.append(_measure_w(title_row,  fs_title))
+    if bottom_row: widths.append(_measure_w(bottom_row, fs_bottom))
+    # PIL overestimates ASS bold render width; scale down to tighten the box.
+    box_w = (round(max(widths) * 0.91) if widths else fs_title) + 2 * pad_x
+    box_w = min(box_w, osd_w - 2 * margin)
+
+    bx = (osd_w - box_w) // 2
+    by = osd_h - margin - box_h + y_offset
+    cx = osd_w // 2   # horizontal center for \an8 anchored text
+
+    bg_bgr = _color_str_to_ass_bgr(bg_color)
+    fg_bgr = _color_str_to_ass_bgr(fg_color)
+
+    def _esc(text):
+        """Escape ASS control chars and convert Python newlines to ASS hard newlines."""
+        return text.replace('{', '').replace('}', '').replace('\n', r'\N')
+
+    events = []
+
+    # Background rectangle
+    events.append(
+        f"{{\\an7\\pos({bx},{by})"
+        f"\\1c&H{bg_bgr}&\\1a&H33&\\bord0\\shad0\\p1}}"
+        f"m 0 0 l {box_w} 0 {box_w} {box_h} 0 {box_h}{{\\p0}}"
+    )
+
+    ty = by + pad_y
+    # \an8 = top-center anchor; \q2 = no automatic word-wrap
+    _txt_tags = "\\3c&H000000&\\3a&H60&\\bord0\\shad1\\b1\\q2"
+    if top_lines:
+        events.append(
+            f"{{\\an8\\pos({cx},{ty})"
+            f"\\1c&H{fg_bgr}&\\1a&H00&{_txt_tags}"
+            f"\\fs{fs_top}}}{_esc(top_row)}"
+        )
+        ty += row_h_top + gap
+    if title_lines:
+        events.append(
+            f"{{\\an8\\pos({cx},{ty})"
+            f"\\1c&H{fg_bgr}&\\1a&H00&{_txt_tags}"
+            f"\\fs{fs_title}}}{_esc(title_row)}"
+        )
+        ty += row_h_title + gap
+    if bottom_lines:
+        events.append(
+            f"{{\\an8\\pos({cx},{ty})"
+            f"\\1c&H{fg_bgr}&\\1a&H00&{_txt_tags}"
+            f"\\fs{fs_bottom}}}{_esc(bottom_row)}"
+        )
+
+    try:
+        _osd_command('osd-overlay', _INFO_POPUP_ASS_OSD_ID, 'ass-events',
+                     "\n".join(events), osd_w, osd_h, 4, 'no')
+    except Exception as e:
+        print(f"Info popup OSD error: {e}")
+
+def _title_popup_slide_cancel():
+    """Cancel any in-flight slide animation without clearing the OSD."""
+    global _title_popup_anim_after
+    if _title_popup_anim_after is not None:
+        try:
+            root.after_cancel(_title_popup_anim_after)
+        except Exception:
+            pass
+        _title_popup_anim_after = None
+
+
+def _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color):
+    """Animate the title popup sliding up from below the screen (time-based, ~100 ms duration)."""
+    global _title_popup_anim_after, _title_popup_anim_state, _title_popup_anim_args
+    _title_popup_slide_cancel()
+    _title_popup_anim_state = 'in'
+    _title_popup_anim_args  = (top_row, title_row, bottom_row, bg_color, fg_color)
+    try:
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_h = 0
+    duration = 0.10   # seconds
+    poll     = 5      # ms between frames
+    t0 = time.perf_counter()
+
+    def _step():
+        global _title_popup_anim_after, _title_popup_anim_state
+        if _title_popup_anim_state != 'in':
+            return
+        t = min((time.perf_counter() - t0) / duration, 1.0)
+        bounce = math.sin(t * math.pi) * 5 if t > 0.7 else 0
+        y_offset = int((osd_h if osd_h else 400) * (1.0 - t) + bounce)
+        _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset)
+        if t < 1.0:
+            _title_popup_anim_after = root.after(poll, _step)
+        else:
+            _title_popup_anim_after  = None
+            _title_popup_anim_state  = None
+            _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, 0)
+
+    _step()
+
+
+def _title_popup_slide_out():
+    """Animate the title popup sliding down off the bottom of the screen (time-based, ~100 ms duration),
+    then clear the OSD."""
+    global _title_popup_anim_after, _title_popup_anim_state
+    _title_popup_slide_cancel()
+    if _title_popup_anim_args is None:
+        _hide_title_popup_osd()
+        return
+    _title_popup_anim_state = 'out'
+    top_row, title_row, bottom_row, bg_color, fg_color = _title_popup_anim_args
+    try:
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_h = 0
+    duration = 0.10
+    poll     = 5
+    t0 = time.perf_counter()
+
+    def _step():
+        global _title_popup_anim_after, _title_popup_anim_state
+        if _title_popup_anim_state != 'out':
+            return
+        t = min((time.perf_counter() - t0) / duration, 1.0)
+        y_offset = int((osd_h if osd_h else 400) * t)
+        _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset)
+        if t < 1.0:
+            _title_popup_anim_after = root.after(poll, _step)
+        else:
+            _title_popup_anim_after  = None
+            _title_popup_anim_state  = None
+            _hide_title_popup_osd()
+
+    _step()
+
+
+def _title_popup_on_mpv_rect(mx, my, mw, mh):
+    global _title_popup_last_mpv_size
+    if not _title_popup_intent:
+        return
+    if (mw, mh) != _title_popup_last_mpv_size:
+        # mpv window resized — instant redraw with new OSD dimensions, no animation
+        _title_popup_last_mpv_size = (mw, mh)
+        _title_popup_slide_cancel()
+        if _title_popup_anim_args:
+            _draw_title_popup_osd(*_title_popup_anim_args, y_offset=0)
+        else:
+            toggle_title_popup(True, _title_popup_info_type_cache)
+    # mpv window moved — OSD tracks automatically, nothing to do
+
 def is_title_window_up():
-    return not (title_window is None or title_window.attributes("-alpha") == 0)
+    return _title_popup_intent
 
 title_info_only = False
 artist_info_display = False
@@ -24774,9 +26398,11 @@ season_info_display = False
 year_info_display = False
 def toggle_title_popup(show, info_type=None):
     """Creates or destroys the title popup at the bottom middle of the screen."""
-    global title_window, title_row_label, top_row_label, bottom_row_label, info_button
-    global light_mode, title_info_only, pre_censor, artist_info_display, studio_info_display, season_info_display, year_info_display, _title_popup_intent
+    global light_mode, title_info_only, artist_info_display, studio_info_display, season_info_display, year_info_display, _title_popup_intent
+    global _title_popup_info_type_cache, _title_popup_last_mpv_size
     if show:
+        _already_up = _title_popup_intent  # True when switching info type while popup is already visible
+        _title_popup_info_type_cache = info_type
         title_info_only = info_type == "title_only"
         artist_info_display = info_type == "artist"
         studio_info_display = info_type == "studio"
@@ -24797,12 +26423,8 @@ def toggle_title_popup(show, info_type=None):
         _push_web_toggles()
         update_popout_title_button_text(show)
         web_server.set_info_public(False)
-        if title_window:
-            screen_width = title_window.winfo_screenwidth()
-            screen_height = title_window.winfo_screenheight()
-            window_width = title_window.winfo_reqwidth()
-            window_height = title_window.winfo_reqheight()
-            animate_window(title_window, (screen_width - window_width) // 2, screen_height, fade="out")
+        _unregister_mpv_tracked_window("title_popup")
+        _title_popup_slide_out()
         return
     
     if guessing_extra == "buzzer":
@@ -24817,31 +26439,14 @@ def toggle_title_popup(show, info_type=None):
     if black_overlay:
         blind()
 
-    pre_censor = False
-
     if (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
         toggle_peek()
-
-    _popup_already_visible = is_title_window_up()
-    if not title_window:
-        title_window = tk.Toplevel()
-        title_window.title("Anime Info")
-        title_window.overrideredirect(True)
-        title_window.attributes("-topmost", True)
-        title_window.wm_attributes("-alpha", 0.8)
-        title_window.configure(bg="black")
-    else:
-        title_window.attributes("-topmost", True)
-        title_window.lift()
 
     top_row = ""
     title_row = ""
     bottom_row = ""
     bg_color = OVERLAY_BACKGROUND_COLOR
     fg_color = OVERLAY_TEXT_COLOR
-    top_font = ("Arial", scl(20), "bold")
-    title_font = ("Arial", scl(50), "bold")
-    bottom_font = ("Arial", scl(15), "bold")
     data = currently_playing.get("data")
     _use_clip_as_song = bool(
         fixed_current_round and
@@ -24956,11 +26561,11 @@ def toggle_title_popup(show, info_type=None):
                 elif info_type == "studio":
                     studios_num = len(data.get("studios", [])) or 1
                     studio_max = (33 // studios_num) - 2
-                    for studio in data.get("studios", []):
-                        studio_data = get_studio_entries_data(studio, currently_playing.get("filename"), max_display=studio_max)
+                    for _studio_name in data.get("studios", []):
+                        studio_data = get_studio_entries_data(_studio_name, currently_playing.get("filename"), max_display=studio_max)
                         if studio_data["entries"]:
                             studio_entries_string = "\n".join(studio_data["entries"])
-                            top_row = f"All {studio_data['header_type']} by {studio}:\n{studio_entries_string}\n\n{top_row}"
+                            top_row = f"All {studio_data['header_type']} by {_studio_name}:\n{studio_entries_string}\n\n{top_row}"
                 
                 elif info_type == "season":
                     season = data.get("season")
@@ -24984,13 +26589,13 @@ def toggle_title_popup(show, info_type=None):
 
                             t = anime_data.get("eng_title") or anilist_data.get("title") or anime_data.get("title", "Unknown")
                             popularity_rank = anilist_data.get("popularity_rank_season", INT_INF)
-                            score = anilist_data.get("score")
-                            ranked_anime.append((t, popularity_rank, score))
+                            _anime_score = anilist_data.get("score")
+                            ranked_anime.append((t, popularity_rank, _anime_score))
 
-                        ranked_anime = [(t, rank, score) for t, rank, score in ranked_anime if rank != INT_INF]
+                        ranked_anime = [(t, rank, s) for t, rank, s in ranked_anime if rank != INT_INF]
                         ranked_anime.sort(key=lambda x: x[1])
 
-                        season_titles = [f"{rank}. {t} ({score}%)" if score else f"{rank}. {t}" for t, rank, score in ranked_anime[:30]]
+                        season_titles = [f"{rank}. {t} ({s}%)" if s else f"{rank}. {t}" for t, rank, s in ranked_anime[:30]]
 
                         if season_titles:
                             top_row = f"Most Popular {current_format} from {season} (on AniList):\n{chr(10).join(season_titles)}\n\n{top_row}"
@@ -25017,13 +26622,13 @@ def toggle_title_popup(show, info_type=None):
 
                             t = anime_data.get("eng_title") or anilist_data.get("title") or anime_data.get("title", "Unknown")
                             popularity_rank = anilist_data.get("popularity_rank_year", INT_INF)
-                            score = anilist_data.get("score")
-                            all_anime.append((t, popularity_rank, score))
+                            _anime_score = anilist_data.get("score")
+                            all_anime.append((t, popularity_rank, _anime_score))
 
-                        all_anime = [(t, rank, score) for t, rank, score in all_anime if rank != INT_INF]
+                        all_anime = [(t, rank, s) for t, rank, s in all_anime if rank != INT_INF]
                         all_anime.sort(key=lambda x: x[1])
 
-                        year_titles = [f"{rank}. {t} ({score}%)" if score else f"{rank}. {t}" for t, rank, score in all_anime[:30]]
+                        year_titles = [f"{rank}. {t} ({s}%)" if s else f"{rank}. {t}" for t, rank, s in all_anime[:30]]
 
                         if year_titles:
                             top_row = f"Most Popular {current_format} from {year} (on AniList):\n{chr(10).join(year_titles)}\n\n{top_row}"
@@ -25080,54 +26685,15 @@ def toggle_title_popup(show, info_type=None):
                 japanese_title = get_base_title(title=japanese_title)
                 if title_top_info_txt:
                     top_row = title_top_info_txt
-                else:
-                    top_font = ("Arial", 1)
                 if japanese_title != title:
                     bottom_row = f"{japanese_title}"
-                else:
-                    bottom_font = ("Arial", 1)
     else:
-        top_font = ("Arial", 1)
-        bottom_font = ("Arial", 1)
         title_row = currently_playing.get("filename", "No Media Playing").split(".")[0]
 
-    title_window.configure(bg=bg_color)
-    if title_row_label:
-        title_row_label.config(text=title_row, font=title_font, fg=fg_color, bg=bg_color)
-        top_row_label.config(text=top_row, font=top_font, fg=fg_color, bg=bg_color)
-        bottom_row_label.config(text=bottom_row, font = bottom_font, fg=fg_color, bg=bg_color)
-    else:
-        top_row_label = tk.Label(title_window, text=top_row,
-                                font=top_font, fg=fg_color, bg=bg_color)
-        top_row_label.pack(pady=(scl(10), 0), padx = scl(10))
-
-        # Title Label (Large Text)
-        title_row_label = tk.Label(title_window, text=title_row, font=title_font, fg=fg_color, bg=bg_color)
-        title_row_label.pack(pady=(0, 0), padx = scl(10))
-
-        bottom_row_label = tk.Label(title_window, text=bottom_row,
-                                font=bottom_font, fg=fg_color, bg=bg_color)
-        bottom_row_label.pack(pady=(0, scl(10)), padx = scl(10))
-
-    # Dynamically adjust font size to fit window width
-    title_window.update_idletasks()
-    max_width = title_window.winfo_screenwidth() - scl(550)  # Leave padding
-    adjust_font_size(title_row_label, max_width)
-    
-    # Position at the bottom center of the screen
-    title_window.update_idletasks()  # Ensure correct size update
-    screen_width = title_window.winfo_screenwidth()
-    screen_height = title_window.winfo_screenheight()
-    window_width = title_window.winfo_reqwidth()
-    window_height = title_window.winfo_reqheight()
-    target_x = (screen_width - window_width) // 2
-    target_y = screen_height - window_height - scl(20)
-    if _popup_already_visible:
-        # Already visible — just reposition in place without animation
-        title_window.geometry(f"+{target_x}+{target_y}")
-    else:
-        title_window.geometry(f"+{target_x}+{screen_height}")  # Adjust for bottom spacing
-        root.after(1, lambda: animate_window(title_window, target_x, target_y))
+    _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color) if not _already_up else _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, 0)
+    _mx, _my, _mw, _mh = _get_mpv_window_rect()
+    _title_popup_last_mpv_size = (_mw, _mh)
+    _register_mpv_tracked_window("title_popup", None, _title_popup_on_mpv_rect)
 
 def get_format(data):
     """Get the format from AniList metadata, replacing underscores with spaces. Falls back to anime metadata format."""
@@ -25739,9 +27305,10 @@ def split_array(arr, parts=2):
 
     return output
 
-bonus_overlay_window = None
+bonus_overlay_window = None    # True when OSD is showing; None when hidden (sentinel for visibility check)
 bonus_character_labels = []
 bonus_correct_indices = []
+_bonus_chars_img_overlay = None  # mpv ImageOverlay for bonus character portraits
 
 def pick_bonus_characters():
     """
@@ -25849,74 +27416,152 @@ def get_anidb_metadata_from_anime(mal):
 
     return {}  # No match found
 
-def show_bonus_characters(characters, reveal_correct=False):
-    global bonus_overlay_window, bonus_character_labels
+def _draw_bonus_characters_osd(characters, reveal_correct=False):
+    """Render bonus character portraits as an mpv image overlay (pure PIL, no ASS)."""
+    global _bonus_chars_img_overlay
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h or not characters:
+        return
 
-    if bonus_overlay_window and bonus_overlay_window.winfo_exists():
-        bonus_overlay_window.destroy()
+    modifier = min(osd_w / 2560, osd_h / 1440)
 
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    height = int(screen_height * 0.3)
+    # Sizes
+    img_w    = max(80,  round(210 * modifier))
+    img_h    = max(120, round(315 * modifier))
+    label_fs = max(10,  round(24  * modifier * 1.6))
+    pad      = max(4,   round(6   * modifier))
+    border   = max(1,   round(2   * modifier))
+    gap      = max(4,   round(8   * modifier))
+
+    n      = len(characters)
+    cell_w = img_w + 2 * (pad + border)
+    cell_h = img_h + label_fs + 3 * pad + 2 * border  # portrait + spacing + label
+    total_w = n * cell_w + (n - 1) * gap
+
+    # Vertical position
     if reveal_correct:
-        width = int(screen_width * 0.585)
-        y = scl(10)
+        pos_x = (osd_w - total_w) // 2
+        pos_y = max(4, round(10 * modifier))
     else:
-        width = coming_up_window.winfo_reqwidth()
-        y = coming_up_window.winfo_reqheight() + scl(20)
-    
-    x = (screen_width - width) // 2
+        pos_x = (osd_w - total_w) // 2
+        pos_y = (_coming_up_osd_box_h + max(10, round(20 * modifier))
+                 if _coming_up_osd_box_h > 0 else round(osd_h * 0.15))
 
-    bonus_overlay_window = tk.Toplevel(root)
-    bonus_overlay_window.geometry(f"{width}x{height}+{x}+{y}")
-    bonus_overlay_window.overrideredirect(True)
-    bonus_overlay_window.lift()
-    bonus_overlay_window.attributes("-topmost", True)
-    bonus_overlay_window.attributes("-alpha", 0.9)
-    bonus_overlay_window.config(bg=OVERLAY_BACKGROUND_COLOR)
+    # Background colour from settings
+    try:
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_BACKGROUND_COLOR)
+        bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        bg_r, bg_g, bg_b = 0, 0, 0
 
-    container = tk.Frame(bonus_overlay_window, bg="pink")
-    container.pack(expand=True)
-
-    label_font = ("Arial", scl(24), "bold")
-    bonus_character_labels = []
-
-    # Use a nested frame to help center the character row
-    center_frame = tk.Frame(container, bg=OVERLAY_BACKGROUND_COLOR)
-    center_frame.pack(expand=True)
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw   = ImageDraw.Draw(canvas)
+    fnt    = _get_ass_font(label_fs)
 
     for i, char in enumerate(characters):
-        img_url = "https://cdn-eu.anidb.net/images/main/" + char[2]
-        img = load_image_from_url(img_url, size=(scl(210), scl(315)))
-        frame = tk.Frame(center_frame,
-                         bg="black",
-                         highlightbackground=OVERLAY_TEXT_COLOR,
-                         highlightthickness=scl(2),
-                         padx=scl(6),
-                         pady=scl(6))
-        frame.grid(row=0, column=i, padx=scl(5), pady=scl(5))
+        cx = pos_x + i * (cell_w + gap)
+        cy = pos_y
 
-        inner_frame = tk.Frame(frame, bg=OVERLAY_BACKGROUND_COLOR)
-        inner_frame.pack()
+        is_correct   = reveal_correct and i in bonus_correct_indices
+        cell_fill    = (100, 100, 100, 220) if is_correct else (bg_r, bg_g, bg_b, 210)
+        border_color = (220, 220, 220, 255)
+
+        draw.rectangle([cx, cy, cx + cell_w - 1, cy + cell_h - 1],
+                       fill=cell_fill, outline=border_color, width=border)
+
+        # Portrait image — only use what is already cached; never block on network here.
+        ix = cx + pad + border
+        iy = cy + pad + border
+        if len(char) > 2 and char[2]:
+            img_url = "https://cdn-eu.anidb.net/images/main/" + char[2]
+            raw = _cached_images.get(img_url)
+            if raw is not None:
+                # Resize the cached PIL image to fit the cell (no network I/O).
+                pil_img = load_pil_image_from_url(img_url, size=(img_w, img_h))
+                if pil_img:
+                    canvas.paste(pil_img, (ix, iy), pil_img)
+                else:
+                    draw.rectangle([ix, iy, ix + img_w - 1, iy + img_h - 1],
+                                   fill=(50, 50, 50, 200))
+            else:
+                # Not loaded yet — grey placeholder with a loading indicator.
+                draw.rectangle([ix, iy, ix + img_w - 1, iy + img_h - 1],
+                               fill=(40, 40, 40, 200))
+                if fnt:
+                    ph = "..."
+                    try:
+                        ph_w = round(fnt.getlength(ph))
+                    except AttributeError:
+                        ph_w = len(ph) * label_fs // 2
+                    draw.text((ix + (img_w - ph_w) // 2, iy + img_h // 2 - label_fs // 2),
+                              ph, font=fnt, fill=(150, 150, 150, 200))
+
+        # Letter label centred below portrait
+        label = f"[{chr(65 + i)}]"
+        ly = iy + img_h + pad
+        if fnt:
+            try:
+                tw = round(fnt.getlength(label))
+            except AttributeError:
+                tw = len(label) * label_fs // 2
+            lx = cx + (cell_w - tw) // 2
+            draw.text((lx, ly), label, font=fnt, fill=(255, 255, 255, 255))
+
+    if _bonus_chars_img_overlay is None:
+        _bonus_chars_img_overlay = player._p.create_image_overlay()
+    _bonus_chars_img_overlay.update(canvas)
 
 
-        back_color = "gray" if reveal_correct and i in bonus_correct_indices else "black"
-        label = tk.Label(inner_frame,
-                         image=img,
-                         text=f"[{chr(65+i)}]",
-                         font=label_font,
-                         compound="top",
-                         fg="white",
-                         bg=back_color)
-        label.image = img
-        label.pack()
-        bonus_character_labels.append(label)
+def show_bonus_characters(characters, reveal_correct=False):
+    """Display bonus character portraits as an mpv OSD image overlay.
+
+    Safe to call from a background thread — image loading happens inline (the
+    network requests may be slow on first call, but are cached afterwards), then
+    the OSD update is dispatched to the main thread via root.after.
+    """
+    global bonus_overlay_window
+
+    destroy_bonus_characters()
+
+    if not characters:
+        return
+
+    # Set the visibility sentinel so the 'is visible?' check still works.
+    bonus_overlay_window = True
+
+    # Show immediately (placeholder boxes for images not yet cached).
+    try:
+        root.after(0, lambda: _draw_bonus_characters_osd(characters, reveal_correct))
+    except Exception:
+        pass
+
+    # Load each portrait in its own thread; redraw after each one arrives.
+    def _load_and_redraw(char, _chars=characters, _rev=reveal_correct):
+        if len(char) > 2 and char[2]:
+            load_pil_image_from_url("https://cdn-eu.anidb.net/images/main/" + char[2], size=None)
+        if bonus_overlay_window:
+            try:
+                root.after(0, lambda: _draw_bonus_characters_osd(_chars, _rev))
+            except Exception:
+                pass
+
+    for char in characters:
+        threading.Thread(target=_load_and_redraw, args=(char,), daemon=True).start()
 
 def destroy_bonus_characters():
-    global bonus_overlay_window
-    if bonus_overlay_window and bonus_overlay_window.winfo_exists():
-        bonus_overlay_window.destroy()
-        bonus_overlay_window = None
+    global bonus_overlay_window, _bonus_chars_img_overlay
+    bonus_overlay_window = None
+    if _bonus_chars_img_overlay is not None:
+        try:
+            _bonus_chars_img_overlay.remove()
+        except Exception:
+            pass
+        _bonus_chars_img_overlay = None
+
 
 # =========================================
 #         *RULES
@@ -26027,6 +27672,8 @@ def play_video(index=playlist["current_index"]):
     toggle_title_popup(False)
     set_countdown()
     toggle_coming_up_popup(False)
+    if end_message_window:
+        toggle_end_message()
 
     if playlist["current_index"] < len(playlist["playlist"]) and index + 1 >= len(playlist["playlist"]) and not youtube_queue and not search_queue and not fixed_lightning_queue:
         _promote_or_generate_next()
@@ -26385,28 +28032,10 @@ def play_filename(playlist_entry, fullscreen=True):
             guess_extra(pick)
     # Update metadata display asynchronously
     update_metadata_queue(playlist["current_index"])
-    is_mp4 = filename.lower().endswith(".mp4") or filename.lower().endswith(".m4v")
-    is_webm = filename.lower().endswith(".webm")
-    if not is_webm:
-        if current_vout != 'opengl':
-            set_vout(vout_module='opengl')
-    elif current_vout:
-        set_vout()
-    if hw_acc_enabled or is_mp4:
-        media = instance.media_new(filepath)
-    else:
-        media = instance.media_new(filepath, ":avcodec-hw=none")
-    previous_media = media
-    # Cover the VLC surface-clear flash during media switch
-    _overlay_was_none = black_overlay is None
-    _image_color = get_image_color()
-    if _overlay_was_none and cover_media_switch:
-        set_black_screen(True, smooth=False, color="black")
-        try:
-            root.update()  # Force Tkinter to paint the overlay before VLC switches
-        except Exception:
-            pass
-    player.set_media(media)
+    previous_media = filepath  # store path string for repeat playback
+    player.set_media(filepath)
+    remove_all_censor_boxes()
+    _prime_start_censors(filename)
     global light_round_number, light_round_length, background_music_rounds
     if light_mode:
         if "c." in light_mode:
@@ -26433,8 +28062,7 @@ def play_filename(playlist_entry, fullscreen=True):
             set_black_screen(True)
             root.after(500, player_play)
         else:
-            if cover_media_switch and light_round_number == 1:
-                black_overlay.configure(bg=_image_color)
+            _recolor_blind_osd(get_image_color())
             player_play()
             set_volume(volume_level)
     else:
@@ -26446,10 +28074,7 @@ def play_filename(playlist_entry, fullscreen=True):
         toggle_coming_up_popup(False, "Lightning Round")
         if blind_round_toggle:
             manual_blind = True
-            if cover_media_switch and black_overlay:
-                black_overlay.configure(bg=_image_color)
-            else:
-                set_black_screen(True)
+            set_black_screen(True)
             root.after(500, player_play)
         elif peek_round_toggle or mute_peek_round_toggle:
             manual_blind = False
@@ -26458,20 +28083,22 @@ def play_filename(playlist_entry, fullscreen=True):
                 next_background_track()
                 toggle_mute(True)
             root.after(500, player_play)
-            root.after(250 if (_overlay_was_none and cover_media_switch) else 0, lambda: set_black_screen(False, smooth=not (_overlay_was_none and cover_media_switch)))
+            root.after(0, lambda: set_black_screen(False))
         else:
             manual_blind = False
             player_play()
-            root.after(250 if (_overlay_was_none and cover_media_switch) else 0, lambda: set_black_screen(False, smooth=not (_overlay_was_none and cover_media_switch)))
+            root.after(0, lambda: set_black_screen(False))
     blind_round_toggle = False
     peek_round_toggle = False
     mute_peek_round_toggle = False
+    if fullscreen and autoplay_fullscreen and light_mode not in ['clip', 'ost']:
+        root.after(150, lambda: player.set_fullscreen(True))
     if light_mode not in ['frame', 'clip', 'ost', 'blind']:
-        retry_delay = 500
+        retry_delay = 250
         if animethemes_stream:
             retry_delay = 5000  # Longer delay for streaming to allow time for buffering
         if autoplay_toggle != 3:
-            root.after(retry_delay, play_video_retry, 5, fullscreen)  # Retry playback
+            root.after(retry_delay, play_video_retry, 5, filename)  # Retry playback
     
     if playlist.get("infinite", False):
         lightning_changed = False
@@ -26986,12 +28613,12 @@ def thread_prefetch_metadata():
     if auto_fetch_missing:
         threading.Thread(target=pre_fetch_metadata, daemon=True).start()
 
-def play_video_retry(retries, fullscreen=True):
+def play_video_retry(retries, filename=None):
     global video_stopped
     retry_delay = 2000
     if animethemes_stream:
         retry_delay = 5000 + 1000*(5-retries)  # Increase delay with each retry for streaming
-    if (not player.is_playing() or player.get_length() == 0):
+    if (not player.is_playing() or player.get_length() == 0) and (not filename or (currently_playing.get("filename") == filename)):
         if retries > 0:
             if retries < 5:
                 print(f"Retrying playback for: {currently_playing.get('filename')}")
@@ -27000,18 +28627,20 @@ def play_video_retry(retries, fullscreen=True):
             return
         else:
             play_video(playlist["current_index"] + skip_direction)
-    if fullscreen:
-        player.set_fullscreen(False)
-        player.set_fullscreen(True)
-        set_skip_direction(1)
+    set_skip_direction(1)
     video_stopped = False
 
 previous_media = None
 def check_video_end():
     """Function to check if the current video has ended"""
     global video_stopped
-    if player.is_playing() or video_stopped or autoplay_toggle == 2 or last_seek_time:
-        # If the video is still playing, check again in 1/2 second
+    _is_seeking = False
+    try:
+        _is_seeking = bool(player._p.seeking)
+    except Exception:
+        pass
+    if player.is_playing() or video_stopped or autoplay_toggle == 2 or last_seek_time or _is_seeking:
+        # If the video is still playing (or seeking), check again in 1/2 second
         root.after(500, check_video_end)
     else:
         # If the video has ended, play the next video
@@ -27114,6 +28743,33 @@ def load_image_from_url(url, size=(400, 400)):
 
     return ImageTk.PhotoImage(background)
 
+def load_pil_image_from_url(url, size=(400, 225)):
+    """Like load_image_from_url but returns a PIL RGBA Image for use with OSD overlays."""
+    if _cached_images.get(url):
+        image = _cached_images[url]
+    else:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            image = Image.open(BytesIO(response.content)).convert("RGBA")
+            _cached_images[url] = image
+        except Exception as e:
+            print(f"load_pil_image_from_url: failed to load {url!r}: {e}")
+            return None
+    if not size:
+        return image.copy()
+    box_width, box_height = size
+    img_width, img_height = image.size
+    scale = min(box_width / img_width, box_height / img_height)
+    new_size = (int(img_width * scale), int(img_height * scale))
+    resized = image.resize(new_size, Image.LANCZOS)
+    background = Image.new("RGBA", (box_width, box_height), (0, 0, 0, 0))
+    offset_x = (box_width - new_size[0]) // 2
+    offset_y = (box_height - new_size[1]) // 2
+    background.paste(resized, (offset_x, offset_y), resized)
+    return background
+
 def go_to_index():
     """Function to jump to a specific index"""
     total = len(playlist["playlist"])
@@ -27141,12 +28797,6 @@ def play_pause():
         video_stopped = False
     else:
         play_video(playlist["current_index"])
-    
-    for plyr in [mismatched_player, stream_player]:
-        if plyr.is_playing():
-            plyr.pause()
-        elif plyr.get_media():
-            plyr.play()
 
 # Function to play next video
 skip_direction = 1
@@ -27175,6 +28825,18 @@ def skip_to_lightning_answer():
                 player.play()
                 light_blind_one_second_count = None
                 player.play()
+
+            # Already in answer phase — let play_next fall through to light_round_transition
+            if _light_answer_wall_start is not None:
+                return False
+
+            if currently_streaming:
+                # Player holds the stream, not the theme — player time is meaningless as
+                # a theme position.  Force the wall-clock so that update_light_round
+                # synthesises a time past the round end on its very next tick.
+                global _stream_wall_start
+                _stream_wall_start = _wall_time() - light_round_length - 0.1
+                return True
 
             current_time = player.get_time() / 1000
             answer_time = light_round_start_time + light_round_length
@@ -27214,6 +28876,7 @@ def stop():
     """Function to stop the video"""
     global video_stopped, currently_playing, light_round_started
     global fixed_lightning_queue, fixed_lightning_round_playlist_data, fixed_current_round
+    currently_playing = {}  # Clear first to prevent idle-active re-entry
     video_stopped = True
     toggle_light_mode()
     light_round_started = False
@@ -27221,6 +28884,8 @@ def stop():
     set_light_round_number()
     set_black_screen(False)
     toggle_title_popup(False)
+    if end_message_window:
+        toggle_end_message()
     fixed_lightning_queue = None
     fixed_lightning_round_playlist_data = None
     fixed_current_round = None
@@ -27232,6 +28897,7 @@ def stop():
     toggle_coming_up_popup(False, title=(coming_up_queue or {}).get("title", ""))
     seek_bar.set(0)
     clean_up_light_round(new_round=True)
+    root.after(500, lambda: clean_up_light_round(new_round=True))
 
 last_seek_time = None
 def seek(value):
@@ -27245,10 +28911,10 @@ def seek(value):
 
 def seek_to(time_ms):
     """Function to seek the video to a specific time in milliseconds"""
-    global projected_vlc_time
+    global projected_player_time
     time_ms = int(time_ms)
     apply_censors(time_ms/1000, player.get_length()/1000)
-    projected_vlc_time = time_ms
+    projected_player_time = time_ms
     player.set_time(time_ms)
 
 # Skip fade window (milliseconds)
@@ -27256,8 +28922,8 @@ SKIP_FADE_WINDOW_MS = 350
 SKIP_FADE_IN_WINDOW_MS = 300
 skip_fade_in_elapsed_ms = None
 
-last_vlc_time = 0
-projected_vlc_time = 0
+last_player_time = 0
+projected_player_time = 0
 last_skip_anchor_ms = None
 SEEK_POLLING = 50
 last_error = None
@@ -27266,39 +28932,39 @@ playing_next_error = False
 _web_playback_counter = 0   # throttle web playback state pushes to ~1/sec
 def update_seek_bar():
     """Function to update the seek bar"""
-    global last_vlc_time, projected_vlc_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms, skip_fade_in_elapsed_ms
+    global last_player_time, projected_player_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms, skip_fade_in_elapsed_ms
     global _yt_bonus_current_question, _yt_bonus_pts, _yt_bonus_template_triggered, _yt_bonus_template_scored
     # try:
     if True:
         if not player.is_playing():
-            vlc_time = player.get_time()
-            if vlc_time != last_vlc_time or last_vlc_time != projected_vlc_time:
-                last_vlc_time = vlc_time
-                projected_vlc_time = vlc_time
+            player_time = player.get_time()
+            if player_time != last_player_time or last_player_time != projected_player_time:
+                last_player_time = player_time
+                projected_player_time = player_time
                 if not last_seek_time:
                     can_seek = False
-                    seek_bar.set(vlc_time/1000)
+                    seek_bar.set(player_time/1000)
         else:
-            vlc_time = player.get_time()
-            if vlc_time != last_vlc_time:
-                last_vlc_time = vlc_time
-                projected_vlc_time = vlc_time
+            player_time = player.get_time()
+            if player_time != last_player_time:
+                last_player_time = player_time
+                projected_player_time = player_time
             else:
-                projected_vlc_time = projected_vlc_time + SEEK_POLLING * light_speed_modifier
+                projected_player_time = projected_player_time + SEEK_POLLING * light_speed_modifier
             skip_play_ms = int(max(0, float(skip_play_seconds)) * 1000)
             skip_jump_ms = int(max(0, float(skip_jump_seconds)) * 1000)
             skip_triggered = False
             if not light_round_started and guessing_extra and web_server.is_running():
                 if (guessing_extra == "yt_bonus" and _yt_bonus_current_question
                         and _yt_bonus_current_question.get("end_time", 0) > 0):
-                    _time_left = max(0.0, _yt_bonus_current_question["end_time"] - projected_vlc_time / 1000)
+                    _time_left = max(0.0, _yt_bonus_current_question["end_time"] - projected_player_time / 1000)
                 else:
-                    _time_left = ((player.get_length() - projected_vlc_time) // 1000) - (8 if auto_info_end else 0)
+                    _time_left = ((player.get_length() - projected_player_time) // 1000) - (8 if auto_info_end else 0)
                 web_server.push_timer(_time_left, paused=True)
             if currently_playing.get("type") != "youtube" and not light_round_started and skip_play_ms > 0 and skip_jump_ms > 0:
-                if last_skip_anchor_ms is None or last_seek_time or projected_vlc_time < last_skip_anchor_ms:
-                    last_skip_anchor_ms = projected_vlc_time
-                time_since_anchor = projected_vlc_time - last_skip_anchor_ms
+                if last_skip_anchor_ms is None or last_seek_time or projected_player_time < last_skip_anchor_ms:
+                    last_skip_anchor_ms = projected_player_time
+                time_since_anchor = projected_player_time - last_skip_anchor_ms
                 time_to_skip = skip_play_ms - time_since_anchor
                 fade_window_ms = min(skip_play_ms, SKIP_FADE_WINDOW_MS)
                 if skip_fade_in_elapsed_ms is None and not disable_video_audio and fade_window_ms > 0:
@@ -27311,11 +28977,11 @@ def update_seek_bar():
                     # Nudge past the boundary so it doesn't immediately re-trigger
                     skip_offset = max(SEEK_POLLING, 1)
                     total_length_ms = player.get_length()
-                    if total_length_ms > 0 and (projected_vlc_time + skip_jump_ms + skip_offset) >= total_length_ms:
+                    if total_length_ms > 0 and (projected_player_time + skip_jump_ms + skip_offset) >= total_length_ms:
                         play_next()
                     else:
-                        seek_to(projected_vlc_time + skip_jump_ms + skip_offset)
-                    last_skip_anchor_ms = projected_vlc_time + skip_jump_ms
+                        seek_to(projected_player_time + skip_jump_ms + skip_offset)
+                    last_skip_anchor_ms = projected_player_time + skip_jump_ms
                     skip_fade_in_elapsed_ms = 0
                     skip_triggered = True
             else:
@@ -27330,7 +28996,7 @@ def update_seek_bar():
                     if fade_factor >= 1.0:
                         skip_fade_in_elapsed_ms = None
                 length = player.get_length()/1000
-                time = projected_vlc_time/1000
+                time = projected_player_time/1000
                 if manual_blind and not light_round_started:
                     set_progress_overlay(time, length)
                 if peek_overlay1 and not light_round_started:
@@ -27361,7 +29027,7 @@ def update_seek_bar():
                             player.pause()
                             play_next()
                         elif (yt_end_time - time) <= 8:
-                            if (not is_title_window_up() or title_info_only) and auto_info_end and not guessing_extra:
+                            if (not is_title_window_up() or title_info_only) and auto_info_end and (not guessing_extra or guessing_extra == "buzzer"):
                                 toggle_title_popup(True)
                         # Bonus template auto-trigger
                         for _bq_i, _bq in enumerate(_yt_bonus_template_questions):
@@ -27394,7 +29060,7 @@ def update_seek_bar():
                                 coming_up_queue = None
                         update_light_round(time)
                         apply_censors(time, length)
-                update_progress_bar(projected_vlc_time, player.get_length(), currently_playing.get("filename"))
+                update_progress_bar(projected_player_time, player.get_length(), currently_playing.get("filename"))
     # except Exception as e:
     #     error_str = str(e)
     #     if not playing_next_error:
@@ -27415,7 +29081,7 @@ def update_seek_bar():
         _web_playback_counter = 0
         try:
             web_server.push_playback_state(
-                projected_vlc_time,
+                projected_player_time,
                 player.get_length(),
                 player.is_playing(),
                 volume_level,
@@ -27438,72 +29104,289 @@ def format_seconds(seconds):
 #            *COMING UP UI
 # =========================================
 
-coming_up_window = None  # Store the lightning round window
-coming_up_title_label = None  # Store the label for the lightning round message
-coming_up_rules_label = None
-coming_up_queue = None
+coming_up_window      = None   # always None (OSD-based; kept for lift_windows compat)
+coming_up_title_label = None   # always None (OSD-based)
+coming_up_rules_label = None   # always None (OSD-based)
+coming_up_queue       = None
+
+_COMING_UP_ASS_OSD_ID        = 80
+_coming_up_osd_visible        = False
+_coming_up_osd_current_title  = ""     # uppercased title currently displayed
+_coming_up_img_overlay        = None   # mpv ImageOverlay for thumbnail
+_coming_up_anim_after         = None   # root.after ID for slide-in animation
+_coming_up_osd_box_h          = 0      # rendered box height in OSD px (for hide/resize)
+_coming_up_osd_box_w          = 0      # rendered box width in OSD px
+
+
+def _coming_up_get_osd_dims():
+    try:
+        return int(player._p.osd_width or 0), int(player._p.osd_height or 0)
+    except Exception:
+        return 0, 0
+
+
+def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alpha_frac=1.0):
+    """Render one animation frame of the coming-up popup at OSD y position.
+
+    alpha_frac: 0.0 = fully transparent, 1.0 = final opacity (background ≈80%, text 100%).
+    Mirrors the original Tkinter layout: title (large, underlined) → optional thumbnail → details.
+    *pil_image* must be a PIL RGBA Image or None.
+    """
+    global _coming_up_img_overlay, _coming_up_osd_box_h, _coming_up_osd_box_w
+
+    modifier = min(osd_w / 2560, osd_h / 1440)
+
+    fs_title   = max(14, round(40 * modifier * 1.6))   # ≈ scl(40)
+    fs_details = max(10, round(20 * modifier * 1.6))   # ≈ scl(20)
+
+    pad_x  = max(8, round(osd_w * 0.010))
+    pad_y  = max(6, round(osd_h * 0.012))
+    gap    = max(4, round(fs_details * 0.3))
+    margin = max(4, round(10 * modifier))
+
+    def _measure_w(text_block, fs):
+        fnt = _get_ass_font(fs)
+        max_w = 0
+        for line in text_block.split('\n'):
+            if not line:
+                continue
+            try:
+                w = round(fnt.getlength(line)) if fnt else round(len(line) * fs * 0.52)
+            except AttributeError:
+                w = fnt.getsize(line)[0] if fnt else round(len(line) * fs * 0.52)
+            if w > max_w:
+                max_w = w
+        return max_w or fs
+
+    def _line_h(fs, n):
+        return round(n * fs * 1.0)
+
+    # Wrap details preserving explicit newlines, word-wrapping each segment independently
+    wrap_max = round(osd_w * 0.80)
+    details_wrapped = details
+    if details and details.strip():
+        wrapped_lines = []
+        for ln in details.split('\n'):
+            if ln.strip():
+                wrapped_lines.extend(_ass_wrap_text(ln, fs_details, wrap_max))
+            else:
+                wrapped_lines.append('')
+        details_wrapped = '\n'.join(wrapped_lines)
+
+    title_lines   = title_text.count('\n') + 1      if title_text                              else 0
+    details_lines = details_wrapped.count('\n') + 1 if (details_wrapped and details_wrapped.strip()) else 0
+
+    row_h_title   = _line_h(fs_title,   title_lines)   if title_lines   else 0
+    row_h_details = _line_h(fs_details, details_lines) if details_lines else 0
+
+    img_w_osd = round(400 * modifier) if pil_image else 0
+    img_h_osd = round(225 * modifier) if pil_image else 0
+
+    inner_h = (row_h_title
+               + (gap if title_lines  and (pil_image or details_lines) else 0)
+               + img_h_osd
+               + (gap if pil_image    and details_lines                else 0)
+               + row_h_details)
+    box_h = inner_h + 2 * pad_y
+
+    widths = []
+    if title_text:                               widths.append(_measure_w(title_text,    fs_title))
+    if details_wrapped and details_wrapped.strip(): widths.append(_measure_w(details_wrapped, fs_details))
+    if pil_image:                                widths.append(img_w_osd)
+    box_w = (round(max(widths) * 0.91) if widths else fs_title) + 2 * pad_x
+    box_w = min(box_w, osd_w - 2 * margin)
+
+    _coming_up_osd_box_h = box_h
+    _coming_up_osd_box_w = box_w
+
+    bx = (osd_w - box_w) // 2
+    by = y
+    cx = osd_w // 2
+
+    bg_bgr = _color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
+    fg_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+
+    # ASS alpha: 0x00=opaque, 0xFF=transparent.
+    # Background target: 0x33 ≈ 80% opaque, matching the original -alpha 0.8.
+    bg_ass_alpha = max(0, min(255, round(0x33 + (255 - 0x33) * (1.0 - alpha_frac))))
+    fg_ass_alpha = max(0, min(255, round(255 * (1.0 - alpha_frac))))
+    bg_alpha_hex = f"{bg_ass_alpha:02X}"
+    fg_alpha_hex = f"{fg_ass_alpha:02X}"
+
+    def _esc(text):
+        return text.replace('{', '').replace('}', '').replace('\n', r'\N')
+
+    events = []
+
+    # Background rectangle
+    events.append(
+        f"{{\\an7\\pos({bx},{by})"
+        f"\\1c&H{bg_bgr}&\\1a&H{bg_alpha_hex}&\\bord0\\shad0\\p1}}"
+        f"m 0 0 l {box_w} 0 {box_w} {box_h} 0 {box_h}{{\\p0}}"
+    )
+
+    ty = by + pad_y
+    _title_tags  = "\\3c&H000000&\\3a&H60&\\bord0\\shad1\\b1\\q2\\u1"
+    _detail_tags = "\\3c&H000000&\\3a&H60&\\bord0\\shad1\\b1\\q2"
+
+    if title_lines:
+        events.append(
+            f"{{\\an8\\pos({cx},{ty})"
+            f"\\1c&H{fg_bgr}&\\1a&H{fg_alpha_hex}&{_title_tags}"
+            f"\\fs{fs_title}}}{_esc(title_text)}"
+        )
+        ty += row_h_title + gap
+
+    img_top_y = ty   # OSD y where the thumbnail will be pasted (for PIL overlay)
+    if pil_image:
+        ty += img_h_osd + gap
+
+    if details_lines:
+        events.append(
+            f"{{\\an8\\pos({cx},{ty})"
+            f"\\1c&H{fg_bgr}&\\1a&H{fg_alpha_hex}&{_detail_tags}"
+            f"\\fs{fs_details}}}{_esc(details_wrapped)}"
+        )
+
+    try:
+        _osd_command('osd-overlay', _COMING_UP_ASS_OSD_ID, 'ass-events',
+                     "\n".join(events), osd_w, osd_h, 3, 'no')
+    except Exception as e:
+        print(f"Coming-up OSD error: {e}")
+
+    # PIL image overlay for thumbnail (layered on top of the ASS background)
+    if pil_image is not None:
+        try:
+            canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+            img_x  = bx + (box_w - img_w_osd) // 2
+            img_y  = img_top_y
+            scaled = (pil_image.resize((img_w_osd, img_h_osd), Image.LANCZOS)
+                      if pil_image.size != (img_w_osd, img_h_osd) else pil_image.copy())
+            if alpha_frac < 1.0:
+                r, g, b, a = scaled.split()
+                a = a.point(lambda px: int(px * alpha_frac))
+                scaled = Image.merge("RGBA", (r, g, b, a))
+            # Clip if the box is still sliding in from off the top
+            src, paste_x, paste_y = scaled, img_x, img_y
+            if paste_y < 0:
+                crop_top = -paste_y
+                if crop_top < img_h_osd:
+                    src      = scaled.crop((0, crop_top, img_w_osd, img_h_osd))
+                    paste_y  = 0
+                else:
+                    src = None
+            if src is not None:
+                canvas.paste(src, (paste_x, paste_y), src)
+            if _coming_up_img_overlay is None:
+                _coming_up_img_overlay = player._p.create_image_overlay()
+            _coming_up_img_overlay.update(canvas)
+        except Exception as e:
+            print(f"Coming-up image OSD error: {e}")
+    elif _coming_up_img_overlay is not None:
+        try:
+            _coming_up_img_overlay.remove()
+        except Exception:
+            pass
+        _coming_up_img_overlay = None
+
+
+def _hide_coming_up_osd():
+    """Immediately clear the coming-up ASS overlay and PIL image overlay."""
+    global _coming_up_osd_visible, _coming_up_osd_current_title
+    global _coming_up_img_overlay, _coming_up_anim_after
+    if _coming_up_anim_after is not None:
+        try:
+            root.after_cancel(_coming_up_anim_after)
+        except Exception:
+            pass
+        _coming_up_anim_after = None
+    try:
+        _osd_command('osd-overlay', _COMING_UP_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+    except Exception:
+        pass
+    if _coming_up_img_overlay is not None:
+        try:
+            _coming_up_img_overlay.remove()
+        except Exception:
+            pass
+        _coming_up_img_overlay = None
+    _coming_up_osd_visible       = False
+    _coming_up_osd_current_title = ""
+
 
 def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True, queue=False):
-    """Creates or destroys the lightning round announcement popup with an optional image."""
-    global coming_up_window, coming_up_title_label, coming_up_rules_label, light_round_length, coming_up_queue
+    """Creates or destroys the lightning round announcement popup (OSD-based).
 
-    if coming_up_window:
-        screen_width = coming_up_window.winfo_screenwidth()
-        window_width = coming_up_window.winfo_reqwidth()
-        window_height = coming_up_window.winfo_reqheight()
-        if not show and (title == "" or (coming_up_title_label and title != "" and title.lower() in coming_up_title_label.cget("text").lower())):
-            coming_up_title_label.configure(text="")
-            animate_window(coming_up_window, (screen_width - window_width) // 2, -window_height)
+    *image* must be a PIL RGBA Image or None — callers pass the PIL image directly,
+    not an ImageTk.PhotoImage.
+    """
+    global coming_up_queue, light_round_length
+    global _coming_up_osd_visible, _coming_up_osd_current_title, _coming_up_anim_after
 
     if not show:
+        if _coming_up_osd_visible:
+            if title == "" or (title and title.lower() in _coming_up_osd_current_title.lower()):
+                _hide_coming_up_osd()
         if coming_up_queue:
             if title in coming_up_queue["title"]:
                 coming_up_queue = None
         return
+
     if queue and player.is_playing():
         coming_up_queue = {
-            "title": title,
+            "title":   title,
             "details": details,
-            "image": image,
-            "up_next": up_next
+            "image":   image,
+            "up_next": up_next,
         }
         return
-    if not coming_up_window:
-        coming_up_window = tk.Toplevel()
-        coming_up_window.title("UP NEXT!")
-        coming_up_window.overrideredirect(True)  # Remove window borders
-        coming_up_window.attributes("-topmost", True)  # Keep it on top
-        coming_up_window.wm_attributes("-alpha", 0.8)  # Semi-transparent background
-    coming_up_window.configure(bg=OVERLAY_BACKGROUND_COLOR)
 
-    # Title
-    if not coming_up_title_label:
-        coming_up_title_label = tk.Label(coming_up_window, font=("Arial", scl(40), "bold", "underline"))
-        coming_up_title_label.pack(pady=(scl(10), 0), padx=scl(10))
-    if up_next:
-        title = "UP NEXT: " + title.upper() + "!"
-    if title == coming_up_title_label.cget("text"):
+    title_text = ("UP NEXT: " + title.upper() + "!") if up_next else title.upper()
+    if title_text == _coming_up_osd_current_title:
         return
-    coming_up_title_label.configure(text=title.upper(), fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
 
-    # Details
-    if not coming_up_rules_label:
-        coming_up_rules_label = tk.Label(coming_up_window, font=("Arial", scl(20), "bold"), justify="center", wraplength=scl(1700))
-        coming_up_rules_label.pack(pady=(scl(5), scl(10)))
-    if image:
-        coming_up_rules_label.configure(image=image, compound="top")
-        coming_up_rules_label.image = image
-    else:
-        coming_up_rules_label.configure(image="")
-        coming_up_rules_label.image = None
-    coming_up_rules_label.configure(text=details, fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
+    # Cancel any in-progress slide-in; clear whatever is currently shown
+    if _coming_up_anim_after is not None:
+        try:
+            root.after_cancel(_coming_up_anim_after)
+        except Exception:
+            pass
+        _coming_up_anim_after = None
+    if _coming_up_osd_visible:
+        _hide_coming_up_osd()
 
-    # Position at the top center of the screen
-    coming_up_window.update_idletasks()
-    screen_width = coming_up_window.winfo_screenwidth()
-    window_width = coming_up_window.winfo_reqwidth()
-    coming_up_window.geometry(f"+{(screen_width - window_width) // 2}+{-coming_up_window.winfo_reqheight()}")
-    root.after(10, lambda: animate_window(coming_up_window, (screen_width - window_width) // 2, 20))
+    osd_w, osd_h = _coming_up_get_osd_dims()
+    if not osd_w or not osd_h:
+        return
+
+    _coming_up_osd_current_title = title_text
+
+    # Pre-render off-screen to populate _coming_up_osd_box_h before the animation starts
+    _render_coming_up_frame(title_text, details, image, -9999, osd_w, osd_h, 0.0)
+    box_h = _coming_up_osd_box_h
+    if not box_h:
+        return
+
+    target_y = max(4, round(osd_h * 0.014))  # ≈20 px at 1440p, matches original y=20
+
+    # Slide-in animation: time-based, ~100 ms duration
+    duration = 0.10   # seconds
+    poll     = 5      # ms between frames
+    t0 = time.perf_counter()
+
+    def _slide_step():
+        global _coming_up_anim_after, _coming_up_osd_visible
+        t = min((time.perf_counter() - t0) / duration, 1.0)
+        bounce = math.sin(t * math.pi) * 5 if t > 0.7 else 0
+        y = int(-box_h + (target_y + box_h) * t + bounce)
+        _render_coming_up_frame(title_text, details, image, y, osd_w, osd_h, t)
+        if t < 1.0:
+            _coming_up_anim_after = root.after(poll, _slide_step)
+        else:
+            _coming_up_osd_visible = True
+            _coming_up_anim_after  = None
+
+    root.after(10, _slide_step)
 
 def format_slug(slug):
     """Converts OP/ED notation to full text format."""
@@ -27517,33 +29400,163 @@ def format_slug(slug):
 #            *PROGRESS BAR
 # =========================================
 
-progress_bar = None
+progress_bar = None  # kept for compatibility checks elsewhere (always None now)
 progress_bar_enabled = True
-def create_progress_bar(color="grey"):
-    """Creates a thin progress bar at the bottom of the screen."""
-    global progress_bar
+_PROGRESS_BAR_HEIGHT_PCT = 0.008  # fraction of OSD height (0.8%)
+# ASS alpha: 0=opaque 255=transparent; 0xB2=178 ≈ 70% transparent (≈30% opaque, matching old -alpha 0.3)
+_PROGRESS_BAR_ASS_ALPHA = 0xB2
 
-    height = 10
-    progress_bar = tk.Toplevel()
-    progress_bar.title = "Progress Bar"
-    progress_bar.overrideredirect(True)  
-    progress_bar.attributes("-topmost", True)  
-    progress_bar.wm_attributes("-alpha", 0.3)  
-    progress_bar.configure(bg=color, width=0, height=height, highlightthickness=0)
-    progress_bar.geometry(f"+{0}+{root.winfo_screenheight() - height}")  # Adjust for bottom spacing
+def _draw_progress_osd(fraction, color_str="grey"):
+    """Draw the progress bar OSD using ASS overlay — always composites above PIL image overlays."""
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_w, osd_h = 0, 0
+    if not osd_w or not osd_h:
+        return
+
+    fill_w = max(0, int(osd_w * fraction))
+    if fill_w <= 0:
+        _clear_progress_osd()
+        return
+
+    bar_h = max(4, int(osd_h * _PROGRESS_BAR_HEIGHT_PCT))
+    y0 = osd_h - bar_h
+
+    try:
+        rgb = ImageColor.getrgb(color_str)
+    except Exception:
+        rgb = (128, 128, 128)
+    r, g, b = rgb
+    # ASS color format: &HBBGGRR& (blue-green-red order)
+    color_hex = f"{b:02X}{g:02X}{r:02X}"
+    alpha_hex = f"{_PROGRESS_BAR_ASS_ALPHA:02X}"
+
+    path = f"m 0 {y0} l {fill_w} {y0} {fill_w} {osd_h} 0 {osd_h}"
+    ass_payload = (
+        f"{{\\an7\\pos(0,0)\\1c&H{color_hex}&\\1a&H{alpha_hex}&\\bord0\\shad0\\p1}}"
+        + path
+        + "{\\p0}"
+    )
+    try:
+        _osd_command('osd-overlay', _PROGRESS_ASS_OSD_ID, 'ass-events',
+                          ass_payload, osd_w, osd_h, 2, 'no')  # z=2, above blind at z=1
+    except Exception as e:
+        print(f"Progress OSD error: {e}")
+
+def _clear_progress_osd():
+    try:
+        _osd_command('osd-overlay', _PROGRESS_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+    except Exception:
+        pass
+
+# =========================================
+#           *EDGE / GROW OSD
+# =========================================
+
+_peek_osd_a = None   # mpv ImageOverlay used by edge and grow variants (static overlays)
+
+_PEEK_BLACK = (0, 0, 0, 255)  # premultiplied black
+_PEEK_CLEAR = (0, 0, 0, 0)    # fully transparent (used by grow hole)
+
+def _clear_peek_osd():
+    global _peek_osd_a
+    if _peek_osd_a is not None:
+        try:
+            _peek_osd_a.remove()
+        except Exception:
+            pass
+        _peek_osd_a = None
+
+def _push_peek_img(img):
+    """Upload a PIL RGBA canvas to the edge/grow overlay, creating it if needed."""
+    global _peek_osd_a
+    try:
+        if _peek_osd_a is None:
+            _peek_osd_a = player._p.create_image_overlay()
+        _peek_osd_a.update(img)
+    except Exception as e:
+        print(f"Peek OSD error: {e}")
+
+def _draw_edge_osd(block_percent):
+    """Draw a solid center box covering the video interior; edges remain visible."""
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    if not osd_w or not vid_w:
+        return
+    visible_pct = 100 - block_percent
+    margin = int(min(vid_w, vid_h) * (visible_pct / 100.0 / 2.0))
+    box_w = max(0, vid_w - margin * 2)
+    box_h = max(0, vid_h - margin * 2)
+    if not box_w or not box_h:
+        _clear_peek_osd()
+        return
+    img = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    bx = vid_x + margin
+    by = vid_y + margin
+    ImageDraw.Draw(img).rectangle([bx, by, bx + box_w - 1, by + box_h - 1], fill=_PEEK_BLACK)
+    _push_peek_img(img)
+
+_grow_osd_last_ms = 0.0   # wall time of last ASS push; throttle to ~60fps
+
+def _draw_grow_osd(block_percent, cx_osd, cy_osd):
+    """Draw four ASS panels surrounding a visible hole centered at (cx_osd, cy_osd).
+    Uses mpv osd-overlay (ass-events) — no pixel data uploaded, GPU-rendered.
+    The payload starts with '{' so mpv's text-echo produces nothing visible.
+    """
+    global _grow_osd_last_ms
+    import time as _time_mod
+    now = _time_mod.monotonic()
+    if (now - _grow_osd_last_ms) < 0.016:  # ~60fps cap
+        return
+    try:
+        osd_w, osd_h, _, _, _, _ = _get_osd_video_rect()
+        if not osd_w:
+            return
+        visible_w = int(osd_w * (1.0 - block_percent / 100.0))
+        visible_h = int(osd_h * (1.0 - block_percent / 100.0))
+        hole_l = max(0, cx_osd - visible_w // 2)
+        hole_t = max(0, cy_osd - visible_h // 2)
+        hole_r = min(osd_w, cx_osd + visible_w // 2)
+        hole_b = min(osd_h, cy_osd + visible_h // 2)
+
+        # Build the four surrounding panels as ASS vector paths.
+        # All paths share one \p1 drawing block; multiple 'm' subpaths = multiple filled regions.
+        paths = []
+        if hole_t > 0:                        # top strip
+            paths.append(f"m 0 0 l {osd_w} 0 {osd_w} {hole_t} 0 {hole_t}")
+        if hole_b < osd_h:                    # bottom strip
+            paths.append(f"m 0 {hole_b} l {osd_w} {hole_b} {osd_w} {osd_h} 0 {osd_h}")
+        if hole_l > 0:                        # left strip (between top/bottom strips)
+            paths.append(f"m 0 {hole_t} l {hole_l} {hole_t} {hole_l} {hole_b} 0 {hole_b}")
+        if hole_r < osd_w:                    # right strip
+            paths.append(f"m {hole_r} {hole_t} l {osd_w} {hole_t} {osd_w} {hole_b} {hole_r} {hole_b}")
+
+        if not paths:
+            # Fully uncovered — nothing to draw
+            _osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            return
+
+        ass_payload = (
+            "{\\an7\\pos(0,0)\\1c&H000000&\\bord0\\shad0\\p1}"
+            + " ".join(paths)
+            + "{\\p0}"
+        )
+        _osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'ass-events',
+                          ass_payload, osd_w, osd_h, 0, 'no')
+        _grow_osd_last_ms = now
+    except Exception as e:
+        print(f"Grow OSD (ASS) error: {e}")
+
+def create_progress_bar(color="grey"):
+    pass  # no longer needed — OSD is created on first update
 
 def update_progress_bar(current_time, total_time, filename=None):
     global progress_bar
 
     if not progress_bar_enabled:
-        if progress_bar:
-            progress_bar.destroy()
-            progress_bar = None
+        _clear_progress_osd()
         return
-
-    if not progress_bar:
-        create_progress_bar()
-        progress_bar.update_idletasks()
 
     # During lightning rounds, override current_time/total_time to show round
     # progress (question + answer phases) rather than raw video position.
@@ -27552,11 +29565,11 @@ def update_progress_bar(current_time, total_time, filename=None):
         if _light_answer_wall_start is not None:
             _current_round_elapsed = light_round_length + (_wall_time() - _light_answer_wall_start)
         else:
-            _current_round_elapsed = max(0.0, projected_vlc_time / 1000.0 - light_round_start_time)
+            _current_round_elapsed = max(0.0, projected_player_time / 1000.0 - light_round_start_time)
         if fixed_lightning_round_playlist_data:
             _pl = _get_fixed_playlist_progress(_current_round_elapsed)
             if _pl:
-                current_time = _pl[0] * 10  # hundredths of sec → ms
+                current_time = _pl[0] * 10
                 total_time = _pl[1] * 10
                 filename = None
         else:
@@ -27565,122 +29578,138 @@ def update_progress_bar(current_time, total_time, filename=None):
             total_time = _round_total * 1000
             filename = None
 
-    """Updates the progress bar based on video time, accounting for skip censors."""
-    if progress_bar and total_time > 0:
-        # Calculate effective time excluding skip censors
-        effective_current_time = current_time
+    if total_time <= 0:
+        return
+
+    # Calculate effective time excluding skip censors
+    effective_current_time = current_time
+    effective_total_time = total_time
+
+    if filename:
+        try:
+            if os.path.exists(CENSOR_JSON_FILE):
+                with open(CENSOR_JSON_FILE, "r") as f:
+                    censor_data = json.load(f)
+
+                file_censors = censor_data.get(filename, [])
+                current_time_seconds = current_time / 1000.0
+                total_time_seconds = total_time / 1000.0
+                total_skip_duration_seconds = 0
+                skip_duration_before_current_seconds = 0
+
+                for censor in [c for c in file_censors if c.get("skip")]:
+                    skip_start = censor['start']
+                    skip_end = censor['end']
+                    skip_duration = skip_end - skip_start
+                    if skip_duration > 0:
+                        total_skip_duration_seconds += skip_duration
+                        if skip_end <= current_time_seconds:
+                            skip_duration_before_current_seconds += skip_duration
+                        elif skip_start < current_time_seconds < skip_end:
+                            skip_duration_before_current_seconds += (current_time_seconds - skip_start)
+
+                effective_current_time = (current_time_seconds - skip_duration_before_current_seconds) * 1000
+                effective_total_time = (total_time_seconds - total_skip_duration_seconds) * 1000
+        except Exception:
+            pass
+
+    if effective_total_time <= 0:
         effective_total_time = total_time
-        
-        if filename:
-            try:
-                if os.path.exists(CENSOR_JSON_FILE):
-                    with open(CENSOR_JSON_FILE, "r") as f:
-                        censor_data = json.load(f)
-                    
-                    file_censors = censor_data.get(filename, [])
-                    
-                    current_time_seconds = current_time / 1000.0
-                    total_time_seconds = total_time / 1000.0
-                    
-                    # Calculate total skip duration and skip time before current position
-                    total_skip_duration_seconds = 0
-                    skip_duration_before_current_seconds = 0
-                    
-                    skip_censors = [c for c in file_censors if c.get("skip")]
-                    
-                    for censor in skip_censors:
-                        skip_start = censor['start']
-                        skip_end = censor['end']
-                        skip_duration = skip_end - skip_start
-                        
-                        if skip_duration > 0:
-                            total_skip_duration_seconds += skip_duration
-                            
-                            # If this skip segment is entirely before current time, subtract it
-                            if skip_end <= current_time_seconds:
-                                skip_duration_before_current_seconds += skip_duration
-                            # If current time is within this skip segment, adjust partially
-                            elif skip_start < current_time_seconds < skip_end:
-                                skip_duration_before_current_seconds += (current_time_seconds - skip_start)
-                    
-                    # Calculate effective times in seconds, then convert back to milliseconds
-                    effective_current_time_seconds = current_time_seconds - skip_duration_before_current_seconds
-                    effective_total_time_seconds = total_time_seconds - total_skip_duration_seconds
-                    
-                    effective_current_time = effective_current_time_seconds * 1000
-                    effective_total_time = effective_total_time_seconds * 1000
-                    
-            except Exception as e:
-                # If there's any error loading censors, fall back to normal progress
-                pass
-        
-        # Ensure we don't have negative or zero effective times
-        if effective_total_time <= 0:
-            effective_total_time = total_time
-        if effective_current_time < 0:
-            effective_current_time = 0
-            
-        screen_width = progress_bar.winfo_screenwidth()
-        progress_width = int((effective_current_time / effective_total_time) * screen_width)
-        height = progress_bar.winfo_height()
-        progress_bar.configure(width=progress_width)
-        progress_bar.geometry(f"+{0}+{root.winfo_screenheight() - height}")  # Adjust for bottom spacing
-        progress_bar.lift()
+    if effective_current_time < 0:
+        effective_current_time = 0
+
+    fraction = effective_current_time / effective_total_time
+    _draw_progress_osd(fraction)
 
 # =========================================
 #            *BLIND SCREEN
 # =========================================
 
-black_overlay = None
+black_overlay = None      # None = blind inactive; True = blind active (OSD-based)
+_blind_osd_color_cache = "#000000"  # last color used; needed for hide path
 blind_enabled = False
 manual_blind = False
-def blind(manual = False):
-    """Toggle black screen"""
+
+def _color_to_premul_rgba(color_str, alpha):
+    """Convert any Tkinter color name or hex string to a premultiplied RGBA tuple."""
+    try:
+        r16, g16, b16 = root.winfo_rgb(color_str)
+        r, g, b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        r, g, b = 0, 0, 0
+    return (r * alpha // 255, g * alpha // 255, b * alpha // 255, alpha)
+
+def _set_blind_osd_alpha(color_str, alpha):
+    """Show or hide the blind OSD using ASS osd-overlay (z=1, below progress bar at z=2)."""
+    # ASS alpha: 0x00=opaque, 0xFF=transparent. Convert from PIL-style 0-255 opacity.
+    if alpha <= 0:
+        # Hide — clear the overlay
+        try:
+            _osd_command('osd-overlay', _BLIND_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
+        return
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+        if not (osd_w and osd_h):
+            return
+    except Exception:
+        return
+    try:
+        r16, g16, b16 = root.winfo_rgb(color_str)
+        r, g, b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        r, g, b = 0, 0, 0
+    # ASS color: &HBBGGRR&; alpha tag: &HXX& where 0=opaque, 255=transparent
+    color_hex = f"{b:02X}{g:02X}{r:02X}"
+    ass_alpha = max(0, 255 - alpha)  # invert: PIL 255=opaque → ASS 0x00=opaque
+    alpha_hex = f"{ass_alpha:02X}"
+    path = f"m 0 0 l {osd_w} 0 {osd_w} {osd_h} 0 {osd_h}"
+    ass_payload = (
+        f"{{\\an7\\pos(0,0)\\1c&H{color_hex}&\\1a&H{alpha_hex}&\\bord0\\shad0\\p1}}"
+        + path
+        + "{\\p0}"
+    )
+    try:
+        _osd_command('osd-overlay', _BLIND_ASS_OSD_ID, 'ass-events',
+                          ass_payload, osd_w, osd_h, 1, 'no')  # z=1
+    except Exception as e:
+        print(f"Blind OSD error: {e}")
+
+def _recolor_blind_osd(color_str):
+    """Recolor the blind OSD at full opacity (replacement for black_overlay.configure(bg=...))."""
+    global _blind_osd_color_cache
+    _blind_osd_color_cache = color_str
+    _set_blind_osd_alpha(color_str, 255)
+
+def blind(manual=False):
+    """Toggle blind (black) overlay."""
     global black_overlay, manual_blind
-    if black_overlay is None:  # Create black overlay if it doesn't exist
+    if black_overlay is None:
         manual_blind = manual
         set_black_screen(True)
-    else:  # Destroy the black overlay to reveal VLC
+    else:
         manual_blind = False
-        if not stream_player.is_playing():
+        if not currently_streaming:
             toggle_mute(False, True)
         set_black_screen(False)
         set_progress_overlay(destroy=True)
 
 def set_black_screen(toggle, smooth=True, color=None):
-    global black_overlay
+    global black_overlay, _blind_osd_color_cache
     if toggle:
-        if black_overlay is None:  # Create black overlay if it doesn't exist
-            black_overlay = tk.Toplevel()
-            # black_overlay.attributes("-fullscreen", True)
-            black_overlay.overrideredirect(True)  # Remove window borders
-            black_overlay.configure(bg=color if color else get_image_color())
-            black_overlay.attributes("-topmost", True)
-            black_overlay.bind("<Escape>", lambda e: blind())  # Escape to close
-            
-            # Get screen dimensions
-            screen_width = black_overlay.winfo_screenwidth()
-            screen_height = black_overlay.winfo_screenheight()
-
-            if smooth:
-                # Start offscreen on the left
-                black_overlay.update_idletasks()  
-                black_overlay.geometry(f"{screen_width}x{screen_height}+{-screen_width}+0")
-                black_overlay.update_idletasks()  
-                animate_window(black_overlay, 0, 0, steps=20, delay=5, bounce=False, fade=None)  # Animate to center
-                root.after(600, set_blind_enabled, toggle)
-            else:
-                black_overlay.geometry(f"{screen_width}x{screen_height}+0+0")
-                set_blind_enabled(True)
+        _color = color if color else get_image_color()
+        _blind_osd_color_cache = _color
+        black_overlay = True
+        _set_blind_osd_alpha(_color, 255)
+        set_blind_enabled(True)
+        _register_mpv_tracked_window("blind_osd", None, _blind_osd_on_mpv_rect)
     else:
-        if black_overlay:  # Destroy the black overlay smoothly
-            if smooth:
-                screen_width = black_overlay.winfo_screenwidth()
-                screen_height = black_overlay.winfo_screenheight()
-                animate_window(black_overlay, screen_width, 0, steps=20, delay=5, bounce=False, fade=None, destroy=True)
-            else:
-                black_overlay.destroy()
-            black_overlay = None
+        if black_overlay:
+            _set_blind_osd_alpha(_blind_osd_color_cache, 0)
+        black_overlay = None
+        _unregister_mpv_tracked_window("blind_osd")
         set_blind_enabled(False)
     root.after(100, configure_style)
 
@@ -27694,11 +29723,9 @@ def set_blind_enabled(toggle):
 
 def black_while_loading(toggle):
     if toggle:
-        global black_overlay
-        set_black_screen(True)
-        black_overlay.attributes("-topmost", False)
+        set_black_screen(True, smooth=False, color="black")
     else:
-        set_black_screen(False)
+        set_black_screen(False, smooth=False)
 
 blind_round_toggle = False
 def toggle_blind_round():
@@ -27720,6 +29747,40 @@ def toggle_blind_round():
 # =========================================
 
 desktop_black_overlay = None
+
+# ---- OST cover overlay (used during OST → answer transition) ----
+# Uses an ASS OSD overlay (same pipeline as the blind) so it always renders
+# on top of the video regardless of window z-order.
+_ost_cover_overlay = None
+
+def _show_ost_cover():
+    """Draw a solid ASS OSD overlay covering the full mpv canvas, using the blind's last color."""
+    global _ost_cover_overlay
+    _ost_cover_overlay = True
+    try:
+        osd_w = int(player._p.osd_width or 0) or root.winfo_screenwidth()
+        osd_h = int(player._p.osd_height or 0) or root.winfo_screenheight()
+        # Match the existing blind color for a seamless transition
+        color_str = _blind_osd_color_cache or "#000000"
+        try:
+            r16, g16, b16 = root.winfo_rgb(color_str)
+            r, g, b = r16 >> 8, g16 >> 8, b16 >> 8
+        except Exception:
+            r, g, b = 0, 0, 0
+        color_hex = f"{b:02X}{g:02X}{r:02X}"  # ASS: BGR
+        path = f"m 0 0 l {osd_w} 0 {osd_w} {osd_h} 0 {osd_h}"
+        ass = f"{{\\an7\\pos(0,0)\\1c&H{color_hex}&\\1a&H00&\\bord0\\shad0\\p1}}" + path + "{\\p0}"
+        _osd_command('osd-overlay', _OST_COVER_ASS_OSD_ID, 'ass-events', ass, osd_w, osd_h, 1, 'no')
+    except Exception:
+        pass
+
+def _hide_ost_cover():
+    global _ost_cover_overlay
+    _ost_cover_overlay = None
+    try:
+        _osd_command('osd-overlay', _OST_COVER_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+    except Exception:
+        pass
 
 def toggle_desktop_black_overlay(toggle=None):
     global desktop_black_overlay
@@ -27752,20 +29813,101 @@ other_censor_lists = []
 censors_enabled = True
 
 censor_boxes = {}
+_censor_osd = None      # mpv ImageOverlay for all active censor boxes
+_censor_osd_img = None  # PIL RGBA canvas for censor compositing
+_censor_osd_last_size = (0, 0)  # (osd_w, osd_h) at last commit — redraw on resize
+
+def _commit_censor_osd():
+    """Composite all active censor boxes into a single mpv OSD overlay."""
+    global _censor_osd, _censor_osd_img, _censor_osd_last_size
+    active = [(d["censor"], d.get("color", "black"))
+              for d in censor_boxes.values() if not d.get("destroying")]
+    if not active:
+        if _censor_osd is not None:
+            try:
+                _censor_osd.remove()
+            except Exception:
+                pass
+            _censor_osd = None
+        _censor_osd_img = None
+        return
+
+    # Get actual mpv OSD (window) dimensions — attribute access avoids the options/ prefix bug
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_w, osd_h = 0, 0
+    if not osd_w or not osd_h:
+        osd_w = root.winfo_screenwidth()
+        osd_h = root.winfo_screenheight()
+
+    # Compute video rect within OSD space (letterbox/pillarbox aware)
+    try:
+        vw, vh = player.video_get_size(0)
+    except Exception:
+        vw, vh = 0, 0
+    if vw and vh:
+        if (vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478):
+            ar = 16 / 9
+        else:
+            ar = vw / vh
+        osd_ar = osd_w / osd_h
+        if ar >= osd_ar:
+            video_w = osd_w
+            video_h = int(osd_w / ar)
+            video_x = 0
+            video_y = (osd_h - video_h) // 2
+        else:
+            video_h = osd_h
+            video_w = int(osd_h * ar)
+            video_x = (osd_w - video_w) // 2
+            video_y = 0
+    else:
+        video_x, video_y, video_w, video_h = 0, 0, osd_w, osd_h
+
+    _censor_osd_img = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(_censor_osd_img)
+    for censor, color_str in active:
+        try:
+            rgb = ImageColor.getrgb(color_str)
+            fill = (*rgb, 255)
+        except Exception:
+            fill = (0, 0, 0, 255)
+        cw = int(video_w * censor['size_w'] / 100)
+        ch = int(video_h * censor['size_h'] / 100)
+        if cw <= 0 or ch <= 0:
+            continue
+        cx = video_x + int((video_w - cw) * censor['pos_x'] / 100)
+        cy = video_y + int((video_h - ch) * censor['pos_y'] / 100)
+        draw.rectangle([cx, cy, cx + cw - 1, cy + ch - 1], fill=fill)
+
+    # python-mpv's update() calls tobytes('raw', 'BGRA') internally — pass RGBA directly
+    try:
+        # Overlay ID 0 — rendered below progress bar overlay (ID 1)
+        if _censor_osd is None:
+            _censor_osd = player._p.create_image_overlay()
+        _censor_osd.update(_censor_osd_img)
+        _censor_osd_last_size = (osd_w, osd_h)
+    except Exception as e:
+        print(f"Censor OSD error: {e}")
+
 def toggle_censor_box(filename, censor, enabled, time=None):
     censor_id = f"{filename}:{censor['pos_x']}x{censor['pos_y']}--{censor['size_w']}x{censor['size_h']}-{censor['start']}-{censor['end']}"
-    if censor_id in censor_boxes and censor_boxes[censor_id] and censor_boxes[censor_id].get("box") and censor_boxes[censor_id].get("box").winfo_exists():
-        if not enabled and censor_boxes[censor_id].get("destroying") != True:
+    if censor_id in censor_boxes:
+        if not enabled and not censor_boxes[censor_id].get("destroying"):
             if time is None:
-                time = projected_vlc_time/1000
+                time = projected_player_time / 1000
             censor_boxes[censor_id]["destroying"] = True
             def delete_censor(cid, cen):
-                pj_time = projected_vlc_time/1000
+                if cid not in censor_boxes:
+                    return
+                pj_time = projected_player_time / 1000
                 if not blind_enabled and show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
                     censor_boxes[cid]["destroying"] = False
-                elif censor_boxes[censor_id]["destroying"]: 
-                    censor_boxes[cid]["box"].destroy()
+                elif censor_boxes[cid].get("destroying"):
                     del censor_boxes[cid]
+                    _commit_censor_osd()
             if time > censor.get("end") + 0.2:
                 root.after(200, delete_censor, censor_id, censor)
             else:
@@ -27773,39 +29915,31 @@ def toggle_censor_box(filename, censor, enabled, time=None):
         elif enabled:
             censor_boxes[censor_id]["destroying"] = False
     elif enabled:
-        censor_box = tk.Toplevel()
-        censor_box.configure(bg="black")
-        censor_box.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}")
-        censor_box.overrideredirect(True)
-        censor_box.attributes("-topmost", True)
         censor_boxes[censor_id] = {
-            "box": censor_box,
-            "used": True,
-            "destroying": False
+            "censor": censor,
+            "color": "black",
+            "destroying": False,
         }
-        root.after(10, lift_peek)
-        root.after(10, lift_windows)
     return censor_boxes.get(censor_id)
 
 def lift_peek():
-    if isinstance(grow_overlay_boxes, dict):
-        for box in grow_overlay_boxes.values():
-            if box:
-                box.lift()
-    for p in [black_overlay, peek_overlay1, peek_overlay2, edge_overlay_box]:
-        if p:
-            p.lift()
+    pass  # peek overlays are now OSD-based; nothing to lift
 
 def remove_all_censor_boxes(filename=None):
-    censors_to_delete = []
-    for censor_id, box_data in censor_boxes.items():
-        if not filename or filename not in censor_id:
-            box = box_data.get("box")
-            if box and box.winfo_exists():
-                box.destroy()
-            censors_to_delete.append(censor_id)
-    for censor_id in censors_to_delete:
-        del censor_boxes[censor_id]
+    global _censor_osd, _censor_osd_img
+    # If filename given, remove boxes for OTHER files (not the current one).
+    # If no filename, remove everything.
+    censors_to_delete = [cid for cid in censor_boxes if not filename or filename not in cid]
+    for cid in censors_to_delete:
+        del censor_boxes[cid]
+    if not censor_boxes:
+        if _censor_osd is not None:
+            try:
+                _censor_osd.remove()
+            except Exception:
+                pass
+            _censor_osd = None
+        _censor_osd_img = None
 
 def load_censors():
     global censor_list, other_censor_lists
@@ -27833,18 +29967,47 @@ load_censors()
 
 censor_used = False
 mute_censor_used = False
-pre_censor = False
+
+def _prime_start_censors(filename):
+    """Immediately activate any censors whose start==0 for the incoming file.
+
+    Called from play_filename() just before player_play() so the OSD boxes
+    are committed before the first frame is visible, eliminating the gap
+    where a censor-at-zero would otherwise be missed by the poll loop.
+    Mute censors are skipped here (they need the player to be playing).
+    """
+    if not censors_enabled or mismatch_visuals or currently_streaming or black_overlay or blind_enabled:
+        return
+    file_censors = get_file_censors(filename)
+    if not file_censors:
+        return
+    _osd_dirty = False
+    for censor in file_censors:
+        if censor.get('start', 1) != 0:
+            continue
+        if censor.get('mute') or censor.get('skip'):
+            continue
+        if not show_censor(censor, check_title=False):
+            continue
+        entry = toggle_censor_box(filename, censor, True)
+        if entry is not None:
+            color = censor.get('color') or 'black'
+            if entry.get('color') != color or not entry.get('committed'):
+                entry['color'] = color
+                _osd_dirty = True
+    if _osd_dirty:
+        _commit_censor_osd()
+        for entry in censor_boxes.values():
+            if not entry.get('destroying'):
+                entry['committed'] = True
+
 def apply_censors(time, length):
-    """"Apply Censors"""
-    global censor_used, mute_censor_used, pre_censor
+    """Apply Censors"""
+    global censor_used, mute_censor_used
     global censor_list
     global censors_enabled
     if censors_enabled and not mismatch_visuals and not currently_streaming:
-        check_file_censors(currently_playing.get('filename'), time, False, not pre_censor)
-        if not video_stopped and not cover_media_switch and not (light_mode or mute_peek_round_toggle or peek_round_toggle or blind_round_toggle) and length - time <= 0.3 and playlist["current_index"]+1 < len(playlist["playlist"]) and check_file_censors(get_clean_filename(playlist["playlist"][playlist["current_index"]+1]), time, True, auto_info_start):
-            pre_censor = True
-        else:
-            remove_all_censor_boxes(filename=currently_playing.get('filename'))
+        check_file_censors(currently_playing.get('filename'), time, True)
     else:
         remove_all_censor_boxes()
         if mute_censor_used:
@@ -27869,39 +30032,17 @@ def get_file_censors(filename):
 def show_censor(censor, check_title=True):
     return (not check_title or not is_title_window_up() or censor.get("nsfw") or censor.get("skip"))
 
-def set_censor_position(window, pos_x_percent, pos_y_percent, video_x, video_y, video_w, video_h):
-    """Position a censor box relative to the video display area."""
-    if not window or not window.winfo_exists():
-        return
-    try:
-        root.update_idletasks()
-        window_width = window.winfo_width()
-        window_height = window.winfo_height()
-    except tk.TclError:
-        return
-    
-    # Calculate position within the video area
-    # pos_x/y_percent are percentages of where in the video the censor should be
-    x_position = video_x + int((video_w - window_width) * (pos_x_percent / 100))
-    y_position = video_y + int((video_h - window_height) * (pos_y_percent / 100))
-    
-    x_position = int(max(0, x_position))
-    y_position = int(max(0, y_position))
-    
-    window.geometry(f"+{x_position}+{y_position}")
-
-def check_file_censors(filename, time, video_end, check_title=True):
+def check_file_censors(filename, time, check_title=True):
     global censor_used, mute_censor_used
-    
-    video_x, video_y, video_w, video_h, has_video = get_video_display_rect()
-    
+
     file_censors = get_file_censors(filename)
     censor_found = False
     mute_found = False
     _image_color = None
+    _osd_dirty = False
     if file_censors:
         for censor in file_censors:
-            if ((not blind_enabled or time <= 0.25) or censor.get("mute")) and show_censor(censor, check_title) and ((video_end and censor['start'] == 0) or (time >= censor['start'] and time <= censor['end'])):
+            if ((not blind_enabled or time <= 0.25) or censor.get("mute")) and show_censor(censor, check_title) and (time >= censor['start'] and time <= censor['end']):
                 if censor.get("skip"):
                     skip_length = censor['end'] - censor['start']
                     if not light_round_started and time < censor['start']+(skip_length / 4):
@@ -27912,21 +30053,18 @@ def check_file_censors(filename, time, video_end, check_title=True):
                     censor_found = True
                 elif not censor.get("mute"):
                     censor_entry = toggle_censor_box(filename, censor, True)
-                    censor_box = censor_entry.get("box") if censor_entry else None
-                    if censor_box and censor_box.winfo_exists():
+                    if censor_entry is not None:
+                        _censor_color = censor.get("color") or _image_color
+                        if not _censor_color:
+                            _image_color = get_image_color()
+                            _censor_color = _image_color or "black"
                         try:
-                            # Use video-based positioning (aspect ratio aware)
-                            censor_width = int(video_w * (censor['size_w'] / 100))
-                            censor_height = int(video_h * (censor['size_h'] / 100))
-                            censor_box.geometry(f"{censor_width}x{censor_height}")
-                            _censor_color = censor.get("color") or _image_color
-                            if not _censor_color:
-                                _image_color = get_image_color()
-                                _censor_color = _image_color or "black"
-                            censor_box.configure(bg=_censor_color)
-                            set_censor_position(censor_box, censor['pos_x'], censor['pos_y'], video_x, video_y, video_w, video_h)
-                        except tk.TclError:
-                            pass
+                            _cur_osd_size = (int(player._p.osd_width or 0), int(player._p.osd_height or 0))
+                        except Exception:
+                            _cur_osd_size = (0, 0)
+                        if censor_entry.get("color") != _censor_color or not censor_entry.get("committed") or _cur_osd_size != _censor_osd_last_size:
+                            censor_entry["color"] = _censor_color
+                            _osd_dirty = True
                 else:
                     player.audio_set_mute(True)
                     mute_censor_used = True
@@ -27934,6 +30072,13 @@ def check_file_censors(filename, time, video_end, check_title=True):
                 censor_found = True
             elif not (censor.get("mute") or censor.get("skip")):
                 toggle_censor_box(filename, censor, False)
+
+    if _osd_dirty:
+        _commit_censor_osd()
+        for entry in censor_boxes.values():
+            if not entry.get("destroying"):
+                entry["committed"] = True
+        _osd_dirty = False
 
     if not mute_found and not light_round_started and mute_censor_used:
         player.audio_set_mute(disable_video_audio)
@@ -27944,7 +30089,7 @@ def check_file_censors(filename, time, video_end, check_title=True):
 def lift_windows():
     if root.attributes("-topmost"):
         root.lift()
-    for window in [title_window, progress_bar, coming_up_window, character_image_overlay, censor_editor]:
+    for window in [title_window, coming_up_window, character_image_overlay, censor_editor]:
         if window:
             window.lift()
 
@@ -28117,10 +30262,17 @@ def update_censor_button_count():
 class RectangleDrawerOverlay:
     def __init__(self, on_rectangle_picked):
         self.on_rectangle_picked = on_rectangle_picked
+
+        # Position overlay over the mpv window, not the whole screen
+        mpv_x, mpv_y, mpv_w, mpv_h = _get_mpv_client_rect_logical()
+
         self.root = tk.Toplevel()
-        self.root.attributes("-fullscreen", True)
-        self.root.attributes("-alpha", 0.3)
+        self.root.overrideredirect(True)
+        self.root.geometry(f"{mpv_w}x{mpv_h}+{mpv_x}+{mpv_y}")
+        self.root.attributes("-alpha", 0.55)
+        self.root.attributes("-topmost", True)
         self.root.configure(cursor="cross")
+        self.root.focus_force()
 
         self.canvas = tk.Canvas(self.root, bg="black")
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -28129,15 +30281,34 @@ class RectangleDrawerOverlay:
         self.start_y = None
         self.rect = None
 
-        self.screen_width = self.root.winfo_screenwidth()
-        self.screen_height = self.root.winfo_screenheight()
-        
-        self.video_x, self.video_y, self.video_w, self.video_h, self.has_video = get_video_display_rect()
-        
-        # Draw guide rectangle showing video boundaries
-        if self.has_video:
+        # Compute video rect within the mpv window dimensions (letterbox/pillarbox)
+        try:
+            vw, vh = player.video_get_size(0)
+        except Exception:
+            vw, vh = 0, 0
+        if vw and vh:
+            video_ar = 16 / 9 if ((vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478)) else vw / vh
+            win_ar = mpv_w / mpv_h if mpv_h else 1
+            if video_ar >= win_ar:
+                self.video_w = mpv_w
+                self.video_h = int(mpv_w / video_ar)
+                self.video_x = 0
+                self.video_y = (mpv_h - self.video_h) // 2
+            else:
+                self.video_h = mpv_h
+                self.video_w = int(mpv_h * video_ar)
+                self.video_x = (mpv_w - self.video_w) // 2
+                self.video_y = 0
+            self.has_video = True
+        else:
+            self.video_x, self.video_y = 0, 0
+            self.video_w, self.video_h = mpv_w, mpv_h
+            self.has_video = False
+
+        # Draw guide rectangle showing video boundaries (only visible when letterboxed)
+        if self.has_video and (self.video_x > 0 or self.video_y > 0):
             self.canvas.create_rectangle(
-                self.video_x, self.video_y, 
+                self.video_x, self.video_y,
                 self.video_x + self.video_w, self.video_y + self.video_h,
                 outline="green", width=3, dash=(10, 5)
             )
@@ -28150,10 +30321,22 @@ class RectangleDrawerOverlay:
 
     def on_press(self, event):
         self.start_x, self.start_y = event.x, event.y
-        self.rect = self.canvas.create_rectangle(self.start_x, self.start_y, event.x, event.y, outline="red", width=2)
+        _h = 4  # half of border width (8 // 2)
+        self.rect = self.canvas.create_rectangle(
+            event.x - _h, event.y - _h,
+            event.x + _h, event.y + _h,
+            outline="#FF3333", width=8, fill=""
+        )
 
     def on_drag(self, event):
-        self.canvas.coords(self.rect, self.start_x, self.start_y, event.x, event.y)
+        _h = 4
+        sx, sy = self.start_x, self.start_y
+        ex, ey = event.x, event.y
+        self.canvas.coords(
+            self.rect,
+            min(sx, ex) - _h, min(sy, ey) - _h,
+            max(sx, ex) + _h, max(sy, ey) + _h
+        )
 
     def on_release(self, event):
         end_x, end_y = event.x, event.y
@@ -28431,7 +30614,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
     censor_editor.title(f"Censor Editor for {filename}")
 
     def current_time_func():
-        return projected_vlc_time / 1000
+        return projected_player_time / 1000
 
     def pick_color_func(label):
         def set_color(hex_color):
@@ -28629,7 +30812,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
             "size_w": 100.00, "size_h": 100.00,
             "pos_x": 0.0, "pos_y": 0.0,
             "start": round(current_time_func(), 1), "end": 0.0,
-            "color": None, "nsfw": False
+            "color": None, "nsfw": False,
         }
         current_censors.append(new_censor)
         
@@ -28938,6 +31121,7 @@ def _push_web_toggles():
         "session_history_count": get_themes_played_count(),
         "selected_rules_file": selected_rules_file,
         "selected_light_mode_settings": selected_light_mode_settings,
+        "autoplay_fullscreen": bool(autoplay_fullscreen),
     })
 
 def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
@@ -31239,7 +33423,9 @@ def end_session():
     toggle_end_message()
     send_scoreboard_command("end")
 
-end_message_window = None
+end_message_window = None    # True = OSD visible, None = hidden
+_end_msg_img_overlay = None
+_end_msg_anim_after  = None
 
 def get_op_ed_counts(themes):
     opening_count = 0
@@ -31269,194 +33455,267 @@ def get_op_ed_counts(themes):
             ending_count += 1
     return opening_count, ending_count
 
-DEFAULT_END_SESSION_MESSAGE = "THANKS FOR\nPLAYING!🤍"
+DEFAULT_END_SESSION_MESSAGE = "THANKS FOR\nPLAYING!\u2665"
+
+def _end_msg_build_canvas(y_top):
+    """Build a full OSD RGBA canvas with the end-session stats box at y_top."""
+    try:
+        osd_w = int(player._p.osd_width  or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return None
+    if not osd_w or not osd_h:
+        return None
+
+    modifier = min(osd_w / 2560, osd_h / 1440)
+    pad = max(8,  round(25 * modifier))
+    gap = max(1,  round(5  * modifier))
+    sep = max(1,  round(2  * modifier))
+
+    def _fs(pt):
+        return max(8, round(pt * modifier * 1.4))
+
+    # Gather stats
+    total_played    = get_themes_played_count()
+    opening_count, ending_count = get_op_ed_counts(get_unique_themes_played())
+    lightning_count = sum(1 for e in session_data if e.get("lightning_mode"))
+    youtube_count   = sum(1 for e in session_data if e.get("type") == "youtube")
+
+    raw_msg  = end_session_txt.replace("\\n", "\n") if end_session_txt else DEFAULT_END_SESSION_MESSAGE
+    safe_msg = raw_msg.replace("\U0001f90d", "\u2665").replace("\u2764\ufe0f", "\u2665").replace("\u2764", "\u2665")
+
+    dt_str   = datetime.now().strftime("%b %d, %Y")
+    date_str = f"GUESS THE ANIME! {dt_str.upper()}"
+
+    try:
+        sd     = datetime.strptime(session_start_time, '%Y-%m-%d_%H-%M')
+        t0_str = sd.strftime("%#I:%M %p")
+        dur    = datetime.now() - sd
+    except Exception:
+        t0_str = "N/A"
+        dur    = None
+    is_dst   = time.daylight and time.localtime().tm_isdst
+    tz_name  = time.tzname[1 if is_dst else 0]
+    tz_abbr  = ''.join(w[0].upper() for w in tz_name.split())
+    t1_str   = datetime.now().strftime("%#I:%M %p")
+    time_txt = f"{t0_str} - {t1_str} {tz_abbr}"
+    if dur:
+        time_txt += f" [{dur.seconds // 3600}h {(dur.seconds // 60) % 60}m]"
+
+    top_series_name, top_series_count = get_top_series_from_session(session_data)
+    top_artist,      top_artist_count = get_top_artist_from_session(session_data)
+
+    # Row definitions: (kind, text, pt, bold)
+    # kind: "msg" | "text" | "sep"
+    rows = []
+    for line in safe_msg.split("\n"):
+        rows.append(("msg",  line,         90, True))
+    rows.append(("sep",  None,              sep, False))
+    rows.append(("text", date_str,          35, True))
+    rows.append(("text", time_txt,          30, False))
+    rows.append(("sep",  None,              sep, False))
+    rows.append(("text", "SESSION BREAKDOWN:", 40, True))
+    rows.append(("text", f"{total_played} THEMES PLAYED", 55, True))
+    rows.append(("text", f"{opening_count} OPENINGS  \u2022  {ending_count} ENDINGS", 35, False))
+    if lightning_count:
+        rows.append(("text", f"{lightning_count} LIGHTNING ROUND{'S' if lightning_count != 1 else ''}", 35, False))
+    if youtube_count:
+        rows.append(("text", f"{youtube_count} YOUTUBE VIDEO{'S' if youtube_count != 1 else ''}", 35, False))
+    if top_series_name:
+        rows.append(("sep",  None,          sep, False))
+        rows.append(("text", "MOST PLAYED SERIES:", 35, True))
+        rows.append(("text", f"{top_series_name} ({top_series_count})", 28, False))
+    if top_artist:
+        rows.append(("sep",  None,          sep, False))
+        rows.append(("text", "MOST PLAYED ARTIST:", 35, True))
+        rows.append(("text", f"{top_artist} ({top_artist_count})", 28, False))
+
+    # Measure widths to determine box width
+    min_box_w  = round(osd_w * 0.28)
+    max_text_w = min_box_w
+    for kind, text, pt, bold in rows:
+        if kind in ("msg", "text") and text:
+            size = _fs(pt)
+            fnt  = _get_ass_font(size, bold=bold)
+            if fnt:
+                try:
+                    w = round(fnt.getlength(text))
+                except AttributeError:
+                    w = len(text) * size // 2
+                max_text_w = max(max_text_w, w)
+    box_w = min(round(osd_w * 0.52), max_text_w + 2 * pad)
+
+    # Measure total height
+    total_h = 2 * pad
+    for kind, text, pt, bold in rows:
+        size = _fs(pt)
+        total_h += (size + gap) if kind == "sep" else (size + gap)
+
+    box_x = osd_w - box_w - max(4, round(10 * modifier))
+
+    # Colours
+    try:
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_BACKGROUND_COLOR)
+        bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_TEXT_COLOR)
+        fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        bg_r, bg_g, bg_b = 0,   0,   0
+        fg_r, fg_g, fg_b = 255, 255, 255
+
+    # Render box sprite once (origin at 0,0) then paste onto full canvas at y_top.
+    # This lets the animation loop skip re-rendering text every frame.
+    sprite = Image.new("RGBA", (box_w, total_h), (0, 0, 0, 0))
+    sdraw  = ImageDraw.Draw(sprite)
+    sdraw.rectangle([0, 0, box_w - 1, total_h - 1], fill=(bg_r, bg_g, bg_b, 210))
+
+    cy = pad
+    for kind, text, pt, bold in rows:
+        size = _fs(pt)
+        if kind == "sep":
+            sdraw.rectangle([pad, cy, box_w - pad - 1, cy + size - 1],
+                            fill=(fg_r, fg_g, fg_b, 200))
+            cy += size + gap
+        else:
+            fnt    = _get_ass_font(size, bold=bold)
+            line_h = size
+            if text and fnt:
+                try:
+                    tw = round(fnt.getlength(text))
+                except AttributeError:
+                    tw = len(text) * size // 2
+                tx = (box_w - tw) // 2
+                sdraw.text((tx, cy), text, font=fnt, fill=(fg_r, fg_g, fg_b, 255))
+            cy += line_h + gap
+
+    # Store sprite on function so _end_msg_composite_canvas can reuse it
+    _end_msg_build_canvas._sprite   = sprite
+    _end_msg_build_canvas._box_x    = box_x
+    _end_msg_build_canvas._osd_size = (osd_w, osd_h)
+
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    canvas.paste(sprite, (box_x, y_top))
+    return canvas
+
+
+def _end_msg_composite_canvas(y_top):
+    """Fast path: paste pre-rendered box sprite onto a blank canvas at y_top.
+    Falls back to full rebuild if the sprite or OSD size has changed."""
+    try:
+        osd_w = int(player._p.osd_width  or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return None
+    if not osd_w or not osd_h:
+        return None
+
+    cached = getattr(_end_msg_build_canvas, '_osd_size', None)
+    if cached != (osd_w, osd_h) or not hasattr(_end_msg_build_canvas, '_sprite'):
+        return _end_msg_build_canvas(y_top)
+
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    canvas.paste(_end_msg_build_canvas._sprite, (_end_msg_build_canvas._box_x, y_top))
+    return canvas
+
+
+def _end_msg_slide_cancel():
+    global _end_msg_anim_after
+    if _end_msg_anim_after is not None:
+        try:
+            root.after_cancel(_end_msg_anim_after)
+        except Exception:
+            pass
+        _end_msg_anim_after = None
+
+
+def _end_msg_slide_in():
+    global _end_msg_anim_after, _end_msg_img_overlay
+    _end_msg_slide_cancel()
+    try:
+        osd_w = int(player._p.osd_width  or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h:
+        return
+
+    modifier = min(osd_w / 2560, osd_h / 1440)
+    target_y = max(4, round(10 * modifier))
+    duration = 15.0         # seconds — slow credits-style reveal
+    t0       = time.perf_counter()
+
+    if _end_msg_img_overlay is None:
+        _end_msg_img_overlay = player._p.create_image_overlay()
+
+    # Pre-render the box sprite once so the animation loop only does cheap pastes
+    _end_msg_build_canvas(osd_h)   # builds sprite, caches on function object
+
+    _last_size = [0, 0]   # [osd_w, osd_h] at last canvas push; detect resize
+
+    def _step():
+        global _end_msg_anim_after
+        if not end_message_window:
+            return
+        t    = min(1.0, (time.perf_counter() - t0) / duration)
+        ease = t                               # linear — constant speed
+        try:
+            cur_w = int(player._p.osd_width  or osd_w)
+            cur_h = int(player._p.osd_height or osd_h)
+        except Exception:
+            cur_w, cur_h = osd_w, osd_h
+
+        size_changed = (cur_w != _last_size[0] or cur_h != _last_size[1])
+
+        # Recompute target_y if OSD resized (also invalidates cached sprite)
+        if size_changed:
+            mod = min(cur_w / 2560, cur_h / 1440)
+            t_y = max(4, round(10 * mod))
+        else:
+            t_y = target_y
+
+        y = round(cur_h + (t_y - cur_h) * ease)
+
+        if t < 1.0 or size_changed:
+            # Fast path: just paste the pre-rendered sprite; full rebuild only on resize
+            c = _end_msg_composite_canvas(y)
+            if c:
+                try:
+                    _end_msg_img_overlay.update(c)
+                except Exception:
+                    pass
+            _last_size[0] = cur_w
+            _last_size[1] = cur_h
+
+        if t < 1.0:
+            _end_msg_anim_after = root.after(15, _step)     # ~120 fps during animation
+        else:
+            _end_msg_anim_after = root.after(250, _step)   # slow poll for resize after
+
+    _step()
+
+
 def toggle_end_message(speed=500):
     """Toggles the 'Thanks for playing!' message with detailed stats."""
-    global end_message_window
+    global end_message_window, _end_msg_img_overlay, _end_msg_anim_after
     try:
         if end_message_window:
-            end_message_window.destroy()
+            _end_msg_slide_cancel()
+            if _end_msg_img_overlay is not None:
+                try:
+                    _end_msg_img_overlay.remove()
+                except Exception:
+                    pass
+                _end_msg_img_overlay = None
             end_message_window = None
             _push_web_toggles()
             return
 
-        end_message_window = tk.Toplevel()
-        end_message_window.title("End Message")
-        end_message_window.overrideredirect(True)
-        end_message_window.attributes("-topmost", True)
-        end_message_window.wm_attributes("-alpha", 0.8)
-        end_message_window.configure(bg=OVERLAY_BACKGROUND_COLOR)
-
-        # Create main container frame
-        main_frame = tk.Frame(end_message_window, bg=OVERLAY_BACKGROUND_COLOR)
-        main_frame.pack(padx=scl(25), pady=scl(25))
-
-        total_played = get_themes_played_count()
-        opening_count, ending_count = get_op_ed_counts(get_unique_themes_played())
-        
-        # Count lightning rounds and YouTube videos from session data
-        lightning_count = sum(1 for entry in session_data if entry.get("lightning_mode"))
-        youtube_count = sum(1 for entry in session_data if entry.get("type") == "youtube")
-        
-        end_message_text = end_session_txt.replace("\\n", "\n") or DEFAULT_END_SESSION_MESSAGE
-
-        # Main end message - largest font (90pt)
-        end_msg_label = tk.Label(main_frame, text=end_message_text, 
-                                 font=("Arial", scl(90), "bold"),
-                                 fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
-                                 justify="center")
-        end_msg_label.pack(pady=(0, scl(20)))
-
-        # Separator line 1
-        separator1 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
-        separator1.pack(fill="x", padx=scl(0), pady=(0, scl(10)))
-
-        # Date and time section - right after thank you message
-        datetime_str = datetime.now().strftime("%b %d, %Y")
-        date_label = tk.Label(main_frame, text=f"GUESS THE ANIME! {datetime_str.upper()}", 
-                              font=("Arial", scl(35), "bold"),
-                              fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                              justify="center")
-        date_label.pack(pady=(0, scl(10)))
-
-        # Session time range
-        try:
-            # session_start_time is stored as a string, need to convert back to datetime
-            start_datetime = datetime.strptime(session_start_time, '%Y-%m-%d_%H-%M')
-            start_time = start_datetime.strftime("%#I:%M %p")
-            duration = datetime.now() - start_datetime
-        except (ValueError, TypeError):
-            start_time = "N/A"
-            duration = None
-        
-        # Get timezone abbreviation
-        is_dst = time.daylight and time.localtime().tm_isdst
-        timezone_name = time.tzname[1 if is_dst else 0]
-        
-        # Create abbreviation by taking first letter of each word
-        timezone_abbr = ''.join(word[0].upper() for word in timezone_name.split())
-        
-        end_time = datetime.now().strftime("%#I:%M %p")
-        time_text = f"{start_time} - {end_time} {timezone_abbr}"
-        if duration:
-            time_text += f" [{duration.seconds//3600}h {(duration.seconds//60)%60}m]"
-        
-        time_range_label = tk.Label(main_frame, text=time_text, 
-                                    font=("Arial", scl(30), "normal"),
-                                    fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                    justify="center")
-        time_range_label.pack(pady=(0, scl(5)))
-
-        separator2 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
-        separator2.pack(fill="x", padx=scl(0), pady=(0, scl(10)))
-
-        # Session Stats Header
-        stats_header = tk.Label(main_frame, text="SESSION BREAKDOWN:", 
-                               font=("Arial", scl(40), "bold underline"),
-                               fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
-                               justify="center")
-        stats_header.pack(pady=(0, scl(15)))
-
-        # Themes played section - large font
-        themes_label = tk.Label(main_frame, text=f"{total_played} THEMES PLAYED", 
-                                font=("Arial", scl(55), "bold"),
-                                fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                justify="center")
-        themes_label.pack(pady=(0, 0))
-
-        # Lightning rounds and YouTube videos - additional stats
-        additional_stats_parts = []
-        if lightning_count > 0:
-            if lightning_count == 1:
-                additional_stats_parts.append("1 LIGHTNING ROUND")
-            else:
-                additional_stats_parts.append(f"{lightning_count} LIGHTNING ROUNDS")
-        if youtube_count > 0:
-            if youtube_count == 1:
-                additional_stats_parts.append("1 YOUTUBE VIDEO")
-            else:
-                additional_stats_parts.append(f"{youtube_count} YOUTUBE VIDEOS")
-        if additional_stats_parts:
-            additional_stats_text = "\n".join(additional_stats_parts)
-        else:
-            additional_stats_text = ""
-
-        # OP/ED breakdown - medium font
-        breakdown_label = tk.Label(main_frame, text=f"{opening_count} OPENINGS  •  {ending_count} ENDINGS", 
-                                   font=("Arial", scl(35), "normal"),
-                                   fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                   justify="center")
-        breakdown_label.pack(pady=(0, scl(10)))
-
-        if additional_stats_text:
-            additional_stats_label = tk.Label(main_frame, text=f"{additional_stats_text}", 
-                                    font=("Arial", scl(35), "normal"),
-                                    fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                    justify="center")
-            additional_stats_label.pack(pady=(scl(10), scl(10)))
-
-        # Top Series section
-        top_series_name, top_series_count = get_top_series_from_session(session_data)
-        if top_series_name:
-            # Add separator line
-            separator4 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
-            separator4.pack(fill="x", padx=scl(0), pady=(scl(10), scl(10)))
-            
-            # Top Series Header (singular)
-            series_header = tk.Label(main_frame, text="MOST PLAYED SERIES:", 
-                                    font=("Arial", scl(35), "bold underline"),
-                                    fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
-                                    justify="center")
-            series_header.pack(pady=(0, scl(10)))
-            
-            # Display the single top series
-            series_label = tk.Label(main_frame, text=f"{top_series_name} ({top_series_count})", 
-                                   font=("Arial", scl(28), "normal"),
-                                   fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                   justify="center")
-            series_label.pack(pady=(0, scl(10)))
-
-        # Top Artists section
-        top_artist, top_artist_count = get_top_artist_from_session(session_data)
-        if top_artist:
-            # Add separator line
-            separator3 = tk.Frame(main_frame, height=2, bg=OVERLAY_TEXT_COLOR)
-            separator3.pack(fill="x", padx=scl(0), pady=(scl(10), scl(10)))
-            
-            # Top Artist Header (singular)
-            artists_header = tk.Label(main_frame, text="MOST PLAYED ARTIST:", 
-                                     font=("Arial", scl(35), "bold underline"),
-                                     fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, 
-                                     justify="center")
-            artists_header.pack(pady=(0, scl(10)))
-            
-            # Display the single top artist
-            artists_label = tk.Label(main_frame, text=f"{top_artist} ({top_artist_count})", 
-                                    font=("Arial", scl(28), "normal"),
-                                    fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                                    justify="center")
-            artists_label.pack(pady=(0, scl(10)))
-
-        # Update window positioning to use the main frame
-        end_message_window.update_idletasks()
-        screen_width = end_message_window.winfo_screenwidth()
-        screen_height = end_message_window.winfo_screenheight()
-        window_width = main_frame.winfo_reqwidth()
-        window_height = main_frame.winfo_reqheight()
-        start_x = screen_width - window_width - scl(60)
-        start_y = screen_height
-        end_x = screen_width - window_width - scl(60)
-        end_y = scl(10)
-
-        root.update_idletasks()
-        end_message_window.geometry(f"+{start_x}+{start_y}")
-        root.update_idletasks()
-        root.after(1, lambda: animate_window(end_message_window, end_x, end_y, delay=5, steps=2000, fade=None))
+        end_message_window = True
+        _end_msg_slide_in()
         save_session_history(create_text_file=True, silent=False)
         _push_web_toggles()
-    except AttributeError as e:
+    except Exception as e:
         print("Error displaying end session message:", e)
-        pass
 
 def on_closing():
     pass
@@ -31526,9 +33785,9 @@ POPOUT_LAYOUT_DEFAULT = [
     {"type": "widget", "id": "LIGHTNING DROPDOWN",    "colspan": 2},
     {"type": "action", "id": "lightning_start",       "colspan": 1},
     {"type": "action", "id": "lightning_variety",     "colspan": 1},
-    {"type": "widget", "id": "DIFFICULTY DROPDOWN",   "colspan": 1},
+    {"type": "widget", "id": "DIFFICULTY DROPDOWN",   "colspan": 2},
     # ── YouTube ─────────────────────────────────────────────────────────────
-    {"type": "widget", "id": "YOUTUBE DROPDOWN",      "colspan": 4},
+    {"type": "widget", "id": "YOUTUBE DROPDOWN",      "colspan": 2},
     {"type": "widget", "id": "YOUTUBE QUEUE",         "colspan": 1},
     # ── Search ──────────────────────────────────────────────────────────────
     {"type": "widget", "id": "SEARCH ENTRY",          "colspan": 2},
@@ -34081,8 +36340,13 @@ def _get_menu_registry():
          "tooltip": "Toggle a subtle progress bar overlay showing the current playback position."},
         {"id": "fullscreen", "icon": "⛶", "label": "Fullscreen",
          "button_label": "FULLSCREEN",
+         "command": toggle_autoplay_fullscreen,
+         "toggle": lambda: autoplay_fullscreen,
+         "tooltip": "Toggle whether the player starts in fullscreen when a track plays."},
+        {"id": "fullscreen_now", "icon": "⛶", "label": "Toggle Fullscreen Now",
+         "button_label": "FS NOW",
          "command": lambda: player.toggle_fullscreen(),
-         "tooltip": "Toggle VLC fullscreen mode."},
+         "tooltip": "Immediately toggle mpv fullscreen (same as TAB)."},
         {"id": "desktop_black", "icon": "🖥", "label": "Desktop Black",
          "button_label": "DESK.BLACK",
          "shortcut": True, "command": toggle_desktop_black_overlay,
@@ -34724,11 +36988,12 @@ def set_volume(value):
     """Sets the volume based on value input (0 to 100)."""
     global volume_level
     volume_level = int(value)
-    player.audio_set_volume(volume_level)  # Adjust VLC volume
-    if stream_player.is_playing():
+    if currently_streaming:
         volume_adjustment = fixed_current_round.get("volume_adjustment", 0) if fixed_current_round else 0
         _stream_volume_level = int(volume_level * (1 + ((stream_volume_boost + volume_adjustment) / 100)))
-        stream_player.audio_set_volume(_stream_volume_level)
+        player.audio_set_volume(_stream_volume_level)
+    else:
+        player.audio_set_volume(volume_level)
     if music_loaded:
         if disable_video_audio or volume_level == 0:
             vol = 0.0
@@ -34818,6 +37083,17 @@ next_button = tk.Button(controls_frame, text="⏭", command=play_next, bg="black
 next_button.pack(side="left", padx=0)
 
 autoplay_toggle = 0
+autoplay_fullscreen = True
+
+def toggle_autoplay_fullscreen():
+    global autoplay_fullscreen
+    autoplay_fullscreen = not autoplay_fullscreen
+    try:
+        player.set_fullscreen(autoplay_fullscreen)
+    except Exception:
+        pass
+    save_config()
+
 def _update_autoplay_button():
     if special_repeat_track_mode:
         autoplay_button.configure(text="🔂", fg="green")
@@ -35056,7 +37332,7 @@ def on_press(key):
                 return
             if disable_shortcuts:
                 pass
-            elif grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values()):
+            elif grow_overlay_boxes:
                 move_amount = 10  # pixels per key press
                 if key == key.up:
                     move_grow_position(0, -move_amount)
@@ -35126,7 +37402,7 @@ def on_release(key):
                     search(True, add=playlist.get("infinite", False))
             else:
                 if isinstance(key, keyboard.Key):
-                    if not (grow_overlay_boxes and any(box.winfo_exists() for box in grow_overlay_boxes.values())):
+                    if not grow_overlay_boxes:
                         if key == keyboard.Key.right:
                             play_next()
                         elif key == keyboard.Key.left:
@@ -35239,8 +37515,7 @@ def on_mouse_click(x, y, button, pressed):
     if pressed:
         if button == mouse.Button.left:
             mouse_left_pressed = True
-            if (grow_overlay_boxes and 
-                any(box.winfo_exists() for box in grow_overlay_boxes.values())):
+            if grow_overlay_boxes:
                 screen_w = root.winfo_screenwidth()
                 screen_h = root.winfo_screenheight()
                 if 0 <= x < screen_w and 0 <= y < screen_h:
@@ -35746,8 +38021,15 @@ _start_web_server()
 if LAUNCH_SCOREBOARD_ON_STARTUP and SCOREBOARD_AVAILABLE and not is_scoreboard_running():
     if os.path.isfile("scoreboard.exe"):
         subprocess.Popen(["scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-    else:
-        subprocess.Popen([sys.executable, "scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif os.path.isfile("universal_scoreboard.exe"):
+        subprocess.Popen(["universal_scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif not getattr(sys, 'frozen', False):
+        # Only use sys.executable as a Python interpreter when NOT running as a
+        # compiled exe — if frozen, sys.executable is this app, not Python.
+        if os.path.isfile("scoreboard.py"):
+            subprocess.Popen([sys.executable, "scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+        elif os.path.isfile("universal_scoreboard.py"):
+            subprocess.Popen([sys.executable, "universal_scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
 web_server.set_titles_provider(get_all_anime_titles)
 web_server.set_player_names_provider(lambda: (
     __import__('json').load(open(
@@ -35865,7 +38147,7 @@ def _handle_host_action(action: str, data: dict):
             set_autoplay_mode(max(0, min(3, int(data.get('mode', 0)))))
         elif action == 'request_state':
             web_server.push_playback_state(
-                projected_vlc_time, player.get_length(), player.is_playing(), volume_level, autoplay_toggle, bgm_volume,
+                projected_player_time, player.get_length(), player.is_playing(), volume_level, autoplay_toggle, bgm_volume,
                 bzz_modifier=bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get('sound_volume', 1.0),
                 strm_boost=stream_volume_boost
             )

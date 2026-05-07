@@ -3084,7 +3084,7 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_widen" onclick="_ctrlExtraClick('tgl_widen')">&#x25B6;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_mute" onclick="_ctrlExtraClick('tgl_mute')">Mute</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-censors" data-extra-id="tgl_censors" onclick="_ctrlExtraClick('tgl_censors')" title="Toggle censors">Censors (<span class="ctrl-censor-count">0</span>)</button>
-        <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="tgl_fullscreen" onclick="_ctrlExtraClick('tgl_fullscreen')">Fullscreen</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_fullscreen" onclick="_ctrlExtraClick('tgl_fullscreen')">Fullscreen</button>
         <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="difficulty" onclick="_ctrlExtraClick('difficulty')">Difficulty</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-shortcuts" data-extra-id="tgl_shortcuts" onclick="_ctrlExtraClick('tgl_shortcuts')" title="Toggle keyboard shortcuts">Keys</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')">Dock</button>
@@ -8120,6 +8120,7 @@ _HTML = r"""<!DOCTYPE html>
         'tgl_narrow': !!data.peek, 'tgl_widen': !!data.peek,
         'tgl_censors': !!data.censors, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock,
         'tgl_info_start': !!data.info_start, 'tgl_info_end': !!data.info_end,
+        'tgl_fullscreen': !!data.autoplay_fullscreen,
         'lt':      !!data.light_mode,
         'lt_stop': !!(data.light_mode || data.yt_queued || data.fl_queued || data.search_queued || data.fl_active),
         'lt_dice': data.light_mode === 'variety',
@@ -8266,7 +8267,7 @@ _HTML = r"""<!DOCTYPE html>
       'auto_bonus':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Auto Bonus', title: 'Automatically trigger a bonus round at the start of each theme' },
       // Toggles
       'difficulty':   { classes: 'ctrl-sect-toggle',                          html: 'Difficulty', title: 'Set playlist difficulty filter' },
-      'tgl_fullscreen':{ classes: 'ctrl-sect-toggle',                         html: 'Fullscreen', title: 'Toggle VLC fullscreen mode' },
+      'tgl_fullscreen':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Fullscreen', title: 'Toggle autoplay fullscreen' },
       'tgl_blind':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Blind',     title: 'Toggle blind mode' },
       'tgl_peek':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Peek',      title: 'Toggle peek (partial reveal)' },
       'tgl_narrow':   { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25C0;',  title: 'Narrow peek window' },
