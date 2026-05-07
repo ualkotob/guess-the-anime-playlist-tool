@@ -1152,7 +1152,7 @@ SETTINGS_SCHEMA = [
     {"key": "CLOUDFLARE_PUBLIC_URL",   "config_key": "cloudflare_public_url",   "label": "Cloudflare Public URL:",   "type": "str",      "default": "", "width": 30, "requires_cloudflared": True, "tooltip": "The public HTTPS URL for your Cloudflare tunnel (e.g. https://gta.yourdomain.com). Must match the hostname configured in the Cloudflare dashboard."},
     {"key": "HOST_PASSWORD",      "config_key": "host_password",      "label": "Host Password:",         "type": "password", "default": "", "width": 30, "requires_tunnel": True, "tooltip": "If set, entering this password on the join screen grants host view (live answer panel + metadata). Leave blank to disable."},
     # Toggles persistence
-    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, Fullscreen, and Desktop Black toggles across restarts."},
+    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, and Fullscreen toggles across restarts."},
 ]
 
 # Initialise all schema settings to their defaults at module level so they always
@@ -8801,7 +8801,6 @@ def save_config():
             "auto_info_end": auto_info_end,
             "auto_refresh_toggle": auto_refresh_toggle,
             "disable_shortcuts": disable_shortcuts,
-            "desktop_black": desktop_black_overlay is not None,
             "progress_bar_enabled": progress_bar_enabled,
             "autoplay_fullscreen": autoplay_fullscreen,
         },
@@ -8842,7 +8841,7 @@ def load_config():
     global popout_layout, popout_columns, shortcuts_config
     # Schema settings loaded via config keys below
     global OPENAI_API_KEY, selected_rules_file, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, volume_level
-    global censors_enabled, auto_info_start, auto_info_end, auto_refresh_toggle, disable_shortcuts, tutorial_shown, _restore_desktop_black, keep_set_toggles, progress_bar_enabled
+    global censors_enabled, auto_info_start, auto_info_end, auto_refresh_toggle, disable_shortcuts, tutorial_shown, keep_set_toggles, progress_bar_enabled
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -8944,7 +8943,6 @@ def load_config():
                     progress_bar_enabled = bool(_t["progress_bar_enabled"])
                 if "autoplay_fullscreen" in _t:
                     autoplay_fullscreen = bool(_t["autoplay_fullscreen"])
-                _restore_desktop_black = bool(_t.get("desktop_black", False))
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -29746,8 +29744,6 @@ def toggle_blind_round():
 #              *BLACK DESKTOP
 # =========================================
 
-desktop_black_overlay = None
-
 # ---- OST cover overlay (used during OST → answer transition) ----
 # Uses an ASS OSD overlay (same pipeline as the blind) so it always renders
 # on top of the video regardless of window z-order.
@@ -29781,28 +29777,6 @@ def _hide_ost_cover():
         _osd_command('osd-overlay', _OST_COVER_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
     except Exception:
         pass
-
-def toggle_desktop_black_overlay(toggle=None):
-    global desktop_black_overlay
-    if toggle is None:
-        toggle = desktop_black_overlay is None
-    if toggle:
-        if desktop_black_overlay and desktop_black_overlay.winfo_exists():
-            desktop_black_overlay.destroy()
-        desktop_black_overlay = tk.Toplevel()
-        desktop_black_overlay.overrideredirect(True)
-        desktop_black_overlay.configure(bg="black")
-        desktop_black_overlay.attributes("-topmost", False)  # Push to back
-        desktop_black_overlay.lower()  # Lower below other windows
-
-        # Set geometry to cover the entire screen
-        screen_w = desktop_black_overlay.winfo_screenwidth()
-        screen_h = desktop_black_overlay.winfo_screenheight()
-        desktop_black_overlay.geometry(f"{screen_w}x{screen_h}+0+0")
-    else:
-        if desktop_black_overlay and desktop_black_overlay.winfo_exists():
-            desktop_black_overlay.destroy()
-            desktop_black_overlay = None
 
 # =========================================
 #              *CENSOR BOXES
@@ -36347,12 +36321,6 @@ def _get_menu_registry():
          "button_label": "FS NOW",
          "command": lambda: player.toggle_fullscreen(),
          "tooltip": "Immediately toggle mpv fullscreen (same as TAB)."},
-        {"id": "desktop_black", "icon": "🖥", "label": "Desktop Black",
-         "button_label": "DESK.BLACK",
-         "shortcut": True, "command": toggle_desktop_black_overlay,
-         "toggle":  lambda: desktop_black_overlay is not None,
-         "tooltip": "Covers the desktop with a black screen behind all windows. Useful for hiding the desktop during a session."},
-        "---",
         {"id": "enable_shortcuts", "icon": "", "label": "Enable Shortcuts",
          "button_label": "SHORTCUTS",
          "shortcut": True, "command": toggle_disable_shortcuts,
@@ -39482,10 +39450,6 @@ root.after(3000, check_for_updates_on_startup)
 root.after(3000, check_for_scoreboard_update_on_startup)
 root.after(1000, update_living_playlists)
 root.after(500, check_download_ui_updates)  # Start checking for download UI updates
-
-# Restore desktop black overlay if it was active at last save
-if _restore_desktop_black:
-    root.after(1500, lambda: toggle_desktop_black_overlay(True))
 
 def on_app_close():
     """Safely destroy hidden root-parented widgets before closing to avoid TclError."""
