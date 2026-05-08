@@ -4,7 +4,7 @@
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "19.0"  # Update this when making releases
+APP_VERSION = "19.1"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -562,6 +562,7 @@ def _mpv_opts(**extra):
         input_vo_keyboard=False,
         osc=False,
         force_media_title='Guess the Anime! - Playlist Tool',
+        auto_window_resize='no',
         **extra
     )
 
@@ -1152,7 +1153,7 @@ SETTINGS_SCHEMA = [
     {"key": "CLOUDFLARE_PUBLIC_URL",   "config_key": "cloudflare_public_url",   "label": "Cloudflare Public URL:",   "type": "str",      "default": "", "width": 30, "requires_cloudflared": True, "tooltip": "The public HTTPS URL for your Cloudflare tunnel (e.g. https://gta.yourdomain.com). Must match the hostname configured in the Cloudflare dashboard."},
     {"key": "HOST_PASSWORD",      "config_key": "host_password",      "label": "Host Password:",         "type": "password", "default": "", "width": 30, "requires_tunnel": True, "tooltip": "If set, entering this password on the join screen grants host view (live answer panel + metadata). Leave blank to disable."},
     # Toggles persistence
-    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, and Fullscreen toggles across restarts."},
+    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, Fullscreen, and Always On Top toggles across restarts."},
 ]
 
 # Initialise all schema settings to their defaults at module level so they always
@@ -3787,7 +3788,7 @@ def update_metadata():
                     left_column.insert(tk.END, f"{get_format(data) or 'N/A'}", "white") 
                 else:
                     left_column.insert(tk.END, "EPISODES: ", "bold")
-                    left_column.insert(tk.END, f"{data.get("episodes") or "Airing"}", "white")
+                    left_column.insert(tk.END, f"{get_episode_display(data, suffix='')}", "white")
                     left_column.insert(tk.END, f" TYPE: ", "bold")
                     left_column.insert(tk.END, f"{get_format(data) or 'N/A'}", "white") 
                 add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
@@ -4003,11 +4004,7 @@ def update_popout_currently_playling(data, clear=False):
             members = f"Views: {data.get('view_count'):,}" if data.get('view_count') else ""
             score = f"Likes: {data.get('like_count'):,}" if data.get('like_count') else ""
         else:
-            episodes =  data.get("episodes")
-            if not episodes:
-                episodes = "Airing"
-            else:
-                episodes = str(episodes) + " Episodes"
+            episodes = get_episode_display(data)
             _members_num = _safe_int(data.get("members", 0), 0)
             _pop_display = data.get("popularity") or "N/A"
             members = f"Members: {_members_num:,} (#{_pop_display})"
@@ -8803,6 +8800,7 @@ def save_config():
             "disable_shortcuts": disable_shortcuts,
             "progress_bar_enabled": progress_bar_enabled,
             "autoplay_fullscreen": autoplay_fullscreen,
+            "mpv_always_on_top": mpv_always_on_top,
         },
     }
     
@@ -8943,6 +8941,12 @@ def load_config():
                     progress_bar_enabled = bool(_t["progress_bar_enabled"])
                 if "autoplay_fullscreen" in _t:
                     autoplay_fullscreen = bool(_t["autoplay_fullscreen"])
+                if "mpv_always_on_top" in _t:
+                    mpv_always_on_top = bool(_t["mpv_always_on_top"])
+                    try:
+                        player._p.ontop = mpv_always_on_top
+                    except Exception:
+                        pass
     except Exception as e:
         os.remove(CONFIG_FILE)
         print(f"Error loading config: {e}")
@@ -13393,50 +13397,6 @@ LIGHT_ROUND_ANSWER_LENGTH_DEFAULT = 8
 light_round_answer_length = 8
 light_mode = None
 light_modes = {
-    "regular":{
-        "icon":"🗲",
-        "desc":(
-            "Opening/Ending starts at a random point."
-        )
-    },
-    "clip":{
-        "icon":"🎬",
-        "desc":(
-            "You will be shown a random clip or trailer."
-        )
-    },
-    "peek":{
-        "icon":"👀",
-        "desc":(
-            "Opening/Ending starts at a random point muted.\n"
-            "Only a small part of the screen is shown, and grows or moves over time."
-        )
-    },
-    "frame":{
-        "icon":"📷",
-        "desc":(
-            "You will be shown 4 different frames from the Opening/Ending.\n"
-            "Each frame will be shown one at a time."
-        )
-    },
-    "cover":{
-        "icon":"📚",
-        "desc":(
-            "You will be shown the cover of the anime, revealed over time."
-        )
-    },
-    "image":{
-        "icon":"🌐",
-        "desc":(
-            "You will be shown a random image, revealed over time."
-        )
-    },
-    "character":{
-        "icon":"👤",
-        "desc":(
-            "You will be shown 4 characters revealed over time."
-        )
-    },
     "blind":{
         "icon":"👁",
         "desc":(
@@ -13444,75 +13404,10 @@ light_modes = {
             "You will only be able to hear the music."
         )
     },
-    "title":{
-        "icon":"𝕋",
+    "c. name":{
+        "icon":"🔤",
         "desc":(
-            "You will need to guess the title as letters are randomly placed in position."
-        )
-    },
-    "synopsis":{
-        "icon":"📰",
-        "desc":(
-            "You will be shown a part of the synopsis.\n"
-            "It will be revealed word by word over time."
-        )
-    },
-    "trivia":{
-        "icon":"❓",
-        "desc":(
-            "You will be asked a trivia question about an anime.\n"
-            "It will be revealed word by word over time."
-        )
-    },
-    "emoji":{
-        "icon":"😄",
-        "desc":(
-            "You are shown 6 emojis over time."
-        )
-    },
-    "song":{
-        "icon":"🎵",
-        "desc":(
-            "You will be shown song information for the Opening/Ending.\n"
-            "It will be revealed over time, and the song plays the last few seconds."
-        )
-    },
-    "ost":{
-        "icon":"💿",
-        "desc":(
-            "You hear part of the anime's OST."
-        )
-    },
-    "clues":{
-        "icon":"🔍",
-        "desc":(
-            "You will be shown various stats."
-        )
-    },
-    "tags":{
-        "icon":"🔖",
-        "desc":(
-            "You will be show detailed tags revealed over time."
-        )
-    },
-    "episodes":{
-        "icon":"📺",
-        "desc":(
-            "You will be shown 6 episode titles.\n"
-            "They will be revealed over time."
-        )
-    },
-    "names":{
-        "icon":"🎭",
-        "desc":(
-            "You will be shown 6 character names.\n"
-            "They will be revealed over time."
-        )
-    },
-    "c. reveal":{
-        "icon":"✨",
-        "desc":(
-            "You will be shown a character, revealed over time."
+            "You will need to guess the character name as letters are randomly placed in position."
         )
     },
     "c. profile":{
@@ -13522,10 +13417,119 @@ light_modes = {
             "Image will be revealed in last few seconds."
         )
     },
-    "c. name":{
-        "icon":"🔤",
+    "c. reveal":{
+        "icon":"✨",
         "desc":(
-            "You will need to guess the character name as letters are randomly placed in position."
+            "You will be shown a character, revealed over time."
+        )
+    },
+    "character":{
+        "icon":"👤",
+        "desc":(
+            "You will be shown 4 characters revealed over time."
+        )
+    },
+    "clip":{
+        "icon":"🎬",
+        "desc":(
+            "You will be shown a random clip or trailer."
+        )
+    },
+    "clues":{
+        "icon":"🔍",
+        "desc":(
+            "You will be shown various stats."
+        )
+    },
+    "cover":{
+        "icon":"📚",
+        "desc":(
+            "You will be shown the cover of the anime, revealed over time."
+        )
+    },
+    "emoji":{
+        "icon":"😄",
+        "desc":(
+            "You are shown 6 emojis over time."
+        )
+    },
+    "episodes":{
+        "icon":"📺",
+        "desc":(
+            "You will be shown 6 episode titles.\n"
+            "They will be revealed over time."
+        )
+    },
+    "frame":{
+        "icon":"📷",
+        "desc":(
+            "You will be shown 4 different frames from the Opening/Ending.\n"
+            "Each frame will be shown one at a time."
+        )
+    },
+    "image":{
+        "icon":"🌐",
+        "desc":(
+            "You will be shown a random image, revealed over time."
+        )
+    },
+    "names":{
+        "icon":"🎭",
+        "desc":(
+            "You will be shown 6 character names.\n"
+            "They will be revealed over time."
+        )
+    },
+    "ost":{
+        "icon":"💿",
+        "desc":(
+            "You hear part of the anime's OST."
+        )
+    },
+    "peek":{
+        "icon":"👀",
+        "desc":(
+            "Opening/Ending starts at a random point muted.\n"
+            "Only a small part of the screen is shown, and grows or moves over time."
+        )
+    },
+    "regular":{
+        "icon":"🗲",
+        "desc":(
+            "Opening/Ending starts at a random point."
+        )
+    },
+    "song":{
+        "icon":"🎵",
+        "desc":(
+            "You will be shown song information for the Opening/Ending.\n"
+            "It will be revealed over time, and the song plays the last few seconds."
+        )
+    },
+    "synopsis":{
+        "icon":"📰",
+        "desc":(
+            "You will be shown a part of the synopsis.\n"
+            "It will be revealed word by word over time."
+        )
+    },
+    "tags":{
+        "icon":"🔖",
+        "desc":(
+            "You will be show detailed tags revealed over time."
+        )
+    },
+    "title":{
+        "icon":"𝕋",
+        "desc":(
+            "You will need to guess the title as letters are randomly placed in position."
+        )
+    },
+    "trivia":{
+        "icon":"❓",
+        "desc":(
+            "You will be asked a trivia question about an anime.\n"
+            "It will be revealed word by word over time."
         )
     },
     "variety":{
@@ -14724,30 +14728,26 @@ def update_light_round(time):
                 toggle_song_overlay(show_title=time_left<=show_title_time, show_artist=time_left<=show_artist_time, show_theme=time_left<=show_slug_time, show_music=time_left<=show_music_time)
                 player.audio_set_mute(time_left > show_music_time)
                 play_background_music(time_left > show_music_time)
-            elif clues_overlay:
+            elif _clues_cell_values:
                 data = currently_playing.get("data")
                 if time_left <= 15:
-                    tags = "\n".join(get_tags(data))
-                    val_size = 60 - max(0, (tags.count('\n') - 5) * 5)
-                    clues_overlay_labels["Tags"].config(text=tags, font=("Arial", scl(val_size)))
+                    _clues_cell_values["Tags"] = "\n".join(get_tags(data))
                 else:
-                    clues_overlay_labels["Tags"].config(text=f"in...{round(time_left-15)}")
+                    _clues_cell_values["Tags"] = f"in...{round(time_left-15)}"
                 if time_left <= 10:
-                    clues_overlay_labels["Episodes"].config(text=str(data.get("episodes") or "Airing"))
-                    clues_overlay_labels["Score"].config(text=f"{data.get('score')}\n#{data.get('rank')}")
+                    _clues_cell_values["Episodes"] = get_episode_display(data, suffix="")
+                    _clues_cell_values["Score"]    = f"{data.get('score')}\n#{data.get('rank')}"
                     _members_num = _safe_int(data.get('members', 0), 0)
-                    clues_overlay_labels["Members"].config(text=f"{_members_num:,}\n#{data.get('popularity') or 'N/A'}")
+                    _clues_cell_values["Members"]  = f"{_members_num:,}\n#{data.get('popularity') or 'N/A'}"
                 else:
-                    clues_overlay_labels["Episodes"].config(text=f"in...{round(time_left-10)}")
-                    clues_overlay_labels["Score"].config(text=f"in...{round(time_left-10)}")
-                    clues_overlay_labels["Members"].config(text=f"in...{round(time_left-10)}")
+                    _clues_cell_values["Episodes"] = f"in...{round(time_left-10)}"
+                    _clues_cell_values["Score"]    = f"in...{round(time_left-10)}"
+                    _clues_cell_values["Members"]  = f"in...{round(time_left-10)}"
                 if time_left <= 5:
-                    theme = data.get("slug")
-                    song = get_song_string(data)
-                    song_string = f"{theme}: {song}"
-                    clues_overlay_labels["Song"].config(text=song_string)
+                    _clues_cell_values["Song"] = f"{data.get('slug')}: {get_song_string(data)}"
                 else:
-                    clues_overlay_labels["Song"].config(text=f"SONG in...{round(time_left-5)}")
+                    _clues_cell_values["Song"] = f"SONG in...{round(time_left-5)}"
+                _draw_clues_canvas()
             elif synopsis_start_index is not None:
                 answer_time = 8
                 if light_trivia_answer:
@@ -14859,6 +14859,8 @@ def update_light_round(time):
                 reveal_num = min(4, (int(light_round_length - (time_left)) // (light_round_length // 4)) + 1)
                 toggle_character_overlay(num_characters=reveal_num)
                 set_frame_number(f"{reveal_num}/{4}", inverse=character_round_answer)
+            elif character_image_overlay:
+                _update_character_image_overlay()
             elif character_pixel_overlay:
                 total_steps = len(character_pixel_images)
                 step_num = min(total_steps-1, (int(light_round_length - (time_left)) // (light_round_length // total_steps)))
@@ -15046,18 +15048,11 @@ def update_light_round(time):
                         player.audio_set_mute(False)
                         set_volume(volume_level)
                         _mismatch_active = True
-                        _mnx, _mny, _mnw, _mnh = _get_mpv_window_rect()
-                        _mn_fs = max(scl(100), int(_mnh * 0.15)) if _mnh else scl(100)
-                        spawn_pulsating_music_note(_mnx + _mnw // 2, _mny + _mnh // 2, font_size=_mn_fs)
+                        spawn_pulsating_music_note()
                         set_black_screen(False)
                         top_info("MISMATCHED VISUALS")
                         set_frame_number("GUESS BY MUSIC ONLY")
                         update_light_round_number()
-                        if pulsating_note_window:
-                            try:
-                                pulsating_note_window.attributes("-topmost", True)
-                            except Exception:
-                                pass
                     _cur_fn = currently_playing.get("filename")
                     def _theme_worker():
                         theme_path = directory_files.get(get_mismatched_theme())
@@ -15224,7 +15219,8 @@ def update_light_round(time):
                     if length > 0:
                         stream_start_time = get_stream_start_time(length)
                     else:
-                        stream_start_time = fixed_current_round.get("clip_start_time", 0) if fixed_current_round else 0
+                        _cst = fixed_current_round.get("clip_start_time") if fixed_current_round else None
+                        stream_start_time = max(0, _cst) if _cst is not None else 0
                     test_print(f"Length: {length} | Stream Start Time: {stream_start_time}")
                     # player is already loading the stream (set_media called in stream_url)
                     test_print(currently_streaming)
@@ -15240,7 +15236,8 @@ def update_light_round(time):
                         elif player.is_playing() and player.get_length() > 0:
                             # If length was unknown when stream started, calculate start time now
                             actual_length = player.get_length() / 1000
-                            if stream_start_time == 0 and not (fixed_current_round and fixed_current_round.get("clip_start_time")):
+                            _cst = fixed_current_round.get("clip_start_time") if fixed_current_round else None
+                            if stream_start_time == 0 and not (fixed_current_round and _cst is not None):
                                 stream_start_time = get_stream_start_time(actual_length)
                                 test_print(f"Deferred stream start time: {stream_start_time} (length={actual_length})")
                             def stream_overlay():
@@ -15488,7 +15485,7 @@ def light_round_transition():
     set_countdown()
     if web_server.is_running():
         web_server.clear_timer()
-    toggle_title_popup(False)
+    toggle_title_popup(False, instant=True)
     set_black_screen(True)
     root.after(500, play_next)
 
@@ -16078,208 +16075,441 @@ def update_frame_light_round(currently_playing_filename):
 #          *CLUES LIGHTNING ROUND
 # =========================================
 
-clues_overlay = None  # Store the overlay window
-clues_overlay_labels = {}  # Store references to value labels by name
-def toggle_clues_overlay(destroy=False, quick_destroy=False, _saved_labels=None):
-    global clues_overlay, clues_overlay_labels
+_clues_img_overlay = None
+_clues_cell_values = {}   # key → text string currently displayed
+
+
+def _draw_clues_canvas():
+    """Render the current _clues_cell_values as an mpv PIL image overlay."""
+    global _clues_img_overlay
+    try:
+        osd_w = int(player._p.osd_width  or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not osd_w or not osd_h:
+        return
+
+    modifier = min(osd_w / 2560, osd_h / 1440)
+    def fs(pt): return max(6, round(pt * modifier * 1.15))
+
+    try:
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_BACKGROUND_COLOR)
+        bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_TEXT_COLOR)
+        fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        bg_r, bg_g, bg_b = 0,   0,   0
+        fg_r, fg_g, fg_b = 255, 255, 255
+
+    box_w   = round(osd_w * 0.70)
+    box_h   = round(osd_h * 0.80)
+    box_x   = (osd_w - box_w) // 2
+    box_y   = (osd_h - box_h) // 2
+    gap     = max(2, round(8  * modifier))
+    pad     = max(4, round(16 * modifier))
+    border  = max(1, round(4  * modifier))
+    title_fs = fs(58)
+    title_fnt = _get_ass_font(title_fs, bold=True)
+
+    n_cols   = 3
+    col_w    = (box_w - gap * (n_cols - 1)) // n_cols
+    song_h   = round(box_h * 0.22)
+    top_h    = box_h - song_h - gap
+    # Row 0 is single-line values only — give it just enough height for title + one value line
+    val_fs_approx = fs(70)
+    row0_h   = title_fs + max(1, round(2 * modifier)) + max(1, round(2 * modifier)) + max(2, round(4 * modifier)) + val_fs_approx + 2 * pad
+    row0_h   = min(row0_h, round(top_h * 0.34))   # cap at 34% so it can't dominate
+    rows12_h = (top_h - row0_h - gap * 2) // 2    # rows 1 and 2 share the rest equally
+
+    def cell_rect(row, col, colspan=1, rowspan=1):
+        x = box_x + col * (col_w + gap)
+        w = col_w * colspan + gap * (colspan - 1)
+        if row == 0:
+            y = box_y
+            h = row0_h
+        elif row == 1:
+            y = box_y + row0_h + gap
+            h = rows12_h * rowspan + gap * (rowspan - 1)
+        elif row == 2:
+            y = box_y + row0_h + gap + rows12_h + gap
+            h = rows12_h
+        else:                         # song row
+            y = box_y + top_h + gap
+            h = song_h
+        return x, y, w, h
+
+    # (key, row, col, colspan, rowspan, title_label)
+    CELLS = [
+        ("Type",     0, 0, 1, 1, "TYPE"),
+        ("Source",   0, 1, 1, 1, "SOURCE"),
+        ("Episodes", 0, 2, 1, 1, "EPISODES"),
+        ("Season",   1, 0, 1, 1, "SEASON"),
+        ("Studio",   1, 1, 1, 1, "STUDIO"),
+        ("Tags",     1, 2, 1, 2, "TAGS"),
+        ("Score",    2, 0, 1, 1, "SCORE"),
+        ("Members",  2, 1, 1, 1, "MEMBERS"),
+        ("Song",     3, 0, 3, 1, None),
+    ]
+
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw   = ImageDraw.Draw(canvas)
+    line_gap = max(1, round(2 * modifier))
+
+    for key, row, col, colspan, rowspan, title_label in CELLS:
+        cx, cy, cw, ch = cell_rect(row, col, colspan, rowspan)
+        value = _clues_cell_values.get(key, "")
+
+        draw.rectangle([cx, cy, cx + cw - 1, cy + ch - 1],
+                       fill=(bg_r, bg_g, bg_b, 204),
+                       outline=(fg_r, fg_g, fg_b, 200), width=border)
+
+        iy = cy + pad
+        inner_w = cw - 2 * pad
+
+        # Title (bold, centred, underlined)
+        if title_label and title_fnt:
+            try:
+                tw = round(title_fnt.getlength(title_label))
+            except AttributeError:
+                tw = len(title_label) * title_fs // 2
+            tx = cx + (cw - tw) // 2
+            draw.text((tx, iy), title_label,
+                      font=title_fnt, fill=(fg_r, fg_g, fg_b, 255))
+            ul_y = iy + title_fs + max(1, round(2 * modifier))
+            ul_h = max(1, round(2 * modifier))
+            draw.rectangle([tx, ul_y, tx + tw - 1, ul_y + ul_h - 1],
+                           fill=(fg_r, fg_g, fg_b, 220))
+            iy = ul_y + ul_h + max(2, round(4 * modifier))
+
+        # Value (regular, auto-sized, height-clamped)
+        if value:
+            lines  = value.split('\n')
+            val_pt = 70 - max(0, (len(lines) - 5) * 5)
+            val_fs = fs(val_pt)
+            remaining_h = cy + ch - pad - iy
+            # Shrink until all lines fit vertically
+            while val_fs > 6:
+                total_text_h = len(lines) * val_fs + max(0, len(lines) - 1) * line_gap
+                if total_text_h <= remaining_h:
+                    break
+                val_fs = max(6, val_fs - 1)
+            val_fnt = _get_ass_font(val_fs, bold=False)
+            if val_fnt:
+                total_text_h  = len(lines) * val_fs + max(0, len(lines) - 1) * line_gap
+                text_y        = iy + max(0, (remaining_h - total_text_h) // 2)
+                for line in lines:
+                    try:
+                        lw = round(val_fnt.getlength(line))
+                    except AttributeError:
+                        lw = len(line) * val_fs // 2
+                    fnt_use, lw_use = val_fnt, lw
+                    if lw > inner_w and line:
+                        scaled_fs = max(6, round(val_fs * inner_w / lw))
+                        fnt_use = _get_ass_font(scaled_fs, bold=False)
+                        try:
+                            lw_use = round(fnt_use.getlength(line))
+                        except AttributeError:
+                            lw_use = len(line) * scaled_fs // 2
+                    draw.text((cx + (cw - lw_use) // 2, text_y), line,
+                              font=fnt_use, fill=(fg_r, fg_g, fg_b, 255))
+                    text_y += val_fs + line_gap
+
+    if _clues_img_overlay is None:
+        _clues_img_overlay = player._p.create_image_overlay()
+    _clues_img_overlay.update(canvas)
+
+
+def toggle_clues_overlay(destroy=False, **_ignored):
+    """Show or hide the clues lightning-round OSD (mpv PIL image overlay)."""
+    global _clues_img_overlay, _clues_cell_values
 
     if destroy:
-        if clues_overlay:
-            clues_overlay.destroy()
-        clues_overlay = None
-        clues_overlay_labels = {}
+        _clues_cell_values = {}
+        if _clues_img_overlay is not None:
+            try:
+                _clues_img_overlay.remove()
+            except Exception:
+                pass
+            _clues_img_overlay = None
         return
 
-    if quick_destroy:
-        _saved = {k: lbl.cget("text") for k, lbl in clues_overlay_labels.items()}
-        if clues_overlay:
-            clues_overlay.destroy()
-        clues_overlay = None
-        clues_overlay_labels = {}
-        toggle_clues_overlay(_saved_labels=_saved)
-        return
+    if _clues_cell_values:
+        return  # already visible
 
     data = currently_playing.get("data")
-    if not data or clues_overlay:
+    if not data:
         return
 
-    if _saved_labels is None:
-        _saved_labels = {}
-
-    # Prepare always-visible values
-    type_ = get_format(data)
-    source = data.get("source", "")
-    season = data.get('season', "").replace(" ", "\n")
-    studio = "\n".join(data.get("studios", []))
-    song = get_song_string(data)
-
-    mx, my, mw, mh = _get_mpv_window_rect()
-    _ws_mod = min(mw / 2560, mh / 1440)
-    def ws(n): return max(1, int(n * _ws_mod))
-
-    overlay_width = round(mw * 0.7)
-    overlay_height = round(mh * 0.8)
-    x = mx + (mw - overlay_width) // 2
-    y = my + (mh - overlay_height) // 2
-
-    clues_overlay = tk.Toplevel(root)
-    clues_overlay.overrideredirect(True)
-    clues_overlay.attributes("-topmost", True)
-    clues_overlay.attributes("-alpha", 0.8)
-    clues_overlay.configure(bg=OVERLAY_BACKGROUND_COLOR)
-    clues_overlay.geometry(f"{overlay_width}x{overlay_height}+{x}+{y}")
-
-    # Grid layout
-    clues_overlay.grid_columnconfigure(0, weight=1)
-    clues_overlay.grid_columnconfigure(1, weight=1)
-    clues_overlay.grid_columnconfigure(2, weight=1)
-    clues_overlay.grid_rowconfigure(0, weight=1)
-    clues_overlay.grid_rowconfigure(1, weight=1)
-    clues_overlay.grid_rowconfigure(2, weight=1)
-    clues_overlay.grid_rowconfigure(3, weight=1)
-
-    def create_box(row, column, title, value, key, columnspan=1, rowspan=1):
-        # On rebuild, restore previously revealed text
-        display_value = _saved_labels.get(key, value)
-        frame = tk.Frame(clues_overlay, bg=OVERLAY_BACKGROUND_COLOR, padx=ws(20), pady=ws(20),
-                         highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=ws(4))
-        frame.grid(row=row, column=column, columnspan=columnspan, rowspan=rowspan,
-                   sticky="nsew", padx=ws(10), pady=ws(10))
-        if title:
-            tk.Label(frame, text=title.upper(), font=("Arial", ws(50), "bold", "underline"),
-                     fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR).pack(anchor="center")
-        val_size = 70 - max(0, (display_value.count('\n') - 5) * 5)
-        label = tk.Label(frame, text=display_value, font=("Arial", ws(val_size)),
-                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR,
-                         wraplength=((overlay_width // 3) * columnspan - ws(10)), justify="center")
-        label.pack(fill="both", expand=True)
-        clues_overlay_labels[key] = label
-
-    create_box(0, 0, "Type", type_, "Type")
-    create_box(0, 1, "Source", source, "Source")
-    create_box(0, 2, "Episodes", "", "Episodes")
-    create_box(1, 0, "Season", season, "Season")
-    create_box(1, 1, "Studio", studio, "Studio")
-    create_box(1, 2, "Tags", "", "Tags", rowspan=2)
-    create_box(2, 0, "Score", "", "Score")
-    create_box(2, 1, "Members", "", "Members")
-    create_box(3, 0, None, "", "Song", columnspan=3)
-
-    _register_overlay_for_tracking(clues_overlay, overlay_width, overlay_height,
-                                   on_size_change=lambda: toggle_clues_overlay(quick_destroy=True))
+    _clues_cell_values = {
+        "Type":     get_format(data),
+        "Source":   data.get("source", ""),
+        "Season":   data.get("season", "").replace(" ", "\n"),
+        "Studio":   "\n".join(data.get("studios", [])),
+        "Episodes": "",
+        "Tags":     "",
+        "Score":    "",
+        "Members":  "",
+        "Song":     "",
+    }
+    _draw_clues_canvas()
 
 # =========================================
 #          *SONG LIGHTNING ROUND
 # =========================================
 
-song_overlay_boxes = {}
+song_overlay_boxes = {}   # kept truthy {"active":True} while active — game-loop guard relies on it
+_song_img_overlay = None
+_song_anim_after = None
+_song_base_cache = [None, None, 0, 0]   # [state_key, PIL Image, note_x, note_y]
+_song_note_color = [None]
+_song_note_px_cache = {}          # px → PIL font
 _song_last_flags = {"show_title": True, "show_artist": True, "show_theme": True, "show_music": True}
 
+
+def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
+    """Render the static song boxes (theme / title / artist) to a full OSD RGBA canvas."""
+    from PIL import Image, ImageDraw
+    modifier = min(osd_w / 2560, osd_h / 1440)
+    def fs(pt): return max(6, round(pt * modifier))
+
+    try:
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_BACKGROUND_COLOR)
+        bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_TEXT_COLOR)
+        fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        bg_r, bg_g, bg_b = 0, 0, 0
+        fg_r, fg_g, fg_b = 255, 255, 255
+
+    bg   = (bg_r, bg_g, bg_b, 217)   # ~0.85 alpha
+    fg   = (fg_r, fg_g, fg_b, 255)
+    bdr_color = fg
+
+    pad    = max(9, round(31 * modifier))
+    border = max(1, round(4  * modifier))
+    max_inner_w = round(osd_w * 0.72)
+    cx = osd_w // 2
+
+    data         = currently_playing.get("data", {})
+    slug         = format_slug(data.get("slug"))
+    song_title   = get_song_string(data, "title")
+    artist_str   = get_song_string(data, "artist_string")
+    theme_label  = format_slug(slug).upper()
+
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw   = ImageDraw.Draw(canvas)
+
+    def truncate_fit(text, font, max_w):
+        """Shorten text with ellipsis until it fits within max_w pixels."""
+        bb = draw.textbbox((0, 0), text, font=font)
+        if bb[2] - bb[0] <= max_w:
+            return text, bb
+        t = text
+        while len(t) > 1:
+            t = t[:-1]
+            candidate = t.rstrip() + "\u2026"
+            bb = draw.textbbox((0, 0), candidate, font=font)
+            if bb[2] - bb[0] <= max_w:
+                return candidate, bb
+        return "\u2026", draw.textbbox((0, 0), "\u2026", font=font)
+
+    def draw_box(header, body, y_top, hdr_fs_pt, body_fs_pt, body_fs_min_pt):
+        hdr_font = _get_ass_font(fs(hdr_fs_pt), bold=True)
+        if not hdr_font:
+            return
+        # Header measurement
+        hb = draw.textbbox((0, 0), header, font=hdr_font)
+        hw = hb[2] - hb[0]
+        hh = hb[3] - hb[1]
+        # Body: reduce font until width fits, then truncate as last resort
+        body_font = None
+        bb = (0, 0, 0, 0)
+        bw = bh = 0
+        if body:
+            bfs     = fs(body_fs_pt)
+            bfs_min = fs(body_fs_min_pt)
+            while bfs >= bfs_min:
+                bf = _get_ass_font(bfs, bold=False)
+                if bf:
+                    b = draw.textbbox((0, 0), body, font=bf)
+                    if b[2] - b[0] <= max_inner_w:
+                        body_font = bf
+                        bb = b
+                        bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+                        break
+                bfs = max(bfs_min, bfs - 2)
+            if body_font is None:
+                body_font = _get_ass_font(bfs_min, bold=False)
+                if body_font:
+                    body, bb = truncate_fit(body, body_font, max_inner_w)
+                    bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+            else:
+                # Even when it fitted, save adjusted bb for accurate positioning
+                body, bb = truncate_fit(body, body_font, max_inner_w)
+                bw, bh = bb[2] - bb[0], bb[3] - bb[1]
+        # Underline bar
+        ul_gap = max(2, round(3  * modifier))
+        ul_h   = max(1, round(3  * modifier))
+        # Box geometry
+        content_h = hh + ul_gap + ul_h + (pad + bh if body_font and body else 0)
+        box_h     = content_h + pad * 2
+        box_w     = min(max(hw, bw) + pad * 2 + border * 2, round(osd_w * 0.80))
+        bx        = cx - box_w // 2
+        by        = round(y_top)
+        # Background + border
+        draw.rectangle([bx, by, bx + box_w, by + box_h], fill=bg)
+        draw.rectangle([bx, by, bx + box_w, by + box_h], outline=bdr_color, width=border)
+        # Header — compensate bbox offsets so visual top lands at by+pad
+        hx = cx - hw // 2 - hb[0]
+        hy = by + pad - hb[1]
+        draw.text((hx, hy), header, font=hdr_font, fill=fg)
+        # Underline: use hb[3] (not hh) so it sits below the glyphs, not through them
+        ul_y = hy + hb[3] + ul_gap
+        draw.rectangle([bx + border + pad // 2, ul_y,
+                        bx + box_w - border - pad // 2, ul_y + ul_h], fill=fg)
+        # Body — compensate bbox[0]/[1] so text is visually centred inside the box
+        if body_font and body:
+            bx2 = cx - bw // 2 - bb[0]
+            by2 = by + pad + hh + ul_gap + ul_h + pad - bb[1]
+            draw.text((bx2, by2), body, font=body_font, fill=fg)
+        return bx, by, box_w, box_h
+
+    note_gap    = max(8, round(20 * modifier))
+    theme_right = round(osd_w * 0.72)   # fallback if theme box not shown
+    theme_cy    = round(osd_h * 0.32)   # fallback
+
+    if show_theme:
+        rect = draw_box(theme_label, None, osd_h * 0.25, 72, 72, 20)
+        if rect:
+            theme_right = rect[0] + rect[2] + note_gap
+            theme_cy    = rect[1] + rect[3] // 2
+    if show_title:
+        draw_box("SONG TITLE", song_title, osd_h * 0.38, 72, 140, 24)
+    if show_artist:
+        draw_box("SONG ARTIST", artist_str, osd_h * 0.62, 72, 100, 24)
+
+    return canvas, theme_right, theme_cy
+
+
 def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show_music=True, destroy=False, quick_destroy=False):
-    """Toggles the Song Lightning Round overlay with three separate boxes."""
-    global song_overlay_boxes, music_icon_label, _song_last_flags
+    """Toggles the Song Lightning Round overlay (mpv PIL image overlay)."""
+    global song_overlay_boxes, _song_img_overlay, _song_anim_after, _song_last_flags
+    global _song_base_cache, _song_note_color, _song_note_px_cache
 
-    if destroy:
-        for box in song_overlay_boxes.values():
-            if box and box.winfo_exists():
-                box.destroy()
+    if destroy or quick_destroy:
+        if _song_anim_after is not None:
+            try:
+                root.after_cancel(_song_anim_after)
+            except Exception:
+                pass
+            _song_anim_after = None
+        if _song_img_overlay is not None:
+            try:
+                _song_img_overlay.remove()
+            except Exception:
+                pass
+            _song_img_overlay = None
         song_overlay_boxes = {}
+        _song_base_cache[0] = None
+        _song_base_cache[1] = None
+        _song_note_px_cache.clear()
+        if destroy:
+            return
+        # quick_destroy: rebuild immediately with saved flags
+        toggle_song_overlay(**_song_last_flags)
         return
 
-    if quick_destroy:
-        flags = dict(_song_last_flags)
-        for box in song_overlay_boxes.values():
-            if box and box.winfo_exists():
-                box.destroy()
-        song_overlay_boxes = {}
-        toggle_song_overlay(**flags)
+    # Update flags — the running animation loop reads these each tick
+    _song_last_flags.update(show_title=show_title, show_artist=show_artist,
+                             show_theme=show_theme, show_music=show_music)
+
+    # If the loop is already running, just let it pick up the new flags
+    if _song_img_overlay is not None:
         return
 
-    # Save flags for rebuild
-    _song_last_flags = {"show_title": show_title, "show_artist": show_artist,
-                        "show_theme": show_theme, "show_music": show_music}
+    # First call: create overlay and start animation
+    _song_img_overlay = player._p.create_image_overlay()
+    song_overlay_boxes = {"active": True}
+    _song_note_color[0] = (random.randint(100, 255),
+                           random.randint(100, 255),
+                           random.randint(100, 255), 255)
+    _song_anim_start = [_wall_time()]
 
-    mx, my, mw, mh = _get_mpv_window_rect()
-    _ws_mod = min(mw / 2560, mh / 1440)
-    def ws(n): return max(1, int(n * _ws_mod))
+    def _song_step():
+        global _song_img_overlay, _song_anim_after
+        if _song_img_overlay is None:
+            return
+        flags = _song_last_flags
+        st  = flags["show_title"]
+        sa  = flags["show_artist"]
+        sth = flags["show_theme"]
+        sm  = flags["show_music"]
+        try:
+            osd_w = player._p.osd_width  or 1920
+            osd_h = player._p.osd_height or 1080
+        except Exception:
+            osd_w, osd_h = 1920, 1080
 
-    box_width = round(mw * 0.70)
+        state_key = (st, sa, sth, osd_w, osd_h)
+        if _song_base_cache[0] != state_key:
+            _song_base_cache[0] = state_key
+            _canvas, _nx, _ny = _draw_song_base(st, sa, sth, osd_w, osd_h)
+            _song_base_cache[1] = _canvas
+            _song_base_cache[2] = _nx
+            _song_base_cache[3] = _ny
 
-    # Load current song data
-    data = currently_playing.get("data", {})
-    slug = format_slug(data.get("slug"))
-    song = get_song_string(data, "title")
-    artist = get_song_string(data, "artist_string")
-    theme_label = format_slug(slug).upper()  # e.g. "OPENING 2"
+        from PIL import Image, ImageDraw
+        base = _song_base_cache[1]
+        canvas = base.copy() if (base is not None and sm) else (
+            base if base is not None else Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+        )
 
-    # Shared resize callback — same object so tracker deduplication fires it only once
-    def _song_resize_cb(): toggle_song_overlay(quick_destroy=True)
+        if sm and base is not None:
+            modifier   = min(osd_w / 2560, osd_h / 1440)
+            base_note  = max(20, round(160 * modifier))
+            max_note   = max(24, round(200 * modifier))
+            elapsed    = _wall_time() - _song_anim_start[0]
+            if not player.is_playing():
+                _song_anim_start[0] += 0.05  # freeze elapsed while paused
+            # ~1.5 second period for a full pulse cycle
+            angle      = elapsed * (2 * math.pi / 1.5)
+            px = int(base_note + math.sin(angle) * (max_note - base_note) / 2)
+            if px not in _song_note_px_cache:
+                from PIL import ImageFont
+                font = None
+                for path in ["C:/Windows/Fonts/seguiemj.ttf", "C:/Windows/Fonts/seguisym.ttf"]:
+                    try:
+                        font = ImageFont.truetype(path, px)
+                        break
+                    except Exception:
+                        pass
+                _song_note_px_cache[px] = font or _get_ass_font(px, bold=False)
+            note_font = _song_note_px_cache[px]
+            if note_font:
+                draw       = ImageDraw.Draw(canvas)
+                NOTE_TEXT  = "\U0001F3B5"
+                bbox       = draw.textbbox((0, 0), NOTE_TEXT, font=note_font)
+                nh         = bbox[3] - bbox[1]
+                nw         = bbox[2] - bbox[0]
+                note_gap   = max(8, round(30 * modifier))
+                nx         = _song_base_cache[2] + note_gap - bbox[0]
+                ny         = _song_base_cache[3] - nh // 2 - bbox[1]
+                bdr        = max(2, px // 22)
+                nc         = _song_note_color[0]
+                for dx, dy in ((-bdr, 0), (bdr, 0), (0, -bdr), (0, bdr),
+                               (-bdr, -bdr), (bdr, -bdr), (-bdr, bdr), (bdr, bdr)):
+                    draw.text((nx + dx, ny + dy), NOTE_TEXT, font=note_font, fill=(0, 0, 0, 200))
+                draw.text((nx, ny), NOTE_TEXT, font=note_font, fill=nc)
 
-    # Each box: { key: (title, text, x_offset_frac, y_frac, font_size, show?) }
-    # x_offset_frac: fraction of mw added to center (matches original screen_width//10 * x_offset)
-    boxes = {
-        "theme":  (theme_label,       None,   0.0, 0.28, ws(60),  show_theme),
-        "title":  ("SONG TITLE",      song,   0.0, 0.40, ws(120), show_title),
-        "artist": ("SONG ARTIST",     artist, 0.0, 0.65, ws(80),  show_artist),
-        "music":  ("             \n\n", None,  0.2, 0.12, ws(70),  show_music),
-    }
+        try:
+            _song_img_overlay.update(canvas)
+        except Exception:
+            _song_img_overlay = None
+            return
+        _song_anim_after = root.after(50, _song_step)
 
-    for key, (title, text, x_offset_frac, y_frac, font_size, show) in boxes.items():
-        if show:
-            if key not in song_overlay_boxes or not song_overlay_boxes.get(key) or not song_overlay_boxes[key].winfo_exists():
-                box = tk.Toplevel(root)
-                box.overrideredirect(True)
-                box.attributes("-topmost", True)
-                box.attributes("-alpha", 0.85)
-                box.configure(bg=OVERLAY_BACKGROUND_COLOR, padx=ws(20), pady=ws(20),
-                               highlightbackground=OVERLAY_TEXT_COLOR, highlightthickness=ws(4))
-
-                song_overlay_boxes[key] = box
-
-                if key == "music":
-                    # Whitespace title sizes the box; note floats centered on top
-                    title_lbl = tk.Label(box, text=title, font=("Arial", font_size, "bold"),
-                                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
-                    title_lbl.pack(anchor="center", fill="both", expand=True)
-                    _note_base = ws(160)
-                    _note_max  = ws(200)
-                    note_lbl = tk.Label(box, text="🎵", font=("Segoe UI Emoji", _note_base),
-                                        bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
-                    note_lbl.place(relx=0.5, rely=0.5, anchor="center")
-                    pulsate_music_icon(note_lbl, sizes=(_note_base, _note_max), _font="Segoe UI Emoji")
-                else:
-                    title_lbl = tk.Label(box, text=title, font=("Arial", ws(60), "bold", "underline"),
-                                         fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR)
-                    if text:
-                        title_lbl.pack(anchor="center")
-                    else:
-                        title_lbl.pack(anchor="center", fill="both", expand=True)
-                    if text:
-                        text_lbl = tk.Label(box, text=text, font=("Arial", font_size),
-                                            fg=OVERLAY_TEXT_COLOR, bg=OVERLAY_BACKGROUND_COLOR, justify="center")
-                        text_lbl.pack(fill="both", expand=True)
-                        adjust_font_size(text_lbl, box_width, base_size=font_size, min_size=ws(20))
-
-                # Measure at off-screen position (10000,10000 is safely off any screen)
-                box.geometry(f"+10000+10000")
-                box.update_idletasks()
-                window_width = box.winfo_reqwidth() or box_width
-                window_height = box.winfo_reqheight() or ws(200)
-                # For the music box: the note is placed via .place() so it doesn't
-                # contribute to winfo_reqwidth/height. Expand the window to fit it.
-                if key == "music":
-                    note_px = round(ws(200) * root.winfo_fpixels("1i") / 72.0)
-                    window_width = max(window_width, note_px + ws(40))
-                    window_height = max(window_height, note_px + ws(40))
-                y = my + int(mh * y_frac)
-                x = mx + (mw - window_width) // 2 + round(mw * x_offset_frac)
-                x = max(mx, min(x, mx + mw - window_width))  # clamp to mpv monitor
-                box.geometry(f"{window_width}x{window_height}+{x}+{y}")
-                _register_overlay_for_tracking(box, window_width, window_height,
-                                               on_size_change=_song_resize_cb)
-        elif key in song_overlay_boxes and song_overlay_boxes[key] and song_overlay_boxes[key].winfo_exists():
-            song_overlay_boxes[key].destroy()
-            song_overlay_boxes[key] = None
+    _song_step()
 
 # =========================================
 #       *TRIVIA LIGHTNING ROUND
@@ -16508,29 +16738,22 @@ def get_emoji_image(emoji_char, size=120):
         print(f"Failed to render emoji {emoji_char}: {e}")
         return None
     
-emoji_overlay_window = None
-emoji_overlay_labels = None
-emoji_overlay_frame = None
+emoji_overlay_window = None   # kept as sentinel — True when overlay active, None when not
+_emoji_img_overlay = None
 
 def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMOJIS"):
-    global emoji_overlay_window, emoji_overlay_labels, emoji_overlay_frame
+    global emoji_overlay_window, _emoji_img_overlay
 
     NUM_EMOJI_SLOTS = 6
 
-    _emx, _emy, _emw, _emh = _get_mpv_window_rect()
-    if not _emw:
-        _emx, _emy, _emw, _emh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    _ws_mod = min(_emw / 2560, _emh / 1440)
-    def ws(n): return max(1, int(n * _ws_mod))
-
-    SLOT_SIZE = ws(200)
-
     if destroy:
-        if emoji_overlay_window and emoji_overlay_window.winfo_exists():
-            emoji_overlay_window.destroy()
+        if _emoji_img_overlay is not None:
+            try:
+                _emoji_img_overlay.remove()
+            except Exception:
+                pass
+            _emoji_img_overlay = None
         emoji_overlay_window = None
-        emoji_overlay_labels = None
-        emoji_overlay_frame = None
         return
 
     if not emojis:
@@ -16540,81 +16763,121 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
     if max_emojis is not None:
         emojis = emojis[:max_emojis]
 
-    padded_emojis = emojis + [""] * (NUM_EMOJI_SLOTS - len(emojis))
+    padded_emojis = (emojis + [""] * NUM_EMOJI_SLOTS)[:NUM_EMOJI_SLOTS]
 
-    # Create overlay and labels only once
-    if not (emoji_overlay_window and emoji_overlay_window.winfo_exists()):
-        overlay_w = int(_emw * 0.7)
-        overlay_h = int(_emh * 0.35)
-        x = _emx + (_emw - overlay_w) // 2
-        y = _emy + (_emh - overlay_h) // 2
+    try:
+        osd_w = player._p.osd_width  or 1920
+        osd_h = player._p.osd_height or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
 
-        emoji_overlay_window = tk.Toplevel(root)
-        emoji_overlay_window.overrideredirect(True)
-        emoji_overlay_window.attributes("-topmost", True)
-        emoji_overlay_window.attributes("-alpha", 0.9)
-        emoji_overlay_window.configure(bg=OVERLAY_BACKGROUND_COLOR)
-        emoji_overlay_window.geometry(f"{overlay_w}x{overlay_h}+{x}+{y}")
-        _register_overlay_for_tracking(emoji_overlay_window, overlay_w, overlay_h,
-                                       on_size_change=lambda: toggle_emoji_overlay(destroy=True))
+    modifier = min(osd_w / 2560, osd_h / 1440)
+    def ws(n): return max(1, int(n * modifier))
 
-        frame = tk.Frame(
-            emoji_overlay_window,
-            bg=OVERLAY_BACKGROUND_COLOR,
-            padx=ws(20),
-            pady=ws(20),
-            highlightbackground=OVERLAY_TEXT_COLOR,
-            highlightthickness=ws(4)
-        )
-        frame.grid(row=0, column=0, sticky="nsew")
-        emoji_overlay_window.grid_rowconfigure(0, weight=1)
-        emoji_overlay_window.grid_columnconfigure(0, weight=1)
+    # Header font size — mirrors synopsis exactly: physical window mod × screen DPI → OSD pixels
+    _mx, _my, _mw_phys, _mh_phys = _get_mpv_window_rect()
+    if not _mw_phys:
+        _mw_phys, _mh_phys = osd_w, osd_h
+    _phys_mod = min(_mw_phys / 2560, _mh_phys / 1440)
+    _screen_dpi = root.winfo_fpixels('1i')
+    header_font_px = max(1, round(max(1, int(70 * _phys_mod)) * _screen_dpi / 72))
 
-        title_label = tk.Label(
-            frame,
-            text=title,
-            font=("Arial", ws(70), "bold", "underline"),
-            fg=OVERLAY_TEXT_COLOR,
-            bg=OVERLAY_BACKGROUND_COLOR,
-            anchor="w",
-            justify="left"
-        )
-        title_label.grid(row=0, column=0, sticky="w", pady=(0, ws(20)))
+    # Colours
+    try:
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_BACKGROUND_COLOR)
+        bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_TEXT_COLOR)
+        fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        bg_r, bg_g, bg_b = 0, 0, 0
+        fg_r, fg_g, fg_b = 255, 255, 255
+    bg = (bg_r, bg_g, bg_b, 230)   # 0.9 alpha — matches Toplevel alpha=0.9
+    fg = (fg_r, fg_g, fg_b, 255)
 
-        emoji_row = tk.Frame(frame, bg=OVERLAY_BACKGROUND_COLOR)
-        emoji_row.grid(row=1, column=0, sticky="nsew", padx=ws(20), pady=ws(10))
-        frame.grid_rowconfigure(1, weight=1)
-        frame.grid_columnconfigure(0, weight=1)
+    # Box geometry (matches 70% wide × 35% tall, centered)
+    box_w  = int(osd_w * 0.70)
+    box_h  = int(osd_h * 0.35)
+    box_x  = (osd_w - box_w) // 2
+    box_y  = (osd_h - box_h) // 2
+    border = ws(4)
+    pad    = ws(20)
 
-        emoji_overlay_labels = []
-        for i in range(NUM_EMOJI_SLOTS):
-            label = tk.Label(
-                emoji_row,
-                text="",
-                width=SLOT_SIZE // ws(20),
-                height=SLOT_SIZE // ws(40),
-                bg=OVERLAY_BACKGROUND_COLOR
-            )
-            label.grid(row=0, column=i, padx=ws(10), pady=ws(10), sticky="nsew")
-            emoji_row.grid_columnconfigure(i, weight=1, minsize=SLOT_SIZE)
-            emoji_overlay_labels.append(label)
-        emoji_row.grid_rowconfigure(0, weight=1, minsize=SLOT_SIZE)
-        emoji_overlay_frame = frame
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw   = ImageDraw.Draw(canvas)
 
-    # Update emoji labels
-    for i in range(NUM_EMOJI_SLOTS):
-        emoji_char = padded_emojis[i]
-        label = emoji_overlay_labels[i]
-        if emoji_char:
-            img = get_emoji_image(emoji_char, size=SLOT_SIZE)
-            if img:
-                label.config(image=img, text="")
-                label.image = img  # Keep reference
-            else:
-                normalized_emoji = unicodedata.normalize('NFC', emoji_char)
-                label.config(image="", text=normalized_emoji, font=("Segoe UI Emoji", ws(120)), fg=OVERLAY_TEXT_COLOR)
-        else:
-            label.config(image="", text="", font=("Arial", ws(1)), fg=OVERLAY_BACKGROUND_COLOR)
+    # Background + border
+    draw.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], fill=bg)
+    draw.rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
+                   outline=fg, width=border)
+
+    # Title — style matches synopsis header (bold, underline under text only)
+    title_font = _get_ass_font(header_font_px, bold=True)
+    title_bottom = box_y + pad + header_font_px + ws(20)   # fallback
+    if title_font:
+        tb = draw.textbbox((0, 0), title, font=title_font)
+        tx = box_x + pad - tb[0]
+        ty = box_y + pad - tb[1]
+        draw.text((tx, ty), title, font=title_font, fill=fg)
+        # Underline spans only the text width — same as synopsis \u1 ASS tag
+        ul_y  = ty + tb[3] + max(1, round(header_font_px * 0.05))
+        ul_x1 = tx + tb[0]   # visual left edge of text
+        ul_x2 = tx + tb[2]   # visual right edge of text
+        ul_h  = max(2, round(header_font_px * 0.07))
+        draw.rectangle([ul_x1, ul_y, ul_x2, ul_y + ul_h], fill=fg)
+        title_bottom = ul_y + ul_h + ws(20)
+
+    # Emoji slots — extra side padding so emojis don't crowd the box edges
+    slot_size      = ws(200)
+    emoji_side_pad = pad * 2          # larger inset on left/right vs. the text pad
+    emoji_area_w   = box_w - emoji_side_pad * 2
+    total_slots    = NUM_EMOJI_SLOTS
+    slot_gap       = max(ws(10), (emoji_area_w - slot_size * total_slots) // max(1, total_slots - 1))
+    emoji_area_h   = box_h - (title_bottom - box_y) - pad
+    slot_y         = title_bottom + (emoji_area_h - slot_size) // 2
+
+    # Emoji font (loaded once per size)
+    _efont = None
+    for _fp in [r"C:\Windows\Fonts\seguiemj.ttf",
+                r"C:\Windows\Fonts\NotoColorEmoji.ttf",
+                r"C:\Windows\Fonts\seguisym.ttf"]:
+        if os.path.exists(_fp):
+            try:
+                from PIL import ImageFont as _IFnt
+                _efont = _IFnt.truetype(_fp, size=int(slot_size * 1.2))
+                break
+            except Exception:
+                pass
+
+    for i, emoji_char in enumerate(padded_emojis):
+        if not emoji_char or not _efont:
+            continue
+        slot_x = box_x + emoji_side_pad + i * (slot_size + slot_gap)
+        try:
+            ec = unicodedata.normalize('NFC', emoji_char)
+            cs = slot_size * 8
+            em_im  = Image.new("RGBA", (cs, cs), (0, 0, 0, 0))
+            em_drw = ImageDraw.Draw(em_im)
+            em_drw.text((cs // 2, cs // 2), ec, font=_efont,
+                        anchor="mm", embedded_color=True)
+            bbox = em_im.getbbox()
+            if not bbox:
+                continue
+            cropped = em_im.crop(bbox)
+            cw, ch  = cropped.size
+            scale   = min(slot_size / cw, slot_size / ch)
+            if scale < 1:
+                cw, ch  = int(cw * scale), int(ch * scale)
+                cropped = cropped.resize((cw, ch), Image.LANCZOS)
+            ox = slot_x + (slot_size - cw) // 2
+            oy = slot_y  + (slot_size - ch) // 2
+            canvas.paste(cropped, (ox, oy), cropped)
+        except Exception:
+            pass
+
+    if _emoji_img_overlay is None:
+        _emoji_img_overlay = player._p.create_image_overlay()
+    _emoji_img_overlay.update(canvas)
+    emoji_overlay_window = True   # sentinel so game-loop guard stays truthy
 
 
 # =========================================
@@ -17068,447 +17331,538 @@ def get_base_title(data=None, title=None):
                     title = title.replace(f"{p}{t}{n} {s}", "")
     return title or ""
 
-title_overlay = None
-title_overlay_canvas = None
-title_overlay_items = []
-title_overlay_letters = []
+title_overlay = None          # sentinel — True when active
+_title_img_overlay = None     # mpv image overlay object
+_title_osd_size   = (0, 0)   # (osd_w, osd_h) at last build
+_title_base_img   = None     # PIL RGBA image with box + underscores but no letters
+_title_letter_pos = []       # list of (cx, cy) OSD coords for each non-space char slot
+_title_revealed   = []       # list of str: revealed char or '' for each slot
+
+def _title_colors():
+    """Return (bg_rgba, fg_rgba) tuples based on current overlay color settings."""
+    try:
+        r, g, b = [v >> 8 for v in root.winfo_rgb(OVERLAY_BACKGROUND_COLOR if not character_round_answer else INVERSE_OVERLAY_BACKGROUND_COLOR)]
+        bg = (r, g, b, 217)
+    except Exception:
+        bg = (0, 0, 0, 217) if not character_round_answer else (255, 255, 255, 217)
+    try:
+        r, g, b = [v >> 8 for v in root.winfo_rgb(OVERLAY_TEXT_COLOR if not character_round_answer else INVERSE_OVERLAY_TEXT_COLOR)]
+        fg = (r, g, b, 255)
+    except Exception:
+        fg = (255, 255, 255, 255) if not character_round_answer else (0, 0, 0, 255)
+    return bg, fg
+
+def _build_title_base(title_text):
+    """Build the static PIL frame (box + header + underscore slots). Returns (img, letter_positions)."""
+    from PIL import Image, ImageDraw
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
+
+    mod = min(osd_w / 2560, osd_h / 1440)
+    def ws(n): return max(1, int(n * mod))
+
+    # Use physical window mod for font sizing (matches song/synopsis approach)
+    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    if not mw_phys:
+        mw_phys, mh_phys = osd_w, osd_h
+    phys_mod = min(mw_phys / 2560, mh_phys / 1440)
+    screen_dpi = root.winfo_fpixels('1i')
+    # Font pixel sizes for PIL (physical → DPI → OSD space)
+    hdr_fs  = max(1, round(max(1, int(70 * phys_mod)) * screen_dpi / 72))   # header "TITLE:"
+    ltr_fs  = max(1, round(max(1, int(80 * phys_mod)) * screen_dpi / 72))   # big letter (Courier)
+    us_fs   = max(1, round(max(1, int(65 * phys_mod)) * screen_dpi / 72))   # underscore (Courier)
+
+    hdr_font = _get_ass_font(hdr_fs, bold=True)
+    ltr_font = _get_courier_font(ltr_fs)
+    us_font  = _get_courier_font(us_fs)
+
+    bg, fg = _title_colors()
+    border = ws(4)
+
+    # Line-wrap using PIL font measurement (consistent with OSD coords)
+    spacing = ws(64)
+    overlay_w = round(osd_w * 0.7)
+    # Measure space char width for line-wrap guard
+    _sp_w = spacing  # fixed monospace spacing — we rely on spacing, not text width for layout
+
+    lines = _title_wrap_lines(title_text, overlay_w - ws(40), ltr_font)
+
+    overlay_h = len(lines) * ws(100) + ws(320)
+    bx = (osd_w - overlay_w) // 2
+    by = (osd_h - overlay_h) // 2
+
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw   = ImageDraw.Draw(canvas)
+
+    # Box background + border
+    draw.rectangle([bx, by, bx + overlay_w, by + overlay_h], fill=bg)
+    draw.rectangle([bx, by, bx + overlay_w, by + overlay_h], outline=fg, width=border)
+
+    # Header "TITLE:" / "CHARACTER NAME:" with underline under text only
+    title_txt = "CHARACTER NAME:" if character_round_answer else "TITLE:"
+    if hdr_font:
+        hx = bx + ws(30)
+        hy = by + ws(30)
+        hb = draw.textbbox((hx, hy), title_txt, font=hdr_font, anchor="lt")
+        draw.text((hx, hy), title_txt, font=hdr_font, fill=fg, anchor="lt")
+        # Underline spans text width only (matches Tkinter 'underline' font style)
+        ul_y = hb[3] + max(2, ws(6))
+        draw.rectangle([hb[0], ul_y, hb[2], ul_y + max(4, ws(10))], fill=fg)
+
+    # Underscore slots + record letter positions
+    letter_positions = []
+    line_y = by + ws(270)  # vertical centre of the first letter row
+    for line in lines:
+        chars = list(line)
+        total_w = len(chars) * spacing
+        line_x = osd_w // 2 - total_w // 2 + spacing // 2
+        for ch in chars:
+            if ch == " ":
+                line_x += spacing
+                continue
+            cx = line_x
+            cy = line_y
+            # Draw a thin underline rule instead of the '_' glyph (glyph is too thick)
+            ul_w = spacing - ws(6)
+            ul_h = max(1, ws(2))
+            draw.rectangle([cx - ul_w // 2, cy + ws(36), cx - ul_w // 2 + ul_w, cy + ws(36) + ul_h], fill=fg)
+            letter_positions.append((cx, cy))
+            line_x += spacing
+        line_y += ws(100)
+
+    return canvas, letter_positions, ltr_font, (osd_w, osd_h)
+
+
+def _title_wrap_lines(text, max_w_px, pil_font):
+    """Word-wrap *text* into lines that fit within *max_w_px* using PIL font measurement."""
+    if pil_font is None:
+        # fallback: never wrap
+        return [text]
+    from PIL import ImageDraw, Image
+    _draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    words = text.split(" ")
+    lines = []
+    cur = ""
+    for word in words:
+        test = (cur + " " + word).strip()
+        bb = _draw.textbbox((0, 0), test, font=pil_font)
+        if bb[2] - bb[0] <= max_w_px or not cur:
+            cur = test
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines or [text]
+
 
 def toggle_title_overlay(title_text=None, destroy=False):
-    """Displays an overlay with the masked anime title using persistent underscores and letter overlays."""
-    global title_overlay, title_overlay_canvas, title_overlay_items, title_overlay_letters
+    """mpv PIL image overlay — masked anime title with per-letter reveal."""
+    global title_overlay, _title_img_overlay, _title_osd_size
+    global _title_base_img, _title_letter_pos, _title_revealed
 
     if destroy:
-        if title_overlay:
-            title_overlay.destroy()
         title_overlay = None
-        title_overlay_canvas = None
-        title_overlay_items = []
-        title_overlay_letters = []
+        _title_base_img = None
+        _title_letter_pos = []
+        _title_revealed = []
+        _title_osd_size = (0, 0)
+        if _title_img_overlay is not None:
+            try:
+                _title_img_overlay.remove()
+            except Exception:
+                pass
+            _title_img_overlay = None
         return
 
     if not title_text:
         return
 
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    _ws_mod = min(mw / 2560, mh / 1440)
-    def ws(n): return max(1, int(n * _ws_mod))
-    overlay_width = round(mw * 0.7)
+    from PIL import Image, ImageDraw
 
-    title_font = ("Courier New", ws(80), "bold")
-    lines = get_title_text_lines(title_text, overlay_width - ws(40), font=title_font)
-    overlay_height = len(lines) * ws(100) + ws(320)
+    # Get current OSD size; rebuild base if it changed or is absent
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
 
-    x = (mw - overlay_width) // 2
-    y = (mh - overlay_height) // 2
+    if _title_img_overlay is None or _title_osd_size != (osd_w, osd_h) or _title_base_img is None:
+        _title_base_img, _title_letter_pos, _ltr_font, _title_osd_size = _build_title_base(title_text)
+        _title_revealed = [""] * len(_title_letter_pos)
+        if _title_img_overlay is None:
+            _title_img_overlay = player._p.create_image_overlay()
+        title_overlay = True  # sentinel
 
-    spacing = ws(64)
-    front_color = OVERLAY_TEXT_COLOR
-    back_color = OVERLAY_BACKGROUND_COLOR
-    if character_round_answer:
-        front_color = INVERSE_OVERLAY_TEXT_COLOR
-        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
-
-    if title_overlay is None:
-        title_overlay_items = []
-        title_overlay_letters = []
-
-        title_overlay = tk.Toplevel(root)
-        title_overlay.overrideredirect(True)
-        title_overlay.attributes("-topmost", True)
-        title_overlay.attributes("-alpha", 0.9)
-        title_overlay.configure(bg=back_color)
-        title_overlay.geometry(f"{mw}x{mh}+{mx}+{my}")
-
-        title_overlay_canvas = tk.Canvas(title_overlay, bg="pink", highlightthickness=0)
-        title_overlay_canvas.pack(fill="both", expand=True)
-        title_overlay.attributes("-transparentcolor", "pink")
-
-        # Box and label
-        title_overlay_canvas.create_rectangle(
-            x, y, x + overlay_width, y + overlay_height,
-            fill=back_color, outline=front_color, width=ws(4)
-        )
-        title_txt = "TITLE:"
-        if character_round_answer:
-            title_txt = "CHARACTER NAME:"
-        title_overlay_canvas.create_text(
-            x + ws(30), y + ws(30),
-            text=title_txt, font=("Arial", ws(70), "bold", "underline"),
-            fill=front_color, anchor="nw"
-        )
-
-        line_y = y + ws(270)
-        idx = 0
-        for line in lines:
-            total_width = len(line) * spacing
-            line_x = mw // 2 - total_width // 2 + spacing // 2
-            for char in line:
-                if char == " ":
-                    title_overlay_items.append(None)
-                    title_overlay_letters.append(None)
-                    line_x += spacing
-                    continue
-
-                # Underscore (always shown)
-                underscore = title_overlay_canvas.create_text(
-                    line_x, line_y,
-                    text="_", font=("Courier New", ws(65)),
-                    fill=front_color, anchor="center"
-                )
-                title_overlay_items.append(underscore)
-
-                # Letter (initially empty)
-                letter = title_overlay_canvas.create_text(
-                    line_x, line_y,
-                    text="", font=title_font,
-                    fill=front_color, anchor="center"
-                )
-                title_overlay_letters.append(letter)
-
-                line_x += spacing
-                idx += 1
-            line_y += ws(100)
-
-        _register_overlay_for_tracking(title_overlay, mw, mh, centered=False,
-                                          on_size_change=lambda: toggle_title_overlay(destroy=True))
+    # Determine which letters should now be visible from title_text
     flat_chars = [c for c in title_text if c != " "]
-    i = 0
-    for idx, letter_item in enumerate(title_overlay_letters):
-        if letter_item is None:
+    new_revealed = []
+    for i, ch in enumerate(flat_chars):
+        new_revealed.append("" if ch == "ˍ" else ch)
+    # Pad/trim to slot count
+    while len(new_revealed) < len(_title_letter_pos):
+        new_revealed.append("")
+    new_revealed = new_revealed[:len(_title_letter_pos)]
+
+    if new_revealed == _title_revealed:
+        return  # nothing changed — skip redraw
+
+    _title_revealed = new_revealed
+
+    # Composite letters onto a copy of the base image
+    canvas = _title_base_img.copy()
+    draw   = ImageDraw.Draw(canvas)
+
+    # Rebuild ltr_font from cache (size may vary per OSD)
+    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    if not mw_phys:
+        mw_phys, mh_phys = osd_w, osd_h
+    phys_mod   = min(mw_phys / 2560, mh_phys / 1440)
+    screen_dpi = root.winfo_fpixels('1i')
+    ltr_fs = max(1, round(max(1, int(80 * phys_mod)) * screen_dpi / 72))
+    ltr_font = _get_courier_font(ltr_fs)
+
+    _, fg = _title_colors()
+
+    for i, (cx, cy) in enumerate(_title_letter_pos):
+        ch = _title_revealed[i]
+        if not ch or not ltr_font:
             continue
-        char = flat_chars[i] if i < len(flat_chars) else ""
-        if char == 'ˍ':
-            char = " "
-        title_overlay_canvas.itemconfig(letter_item, text=char)
-        i += 1
+        # anchor="mm" centres the glyph at (cx, cy) — matches Tkinter anchor=center
+        draw.text((cx, cy), ch, font=ltr_font, fill=fg, anchor="mm")
+
+    try:
+        _title_img_overlay.update(canvas)
+    except Exception:
+        pass
 
 # =========================================
 #          *SCRAMBLE LIGHTNING ROUND
 # =========================================
 
-scramble_overlay_letters = []
-scramble_overlay_targets = []
-scramble_overlay_root = None
-scramble_title_text = ""
-scramble_title_canvas = None
-scramble_letter_objects = []
-scramble_animating = False
-scramble_title_text_items = []
+scramble_overlay_root          = None  # sentinel — True when active, None when not
+_scramble_base_overlay         = None  # mpv image overlay: static box + header + slots (pushed once)
+_scramble_img_overlay          = None  # mpv image overlay: animated letters layer
+_scramble_letters_img          = None  # persistent full-screen RGBA canvas for letters (reused each frame)
+_scramble_box_rect             = None  # (x0, y0, x1, y1) interior of box for per-frame clear
+_scramble_ltr_font             = None  # cached PIL letter font
+_scramble_osd_size             = (0, 0)
+_scramble_anim_after           = None  # pending root.after id for wiggle loop
+scramble_title_text            = ""
+scramble_overlay_letters       = []    # list of dicts: {char, index, x, y, target, wiggle, placed}
 scramble_letter_placed_indices = set()
+scramble_animating             = False
+
+
+def _scramble_build_base():
+    """Build and push the static base overlay (box + header + slots).
+    Also allocates a fresh transparent letters canvas.
+    Sets globals: _scramble_base_overlay, _scramble_img_overlay (if None),
+                  _scramble_letters_img, _scramble_box_rect,
+                  _scramble_ltr_font, _scramble_osd_size.
+    Returns (target_coords, (osd_w, osd_h))."""
+    global _scramble_base_overlay, _scramble_img_overlay
+    global _scramble_letters_img, _scramble_box_rect
+    global _scramble_ltr_font, _scramble_osd_size
+    from PIL import Image, ImageDraw
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        osd_w, osd_h = 0, 0
+    if not osd_w or not osd_h:
+        osd_w = root.winfo_screenwidth()
+        osd_h = root.winfo_screenheight()
+
+    mod = min(osd_w / 2560, osd_h / 1440)
+    def ws(n): return max(1, int(n * mod))
+
+    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    if not mw_phys:
+        mw_phys, mh_phys = osd_w, osd_h
+    phys_mod   = min(mw_phys / 2560, mh_phys / 1440)
+    screen_dpi = root.winfo_fpixels('1i')
+    hdr_fs = max(1, round(max(1, int(70 * phys_mod)) * screen_dpi / 72))
+    ltr_fs = max(1, round(max(1, int(80 * phys_mod)) * screen_dpi / 72))
+
+    hdr_font = _get_ass_font(hdr_fs, bold=True)
+    ltr_font = _get_courier_font(ltr_fs)
+    bg, fg   = _title_colors()
+    border   = ws(4)
+    spacing  = ws(64)
+
+    lines      = _title_wrap_lines(scramble_title_text, round(osd_w * 0.7) - ws(40), ltr_font)
+    overlay_w  = round(osd_w * 0.7)
+    overlay_h  = len(lines) * ws(100) + ws(320)
+    box_full_h = int(osd_h * 0.7)
+    bx         = (osd_w - overlay_w) // 2
+    box_full_y = (osd_h - box_full_h) // 2
+    by         = (osd_h - overlay_h) // 2
+
+    base_canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw        = ImageDraw.Draw(base_canvas)
+
+    draw.rectangle([bx, box_full_y, bx + overlay_w, box_full_y + box_full_h], fill=bg)
+    draw.rectangle([bx, box_full_y, bx + overlay_w, box_full_y + box_full_h], outline=fg, width=border)
+
+    title_txt = "CHARACTER NAME:" if character_round_answer else "TITLE:"
+    if hdr_font:
+        hx = bx + ws(30)
+        hy = box_full_y + ws(30)
+        hb = draw.textbbox((hx, hy), title_txt, font=hdr_font, anchor="lt")
+        draw.text((hx, hy), title_txt, font=hdr_font, fill=fg, anchor="lt")
+        ul_y = hb[3] + max(2, ws(6))
+        draw.rectangle([hb[0], ul_y, hb[2], ul_y + max(4, ws(10))], fill=fg)
+
+    target_coords = {}
+    slot_idx = 0
+    line_y   = by + ws(270)
+    for line in lines:
+        chars   = list(line)
+        total_w = len(chars) * spacing
+        line_x  = osd_w // 2 - total_w // 2 + spacing // 2
+        for ch in chars:
+            if ch == " ":
+                line_x += spacing
+                continue
+            cx, cy = line_x, line_y
+            ul_w = spacing - ws(6)
+            ul_h = max(1, ws(2))
+            draw.rectangle([cx - ul_w // 2, cy + ws(36), cx - ul_w // 2 + ul_w, cy + ws(36) + ul_h], fill=fg)
+            target_coords[slot_idx] = (cx, cy)
+            slot_idx += 1
+            line_x += spacing
+        line_y += ws(100)
+
+    # Push static base (create overlay on first build, reuse on rebuild)
+    if _scramble_base_overlay is None:
+        _scramble_base_overlay = player._p.create_image_overlay()
+    _scramble_base_overlay.update(base_canvas)
+
+    # Create letters overlay on first build only
+    if _scramble_img_overlay is None:
+        _scramble_img_overlay = player._p.create_image_overlay()
+
+    # Fresh transparent canvas for the animated letters layer
+    _scramble_letters_img = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+
+    # Clear rect is the box interior (inside the border)
+    _scramble_box_rect = (bx + border, box_full_y + border,
+                          bx + overlay_w - border, box_full_y + box_full_h - border)
+    _scramble_ltr_font = ltr_font
+    _scramble_osd_size = (osd_w, osd_h)
+
+    return target_coords, (osd_w, osd_h)
+
+
+def _scramble_redraw():
+    """Clear the box region on the letters canvas, stamp all letters, push to OSD.
+    No base-image copy — the static base lives on its own overlay."""
+    if _scramble_letters_img is None or _scramble_img_overlay is None:
+        return
+    from PIL import ImageDraw
+    _, fg = _title_colors()
+    draw  = ImageDraw.Draw(_scramble_letters_img)
+    # Single rectangle fill to clear — much cheaper than full-image copy
+    draw.rectangle(_scramble_box_rect, fill=(0, 0, 0, 0))
+    for letter in scramble_overlay_letters:
+        draw.text((int(letter["x"]), int(letter["y"])), letter["char"],
+                  font=_scramble_ltr_font, fill=fg, anchor="mm")
+    try:
+        _scramble_img_overlay.update(_scramble_letters_img)
+    except Exception:
+        pass
+
+
+def _animate_scramble():
+    """400ms wiggle tick: bounce unplaced letters and push updated frame."""
+    global _scramble_anim_after
+    if not scramble_animating or not scramble_overlay_root:
+        return
+    try:
+        cur_w = int(player._p.osd_width or 0)
+        cur_h = int(player._p.osd_height or 0)
+    except Exception:
+        cur_w, cur_h = 0, 0
+    if cur_w and (cur_w, cur_h) != _scramble_osd_size:
+        toggle_scramble_overlay(rebuild=True)
+        return
+    if player.is_playing():
+        for letter in scramble_overlay_letters:
+            if not letter["placed"]:
+                wx, wy = letter["wiggle"]
+                letter["x"] += wx
+                letter["y"] += wy
+                letter["wiggle"] = (-wx, -wy)
+    _scramble_redraw()
+    _scramble_anim_after = root.after(400, _animate_scramble)
+
 
 def toggle_scramble_overlay(num_letters=0, destroy=False, rebuild=False):
-    global scramble_overlay_letters, scramble_overlay_targets
-    global scramble_overlay_root, scramble_title_text, scramble_title_canvas
-    global scramble_letter_objects, scramble_animating
-    global scramble_title_text_items, scramble_letter_placed_indices
+    global scramble_overlay_root, _scramble_base_overlay, _scramble_img_overlay
+    global _scramble_letters_img, _scramble_box_rect, _scramble_ltr_font
+    global _scramble_osd_size, _scramble_anim_after, scramble_animating
+    global scramble_title_text, scramble_overlay_letters, scramble_letter_placed_indices
 
     if destroy:
         scramble_animating = False
-        if scramble_overlay_root:
-            scramble_overlay_root.destroy()
+        if _scramble_anim_after is not None:
+            try:
+                root.after_cancel(_scramble_anim_after)
+            except Exception:
+                pass
+            _scramble_anim_after = None
+        for ov in (_scramble_base_overlay, _scramble_img_overlay):
+            if ov is not None:
+                try:
+                    ov.remove()
+                except Exception:
+                    pass
+        _scramble_base_overlay = None
+        _scramble_img_overlay  = None
+        _scramble_letters_img  = None
+        _scramble_box_rect     = None
+        _scramble_ltr_font     = None
+        scramble_overlay_root  = None
         scramble_overlay_letters.clear()
-        scramble_overlay_targets.clear()
-        scramble_letter_objects.clear()
-        scramble_title_text_items.clear()
         scramble_letter_placed_indices.clear()
-        scramble_overlay_root = None
-        scramble_title_canvas = None
         return
 
+    def _scatter_geometry(osd_w, osd_h, ltr_font):
+        mod = min(osd_w / 2560, osd_h / 1440)
+        def ws(n): return max(1, int(n * mod))
+        overlay_w  = round(osd_w * 0.7)
+        bx         = (osd_w - overlay_w) // 2
+        lines      = _title_wrap_lines(scramble_title_text, overlay_w - ws(40), ltr_font)
+        overlay_h  = len(lines) * ws(100) + ws(320)
+        by         = (osd_h - overlay_h) // 2
+        box_full_h = int(osd_h * 0.7)
+        box_full_y = (osd_h - box_full_h) // 2
+        box_full_b = box_full_y + box_full_h
+        left_x  = bx + ws(50)
+        right_x = bx + overlay_w - ws(50)
+        scatter_top = box_full_y + ws(190)
+        scatter_bot = box_full_b - ws(50)
+        # Slot row y-positions — letters must avoid a band around each
+        slot_ys      = [by + ws(270) + l * ws(100) for l in range(len(lines))]
+        slot_margin  = ws(110)  # half-height clearance around each slot row
+        return left_x, right_x, scatter_top, scatter_bot, ws(70), slot_ys, slot_margin
+
     if rebuild and scramble_overlay_letters:
-        # Save logical state before destroying
-        saved_title_text = scramble_title_text
-        saved_placed = set(scramble_letter_placed_indices)
-        saved_letter_order = [(l["char"], l["index"]) for l in scramble_overlay_letters]
-        # Tear down old window
+        saved_letters = [(l["char"], l["index"], l["placed"]) for l in scramble_overlay_letters]
+        saved_placed  = set(scramble_letter_placed_indices)
         scramble_animating = False
-        if scramble_overlay_root:
-            scramble_overlay_root.destroy()
-        scramble_overlay_root = None
-        scramble_title_canvas = None
-        scramble_title_text_items.clear()
-        scramble_letter_placed_indices.clear()
+        if _scramble_anim_after is not None:
+            try:
+                root.after_cancel(_scramble_anim_after)
+            except Exception:
+                pass
+            _scramble_anim_after = None
         scramble_overlay_letters.clear()
-        scramble_overlay_targets.clear()
-        scramble_letter_objects.clear()
-        # Determine colors
-        front_color = OVERLAY_TEXT_COLOR
-        back_color = OVERLAY_BACKGROUND_COLOR
-        if character_round_answer:
-            front_color = INVERSE_OVERLAY_TEXT_COLOR
-            back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
-        # Recreate window at new size
-        mx, my, mw, mh = _get_mpv_window_rect()
-        if not mw:
-            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-        _ws_mod = min(mw / 2560, mh / 1440)
-        def ws(n): return max(1, int(n * _ws_mod))
-        title_font = ("Courier New", ws(80), "bold")
-        lines = get_title_text_lines(saved_title_text, mw * 0.7 - ws(40), font=title_font)
-        overlay_width = round(mw * 0.7)
-        overlay_height = len(lines) * ws(100) + ws(320)
-        x = (mw - overlay_width) // 2
-        y = (mh - overlay_height) // 2
-        box_top = y
-        box_bottom = y + overlay_height
-        scramble_overlay_root = tk.Toplevel()
-        scramble_overlay_root.overrideredirect(True)
-        scramble_overlay_root.attributes("-topmost", True)
-        transparent_color = "pink"
-        scramble_overlay_root.configure(bg=transparent_color)
-        scramble_overlay_root.attributes("-transparentcolor", transparent_color)
-        scramble_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
-        scramble_title_canvas = tk.Canvas(scramble_overlay_root, bg=transparent_color, highlightthickness=0)
-        scramble_title_canvas.pack(fill="both", expand=True)
-        full_overlay_height = int(mh * 0.7)
-        full_y = (mh - full_overlay_height) // 2
-        scramble_title_canvas.create_rectangle(
-            x, full_y, x + overlay_width, full_y + full_overlay_height,
-            fill=back_color, outline=front_color, width=ws(4)
-        )
-        title_label_text = "CHARACTER NAME:" if character_round_answer else "TITLE:"
-        scramble_title_canvas.create_text(
-            x + ws(30), full_y + ws(30),
-            text=title_label_text,
-            font=("Arial", ws(70), "bold", "underline"),
-            fill=front_color, anchor="nw"
-        )
-        spacing = ws(64)
-        line_y = y + ws(270)
-        target_coords = {}
-        for line in lines:
-            line_chars = [c for c in line]
-            total_width = len(line_chars) * spacing
-            line_x = mw // 2 - total_width // 2 + spacing // 2
-            for c in line_chars:
-                if c == " ":
-                    line_x += spacing
-                    continue
-                text_item = scramble_title_canvas.create_text(
-                    line_x, line_y,
-                    text="_", font=("Courier New", ws(65)), fill=front_color, anchor="center"
-                )
-                target_coords[len(scramble_title_text_items)] = (line_x, line_y)
-                scramble_title_text_items.append(text_item)
-                line_x += spacing
-            line_y += ws(100)
-        margin_x = int(mw * 0.18)
-        top_range = (int(mh * 0.3), max(int(mh * 0.3) + 1, box_top + ws(150)))
-        bottom_range = (box_bottom, max(box_bottom + 1, mh - int(mh * 0.2)))
-        min_distance = ws(80)
+        scramble_letter_placed_indices.clear()
+
+        target_coords, osd_size = _scramble_build_base()
+        osd_w, osd_h = osd_size
+        left_x, right_x, scatter_top, scatter_bot, min_dist, slot_ys, slot_margin = \
+            _scatter_geometry(osd_w, osd_h, _scramble_ltr_font)
+
         letter_positions = []
-        for i, (char, idx) in enumerate(saved_letter_order):
+        for char, idx, was_placed in saved_letters:
             if idx not in target_coords:
                 continue
             tx, ty = target_coords[idx]
-            if idx in saved_placed:
-                start_x, start_y = tx, ty
+            if was_placed:
+                sx, sy = float(tx), float(ty)
             else:
-                start_x_candidate = start_y_candidate = 0
-                for _ in range(50):
-                    if i % 2 == 0:
-                        start_y_candidate = random.randint(*top_range)
-                    else:
-                        start_y_candidate = random.randint(*bottom_range)
-                    start_x_candidate = random.randint(margin_x, mw - margin_x)
-                    if not any(abs(start_x_candidate - px) < min_distance and abs(start_y_candidate - py) < min_distance for px, py in letter_positions):
+                sx, sy = float(osd_w // 2), float(osd_h // 2)
+                for _ in range(150):
+                    sy = float(random.randint(scatter_top, scatter_bot))
+                    sx = float(random.randint(left_x, right_x))
+                    if any(abs(sy - slot_y) < slot_margin for slot_y in slot_ys):
+                        continue
+                    if not any(abs(sx - px) < min_dist and abs(sy - py) < min_dist
+                               for px, py in letter_positions):
                         break
-                start_x, start_y = start_x_candidate, start_y_candidate
-            letter_positions.append((start_x, start_y))
-            wiggle_x = random.choice([-1, 1]) * random.randint(1, 2)
-            wiggle_y = random.choice([-1, 1]) * random.randint(1, 2)
-            label = scramble_title_canvas.create_text(
-                start_x, start_y, text=char, font=title_font, fill=front_color
-            )
-            scramble_title_canvas.tag_raise(label)
+            letter_positions.append((sx, sy))
+            wx = random.choice([-1, 1]) * random.randint(1, 2)
+            wy = random.choice([-1, 1]) * random.randint(1, 2)
             scramble_overlay_letters.append({
-                "item": label, "char": char, "index": idx,
-                "target": (tx, ty), "wiggle": (wiggle_x, wiggle_y)
+                "char": char, "index": idx,
+                "x": sx, "y": sy,
+                "target": (float(tx), float(ty)),
+                "wiggle": (wx, wy),
+                "placed": was_placed,
             })
-            scramble_overlay_targets.append(idx)
-            scramble_letter_objects.append(label)
         scramble_letter_placed_indices.update(saved_placed)
         scramble_animating = True
-        animate_scramble_letters()
-        _register_overlay_for_tracking(scramble_overlay_root, mw, mh, centered=False,
-                                       on_size_change=lambda: toggle_scramble_overlay(rebuild=True))
+        _animate_scramble()
         return
 
-    front_color = OVERLAY_TEXT_COLOR
-    back_color = OVERLAY_BACKGROUND_COLOR
-    if character_round_answer:
-        front_color = INVERSE_OVERLAY_TEXT_COLOR
-        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
-
+    # --- Initial creation ---
     if not scramble_overlay_root:
         scramble_title_text = get_base_title()
-        mx, my, mw, mh = _get_mpv_window_rect()
-        if not mw:
-            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-        _ws_mod = min(mw / 2560, mh / 1440)
-        def ws(n): return max(1, int(n * _ws_mod))
-        title_font = ("Courier New", ws(80), "bold")
-        # Split title into lines
-        lines = get_title_text_lines(scramble_title_text, mw * 0.7 - ws(40), font=title_font)
-        overlay_width = round(mw * 0.7)
-        # Adjust vertical spacing: line height * number of lines + padding
-        overlay_height = len(lines) * ws(100) + ws(320)
-        x = (mw - overlay_width) // 2
-        y = (mh - overlay_height) // 2
-        box_top = y
-        box_bottom = y + overlay_height
 
-        # Transparent root
-        scramble_overlay_root = tk.Toplevel()
-        scramble_overlay_root.overrideredirect(True)
-        scramble_overlay_root.attributes("-topmost", True)
-        transparent_color = "pink"
-        scramble_overlay_root.configure(bg=transparent_color)
-        scramble_overlay_root.attributes("-transparentcolor", transparent_color)
-        scramble_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
+        target_coords, osd_size = _scramble_build_base()
+        osd_w, osd_h = osd_size
+        left_x, right_x, scatter_top, scatter_bot, min_dist, slot_ys, slot_margin = \
+            _scatter_geometry(osd_w, osd_h, _scramble_ltr_font)
 
-        scramble_title_canvas = tk.Canvas(scramble_overlay_root, bg=transparent_color, highlightthickness=0)
-        scramble_title_canvas.pack(fill="both", expand=True)
-
-        full_overlay_height = int(mh*0.7)
-        full_y = (mh - full_overlay_height) // 2
-        # Draw box and label
-        scramble_title_canvas.create_rectangle(
-            # x, y, x + overlay_width, y + overlay_height,
-            x, full_y, x + overlay_width, full_y + full_overlay_height,
-            fill=back_color, outline=front_color, width=ws(4)
-        )
-        title_text = "TITLE:"
-        if character_round_answer:
-            title_text = "CHARACTER NAME:"
-        scramble_title_canvas.create_text(
-            # x + 30, y + 40,
-            x + ws(30), full_y + ws(30),
-            text=title_text,
-            font=("Arial", ws(70), "bold", "underline"),
-            fill=front_color,
-            anchor="nw"
-        )
-
-        scramble_title_text_items.clear()
-        scramble_letter_placed_indices.clear()
-
-        spacing = ws(64)  # Increased spacing to avoid overlap
-        line_y = y + ws(270)  # Moved text start down 20px for better centering
-        target_coords = {}
-
-        for line in lines:
-            line_chars = [c for c in line]
-            total_width = ((len(line_chars)) * spacing)
-            line_x = mw // 2 - total_width // 2
-            line_x += spacing // 2
-            for c in line_chars:
-                if c == " ":
-                    line_x += spacing
-                    continue
-                text_item = scramble_title_canvas.create_text(
-                    line_x, line_y,
-                    text="_", font=("Courier New", ws(65)), fill=front_color, anchor="center"
-                )
-                target_coords[len(scramble_title_text_items)] = (line_x, line_y)
-                scramble_title_text_items.append(text_item)
-                line_x += spacing
-            line_y += ws(100)
-
-        # Create floating letters
-        margin_x = int(mw * 0.18)
-        top_range = (int(mh*0.3), box_top + ws(150))  # start 100px from top, end 150px above box top
-        bottom_range = (box_bottom, mh - int(mh*0.2))  # start 100px below box bottom, leave 150px at bottom
-
-        floating_letters = [{"char": c, "index": i} for i, c in enumerate(scramble_title_text.replace(" ", "")) if c != " " and i in target_coords]
+        flat_chars = [(c, i) for i, c in enumerate(scramble_title_text.replace(" ", ""))
+                      if i in target_coords]
         if fixed_current_round and fixed_current_round.get("scramble_place_order"):
-            # scramble_place_order is in format "3,6,2,7" to determine the order of letters to reveal.
-            # Pull those letters to the front in the specified order, then append the rest in random order.
-            order_indices = [int(x.strip()) for x in fixed_current_round["scramble_place_order"].split(",") if x.strip().isdigit()]
-            ordered = [l for idx in order_indices for l in floating_letters if l["index"] == idx]
-            ordered_set = {l["index"] for l in ordered}
-            remaining = [l for l in floating_letters if l["index"] not in ordered_set]
+            order_indices = [int(x.strip()) for x in
+                             fixed_current_round["scramble_place_order"].split(",")
+                             if x.strip().isdigit()]
+            ordered     = [p for idx in order_indices for p in flat_chars if p[1] == idx]
+            ordered_set = {p[1] for p in ordered}
+            remaining   = [p for p in flat_chars if p[1] not in ordered_set]
             random.shuffle(remaining)
-            floating_letters = ordered + remaining
+            flat_chars  = ordered + remaining
         else:
-            random.shuffle(floating_letters)
+            random.shuffle(flat_chars)
 
-        scramble_overlay_letters.clear()
-        scramble_overlay_targets.clear()
-        scramble_letter_objects.clear()
-
-        letter_positions = []  # Store positions of already placed letters
-        min_distance = ws(80)      # Minimum allowed distance between letters
-        
-        for i, letter in enumerate(floating_letters):
-            idx = letter["index"]
+        letter_positions = []
+        for i, (char, idx) in enumerate(flat_chars):
             tx, ty = target_coords[idx]
-
-            # Try up to N times to find a non-colliding position
-            for _ in range(50):
-                if i % 2 == 0:
-                    start_y = random.randint(*top_range)
-                else:
-                    start_y = random.randint(*bottom_range)
-                start_x = random.randint(margin_x, mw - margin_x)
-
-                too_close = False
-                for (px, py) in letter_positions:
-                    if abs(start_x - px) < min_distance and abs(start_y - py) < min_distance:
-                        too_close = True
-                        break
-
-                if not too_close:
-                    break  # Found a valid position
-
-            # Save this position to the list
-            letter_positions.append((start_x, start_y))
-
-            wiggle_x = random.choice([-1, 1]) * random.randint(1, 2)
-            wiggle_y = random.choice([-1, 1]) * random.randint(1, 2)
-
-            # Draw main letter (white) on top
-            label = scramble_title_canvas.create_text(
-                start_x, start_y, text=letter["char"],
-                font=title_font, fill=front_color
-            )
-            scramble_title_canvas.tag_raise(label)
-
+            sx, sy = float(osd_w // 2), float(osd_h // 2)
+            for _ in range(150):
+                sy = float(random.randint(scatter_top, scatter_bot))
+                sx = float(random.randint(left_x, right_x))
+                if any(abs(sy - slot_y) < slot_margin for slot_y in slot_ys):
+                    continue
+                if not any(abs(sx - px) < min_dist and abs(sy - py) < min_dist
+                           for px, py in letter_positions):
+                    break
+            letter_positions.append((sx, sy))
+            wx = random.choice([-1, 1]) * random.randint(1, 2)
+            wy = random.choice([-1, 1]) * random.randint(1, 2)
             scramble_overlay_letters.append({
-                "item": label,
-                "char": letter["char"],
-                "index": idx,
-                "target": (tx, ty),
-                "wiggle": (wiggle_x, wiggle_y)
+                "char": char, "index": idx,
+                "x": sx, "y": sy,
+                "target": (float(tx), float(ty)),
+                "wiggle": (wx, wy),
+                "placed": False,
             })
-            scramble_overlay_targets.append(idx)
-            scramble_letter_objects.append(label)
 
-        scramble_animating = True
-        animate_scramble_letters()
-        _register_overlay_for_tracking(scramble_overlay_root, mw, mh, centered=False,
-                                          on_size_change=lambda: toggle_scramble_overlay(rebuild=True))
+        scramble_overlay_root = True
+        scramble_animating    = True
+        _animate_scramble()
+
+    # Place letters up to num_letters (lerp one step toward target)
     for i, letter in enumerate(scramble_overlay_letters):
-        if i < num_letters:
-            if letter["index"] not in scramble_letter_placed_indices:
-                scramble_letter_placed_indices.add(letter["index"])
-            x0, y0 = scramble_title_canvas.coords(letter["item"])
-            x1, y1 = letter["target"]
-            new_x = x0 + (x1 - x0) * 0.2
-            new_y = y0 + (y1 - y0) * 0.2
-            scramble_title_canvas.coords(letter["item"], new_x, new_y)
+        if i < num_letters and not letter["placed"]:
+            letter["placed"] = True
+            scramble_letter_placed_indices.add(letter["index"])
+        if letter["placed"]:
+            tx, ty = letter["target"]
+            letter["x"] += (tx - letter["x"]) * 0.2
+            letter["y"] += (ty - letter["y"]) * 0.2
+    if num_letters > 0:
+        _scramble_redraw()
 
-def animate_scramble_letters():
-    if not scramble_animating:
-        return
-    for letter in scramble_overlay_letters:
-        if player.is_playing() and letter["index"] not in scramble_letter_placed_indices:
-            wiggle_x, wiggle_y = letter["wiggle"]
-            scramble_title_canvas.move(letter["item"], wiggle_x, wiggle_y)
-            letter["wiggle"] = (-wiggle_x, -wiggle_y)
-    scramble_overlay_root.after(200, animate_scramble_letters)
 
 def get_title_text_lines(text, max_width, font=("Courier New", scl(80), "bold")):
     f = Font(family=font[0], size=font[1], weight=font[2])
@@ -17530,220 +17884,263 @@ def get_title_text_lines(text, max_width, font=("Courier New", scl(80), "bold"))
 #          *SWAP LIGHTNING ROUND
 # =========================================
 
-swap_overlay_root = None
-swap_overlay_canvas = None
-swap_title_text = ""
-swap_title_items = []
-swap_pairs = []
-swap_animating = False
-swap_completed = 0
-swap_title_font = ("Courier New", scl(80), "bold")
-swap_overlay_letters = []
+swap_overlay_root    = True   # sentinel â€” True when active, None when not (kept for external checks)
+_swap_static_overlay = None   # mpv overlay: box + header + underlines (pushed once)
+_swap_letters_overlay = None  # mpv overlay: all letters on transparent canvas
+_swap_letters_img    = None   # persistent full-screen RGBA canvas for letters
+_swap_box_rect       = None   # (x0,y0,x1,y1) interior of box for per-frame clear
+_swap_ltr_font       = None   # cached PIL letter font
+swap_title_text      = ""
+swap_pairs           = []
+swap_completed       = 0
+swap_overlay_letters = []     # list of dicts: {char, index, pos:(cx,cy), correct, base_char}
+_swap_osd_size       = (0, 0)
+_swap_anim_after     = None   # pending root.after id for arc animation
+swap_overlay_root    = None   # reset sentinel to None (initial state)
+
+
+def _swap_colors():
+    """(bg_rgba, fg_rgba, gray_rgba) for current color scheme."""
+    try:
+        r, g, b = [v >> 8 for v in root.winfo_rgb(OVERLAY_BACKGROUND_COLOR if not character_round_answer else INVERSE_OVERLAY_BACKGROUND_COLOR)]
+        bg = (r, g, b, 217)
+    except Exception:
+        bg = (0, 0, 0, 217) if not character_round_answer else (255, 255, 255, 217)
+    try:
+        r, g, b = [v >> 8 for v in root.winfo_rgb(OVERLAY_TEXT_COLOR if not character_round_answer else INVERSE_OVERLAY_TEXT_COLOR)]
+        fg = (r, g, b, 255)
+    except Exception:
+        fg = (255, 255, 255, 255) if not character_round_answer else (0, 0, 0, 255)
+    gray = tuple((bg[i] + fg[i]) // 2 for i in range(3)) + (255,)
+    return bg, fg, gray
+
+
+def _build_swap_base():
+    """Build and push the static base overlay (box + header + underlines only, no letters).
+    Allocates a fresh letters canvas.
+    Sets globals: _swap_static_overlay, _swap_letters_overlay (if None),
+                  _swap_letters_img, _swap_box_rect, _swap_ltr_font, _swap_osd_size.
+    Returns (target_coords, (osd_w, osd_h))."""
+    global _swap_static_overlay, _swap_letters_overlay
+    global _swap_letters_img, _swap_box_rect, _swap_ltr_font, _swap_osd_size
+    from PIL import Image, ImageDraw
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
+
+    mod = min(osd_w / 2560, osd_h / 1440)
+    def ws(n): return max(1, int(n * mod))
+
+    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    if not mw_phys:
+        mw_phys, mh_phys = osd_w, osd_h
+    phys_mod   = min(mw_phys / 2560, mh_phys / 1440)
+    screen_dpi = root.winfo_fpixels('1i')
+    hdr_fs = max(1, round(max(1, int(70 * phys_mod)) * screen_dpi / 72))
+    ltr_fs = max(1, round(max(1, int(80 * phys_mod)) * screen_dpi / 72))
+
+    hdr_font = _get_ass_font(hdr_fs, bold=True)
+    ltr_font = _get_courier_font(ltr_fs)
+
+    bg, fg, _ = _swap_colors()
+    border  = ws(4)
+    spacing = ws(64)
+
+    lines = _title_wrap_lines(swap_title_text, round(osd_w * 0.7) - ws(40), ltr_font)
+    overlay_w = round(osd_w * 0.7)
+    overlay_h = len(lines) * ws(100) + ws(320)
+    bx = (osd_w - overlay_w) // 2
+    by = (osd_h - overlay_h) // 2
+
+    base_canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw        = ImageDraw.Draw(base_canvas)
+
+    draw.rectangle([bx, by, bx + overlay_w, by + overlay_h], fill=bg)
+    draw.rectangle([bx, by, bx + overlay_w, by + overlay_h], outline=fg, width=border)
+
+    title_txt = "CHARACTER NAME:" if character_round_answer else "TITLE:"
+    if hdr_font:
+        hx = bx + ws(30)
+        hy = by + ws(30)
+        hb = draw.textbbox((hx, hy), title_txt, font=hdr_font, anchor="lt")
+        draw.text((hx, hy), title_txt, font=hdr_font, fill=fg, anchor="lt")
+        ul_y = hb[3] + max(2, ws(6))
+        draw.rectangle([hb[0], ul_y, hb[2], ul_y + max(4, ws(10))], fill=fg)
+
+    target_coords = {}
+    slot_idx = 0
+    line_y = by + ws(270)
+    for line in lines:
+        chars = list(line)
+        total_w = len(chars) * spacing
+        line_x = osd_w // 2 - total_w // 2 + spacing // 2
+        for ch in chars:
+            if ch == " ":
+                line_x += spacing
+                continue
+            cx, cy = line_x, line_y
+            ul_w = spacing - ws(6)
+            ul_h = max(1, ws(2))
+            draw.rectangle([cx - ul_w // 2, cy + ws(36), cx - ul_w // 2 + ul_w, cy + ws(36) + ul_h], fill=fg)
+            target_coords[slot_idx] = (cx, cy)
+            slot_idx += 1
+            line_x += spacing
+        line_y += ws(100)
+
+    if _swap_static_overlay is None:
+        _swap_static_overlay = player._p.create_image_overlay()
+    _swap_static_overlay.update(base_canvas)
+
+    if _swap_letters_overlay is None:
+        _swap_letters_overlay = player._p.create_image_overlay()
+
+    _swap_letters_img = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    _swap_box_rect    = (bx + border, by + border, bx + overlay_w - border, by + overlay_h - border)
+    _swap_ltr_font    = ltr_font
+    _swap_osd_size    = (osd_w, osd_h)
+
+    return target_coords, (osd_w, osd_h)
+
+
+def _swap_stamp_letters(skip_indices=None, extra_letters=None):
+    """Clear the box interior on the letters canvas, stamp all letters (except
+    skip_indices), optionally add extra_letters [(ch, cx, cy, fill)], push to OSD."""
+    if _swap_letters_img is None or _swap_letters_overlay is None:
+        return
+    from PIL import ImageDraw
+    _, fg, gray = _swap_colors()
+    draw = ImageDraw.Draw(_swap_letters_img)
+    draw.rectangle(_swap_box_rect, fill=(0, 0, 0, 0))
+    for letter in swap_overlay_letters:
+        if skip_indices and letter["index"] in skip_indices:
+            continue
+        cx, cy = letter["pos"]
+        fill = fg if letter["correct"] else gray
+        if _swap_ltr_font:
+            draw.text((cx, cy), letter["char"], font=_swap_ltr_font, fill=fill, anchor="mm")
+    if extra_letters:
+        for ch, cx, cy, fill in extra_letters:
+            if _swap_ltr_font:
+                draw.text((int(cx), int(cy)), ch, font=_swap_ltr_font, fill=fill, anchor="mm")
+    try:
+        _swap_letters_overlay.update(_swap_letters_img)
+    except Exception:
+        pass
+
 
 def toggle_swap_overlay(num_swaps=0, destroy=False, rebuild=False):
-    global swap_overlay_root, swap_overlay_canvas
-    global swap_title_text, swap_title_items, swap_pairs
-    global swap_animating, swap_completed, swap_overlay_letters
+    global swap_overlay_root, _swap_static_overlay, _swap_letters_overlay
+    global _swap_letters_img, _swap_box_rect, _swap_ltr_font
+    global swap_title_text, swap_pairs, swap_completed, swap_overlay_letters
+    global _swap_osd_size, _swap_anim_after
 
     if destroy:
-        swap_animating = False
-        if swap_overlay_root:
-            swap_overlay_root.destroy()
         swap_overlay_root = None
-        swap_overlay_canvas = None
-        swap_title_items.clear()
+        if _swap_anim_after is not None:
+            try:
+                root.after_cancel(_swap_anim_after)
+            except Exception:
+                pass
+            _swap_anim_after = None
+        for ov in (_swap_static_overlay, _swap_letters_overlay):
+            if ov is not None:
+                try:
+                    ov.remove()
+                except Exception:
+                    pass
+        _swap_static_overlay  = None
+        _swap_letters_overlay = None
+        _swap_letters_img     = None
+        _swap_box_rect        = None
+        _swap_ltr_font        = None
         swap_overlay_letters.clear()
         swap_pairs.clear()
+        _swap_osd_size = (0, 0)
         return
 
     if rebuild and swap_overlay_letters:
-        # Save logical state before destroying
-        saved_title_text = swap_title_text
-        saved_pairs = list(swap_pairs)
-        saved_completed = swap_completed
-        saved_letter_states = [(l["char"], l["index"], l["correct"]) for l in swap_overlay_letters]
-        # Tear down old window
-        swap_animating = False
-        if swap_overlay_root:
-            swap_overlay_root.destroy()
-        swap_overlay_root = None
-        swap_overlay_canvas = None
-        swap_title_items.clear()
-        swap_overlay_letters.clear()
-        swap_pairs.clear()
-        # Determine colors
-        front_color = OVERLAY_TEXT_COLOR
-        back_color = OVERLAY_BACKGROUND_COLOR
-        if character_round_answer:
-            front_color = INVERSE_OVERLAY_TEXT_COLOR
-            back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
-        # Recreate window at new size
-        mx, my, mw, mh = _get_mpv_window_rect()
-        if not mw:
-            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-        _ws_mod = min(mw / 2560, mh / 1440)
-        def ws(n): return max(1, int(n * _ws_mod))
-        swap_title_font_ws = ("Courier New", ws(80), "bold")
-        lines = get_title_text_lines(saved_title_text, mw * 0.7 - ws(40), font=swap_title_font_ws)
-        overlay_width = round(mw * 0.7)
-        overlay_height = len(lines) * ws(100) + ws(320)
-        x = (mw - overlay_width) // 2
-        y = (mh - overlay_height) // 2
-        swap_overlay_root = tk.Toplevel()
-        swap_overlay_root.overrideredirect(True)
-        swap_overlay_root.attributes("-topmost", True)
-        transparent_color = "pink"
-        swap_overlay_root.configure(bg=transparent_color)
-        swap_overlay_root.attributes("-transparentcolor", transparent_color)
-        swap_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
-        swap_overlay_canvas = tk.Canvas(swap_overlay_root, bg=transparent_color, highlightthickness=0)
-        swap_overlay_canvas.pack(fill="both", expand=True)
-        swap_overlay_canvas.create_rectangle(
-            x, y, x + overlay_width, y + overlay_height,
-            fill=back_color, outline=front_color, width=ws(4)
-        )
-        title_label_text = "CHARACTER NAME:" if character_round_answer else "TITLE:"
-        swap_overlay_canvas.create_text(
-            x + ws(30), y + ws(30),
-            text=title_label_text, font=("Arial", ws(70), "bold", "underline"),
-            fill=front_color, anchor="nw"
-        )
-        spacing = ws(64)
-        line_y = y + ws(270)
-        target_coords = {}
-        for line in lines:
-            total_width = len(line) * spacing
-            line_x = mw // 2 - total_width // 2 + spacing // 2
-            for c in line:
-                if c == " ":
-                    line_x += spacing
-                    continue
-                idx = len(swap_title_items)
-                text_item = swap_overlay_canvas.create_text(
-                    line_x, line_y,
-                    text="_", font=("Courier New", ws(65)),
-                    fill=front_color, anchor="center"
-                )
-                target_coords[idx] = (line_x, line_y)
-                swap_title_items.append(text_item)
-                line_x += spacing
-            line_y += ws(100)
-        # Restore saved letter states at new scaled positions
-        for char, idx, correct in saved_letter_states:
-            if idx not in target_coords:
-                continue
-            tx, ty = target_coords[idx]
-            fill = front_color if correct else "gray"
-            letter_item = swap_overlay_canvas.create_text(
-                tx, ty, text=char, font=swap_title_font_ws, fill=fill, anchor="center"
-            )
-            swap_overlay_letters.append({
-                "item": letter_item, "char": char, "index": idx,
-                "pos": (tx, ty), "correct": correct, "moving": False
-            })
-        swap_pairs.extend(saved_pairs)
-        swap_completed = saved_completed
-        swap_animating = True
-        _register_overlay_for_tracking(swap_overlay_root, mw, mh, centered=False,
-                                       on_size_change=lambda: toggle_swap_overlay(rebuild=True))
+        target_coords, _ = _build_swap_base()
+        # Refresh stored positions to new OSD coords
+        for letter in swap_overlay_letters:
+            idx = letter["index"]
+            if idx in target_coords:
+                letter["pos"] = target_coords[idx]
+        _swap_stamp_letters()
         return
 
-    front_color = OVERLAY_TEXT_COLOR
-    back_color = OVERLAY_BACKGROUND_COLOR
-    if character_round_answer:
-        front_color = INVERSE_OVERLAY_TEXT_COLOR
-        back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
+    # Auto-rebuild if OSD size changed (window resize)
+    if swap_overlay_root and swap_overlay_letters:
+        try:
+            _cur_osd_w = int(player._p.osd_width  or 0) or 1920
+            _cur_osd_h = int(player._p.osd_height or 0) or 1080
+        except Exception:
+            _cur_osd_w, _cur_osd_h = 1920, 1080
+        if (_cur_osd_w, _cur_osd_h) != _swap_osd_size:
+            toggle_swap_overlay(num_swaps=num_swaps, rebuild=True)
+            return
+
+    bg, fg, gray = _swap_colors()
 
     if not swap_overlay_root:
         swap_title_text = get_base_title()
-        mx, my, mw, mh = _get_mpv_window_rect()
-        if not mw:
-            mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-        _ws_mod = min(mw / 2560, mh / 1440)
-        def ws(n): return max(1, int(n * _ws_mod))
-        swap_title_font_ws = ("Courier New", ws(80), "bold")
 
-        lines = get_title_text_lines(swap_title_text, mw * 0.7 - ws(40), font=swap_title_font_ws)
-        overlay_width = round(mw * 0.7)
-        overlay_height = len(lines) * ws(100) + ws(320)
-        x = (mw - overlay_width) // 2
-        y = (mh - overlay_height) // 2
+        try:
+            osd_w = int(player._p.osd_width  or 0) or 1920
+            osd_h = int(player._p.osd_height or 0) or 1080
+        except Exception:
+            osd_w, osd_h = 1920, 1080
 
-        swap_overlay_root = tk.Toplevel()
-        swap_overlay_root.overrideredirect(True)
-        swap_overlay_root.attributes("-topmost", True)
-        transparent_color = "pink"
-        swap_overlay_root.configure(bg=transparent_color)
-        swap_overlay_root.attributes("-transparentcolor", transparent_color)
-        swap_overlay_root.geometry(f"{mw}x{mh}+{mx}+{my}")
+        mod = min(osd_w / 2560, osd_h / 1440)
+        def ws(n): return max(1, int(n * mod))
 
-        swap_overlay_canvas = tk.Canvas(swap_overlay_root, bg=transparent_color, highlightthickness=0)
-        swap_overlay_canvas.pack(fill="both", expand=True)
+        spacing   = ws(64)
+        overlay_w = round(osd_w * 0.7)
+        lines     = _title_wrap_lines(swap_title_text, overlay_w - ws(40), _swap_ltr_font or _get_courier_font(
+            max(1, round(max(1, int(80 * min(osd_w/2560, osd_h/1440))) *
+                root.winfo_fpixels('1i') / 72))))
+        overlay_h = len(lines) * ws(100) + ws(320)
+        by = (osd_h - overlay_h) // 2
 
-        swap_overlay_canvas.create_rectangle(
-            x, y, x + overlay_width, y + overlay_height,
-            fill=back_color, outline=front_color, width=ws(4)
-        )
-        title_text = "TITLE:" if not character_round_answer else "CHARACTER NAME:"
-        swap_overlay_canvas.create_text(
-            x + ws(30), y + ws(30),
-            text=title_text, font=("Arial", ws(70), "bold", "underline"),
-            fill=front_color, anchor="nw"
-        )
-
-        swap_title_items.clear()
-        swap_overlay_letters.clear()
-
-        spacing = ws(64)
-        line_y = y + ws(270)
-        target_coords = {}
-        base_chars = []
-        base_indices = []
+        base_chars         = []
         word_visual_groups = []
-        current_word = []
+        current_word       = []
+        target_coords      = {}
 
+        line_y = by + ws(270)
         for line in lines:
-            total_width = len(line) * spacing
-            line_x = mw // 2 - total_width // 2 + spacing // 2
-            for c in line:
-                if c == " ":
+            chars   = list(line)
+            total_w = len(chars) * spacing
+            line_x  = osd_w // 2 - total_w // 2 + spacing // 2
+            for ch in chars:
+                if ch == " ":
                     if current_word:
                         word_visual_groups.append(current_word)
                         current_word = []
                     line_x += spacing
                     continue
-
                 idx = len(base_chars)
-                base_chars.append(c)
-                base_indices.append(idx)
+                base_chars.append(ch)
                 current_word.append(idx)
-
-                text_item = swap_overlay_canvas.create_text(
-                    line_x, line_y,
-                    text="_", font=("Courier New", ws(65)),
-                    fill=front_color, anchor="center"
-                )
                 target_coords[idx] = (line_x, line_y)
-                swap_title_items.append(text_item)
                 line_x += spacing
             if current_word:
                 word_visual_groups.append(current_word)
                 current_word = []
-            line_y += scl(100)
+            line_y += ws(100)
 
         total_letters = len(base_chars)
         kept = set(i for i, c in enumerate(base_chars) if c == "_")
 
-        # Ensure one correct letter per word
         for group in word_visual_groups:
             available = [i for i in group if base_chars[i] != "_" and i not in kept]
             if available:
                 kept.add(random.choice(available))
 
-        # Keep at least 25%
-        min_keep = round(total_letters * 0.25)
-        extra_needed = max(0, min_keep - len(kept))
-        remaining = [i for i in range(total_letters) if i not in kept and base_chars[i] != "_"]
+        min_keep      = round(total_letters * 0.25)
+        extra_needed  = max(0, min_keep - len(kept))
+        remaining     = [i for i in range(total_letters) if i not in kept and base_chars[i] != "_"]
         if extra_needed and len(remaining) >= extra_needed:
             kept.update(random.sample(remaining, extra_needed))
 
@@ -17751,102 +18148,96 @@ def toggle_swap_overlay(num_swaps=0, destroy=False, rebuild=False):
         random.shuffle(swappable)
         swap_pairs.clear()
         used = set()
-
         while len(swappable) >= 2:
             a = swappable.pop()
             b = swappable.pop()
             if base_chars[a] != base_chars[b]:
                 swap_pairs.append((a, b))
-                used.add(a)
-                used.add(b)
-
-        # Odd leftover? Mark it kept
+                used.add(a); used.add(b)
         if swappable:
             kept.add(swappable[0])
 
-        # Apply swaps
         scrambled = base_chars[:]
         for a, b in swap_pairs:
             scrambled[a], scrambled[b] = scrambled[b], scrambled[a]
 
-        # Draw final characters
         swap_overlay_letters.clear()
         for i, char in enumerate(scrambled):
             if i not in target_coords:
                 continue
-            tx, ty = target_coords[i]
+            cx, cy = target_coords[i]
             correct = scrambled[i] == base_chars[i]
-            fill = front_color if correct else "gray"
             if base_chars[i] == "_":
-                char = "_"
-                fill = front_color
-                correct = True
-            letter_item = swap_overlay_canvas.create_text(
-                tx, ty,
-                text=char,
-                font=swap_title_font_ws,
-                fill=fill,
-                anchor="center"
-            )
+                char = "_"; correct = True
             swap_overlay_letters.append({
-                "item": letter_item,
-                "char": char,
-                "index": i,
-                "pos": (tx, ty),
-                "correct": correct,
-                "moving": False
+                "char":      char,
+                "index":     i,
+                "pos":       (cx, cy),
+                "correct":   correct,
+                "base_char": base_chars[i],
             })
 
-        swap_completed = 0
-        swap_animating = True
-        _register_overlay_for_tracking(swap_overlay_root, mw, mh, centered=False,
-                                          on_size_change=lambda: toggle_swap_overlay(rebuild=True))
+        swap_completed    = 0
+        swap_overlay_root = True
 
+        # Build static base (creates overlays) then stamp all letters
+        _build_swap_base()
+        _swap_stamp_letters()
+
+    # --- Trigger next swap animation ---
     if swap_completed < num_swaps and swap_completed < len(swap_pairs):
         a, b = swap_pairs[swap_completed]
-        item_a = next(l for l in swap_overlay_letters if l["index"] == a)
-        item_b = next(l for l in swap_overlay_letters if l["index"] == b)
-        animate_swap_letters(item_a, item_b)
+        item_a = next((l for l in swap_overlay_letters if l["index"] == a), None)
+        item_b = next((l for l in swap_overlay_letters if l["index"] == b), None)
+        if item_a and item_b:
+            animate_swap_letters(item_a, item_b)
         swap_completed += 1
 
 
 def animate_swap_letters(letter_a, letter_b):
-    steps = 20
-    arc_height = 40
-    step = 0
+    global _swap_anim_after
+    steps = 10
+    step  = [0]
 
     x0, y0 = letter_a["pos"]
     x1, y1 = letter_b["pos"]
+    _, fg, _ = _swap_colors()
+    skip = {letter_a["index"], letter_b["index"]}
 
     def get_arc_pos(t, p0, p1, up=True):
-        """Return position along arc."""
+        try:
+            osd_w = int(player._p.osd_width  or 0) or 1920
+            osd_h = int(player._p.osd_height or 0) or 1080
+        except Exception:
+            osd_w, osd_h = 1920, 1080
+        mod   = min(osd_w / 2560, osd_h / 1440)
+        arc_h = max(20, int(40 * mod))
         x = p0[0] + (p1[0] - p0[0]) * t
         y = p0[1] + (p1[1] - p0[1]) * t
-        curve = arc_height * (1 - (2*t - 1)**2)  # peak at t=0.5
+        curve = arc_h * (1 - (2 * t - 1) ** 2)
         y -= curve if up else -curve
         return x, y
 
     def animate():
-        if player.is_playing():
-            nonlocal step
-            t = step / steps
-            if t > 1:
-                swap_overlay_canvas.coords(letter_a["item"], x1, y1)
-                swap_overlay_canvas.coords(letter_b["item"], x0, y0)
-                letter_a["pos"], letter_b["pos"] = (x1, y1), (x0, y0)
-                # ✅ Change colors after swap is complete
-                front_color = OVERLAY_TEXT_COLOR
-                if character_round_answer:
-                    front_color = INVERSE_OVERLAY_TEXT_COLOR
-                swap_overlay_canvas.itemconfig(letter_a["item"], fill=front_color)
-                swap_overlay_canvas.itemconfig(letter_b["item"], fill=front_color)
-                return
-            ax, ay = get_arc_pos(t, (x0, y0), (x1, y1), up=True)
-            bx, by = get_arc_pos(t, (x1, y1), (x0, y0), up=False)
-            swap_overlay_canvas.coords(letter_a["item"], ax, ay)
-            swap_overlay_canvas.coords(letter_b["item"], bx, by)
-            step += 1
-        swap_overlay_root.after(20, animate)
+        global _swap_anim_after
+        if _swap_letters_overlay is None:
+            return
+        t = step[0] / steps
+        if t > 1.0:
+            letter_a["char"], letter_b["char"] = letter_b["char"], letter_a["char"]
+            letter_a["correct"] = True
+            letter_b["correct"] = True
+            _swap_stamp_letters()
+            _swap_anim_after = None
+            return
+        ax, ay = get_arc_pos(t, (x0, y0), (x1, y1), up=True)
+        bx, by = get_arc_pos(t, (x1, y1), (x0, y0), up=False)
+        _swap_stamp_letters(skip_indices=skip, extra_letters=[
+            (letter_a["char"], ax, ay, fg),
+            (letter_b["char"], bx, by, fg),
+        ])
+        step[0] += 1
+        _swap_anim_after = root.after(16, animate)
 
     animate()
 
@@ -18496,56 +18887,132 @@ def check_nsfw(filename):
             return True
     return False
 
-pulsating_note_window = None
-pulsating_note_label = None
+_note_img_overlay = None
+_note_anim_after = None
 
 def spawn_pulsating_music_note(x=0, y=0, font_size=scl(100), destroy=False):
-    global pulsating_note_window, pulsating_note_label
+    global _note_img_overlay, _note_anim_after
+
+    # Cancel any running animation
+    if _note_anim_after is not None:
+        try:
+            root.after_cancel(_note_anim_after)
+        except Exception:
+            pass
+        _note_anim_after = None
+
+    # Remove existing overlay
+    if _note_img_overlay is not None:
+        try:
+            _note_img_overlay.remove()
+        except Exception:
+            pass
+        _note_img_overlay = None
 
     if destroy:
-        if pulsating_note_window and pulsating_note_window.winfo_exists():
-            pulsating_note_window.destroy()
-        pulsating_note_window = None
-        pulsating_note_label = None
         return
 
-    if pulsating_note_window and pulsating_note_window.winfo_exists():
-        pulsating_note_window.destroy()
+    # Pick a random bright color once per spawn
+    note_color = (random.randint(100, 255), random.randint(100, 255), random.randint(100, 255), 255)
 
-    # Create a transparent top-level window
-    pulsating_note_window = tk.Toplevel()
-    pulsating_note_window.overrideredirect(True)
-    pulsating_note_window.attributes("-topmost", True)
-    pulsating_note_window.attributes("-transparentcolor", "black")
-    pulsating_note_window.configure(bg="black")
+    # Try Segoe UI Emoji so we can render 🎵 properly; fall back to Arial ♪
+    _emoji_font_cache = {}
+    def _get_note_font(px):
+        if px not in _emoji_font_cache:
+            from PIL import ImageFont
+            for path in ["C:/Windows/Fonts/seguiemj.ttf", "C:/Windows/Fonts/seguisym.ttf"]:
+                try:
+                    _emoji_font_cache[px] = ImageFont.truetype(path, px)
+                    break
+                except Exception:
+                    pass
+            else:
+                _emoji_font_cache[px] = _get_ass_font(px, bold=False)
+        return _emoji_font_cache[px]
 
-    # Position window to center the note on screen at (x, y)
-    width = height = font_size * 3
-    pulsating_note_window.geometry(f"{width}x{height}+{x - width // 2}+{y - height // 2}")
+    NOTE_TEXT = "\U0001F3B5"  # 🎵
 
-    # Create and place the label
-    pulsating_note_label = tk.Label(pulsating_note_window, text="🎵", font=("Segoe UI Emoji", font_size),
-                                    bg="black", fg=generate_random_color(100, 255))
-    pulsating_note_label.place(relx=0.5, rely=0.5, anchor="center")
+    _note_img_overlay = player._p.create_image_overlay()
+    _step = [0.0]
+    _last_osd = [0, 0]  # track last known OSD size for dynamic rebase
+    _frame_cache = [None, None, None]  # [last_px, last_canvas_w, last_canvas]
 
-    # Cache the Win32 HWND so the WinEvent callback can move it without touching Python/Tkinter
-    global _note_hwnd
+    def _note_step():
+        global _note_img_overlay, _note_anim_after
+        if _note_img_overlay is None:
+            return
+        try:
+            cur_osd_w = player._p.osd_width or 1920
+            cur_osd_h = player._p.osd_height or 1080
+        except Exception:
+            cur_osd_w, cur_osd_h = 1920, 1080
+
+        # Dynamically rebase whenever OSD size changes
+        if cur_osd_w != _last_osd[0] or cur_osd_h != _last_osd[1]:
+            _last_osd[0] = cur_osd_w
+            _last_osd[1] = cur_osd_h
+            _step[1] = max(60, int(cur_osd_h * 0.30))   # base_px
+            _step[2] = int(_step[1] * 1.15)              # max_px
+            _frame_cache[0] = None  # force redraw on resize
+
+        base_px = _step[1]
+        max_px  = _step[2]
+
+        if not player.is_playing():
+            _note_anim_after = root.after(50, _note_step)
+            return
+
+        _step[0] += 0.9  # pulse speed
+        px = int(base_px + math.sin(_step[0]) * (max_px - base_px) / 2)
+
+        # Only re-render when the pixel size actually changed
+        if px == _frame_cache[0] and cur_osd_w == _frame_cache[1]:
+            _note_anim_after = root.after(50, _note_step)
+            return
+
+        from PIL import Image, ImageDraw
+        canvas = Image.new("RGBA", (cur_osd_w, cur_osd_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(canvas)
+        font = _get_note_font(px)
+        if font:
+            bbox = draw.textbbox((0, 0), NOTE_TEXT, font=font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            tx = (cur_osd_w - tw) // 2 - bbox[0]
+            ty = (cur_osd_h - th) // 2 - bbox[1]
+            # 8-point outline — vastly cheaper than a full grid loop
+            border = max(3, px // 22)
+            for dx, dy in ((-border, 0), (border, 0), (0, -border), (0, border),
+                           (-border, -border), (border, -border), (-border, border), (border, border)):
+                draw.text((tx + dx, ty + dy), NOTE_TEXT, font=font, fill=(0, 0, 0, 200))
+            draw.text((tx, ty), NOTE_TEXT, font=font, fill=note_color)
+
+        _frame_cache[0] = px
+        _frame_cache[1] = cur_osd_w
+        _frame_cache[2] = canvas
+        try:
+            _note_img_overlay.update(canvas)
+        except Exception:
+            _note_img_overlay = None
+            return
+        _note_anim_after = root.after(50, _note_step)
+
+    # Initialise the per-step size slots before the first call
     try:
-        import ctypes
-        pulsating_note_window.update_idletasks()
-        inner = pulsating_note_window.winfo_id()
-        _note_hwnd = ctypes.windll.user32.GetAncestor(inner, 2)  # GA_ROOT=2 → true top-level HWND
+        _init_h = player._p.osd_height or 1080
     except Exception:
-        _note_hwnd = 0
-
-    # Start animation
-    pulsate_music_icon(pulsating_note_label, sizes=(font_size, int(font_size * 1.2)))
+        _init_h = 1080
+    _step.append(max(60, int(_init_h * 0.30)))   # index 1: base_px
+    _step.append(int(_step[1] * 1.15))            # index 2: max_px
+    _step.append(0)                               # index 3: unused sentinel
+    _note_step()
 
 # =========================================
 #          *CHARACTER LIGHTNING ROUND
 # =========================================
 
 character_overlay_boxes = {}
+_character_img_overlay = None
 character_round_characters = []
 character_round_image_cache_default = []
 character_round_image_cache_default_urls =[
@@ -18632,120 +19099,80 @@ def get_character_round_characters(data=None, queue=False):
             character_round_characters = copy.copy(character_round_image_cache_default)
 
 def toggle_character_overlay(num_characters=4, destroy=False):
-    """Toggles the Character Lightning Round overlay in a 2x2 grid."""
-    global character_overlay_boxes, character_round_characters
+    """Toggles the Character Lightning Round overlay in a 2x2 grid (mpv PIL image overlay)."""
+    global character_overlay_boxes, character_round_characters, _character_img_overlay
 
     if destroy:
-        for box in character_overlay_boxes.values():
-            if box and box.winfo_exists():
-                screen_width = root.winfo_screenwidth()
-                animate_window(box, screen_width, box.winfo_y(), steps=20, delay=5, bounce=False, fade=None, destroy=True)
+        if _character_img_overlay is not None:
+            try:
+                _character_img_overlay.remove()
+            except Exception:
+                pass
+            _character_img_overlay = None
         character_overlay_boxes = {}
         return
 
-    # Only use available characters
     num_characters = min(num_characters, len(character_round_characters), 4)
+    if num_characters == 0:
+        return
 
-    # Layout relative to the mpv window for correct multi-monitor centering
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    img_size = int(min(mw, mh) * 0.35)
-    in_between = mw // 80
-    margin_y = (mh - img_size * 2 - in_between) // 2
-    margin_x = (mw - img_size * 2 - in_between) // 2
+    try:
+        osd_w = player._p.osd_width  or 1920
+        osd_h = player._p.osd_height or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
 
-    # Grid positions: (col, row)
+    img_size   = int(min(osd_w, osd_h) * 0.35)
+    in_between = osd_w // 80
+    margin_x   = (osd_w - img_size * 2 - in_between) // 2
+    margin_y   = (osd_h - img_size * 2 - in_between) // 2
+    border_px  = max(2, round(4 * min(osd_w / 1920, osd_h / 1080)))  # matches highlightthickness=4
+    inner      = img_size - border_px * 2
+
     grid_positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
+
+    from PIL import Image as _PILImage, ImageDraw as _PILDraw
+    canvas = _PILImage.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw   = _PILDraw.Draw(canvas)
 
     for i in range(num_characters):
-        key = f"char_{i}"
-        if key in character_overlay_boxes and character_overlay_boxes[key].winfo_exists():
-            continue
-
-        box = tk.Toplevel(root)
-        box.overrideredirect(True)
-        box.attributes("-topmost", True)
-        box.attributes("-alpha", 0.0)
-        box.configure(bg="black", highlightbackground="white", highlightthickness=4)
-
-        character_overlay_boxes[key] = box
-
-        # Load and resize image to fit the current mpv-window-based img_size
-        if i < len(character_round_characters):
-            tk_img = character_round_characters[i]
-        else:
-            tk_img = character_round_image_cache_default[i]
-
-        # Rescale to the current img_size (images were cached at screen-size, not mpv-window-size)
-        try:
-            pil_img = ImageTk.getimage(tk_img)
-            pil_img = pil_img.resize((img_size, img_size), Image.LANCZOS)
-            tk_img = ImageTk.PhotoImage(pil_img)
-        except Exception:
-            pass
-
-        # Set image and label
-        label = tk.Label(box, image=tk_img, bg="black")
-        label.image = tk_img
-        label.pack()
-
-        # Compute position in grid (offset by mpv window origin)
         col, row = grid_positions[i]
-        x = mx + margin_x + col * (img_size + in_between)
-        y = my + margin_y + row * (img_size + in_between)
+        x = margin_x + col * (img_size + in_between)
+        y = margin_y + row * (img_size + in_between)
 
-        # Set size and position directly
-        box.geometry(f"{img_size}x{img_size}+{x}+{y}")
-        box.attributes("-alpha", 0.9)  # Ensure it's visible
-        _register_overlay_for_tracking(box, img_size, img_size, centered=False,
-                                       on_resize=_update_character_overlay_positions)
+        # Black background (alpha=0.9 → 230)
+        draw.rectangle([x, y, x + img_size - 1, y + img_size - 1], fill=(0, 0, 0, 230))
 
-_character_overlay_last_img_size = 0
-
-def _update_character_overlay_positions():
-    """Reposition (and rescale only when size changed) all character overlay boxes."""
-    global _character_overlay_last_img_size
-    if not character_overlay_boxes:
-        return
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    img_size = int(min(mw, mh) * 0.35)
-    in_between = mw // 80
-    margin_y = (mh - img_size * 2 - in_between) // 2
-    margin_x = (mw - img_size * 2 - in_between) // 2
-    grid_positions = [(0, 0), (1, 0), (0, 1), (1, 1)]
-    size_changed = (img_size != _character_overlay_last_img_size)
-    if size_changed:
-        _character_overlay_last_img_size = img_size
-    for i, key in enumerate(sorted(character_overlay_boxes)):
-        box = character_overlay_boxes.get(key)
-        if not box or not box.winfo_exists():
-            continue
-        col, row = grid_positions[i % 4]
-        x = mx + margin_x + col * (img_size + in_between)
-        y = my + margin_y + row * (img_size + in_between)
-        # Only rescale images when the window size actually changed
-        if size_changed:
-            src_idx = int(key.split('_')[1]) if '_' in key else i
+        # Character image
+        src = (character_round_characters[i]
+               if i < len(character_round_characters)
+               else character_round_image_cache_default[i]
+               if i < len(character_round_image_cache_default)
+               else None)
+        if src is not None:
             try:
-                if src_idx < len(character_round_characters):
-                    raw = character_round_characters[src_idx]
-                else:
-                    raw = character_round_image_cache_default[src_idx]
-                pil_img = ImageTk.getimage(raw)
-                pil_img = pil_img.resize((img_size, img_size), Image.LANCZOS)
-                tk_img = ImageTk.PhotoImage(pil_img)
-                lbl = box.winfo_children()
-                if lbl:
-                    lbl[0].configure(image=tk_img)
-                    lbl[0].image = tk_img
+                pil_img = ImageTk.getimage(src)
+                pil_img = pil_img.resize((inner, inner), Image.LANCZOS)
+                if pil_img.mode != "RGBA":
+                    pil_img = pil_img.convert("RGBA")
+                # Apply 0.9 alpha to image pixels to match Toplevel alpha
+                r, g, b, a = pil_img.split()
+                a = a.point(lambda v: int(v * 0.9))
+                pil_img = Image.merge("RGBA", (r, g, b, a))
+                canvas.paste(pil_img, (x + border_px, y + border_px), pil_img)
             except Exception:
                 pass
-            _register_overlay_for_tracking(box, img_size, img_size, centered=False,
-                                           on_resize=_update_character_overlay_positions)
-        box.geometry(f"{img_size}x{img_size}+{x}+{y}")
+
+        # White border (alpha=230 to match Tkinter 0.9 window alpha)
+        draw.rectangle([x, y, x + img_size - 1, y + img_size - 1],
+                       outline=(255, 255, 255, 230), width=border_px)
+
+    if _character_img_overlay is None:
+        _character_img_overlay = player._p.create_image_overlay()
+    _character_img_overlay.update(canvas)
+    character_overlay_boxes = {"active": True}
+
+
 
 # =========================================
 #       *COVER LIGHTNING ROUND
@@ -19168,36 +19595,47 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
 
     return return_image(name, tk_img, gender, desc, queue=queue)
 
-character_image_overlay = None
-_character_image_overlay_label = None
+character_image_overlay = None   # mpv image overlay object
 _character_image_overlay_source = None  # stores the last 'character' arg for resizing
 
 def toggle_character_image_overlay(character=None, destroy=False):
-    global character_image_overlay, _character_image_overlay_label, _character_image_overlay_source
+    global character_image_overlay, _character_image_overlay_source
 
     if destroy or not character:
-        if character_image_overlay and character_image_overlay.winfo_exists():
-            character_image_overlay.destroy()
-        character_image_overlay = None
-        _character_image_overlay_label = None
+        if character_image_overlay is not None:
+            try:
+                character_image_overlay.remove()
+            except Exception:
+                pass
+            character_image_overlay = None
         _character_image_overlay_source = None
         return
 
-    if character_image_overlay and character_image_overlay.winfo_exists():
-        # Already shown — update source first so the new image is applied, then resize/reposition
-        _character_image_overlay_source = character
-        _update_character_image_overlay()
+    _character_image_overlay_source = character
+    _update_character_image_overlay()
+    return
+
+    _update_character_image_overlay()
+
+
+def _update_character_image_overlay():
+    """Build and push the character image to the mpv OSD overlay."""
+    global character_image_overlay
+    character = _character_image_overlay_source
+    if not character:
         return
 
-    # Sizing relative to the mpv window for correct multi-monitor centering
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    max_width = int(mw * width_percent)
-    max_height = int(mh * 0.7)
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
 
-    # Get original image (single) or combine multiple images side-by-side
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    max_width  = int(osd_w * width_percent)
+    max_height = int(osd_h * 0.7)
+
+    # Build PIL image (single or multi-image side-by-side)
     if isinstance(character, (list, tuple)):
         pil_images = []
         for img in character:
@@ -19205,7 +19643,6 @@ def toggle_character_image_overlay(character=None, destroy=False):
                 continue
             try:
                 rgba_img = ImageTk.getimage(img).convert("RGBA")
-                # Trim transparent padding to avoid visible seam/gap when stitching.
                 try:
                     alpha_bbox = rgba_img.getchannel("A").getbbox()
                     if alpha_bbox:
@@ -19215,10 +19652,8 @@ def toggle_character_image_overlay(character=None, destroy=False):
                 pil_images.append(rgba_img)
             except Exception:
                 continue
-
         if not pil_images:
             return
-
         if len(pil_images) == 1:
             pil_image = pil_images[0]
         else:
@@ -19229,123 +19664,43 @@ def toggle_character_image_overlay(character=None, destroy=False):
                     new_w = int(img.width * (target_height / img.height))
                     img = img.resize((max(1, new_w), target_height), Image.LANCZOS)
                 normalized.append(img)
-
-            spacing = 0
-            total_width = sum(img.width for img in normalized) + spacing * (len(normalized) - 1)
+            total_width = sum(img.width for img in normalized)
             combined = Image.new("RGBA", (total_width, target_height), (0, 0, 0, 0))
-
             x_offset = 0
             for img in normalized:
                 combined.paste(img, (x_offset, 0), img)
-                x_offset += img.width + spacing
-
+                x_offset += img.width
             pil_image = combined
     else:
-        pil_image = ImageTk.getimage(character)
+        pil_image = ImageTk.getimage(character).convert("RGBA")
+        try:
+            alpha_bbox = pil_image.getchannel("A").getbbox()
+            if alpha_bbox:
+                pil_image = pil_image.crop(alpha_bbox)
+        except Exception:
+            pass
 
     img_w, img_h = pil_image.size
-    
-    # Constrain both width and height
-    width_scale = max_width / img_w
-    height_scale = max_height / img_h
-    scale = min(width_scale, height_scale)
-    
-    new_w = max(1, int(img_w * scale))
-    new_h = max(1, int(img_h * scale))
-    resized_image = pil_image.resize((new_w, new_h), Image.LANCZOS)
+    scale  = min(max_width / img_w, max_height / img_h)
+    new_w  = max(1, int(img_w * scale))
+    new_h  = max(1, int(img_h * scale))
+    resized = pil_image.resize((new_w, new_h), Image.LANCZOS).convert("RGBA")
 
-    # White border
-    bordered_image = Image.new("RGB", (new_w + scl(8), new_h + scl(8)), "black")
-    bordered_image.paste(resized_image, (4, 4))
+    border = scl(4)
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    cx = (osd_w - new_w) // 2
+    cy = int((osd_h - new_h) // 2 - osd_h * 0.025)
+    # Black border rect
+    draw = __import__("PIL.ImageDraw", fromlist=["ImageDraw"]).Draw(canvas)
+    draw.rectangle([cx - border, cy - border, cx + new_w + border, cy + new_h + border], fill=(0, 0, 0, 242))
+    canvas.paste(resized, (cx, cy), resized)
 
-    tk_img = ImageTk.PhotoImage(bordered_image)
-
-    # Create overlay window
-    character_image_overlay = tk.Toplevel(root)
-    character_image_overlay.overrideredirect(True)
-    character_image_overlay.attributes("-topmost", True)
-    character_image_overlay.attributes("-alpha", 0.95)
-    character_image_overlay.configure(bg="black")
-
-    x = mx + (mw - new_w) // 2
-    y = my + (mh - new_h) // 2 - int(mh * 0.025)  # Move up a bit more for better positioning
-    character_image_overlay.geometry(f"{new_w + scl(8)}x{new_h + scl(8)}+{x}+{y}")
-
-    _character_image_overlay_label = tk.Label(character_image_overlay, image=tk_img, bg="black", borderwidth=0)
-    _character_image_overlay_label.image = tk_img
-    _character_image_overlay_label.pack()
-    _character_image_overlay_source = character
-    _register_overlay_for_tracking(character_image_overlay, new_w + scl(8), new_h + scl(8), -0.025,
-                                   on_resize=_update_character_image_overlay)
-
-def _update_character_image_overlay():
-    """Resize and reposition the character image overlay to match the current mpv window."""
-    global character_image_overlay, _character_image_overlay_label, _character_image_overlay_source
-    if not character_image_overlay or not character_image_overlay.winfo_exists():
-        return
-    character = _character_image_overlay_source
-    if not character:
-        return
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    max_width = int(mw * width_percent)
-    max_height = int(mh * 0.7)
-    if isinstance(character, (list, tuple)):
-        pil_images = []
-        for img in character:
-            if not img:
-                continue
-            try:
-                rgba_img = ImageTk.getimage(img).convert("RGBA")
-                try:
-                    alpha_bbox = rgba_img.getchannel("A").getbbox()
-                    if alpha_bbox:
-                        rgba_img = rgba_img.crop(alpha_bbox)
-                except Exception:
-                    pass
-                pil_images.append(rgba_img)
-            except Exception:
-                continue
-        if not pil_images:
-            return
-        if len(pil_images) == 1:
-            pil_image = pil_images[0]
-        else:
-            target_height = max(img.height for img in pil_images)
-            normalized = []
-            for img in pil_images:
-                if img.height != target_height and img.height > 0:
-                    new_w2 = int(img.width * (target_height / img.height))
-                    img = img.resize((max(1, new_w2), target_height), Image.LANCZOS)
-                normalized.append(img)
-            total_width = sum(img.width for img in normalized)
-            combined = Image.new("RGBA", (total_width, target_height), (0, 0, 0, 0))
-            x_off = 0
-            for img in normalized:
-                combined.paste(img, (x_off, 0), img)
-                x_off += img.width
-            pil_image = combined
-    else:
-        pil_image = ImageTk.getimage(character)
-    img_w, img_h = pil_image.size
-    scale = min(max_width / img_w, max_height / img_h)
-    new_w = max(1, int(img_w * scale))
-    new_h = max(1, int(img_h * scale))
-    resized = pil_image.resize((new_w, new_h), Image.LANCZOS)
-    bordered = Image.new("RGB", (new_w + scl(8), new_h + scl(8)), "black")
-    bordered.paste(resized, (4, 4))
-    tk_img = ImageTk.PhotoImage(bordered)
-    win_w = new_w + scl(8)
-    win_h = new_h + scl(8)
-    x = mx + (mw - win_w) // 2
-    y = my + (mh - win_h) // 2 - int(mh * 0.025)
-    character_image_overlay.geometry(f"{win_w}x{win_h}+{x}+{y}")
-    _character_image_overlay_label.configure(image=tk_img)
-    _character_image_overlay_label.image = tk_img
-    _register_overlay_for_tracking(character_image_overlay, win_w, win_h, -0.025,
-                                   on_resize=_update_character_image_overlay)
+    if character_image_overlay is None:
+        character_image_overlay = player._p.create_image_overlay()
+    try:
+        character_image_overlay.update(canvas)
+    except Exception:
+        pass
 
 def generate_weighted_zoomed_parts(tk_img, num_parts=4, target_size=(400, 400)):
     """
@@ -19554,66 +19909,64 @@ def generate_pixelation_steps(steps=6, final_pixel_size=4, max_pixel_size=35, pi
     for px in pixel_sizes:
         downscaled = pil_image.resize((max(1, width // px), max(1, height // px)), Image.NEAREST)
         pixelated = downscaled.resize((width, height), Image.NEAREST)
-        pixelated_images.append(ImageTk.PhotoImage(pixelated))
+        pixelated_images.append(pixelated)  # store PIL images directly
 
     character_pixel_images = pixelated_images
 
-character_pixel_overlay = None
-character_pixel_label = None
-character_pixel_images = []  # Store precomputed pixelation steps
+character_pixel_overlay = None  # mpv image overlay object
+character_pixel_images = []  # Store precomputed pixelation steps (PIL Images)
 
 def toggle_character_pixel_overlay(step=0, destroy=False):
     """
     Shows the character image pixelated at the given step (0 = most pixelated).
     If destroy=True, removes the overlay.
     """
-    global character_pixel_overlay, character_pixel_label, character_pixel_images
+    global character_pixel_overlay
 
     if destroy:
-        if character_pixel_overlay and character_pixel_overlay.winfo_exists():
-            character_pixel_overlay.destroy()
-        character_pixel_overlay = None
-        character_pixel_label = None
+        if character_pixel_overlay is not None:
+            try:
+                character_pixel_overlay.remove()
+            except Exception:
+                pass
+            character_pixel_overlay = None
         return
 
     if not character_pixel_images or step >= len(character_pixel_images):
         return
 
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
 
-    # Scale to 70% of height, keep aspect ratio
-    img = ImageTk.getimage(character_pixel_images[step])
-    img_w, img_h = img.size
-    scale = (mh * 0.7) / img_h
-    new_w, new_h = int(img_w * scale), int(img_h * scale)
+    pil_step = character_pixel_images[step]
+    img_w, img_h = pil_step.size
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_w = int(osd_w * width_percent)
+    target_h = int(osd_h * 0.7)
+    scale = min(target_w / img_w, target_h / img_h)
+    new_w, new_h = max(1, int(img_w * scale)), max(1, int(img_h * scale))
+    resized = pil_step.resize((new_w, new_h), Image.LANCZOS)
 
-    resized_img = img.resize((new_w, new_h), Image.LANCZOS)
-    display_img = ImageTk.PhotoImage(resized_img)
+    border = scl(4)
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    cx = (osd_w - new_w) // 2
+    cy = (osd_h - new_h) // 2
+    from PIL import ImageDraw
+    ImageDraw.Draw(canvas).rectangle(
+        [cx - border, cy - border, cx + new_w + border, cy + new_h + border],
+        fill=(0, 0, 0, 242)
+    )
+    canvas.paste(resized.convert("RGBA"), (cx, cy))
 
-    if not character_pixel_overlay or not character_pixel_overlay.winfo_exists():
-        character_pixel_overlay = tk.Toplevel(root)
-        character_pixel_overlay.overrideredirect(True)
-        character_pixel_overlay.attributes("-topmost", True)
-        character_pixel_overlay.attributes("-alpha", 0.95)
-        character_pixel_overlay.configure(bg="black", highlightbackground="white", highlightthickness=4)
-
-        character_pixel_label = tk.Label(character_pixel_overlay, image=display_img, bg="black", bd=0)
-        character_pixel_label.image = display_img
-        character_pixel_label.pack()
-
-        x = mx + (mw - new_w) // 2
-        y = my + (mh - new_h) // 2
-        character_pixel_overlay.geometry(f"{new_w}x{new_h}+{x}+{y}")
-        _register_overlay_for_tracking(character_pixel_overlay, new_w, new_h)
-    else:
-        x = mx + (mw - new_w) // 2
-        y = my + (mh - new_h) // 2
-        character_pixel_overlay.geometry(f"{new_w}x{new_h}+{x}+{y}")
-        character_pixel_label.configure(image=display_img)
-        character_pixel_label.image = display_img
-        _register_overlay_for_tracking(character_pixel_overlay, new_w, new_h)
+    if character_pixel_overlay is None:
+        character_pixel_overlay = player._p.create_image_overlay()
+    try:
+        character_pixel_overlay.update(canvas)
+    except Exception:
+        pass
 
 # =========================================
 #          *REVEAL LIGHTNING ROUND
@@ -19640,10 +19993,8 @@ def get_next_c_reveal_mode():
     last_c_reveal_mode = available_c_reveal_modes.pop(0)
     return last_c_reveal_mode
 
-reveal_image_window = None
-reveal_cover_id = None
-reveal_canvas = None
-reveal_direction = None
+reveal_image_window  = None   # mpv image overlay
+reveal_direction     = None
 
 def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top"):
     """
@@ -19651,14 +20002,16 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top")
     `percent` should be between 0.0 (fully revealed) and 1.0 (fully covered).
     `direction` can be 'top', 'bottom', 'left', or 'right' to control the reveal direction.
     """
-    global reveal_image_window, reveal_cover_id, reveal_canvas, reveal_direction
+    global reveal_image_window, reveal_direction
 
     if destroy:
-        if reveal_image_window and reveal_image_window.winfo_exists():
-            animate_window(reveal_image_window, root.winfo_screenwidth(), reveal_image_window.winfo_y(), steps=20, destroy=True)
-        reveal_image_window = None
-        reveal_cover_id = None
-        reveal_canvas = None
+        if reveal_image_window is not None:
+            try:
+                reveal_image_window.remove()
+            except Exception:
+                pass
+            reveal_image_window = None
+        reveal_direction = None
         return
 
     if light_cover_image:
@@ -19667,83 +20020,69 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top")
         if not character_round_answer:
             return
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(mw * width_percent)
-    target_height = int(mh * 0.7)
 
-    # Use smaller scale so image fits within both width and height
-    scale_w = target_width / pil_img.width
-    scale_h = target_height / pil_img.height
-    scale = min(scale_w, scale_h)
-    new_size = (int(pil_img.width * scale), int(pil_img.height * scale))
-    pil_img = pil_img.resize(new_size, Image.LANCZOS)
-    tk_img = ImageTk.PhotoImage(pil_img)
-
-    if not reveal_image_window or not reveal_image_window.winfo_exists():
+    if reveal_direction is None:
         reveal_direction = direction
-        reveal_image_window = tk.Toplevel(root)
-        reveal_image_window.overrideredirect(True)
-        reveal_image_window.attributes("-topmost", True)
-        reveal_image_window.attributes("-alpha", 0.98)
-        reveal_image_window.configure(bg="white", highlightbackground="black", highlightthickness=4)
 
-        x = mx + (mw - new_size[0]) // 2
-        y = my + (mh - new_size[1]) // 2
-        reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
-        _register_overlay_for_tracking(reveal_image_window, new_size[0], new_size[1])
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
 
-        reveal_canvas = tk.Canvas(reveal_image_window, width=new_size[0], height=new_size[1], highlightthickness=0)
-        reveal_canvas.pack()
-        reveal_canvas.create_image(0, 0, anchor="nw", image=tk_img)
-        reveal_canvas.image = tk_img
+    width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
+    target_width  = int(osd_w * width_percent)
+    target_height = int(osd_h * 0.7)
+    scale = min(target_width / pil_img.width, target_height / pil_img.height)
+    iw = int(pil_img.width  * scale)
+    ih = int(pil_img.height * scale)
+    pil_img = pil_img.resize((iw, ih), Image.LANCZOS).convert("RGBA")
 
-        reveal_cover_id = reveal_canvas.create_rectangle(0, 0, new_size[0], new_size[1], fill="black", outline="")
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    ix = (osd_w - iw) // 2
+    iy = (osd_h - ih) // 2
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(canvas)
+    border = scl(4)
+    draw.rectangle([ix - border, iy - border, ix + iw + border, iy + ih + border], fill=(0, 0, 0, 242))
+    canvas.paste(pil_img, (ix, iy))
 
-    else:
-        # Resize window/canvas to current mpv window size, refresh image and cover rect
-        x = mx + (mw - new_size[0]) // 2
-        y = my + (mh - new_size[1]) // 2
-        reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
-        reveal_canvas.config(width=new_size[0], height=new_size[1])
-        reveal_canvas.delete("all")
-        reveal_canvas.create_image(0, 0, anchor="nw", image=tk_img)
-        reveal_canvas.image = tk_img
-        reveal_cover_id = reveal_canvas.create_rectangle(0, 0, new_size[0], new_size[1], fill="black", outline="")
-        _register_overlay_for_tracking(reveal_image_window, new_size[0], new_size[1])
+    # Draw black cover rect according to direction + percent
+    if reveal_direction == "top":
+        draw.rectangle([ix, iy, ix + iw, iy + int(ih * percent)], fill=(0, 0, 0, 255))
+    elif reveal_direction == "bottom":
+        draw.rectangle([ix, iy + int(ih * (1 - percent)), ix + iw, iy + ih], fill=(0, 0, 0, 255))
+    elif reveal_direction == "left":
+        draw.rectangle([ix, iy, ix + int(iw * percent), iy + ih], fill=(0, 0, 0, 255))
+    elif reveal_direction == "right":
+        draw.rectangle([ix + int(iw * (1 - percent)), iy, ix + iw, iy + ih], fill=(0, 0, 0, 255))
 
-    # Update cover size based on direction and percent
-    if reveal_canvas and reveal_cover_id:
-        w, h = new_size
-        if reveal_direction == "top":
-            reveal_canvas.coords(reveal_cover_id, 0, 0, w, int(h * percent))
-        elif reveal_direction == "bottom":
-            reveal_canvas.coords(reveal_cover_id, 0, int(h * (1 - percent)), w, h)
-        elif reveal_direction == "left":
-            reveal_canvas.coords(reveal_cover_id, 0, 0, int(w * percent), h)
-        elif reveal_direction == "right":
-            reveal_canvas.coords(reveal_cover_id, int(w * (1 - percent)), 0, w, h)
+    if reveal_image_window is None:
+        reveal_image_window = player._p.create_image_overlay()
+    try:
+        reveal_image_window.update(canvas)
+    except Exception:
+        pass
 
 # =========================================
 #        *BLUR LIGHTNING ROUND
 # =========================================
 
-blur_reveal_image_window = None
-blur_reveal_canvas = None
+blur_reveal_image_window = None   # mpv image overlay
 def toggle_character_blur_reveal_overlay(percent=1.0, destroy=False):
     """
     Displays the character image with a blurred overlay that clears as percent decreases.
     percent: 1.0 = fully blurred, 0.0 = fully clear.
     """
-    global blur_reveal_image_window, blur_reveal_canvas
+    global blur_reveal_image_window
 
     if destroy:
-        if blur_reveal_image_window and blur_reveal_image_window.winfo_exists():
-            blur_reveal_image_window.destroy()
-        blur_reveal_image_window = None
-        blur_reveal_canvas = None
+        if blur_reveal_image_window is not None:
+            try:
+                blur_reveal_image_window.remove()
+            except Exception:
+                pass
+            blur_reveal_image_window = None
         return
 
     if light_cover_image:
@@ -19752,58 +20091,44 @@ def toggle_character_blur_reveal_overlay(percent=1.0, destroy=False):
         if not character_round_answer:
             return
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
+
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(mw * width_percent)
-    target_height = int(mh * 0.7)
-    
-    # Use smaller scale so image fits within both width and height
-    scale_w = target_width / pil_img.width
-    scale_h = target_height / pil_img.height
-    scale = min(scale_w, scale_h)
-    new_size = (int(pil_img.width * scale), int(pil_img.height * scale))
-    pil_img = pil_img.resize(new_size, Image.LANCZOS)
+    target_width  = int(osd_w * width_percent)
+    target_height = int(osd_h * 0.7)
+    scale = min(target_width / pil_img.width, target_height / pil_img.height)
+    iw = int(pil_img.width  * scale)
+    ih = int(pil_img.height * scale)
+    pil_img = pil_img.resize((iw, ih), Image.LANCZOS)
 
-    # Apply blur based on percent
     blur_radius = int(50 * percent)
-    blurred_img = pil_img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    tk_blurred_img = ImageTk.PhotoImage(blurred_img)
+    blurred = pil_img.filter(ImageFilter.GaussianBlur(radius=blur_radius)).convert("RGBA")
 
-    # Create overlay window
-    if not blur_reveal_image_window or not blur_reveal_image_window.winfo_exists():
-        blur_reveal_image_window = tk.Toplevel(root)
-        blur_reveal_image_window.overrideredirect(True)
-        blur_reveal_image_window.attributes("-topmost", True)
-        blur_reveal_image_window.attributes("-alpha", 0.98)
-        blur_reveal_image_window.configure(bg="white", highlightbackground="black", highlightthickness=4)
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    ix = (osd_w - iw) // 2
+    iy = (osd_h - ih) // 2
+    from PIL import ImageDraw
+    border = scl(4)
+    ImageDraw.Draw(canvas).rectangle([ix - border, iy - border, ix + iw + border, iy + ih + border], fill=(0, 0, 0, 242))
+    canvas.paste(blurred, (ix, iy))
 
-        x = mx + (mw - new_size[0]) // 2
-        y = my + (mh - new_size[1]) // 2
-        blur_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
-        _register_overlay_for_tracking(blur_reveal_image_window, new_size[0], new_size[1])
-
-        blur_reveal_canvas = tk.Canvas(blur_reveal_image_window, width=new_size[0], height=new_size[1], highlightthickness=0)
-        blur_reveal_canvas.pack()
-        blur_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_blurred_img)
-        blur_reveal_canvas.image = tk_blurred_img
-    else:
-        x = mx + (mw - new_size[0]) // 2
-        y = my + (mh - new_size[1]) // 2
-        blur_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
-        blur_reveal_canvas.config(width=new_size[0], height=new_size[1])
-        blur_reveal_canvas.delete("all")
-        blur_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_blurred_img)
-        blur_reveal_canvas.image = tk_blurred_img
-        _register_overlay_for_tracking(blur_reveal_image_window, new_size[0], new_size[1])
+    if blur_reveal_image_window is None:
+        blur_reveal_image_window = player._p.create_image_overlay()
+    try:
+        blur_reveal_image_window.update(canvas)
+    except Exception:
+        pass
 
 # =========================================
 #          *ZOOM LIGHTNING ROUND
 # =========================================
 
-zoom_reveal_image_window = None
-zoom_reveal_canvas = None
+zoom_reveal_image_window = None   # mpv image overlay
 zoom_reveal_crop = None
 
 def pick_interesting_zoom_crop(pil_img, crop_size=(0.35, 0.35), attempts=50, initial_zoom=16):
@@ -19867,13 +20192,15 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
     Displays the character image zoomed in at an interesting spot, then zooms out as percent decreases.
     percent: 1.0 = fully zoomed in, 0.0 = fully zoomed out.
     """
-    global zoom_reveal_image_window, zoom_reveal_canvas, zoom_reveal_crop
+    global zoom_reveal_image_window, zoom_reveal_crop
 
     if destroy:
-        if 'zoom_reveal_image_window' in globals() and zoom_reveal_image_window and zoom_reveal_image_window.winfo_exists():
-            zoom_reveal_image_window.destroy()
-        zoom_reveal_image_window = None
-        zoom_reveal_canvas = None
+        if zoom_reveal_image_window is not None:
+            try:
+                zoom_reveal_image_window.remove()
+            except Exception:
+                pass
+            zoom_reveal_image_window = None
         zoom_reveal_crop = None
         return
 
@@ -19883,17 +20210,17 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
         if not character_round_answer:
             return
         pil_img = ImageTk.getimage(character_round_answer[1]).copy()
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
+
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(mw * width_percent)
-    target_height = int(mh * 0.7)
-    
-    # Use smaller scale so image fits within both width and height
-    scale_w = target_width / pil_img.width
-    scale_h = target_height / pil_img.height
-    scale = min(scale_w, scale_h)
+    target_width  = int(osd_w * width_percent)
+    target_height = int(osd_h * 0.7)
+    scale = min(target_width / pil_img.width, target_height / pil_img.height)
     new_size = (int(pil_img.width * scale), int(pil_img.height * scale))
     pil_img = pil_img.resize(new_size, Image.LANCZOS)
 
@@ -19984,39 +20311,29 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
     cropped = cropped.resize((scaled_w, scaled_h), Image.LANCZOS)
     
     # Center the scaled crop on a black background
-    composite = Image.new("RGB", new_size, "black")
+    composite = Image.new("RGBA", new_size, (0, 0, 0, 255))
     offset_x = (new_size[0] - scaled_w) // 2
     offset_y = (new_size[1] - scaled_h) // 2
-    composite.paste(cropped, (offset_x, offset_y))
-    
-    tk_cropped_img = ImageTk.PhotoImage(composite)
+    composite.paste(cropped.convert("RGBA"), (offset_x, offset_y))
 
-    # Create overlay window
-    if 'zoom_reveal_image_window' not in globals() or not zoom_reveal_image_window or not zoom_reveal_image_window.winfo_exists():
-        zoom_reveal_image_window = tk.Toplevel(root)
-        zoom_reveal_image_window.overrideredirect(True)
-        zoom_reveal_image_window.attributes("-topmost", True)
-        zoom_reveal_image_window.attributes("-alpha", 0.98)
-        zoom_reveal_image_window.configure(bg="white", highlightbackground="black", highlightthickness=4)
+    # Place composite centered on full OSD canvas
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    ix = (osd_w - new_size[0]) // 2
+    iy = (osd_h - new_size[1]) // 2
+    from PIL import ImageDraw as _ImageDraw
+    border = scl(4)
+    _ImageDraw.Draw(canvas).rectangle(
+        [ix - border, iy - border, ix + new_size[0] + border, iy + new_size[1] + border],
+        fill=(0, 0, 0, 242)
+    )
+    canvas.paste(composite, (ix, iy))
 
-        x = mx + (mw - new_size[0]) // 2
-        y = my + (mh - new_size[1]) // 2
-        zoom_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
-        _register_overlay_for_tracking(zoom_reveal_image_window, new_size[0], new_size[1])
-
-        zoom_reveal_canvas = tk.Canvas(zoom_reveal_image_window, width=new_size[0], height=new_size[1], highlightthickness=0)
-        zoom_reveal_canvas.pack()
-        zoom_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_cropped_img)
-        zoom_reveal_canvas.image = tk_cropped_img
-    else:
-        x = mx + (mw - new_size[0]) // 2
-        y = my + (mh - new_size[1]) // 2
-        zoom_reveal_image_window.geometry(f"{new_size[0]}x{new_size[1]}+{x}+{y}")
-        zoom_reveal_canvas.config(width=new_size[0], height=new_size[1])
-        zoom_reveal_canvas.delete("all")
-        zoom_reveal_canvas.create_image(0, 0, anchor="nw", image=tk_cropped_img)
-        zoom_reveal_canvas.image = tk_cropped_img
-        _register_overlay_for_tracking(zoom_reveal_image_window, new_size[0], new_size[1])
+    if zoom_reveal_image_window is None:
+        zoom_reveal_image_window = player._p.create_image_overlay()
+    try:
+        zoom_reveal_image_window.update(canvas)
+    except Exception:
+        pass
 
 # =========================================
 #          *SLICE LIGHTNING ROUND
@@ -20043,8 +20360,7 @@ def generate_image_slices(tk_img, num_slices=10, vertical=True):
         slices.append((part, box))
     return slices
 
-slice_overlay_window = None
-slice_overlay_label = None
+slice_overlay_window = None   # mpv image overlay
 slice_overlay_parts = []
 slice_overlay_order = []
 
@@ -20054,13 +20370,15 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
     If swap=True, all slices are visible but their positions are shuffled.
     If swap=False, only num_revealed slices are shown in a random order.
     """
-    global slice_overlay_window, slice_overlay_label, slice_overlay_parts, slice_overlay_order
+    global slice_overlay_window, slice_overlay_parts, slice_overlay_order
 
     if destroy:
-        if slice_overlay_window and slice_overlay_window.winfo_exists():
-            slice_overlay_window.destroy()
-        slice_overlay_window = None
-        slice_overlay_label = None
+        if slice_overlay_window is not None:
+            try:
+                slice_overlay_window.remove()
+            except Exception:
+                pass
+            slice_overlay_window = None
         slice_overlay_parts = []
         slice_overlay_order = []
         return
@@ -20108,41 +20426,33 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
             part, box = slice_overlay_parts[idx]
             composite.paste(part, box)
 
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_w = int(mw * width_percent)
-    target_h = int(mh * 0.7)
-    scale_w = target_w / w
-    scale_h = target_h / h
-    scale = min(scale_w, scale_h)
+    target_w = int(osd_w * width_percent)
+    target_h = int(osd_h * 0.7)
+    scale = min(target_w / w, target_h / h)
     img_w = int(w * scale)
     img_h = int(h * scale)
     composite = composite.resize((img_w, img_h), Image.LANCZOS)
-    tk_composite = ImageTk.PhotoImage(composite)
 
-    # Create or update overlay window
-    x = mx + (mw - img_w) // 2
-    y = my + (mh - img_h) // 2
+    osd_canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    ix = (osd_w - img_w) // 2
+    iy = (osd_h - img_h) // 2
+    from PIL import ImageDraw
+    border = scl(4)
+    ImageDraw.Draw(osd_canvas).rectangle([ix - border, iy - border, ix + img_w + border, iy + img_h + border], fill=(0, 0, 0, 242))
+    osd_canvas.paste(composite, (ix, iy), composite)
 
-    if not slice_overlay_window or not slice_overlay_window.winfo_exists():
-        slice_overlay_window = tk.Toplevel(root)
-        slice_overlay_window.overrideredirect(True)
-        slice_overlay_window.attributes("-topmost", True)
-        slice_overlay_window.attributes("-alpha", 0.98)
-        slice_overlay_window.configure(bg="white", highlightbackground="black", highlightthickness=2)
-        slice_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
-        _register_overlay_for_tracking(slice_overlay_window, img_w, img_h)
-
-        slice_overlay_label = tk.Label(slice_overlay_window, image=tk_composite, bg="white")
-        slice_overlay_label.image = tk_composite
-        slice_overlay_label.pack()
-    else:
-        slice_overlay_label.configure(image=tk_composite)
-        slice_overlay_label.image = tk_composite
-        slice_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
-        _register_overlay_for_tracking(slice_overlay_window, img_w, img_h)
+    if slice_overlay_window is None:
+        slice_overlay_window = player._p.create_image_overlay()
+    try:
+        slice_overlay_window.update(osd_canvas)
+    except Exception:
+        pass
                 
 # =========================================
 #        *TILE LIGHTNING ROUND
@@ -20171,8 +20481,7 @@ def generate_image_grid_slices(tk_img, grid_size=4, ignore_solid=True):
                 slices.append((part, box, (row, col)))
     return slices
 
-tile_overlay_window = None
-tile_overlay_label = None
+tile_overlay_window = None   # mpv image overlay
 tile_overlay_parts = []
 tile_overlay_order = []
 tile_overlay_swap = False
@@ -20184,13 +20493,15 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
     If swap=True: all tiles shown, but only num_revealed unique swaps are restored to correct positions.
     Tiles in the wrong position are dimmed.
     """
-    global tile_overlay_window, tile_overlay_label, tile_overlay_parts, tile_overlay_order, tile_overlay_swap, tile_overlay_grid_size
+    global tile_overlay_window, tile_overlay_parts, tile_overlay_order, tile_overlay_swap, tile_overlay_grid_size
 
     if destroy:
-        if tile_overlay_window and tile_overlay_window.winfo_exists():
-            tile_overlay_window.destroy()
-        tile_overlay_window = None
-        tile_overlay_label = None
+        if tile_overlay_window is not None:
+            try:
+                tile_overlay_window.remove()
+            except Exception:
+                pass
+            tile_overlay_window = None
         tile_overlay_parts = []
         tile_overlay_order = []
         tile_overlay_swap = False
@@ -20279,72 +20590,62 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
             part, box, _ = tile_overlay_parts[idx]
             composite.paste(part, box)
 
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    try:
+        osd_w = int(player._p.osd_width  or 0) or 1920
+        osd_h = int(player._p.osd_height or 0) or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_w = int(mw * width_percent)
-    target_h = int(mh * 0.7)
-    scale_w = target_w / w
-    scale_h = target_h / h
-    scale = min(scale_w, scale_h)
+    target_w = int(osd_w * width_percent)
+    target_h = int(osd_h * 0.7)
+    scale = min(target_w / w, target_h / h)
     img_w = int(w * scale)
     img_h = int(h * scale)
     composite = composite.resize((img_w, img_h), Image.LANCZOS)
-    tk_composite = ImageTk.PhotoImage(composite)
 
-    x = mx + (mw - img_w) // 2
-    y = my + (mh - img_h) // 2
+    osd_canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    ix = (osd_w - img_w) // 2
+    iy = (osd_h - img_h) // 2
+    from PIL import ImageDraw
+    border = scl(4)
+    ImageDraw.Draw(osd_canvas).rectangle([ix - border, iy - border, ix + img_w + border, iy + img_h + border], fill=(0, 0, 0, 242))
+    osd_canvas.paste(composite, (ix, iy), composite)
 
-    if not tile_overlay_window or not tile_overlay_window.winfo_exists():
-        tile_overlay_window = tk.Toplevel(root)
-        tile_overlay_window.overrideredirect(True)
-        tile_overlay_window.attributes("-topmost", True)
-        tile_overlay_window.attributes("-alpha", 0.98)
-        tile_overlay_window.configure(bg="white", highlightbackground="black", highlightthickness=2)
-        tile_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
-        _register_overlay_for_tracking(tile_overlay_window, img_w, img_h)
-
-        tile_overlay_label = tk.Label(tile_overlay_window, image=tk_composite, bg="gray")
-        tile_overlay_label.image = tk_composite
-        tile_overlay_label.pack()
-    else:
-        tile_overlay_label.configure(image=tk_composite)
-        tile_overlay_label.image = tk_composite
-        tile_overlay_window.geometry(f"{img_w}x{img_h}+{x}+{y}")
-        _register_overlay_for_tracking(tile_overlay_window, img_w, img_h)
+    if tile_overlay_window is None:
+        tile_overlay_window = player._p.create_image_overlay()
+    try:
+        tile_overlay_window.update(osd_canvas)
+    except Exception:
+        pass
 
 # =========================================
 #        *PROFILE LIGHTNING ROUND
 # =========================================
 
-profile_overlay_window = None
-profile_text_label = None
-profile_image_label = None
-profile_words_shown = 0
+profile_overlay_window = None   # sentinel — True when active, None when not
+_profile_img_overlay = None
 
 _profile_last_word_count = 0
 _profile_last_image_countdown = 15
 
 def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=False, quick_destroy=False):
     """Displays a character profile with gender, a word-by-word BIO, and delayed image reveal."""
-    global profile_overlay_window, profile_text_label, profile_image_label, profile_words_shown
+    global profile_overlay_window, _profile_img_overlay
     global _profile_last_word_count, _profile_last_image_countdown
 
-    if destroy:
-        if profile_overlay_window and profile_overlay_window.winfo_exists():
-            animate_window(profile_overlay_window, root.winfo_screenwidth(), profile_overlay_window.winfo_y(), destroy=True)
+    if destroy or quick_destroy:
+        if _profile_img_overlay is not None:
+            try:
+                _profile_img_overlay.remove()
+            except Exception:
+                pass
+            _profile_img_overlay = None
         profile_overlay_window = None
-        return
-
-    if quick_destroy:
-        if profile_overlay_window and profile_overlay_window.winfo_exists():
-            profile_overlay_window.destroy()
-        profile_overlay_window = None
-        toggle_character_profile_overlay(
-            word_count=_profile_last_word_count,
-            image_countdown=_profile_last_image_countdown,
-        )
+        if quick_destroy:
+            toggle_character_profile_overlay(
+                word_count=_profile_last_word_count,
+                image_countdown=_profile_last_image_countdown,
+            )
         return
 
     if not character_round_answer:
@@ -20354,160 +20655,159 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     _profile_last_image_countdown = image_countdown
 
     name, img, gender, desc = character_round_answer
-    word_count
-    mx, my, mw, mh = _get_mpv_window_rect()
-    if not mw:
-        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
-    _ws_mod = min(mw / 2560, mh / 1440)
-    def ws(n): return max(1, int(n * _ws_mod))
+
+    try:
+        osd_w = player._p.osd_width  or 1920
+        osd_h = player._p.osd_height or 1080
+    except Exception:
+        osd_w, osd_h = 1920, 1080
+
+    osd_mod = min(osd_w / 2560, osd_h / 1440)
+    def ws(n): return max(1, int(n * osd_mod))
+
+    # Font sizes: Tkinter used point sizes, PIL uses pixels.
+    # Apply the same DPI conversion as synopsis/emoji headers so they match.
+    _screen_dpi   = root.winfo_fpixels('1i')
+    title_font_px = max(1, round(ws(60) * _screen_dpi / 72))
+    body_font_px  = max(1, round(ws(50) * _screen_dpi / 72))
+
+    # Colours — profile uses INVERSE palette
+    try:
+        r16, g16, b16 = root.winfo_rgb(INVERSE_OVERLAY_BACKGROUND_COLOR)
+        bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
+        r16, g16, b16 = root.winfo_rgb(INVERSE_OVERLAY_TEXT_COLOR)
+        fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        bg_r, bg_g, bg_b = 255, 255, 255
+        fg_r, fg_g, fg_b = 0, 0, 0
+    bg = (bg_r, bg_g, bg_b, round(0.95 * 255))   # alpha=0.95 matches Toplevel
+    fg = (fg_r, fg_g, fg_b, 255)
+
+    # Layout — exact ratios from Tkinter version
     width_percent = lightning_mode_settings.get("_misc_settings", {}).get("image_width_percent", 70) / 100
-    target_width = int(mw * width_percent)
-    target_height = int(mh * 0.7)
+    target_w    = int(osd_w * width_percent)
+    target_h    = int(osd_h * 0.7)
+    border      = max(1, round(4 * osd_mod))   # highlightthickness=4
+    outer_pad_x = ws(5)    # padx=5 on frames
+    outer_pad_y = ws(10)   # pady=10 on frames
+    inner_pad   = ws(10)   # padx=ws(10) on labels
+    desc_w      = (target_w // 3) * 2   # left panel: 2/3 of total width
+    img_panel_w = target_w - desc_w     # right panel: 1/3
 
-    back_color = INVERSE_OVERLAY_BACKGROUND_COLOR
-    front_color = INVERSE_OVERLAY_TEXT_COLOR
+    box_x = (osd_w - target_w) // 2
+    box_y = (osd_h - target_h) // 2
 
-    # Scale image to fit within both width and height
-    pil_img = ImageTk.getimage(img).copy()
-    scale_w = (target_width * 0.4) / pil_img.width  # Reserve space for text
-    scale_h = target_height / pil_img.height
-    scale = min(scale_w, scale_h)
-    scaled_width = int(pil_img.width * scale)
-    scaled_height = int(pil_img.height * scale)
-    scaled_img = pil_img.resize((scaled_width, scaled_height), Image.LANCZOS)
-    tk_scaled_img = ImageTk.PhotoImage(scaled_img)# Create a very blurry version of the image
-    blurred_img = scaled_img.filter(ImageFilter.GaussianBlur(radius=100))
-    tk_blurred_img = ImageTk.PhotoImage(blurred_img)
+    canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    draw   = ImageDraw.Draw(canvas)
 
-    # Let's say text area should match image width roughly or be slightly narrower
-    desc_width =  (target_width // 3)*2 # max(int(target_width - tk_scaled_img.width()), int(target_width // 3))
-    image_width = target_width - desc_width
-    wraplength = desc_width - ws(20)
+    # Background + border
+    draw.rectangle([box_x, box_y, box_x + target_w, box_y + target_h], fill=bg)
+    draw.rectangle([box_x, box_y, box_x + target_w, box_y + target_h],
+                   outline=fg, width=border)
 
-    font_title = ("Arial", ws(60), "bold", "underline")
-    font_body = ("Arial", ws(50))
+    title_font = _get_ass_font(title_font_px, bold=True)
+    body_font  = _get_ass_font(body_font_px,  bold=False)
 
-    if not profile_overlay_window or not profile_overlay_window.winfo_exists():
-        # Create the main window
-        profile_overlay_window = tk.Toplevel(root)
-        profile_overlay_window.overrideredirect(True)
-        profile_overlay_window.attributes("-topmost", True)
-        profile_overlay_window.attributes("-alpha", 0.95)
-        profile_overlay_window.configure(bg=back_color, highlightbackground=front_color, highlightthickness=4)
+    # Left panel text origin (inside border + outer padding + label padding)
+    text_x = box_x + outer_pad_x + inner_pad
+    text_y = box_y + outer_pad_y + inner_pad
 
-        x = mx + (mw - target_width) // 2
-        y = my + (mh - target_height) // 2
-        profile_overlay_window.geometry(f"{target_width}x{target_height}+{x}+{y}")
-        _register_overlay_for_tracking(profile_overlay_window, target_width, target_height,
-                                       on_size_change=lambda: toggle_character_profile_overlay(quick_destroy=True))
+    # Wrap width: from text_x to the right edge of the desc panel minus a right margin
+    wrap_w = (box_x + desc_w) - text_x - inner_pad
 
-        # Main layout container
-        container = tk.Frame(profile_overlay_window, bg=back_color)
-        container.pack(fill="both", expand=True)
+    # Title: "CHARACTER DESCRIPTION:" bold + underline
+    title_bottom = text_y + title_font_px + inner_pad   # fallback if font missing
+    if title_font:
+        TITLE = "CHARACTER DESCRIPTION:"
+        tb = draw.textbbox((0, 0), TITLE, font=title_font)
+        draw.text((text_x - tb[0], text_y - tb[1]), TITLE, font=title_font, fill=fg)
+        ul_gap = max(1, round(title_font_px * 0.05))
+        ul_h   = max(2, round(title_font_px * 0.07))
+        ul_y   = text_y - tb[1] + tb[3] + ul_gap
+        draw.rectangle([text_x, ul_y, text_x + (tb[2] - tb[0]), ul_y + ul_h], fill=fg)
+        title_bottom = ul_y + ul_h + inner_pad
 
-        # Split left/right
-        left_frame = tk.Frame(container, bg=back_color)
-        left_frame.pack(side="left", fill="both", expand=False, ipadx=5, ipady=10, padx=5, pady=10)
-        left_frame.config(width=desc_width, height=target_height)
+    # Body: "Gender: X. [description]" — word-wrapped, up to word_count+2 words, max 11 lines
+    full_text   = f"Gender: {gender.capitalize()}. {desc}"
+    all_words   = full_text.split()
+    limited     = all_words[:word_count + 2]
+    max_lines   = 11
 
-        right_frame = tk.Frame(container, bg=back_color)
-        right_frame.pack(side="right", fill="both", expand=False, ipadx=5, ipady=5, padx=5, pady=10)
-        right_frame.config(width=image_width, height=target_height)
+    if body_font and limited:
+        # Measure space width by comparing "a b" vs "ab" to avoid zero-width issues
+        _sp_bb  = draw.textbbox((0, 0), "a b", font=body_font)
+        _ab_bb  = draw.textbbox((0, 0), "ab",  font=body_font)
+        space_w = max(1, (_sp_bb[2] - _sp_bb[0]) - (_ab_bb[2] - _ab_bb[0]))
 
-        bio_label = tk.Label(left_frame, text="CHARACTER DESCRIPTION:", font=font_title, bg=back_color, fg=front_color,
-                             wraplength=wraplength, justify="left", anchor="nw")
-        bio_label.pack(side="top", anchor="w", fill="x", padx=ws(10), pady=(ws(10), 0))
+        lines     = []
+        cur_words = []
+        cur_w     = 0
 
-        profile_text_label = tk.Label(left_frame, text="", font=font_body, bg=back_color, fg=front_color,
-                             wraplength=wraplength, justify="left", anchor="nw")
-        profile_text_label.pack(side="top", anchor="w", fill="x", padx=ws(10), pady=(ws(10), 0))
-
-        # Right: Image or countdown
-        profile_image_label = tk.Label(right_frame, bg=back_color)
-        profile_image_label.pack(expand=True)
-
-        # Store resized image
-        profile_image_label.scaled_img = tk_scaled_img
-
-    # Show the countdown or image
-    if image_countdown > 0:
-        profile_image_label.config(
-            image=tk_blurred_img,
-            text="",
-            bg=back_color
-        )
-        profile_image_label.image = tk_blurred_img
-    else:
-        profile_image_label.config(
-            image=profile_image_label.scaled_img,
-            text="",
-            bg=back_color
-        )
-        profile_image_label.image = profile_image_label.scaled_img
-
-    def update_profile_bio_text(description, word_limit, wraplength, label_font, max_lines=11):
-        global profile_overlay_window
-
-        if isinstance(label_font, tuple):
-            label_font = font.Font(font=label_font)
-
-        # Lazy init dummy label
-        if not hasattr(update_profile_bio_text, "_dummy_label"):
-            update_profile_bio_text._dummy_label = tk.Label(
-                profile_overlay_window, font=label_font, wraplength=wraplength,
-                justify="left", bg=back_color, fg=front_color
-            )
-            update_profile_bio_text._dummy_label.place(x=-5000, y=-5000)
-
-        dummy = update_profile_bio_text._dummy_label
-        words = description.split()
-        trimmed_words = words[:word_limit]
-
-        current_text = ""
-        visible_text = ""
-        dummy.config(text="")  # reset
-        dummy.update_idletasks()
-
-        line_height = label_font.metrics("linespace")
-        current_lines = 0
-
-        for i, word in enumerate(trimmed_words):
-            test_text = current_text + (" " if current_text else "") + word
-            dummy.config(text=test_text)
-            dummy.update_idletasks()
-
-            height = dummy.winfo_height()
-            new_lines = max(1, height // line_height)
-
-            if new_lines > max_lines:
-                break
-
-            current_text = test_text
-            visible_text = current_text
-            current_lines = new_lines
-
-        # Try to add ellipsis without exceeding max lines
-        if visible_text != " ".join(trimmed_words):
-            ellipsed_text = visible_text.rstrip() + "..."
-            dummy.config(text=ellipsed_text)
-            dummy.update_idletasks()
-            height = dummy.winfo_height()
-            if height // line_height <= max_lines:
-                visible_text = ellipsed_text
+        for word in limited:
+            wbb    = draw.textbbox((0, 0), word, font=body_font)
+            word_w = wbb[2] - wbb[0]
+            test_w = cur_w + (space_w if cur_words else 0) + word_w
+            if cur_words and test_w > wrap_w:
+                lines.append(' '.join(cur_words))
+                if len(lines) >= max_lines:
+                    cur_words = []
+                    break
+                cur_words = [word]
+                cur_w     = word_w
             else:
-                # Try trimming back a bit to fit the ellipsis
-                for j in range(len(visible_text.split()) - 1, 0, -1):
-                    short_text = " ".join(visible_text.split()[:j]) + "..."
-                    dummy.config(text=short_text)
-                    dummy.update_idletasks()
-                    height = dummy.winfo_height()
-                    if height // line_height <= max_lines:
-                        visible_text = short_text
-                        break
+                cur_words.append(word)
+                cur_w = test_w
 
-        profile_text_label.config(text=visible_text)
+        if cur_words and len(lines) < max_lines:
+            lines.append(' '.join(cur_words))
 
-    update_profile_bio_text(f"Gender: {gender.capitalize()}. {desc}", word_count+2, wraplength, font_body)
+        # If not all limited words were shown, add ellipsis to the last line
+        shown_words = sum(len(l.split()) for l in lines)
+        if shown_words < len(limited) and lines:
+            last_words = lines[-1].split()
+            for trim in range(len(last_words), 0, -1):
+                candidate = ' '.join(last_words[:trim]) + '...'
+                cbb = draw.textbbox((0, 0), candidate, font=body_font)
+                if (cbb[2] - cbb[0]) <= wrap_w:
+                    lines[-1] = candidate
+                    break
+
+        # Line height: cap height + ~15% leading to match Tk label spacing
+        lhbb   = draw.textbbox((0, 0), "Ag", font=body_font)
+        line_h = (lhbb[3] - lhbb[1]) + max(1, round(body_font_px * 0.15))
+
+        cy = title_bottom
+        for line in lines:
+            lbb = draw.textbbox((0, 0), line, font=body_font)
+            draw.text((text_x - lbb[0], cy - lbb[1]), line, font=body_font, fill=fg)
+            cy += line_h
+
+    # Right panel: character image — blurred when countdown > 0, sharp when 0
+    pil_img = ImageTk.getimage(img).copy().convert("RGBA")
+    max_img_w = img_panel_w - outer_pad_x * 2   # stay within right panel + padding
+    max_img_h = target_h    - outer_pad_y * 2
+    scale_w = max_img_w / pil_img.width
+    scale_h = max_img_h / pil_img.height
+    scale   = min(scale_w, scale_h)
+    sc_w    = int(pil_img.width  * scale)
+    sc_h    = int(pil_img.height * scale)
+    sc_img  = pil_img.resize((sc_w, sc_h), Image.LANCZOS)
+
+    if image_countdown > 0:
+        display_img = sc_img.filter(ImageFilter.GaussianBlur(radius=100))
+    else:
+        display_img = sc_img
+
+    # Centre image in right panel
+    right_x = box_x + desc_w
+    paste_x = right_x + (img_panel_w - sc_w) // 2
+    paste_y = box_y   + (target_h   - sc_h) // 2
+    canvas.paste(display_img, (paste_x, paste_y), display_img)
+
+    if _profile_img_overlay is None:
+        _profile_img_overlay = player._p.create_image_overlay()
+    _profile_img_overlay.update(canvas)
+    profile_overlay_window = True   # sentinel for game-loop guards
 
 # =========================================
 #          *TAGS LIGHTNING ROUND
@@ -22064,8 +22364,9 @@ def play_trailer(url=None):
     return 0
 
 def get_stream_start_time(length):
-    if fixed_current_round and fixed_current_round.get("clip_start_time"):
-        return fixed_current_round.get("clip_start_time")
+    _cst = fixed_current_round.get("clip_start_time") if fixed_current_round else None
+    if _cst is not None:
+        return max(0, _cst)
     if last_streamed and last_streamed[3] and "Crunchyroll" in last_streamed[3]:
         start_buffer = 0
         end_buffer = 10
@@ -22795,6 +23096,22 @@ _floating_text_osd_alloc = {}
 # PIL font cache for accurate ASS text-width measurement (keyed by pixel size).
 _ass_font_cache = {}
 _ass_font_cache_regular = {}
+_courier_font_cache = {}   # px → PIL ImageFont (Courier New bold) for title/swap/scramble overlays
+
+def _get_courier_font(px):
+    """Return a PIL ImageFont for Courier New Bold at *px* pixels, cached."""
+    if px not in _courier_font_cache:
+        from PIL import ImageFont
+        font = None
+        for path in ["C:/Windows/Fonts/courbd.ttf", "C:/Windows/Fonts/cour.ttf",
+                     "C:/Windows/Fonts/lucon.ttf"]:
+            try:
+                font = ImageFont.truetype(path, px)
+                break
+            except Exception:
+                pass
+        _courier_font_cache[px] = font
+    return _courier_font_cache[px]
 
 def _get_ass_font(fs, bold=True):
     """Return a PIL ImageFont for Arial at *fs* pixels, cached across calls."""
@@ -22925,32 +23242,34 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
     pad = max(6, round(osd_h * 0.01))
 
     # Box sizing:
-    #   width  — measured via PIL ImageFont.getlength() for each line at size f,
-    #            so the box fits the actual rendered glyphs regardless of content.
-    #            Falls back to 0.52×fs×chars if the font file cannot be loaded.
-    #   height — 1.0 × fs per line (em-square; libass \N line spacing matches this).
+    #   width  — measured via PIL ImageFont.getbbox() for each line at size f.
+    #            getbbox() returns the actual ink bounds (right-left), which matches
+    #            what libass renders.  getlength() would include trailing advance
+    #   width  — measured via PIL for shrink-to-fit only (not used for box drawing).
+    #            Falls back to char-count estimate if font unavailable.
     def _metrics(f):
         font = _get_ass_font(f)
         if font is not None:
             try:
-                tw = max((round(font.getlength(l or ' ')) for l in lines), default=f)
+                widths = []
+                for l in lines:
+                    bbox = font.getbbox(l or ' ')
+                    widths.append(bbox[2] - bbox[0])
+                tw = max(widths, default=f)
             except AttributeError:
-                # Pillow < 9.2 fallback
                 tw = max((font.getsize(l or ' ')[0] for l in lines), default=f)
         else:
             tw = round(max_line_len * f * 0.52)
         th = round(num_lines * f * 1.0)
         return tw, th, pad
 
-    # Shrink-to-fit so the box stays within width_max of the OSD width.
+    # Shrink-to-fit: reduce font size until the estimated text width fits within width_max.
+    # PIL measurement only drives the shrink decision, not the drawn box size.
     max_px = osd_w * width_max
     text_w, text_h, pad = _metrics(fs)
     while fs > 10 and text_w + pad * 2 > max_px:
         fs -= 1
         text_w, text_h, pad = _metrics(fs)
-
-    box_w = text_w + pad * 2
-    box_h = text_h + pad * 2
 
     # Colors (ASS uses BBGGRR order)
     if inverse:
@@ -22960,40 +23279,37 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         text_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
         bg_bgr   = _color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
 
-    # Box top-left corner: place outward from the requested corner/edge.
-    # scl(10) ≡ round(10 * modifier) — matches the Tkinter overlay edge gap.
+    # Map position string to ASS anchor number and (tx, ty) reference point.
+    # ASS anchor grid: 7 8 9 / 4 5 6 / 1 2 3  (top-left → bottom-right)
+    # The border extends outward from the anchor by bord_bg pixels, so we must
+    # compute bord_bg first and then offset tx/ty inward on edge-anchored sides.
     margin = max(4, round(10 * modifier))
-    if 'left'   in position: box_x = margin
-    elif 'right' in position: box_x = osd_w - margin - box_w
-    else:                     box_x = (osd_w - box_w) // 2
+    bord_bg = max(pad, round(fs * 0.17))
 
-    if 'top'    in position: box_y = margin
-    elif 'bottom' in position: box_y = osd_h - margin - box_h
-    else:                     box_y = (osd_h - box_h) // 2
-
-    # Text anchor inside the box.
-    # For left-positioned overlays: \an4 (left-center anchor) at the pad-inset left edge
-    # → ASS left-aligns multi-line text and we don't need to estimate line widths.
-    # For all others: \an5 (center anchor) at box center.
-    cy = box_y + box_h // 2
-    if 'left' in position:
-        text_an = 4
-        tx = box_x + pad
-        ty = cy
-    else:
-        text_an = 5
-        tx = box_x + box_w // 2
-        ty = cy
+    if 'left'   in position: tx, col = margin + bord_bg,           0
+    elif 'right' in position: tx, col = osd_w - margin - bord_bg,  2
+    else:                     tx, col = osd_w // 2,                 1
+    v_inset = bord_bg if num_lines > 1 else 0
+    if 'top'    in position: ty, row = margin + v_inset,            0
+    elif 'bottom' in position: ty, row = osd_h - margin - v_inset, 2
+    else:                     ty, row = osd_h // 2,                 1
+    text_an = [[7, 8, 9], [4, 5, 6], [1, 2, 3]][row][col]
 
     bg_alpha   = "33"  # ~80% opaque (ASS: 0x00=opaque, 0xFF=transparent)
-    shad_alpha = "60"  # subtle shadow
+    shad_alpha = "60"  # subtle text shadow
+
+    # Background: render the same text in bg color with a thick border (also bg color).
+    # Border thickness is chosen so it bridges the advance-width of a typical space
+    # character (~0.3 em), merging adjacent-word borders into a solid backing.
+    # No rectangle drawing — libass auto-sizes to the actual rendered glyphs.
 
     ass_payload = (
-        # Line 1: filled background rectangle (drawing coords relative to \pos)
-        f"{{\\an7\\pos({box_x},{box_y})"
-        f"\\1c&H{bg_bgr}&\\1a&H{bg_alpha}&\\bord0\\shad0\\p1}}"
-        f"m 0 0 l {box_w} 0 {box_w} {box_h} 0 {box_h}{{\\p0}}\n"
-        # Line 2: text positioned and aligned per text_an
+        # Layer 1: background — bg fill + thick bg-colored border; auto-sizes to text.
+        f"{{\\an{text_an}\\pos({tx},{ty})"
+        f"\\1c&H{bg_bgr}&\\1a&H{bg_alpha}&"
+        f"\\3c&H{bg_bgr}&\\3a&H{bg_alpha}&"
+        f"\\bord{bord_bg}\\shad0\\fs{fs}\\b1}}{ass_text}\n"
+        # Layer 2: actual text with a thin black shadow for readability.
         f"{{\\an{text_an}\\pos({tx},{ty})"
         f"\\1c&H{text_bgr}&\\1a&H00&"
         f"\\3c&H000000&\\3a&H{shad_alpha}&\\bord0\\shad1"
@@ -23006,43 +23322,55 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
     except Exception as e:
         print(f"Floating text OSD error ({name}): {e}")
 
-progress_overlay = None
-light_progress_bar = None
-music_icon_label = None
+progress_overlay = None         # sentinel — True when active, None when not
+light_progress_bar = None       # sentinel — True when active (checked externally), None when not
+music_icon_label = None         # kept for compat; unused in mpv PIL mode
 pulse_step = 0
-progress_bar_ready = False  # Tracks when progress bar is fully initialized
-_progress_overlay_last_mpv_size = (0, 0)  # detect resize vs. move
-_pulse_sizes = (48, 60)  # (base_size, max_size) cached to avoid winfo_height() every frame
+progress_bar_ready = False
+_progress_overlay_last_mpv_size = (0, 0)
+_pulse_sizes = (48, 60)
+_progress_img_overlay  = None
+_progress_bar_color    = None   # (r, g, b) chosen at creation
+_progress_icon_color   = None   # (r, g, b) chosen at creation
+_progress_music_icon   = "\U0001f3b5"
+_progress_pulse_step   = 0.0
+_progress_last_time    = 0.0
+_progress_last_total   = 1.0
+_progress_tick_gen     = 0      # incremented each time the tick loop is started; old loops self-terminate
+# Per-creation caches (rebuilt on first call; avoid re-computation every frame)
+_progress_bg_layer     = None   # pre-rendered static background RGBA PIL image
+_progress_bg_np        = None   # numpy view of bg layer — (h, w, 4) uint8, read-only
+_progress_canvas_np    = None   # persistent writable working buffer — (h, w, 4) uint8
+_progress_icon_cache   = None   # pre-rendered emoji RGBA image at max size (PIL)
+_progress_icon_frames  = {}     # {icon_px: (np_array, cw, ch)} — pre-cached every size
+_progress_icon_base_px = 48
+_progress_icon_max_px  = 60
+_progress_cached_osd   = (0, 0) # (osd_w, osd_h) when _progress_bg_layer was built
+_progress_bg_col       = (30, 30, 30, 204)
+_progress_fg_col       = (255, 255, 255, 255)
+# Pre-computed layout constants (rebuilt when osd size changes)
+_progress_bar_x        = 0
+_progress_bar_y        = 0
+_progress_bar_w        = 0
+_progress_bar_h        = 0
+_progress_bar_ol       = 1      # bar outline width in px
+_progress_icon_slot_w  = 0
+_progress_icon_cy      = 0
+_progress_prev_icon_box = (0, 0, 0, 0)  # (ox, oy, ox+cw, oy+ch) of last icon blit — sub-image coords
+# Sub-image BGRA premult buffers — only covers the box area, not the full OSD
+_progress_sub_x    = 0       # box top-left x in OSD coords
+_progress_sub_y    = 0       # box top-left y in OSD coords
+_progress_sub_w    = 0       # box width
+_progress_sub_h    = 0       # box height
+_progress_bgra_arr = None    # (sub_h, sub_w, 4) uint8 premult BGRA — writable per-frame buffer
+_progress_bgbg_arr = None    # (sub_h, sub_w, 4) uint8 premult BGRA — read-only bg reference
+_progress_fill_strip = None  # (bar_inner_h, 1, 4) uint8 premult BGRA — shaded column, broadcast per frame
+# ── Bar shading style: 1=glossy pill  2=tubular/center-lit  3=inner bevel  4=soft gradient  5=two-tone ──
+_PROGRESS_BAR_SHADE_STYLE = 4
 
 def _progress_overlay_on_mpv_rect(mx, my, mw, mh):
-    """Reposition (and on resize, rebuild) the progress overlay to track the mpv window."""
-    global _progress_overlay_last_mpv_size
-    if progress_overlay is None:
-        return
-    if (mw, mh) != _progress_overlay_last_mpv_size:
-        # Window resized — rebuild so sizes/fonts scale correctly
-        _progress_overlay_last_mpv_size = (mw, mh)
-        # Capture the current bar progress before destroying so we can restore it
-        try:
-            _cur = light_progress_bar["value"] if light_progress_bar else 0
-            _tot = light_progress_bar["maximum"] if light_progress_bar else 1
-        except Exception:
-            _cur, _tot = 0, 1
-        set_progress_overlay(destroy=True)
-        set_progress_overlay(_cur, _tot)
-        return
-    # Window just moved — reposition only
-    try:
-        pw = progress_overlay.winfo_width()
-        ph = progress_overlay.winfo_height()
-        nx = mx + (mw - pw) // 2
-        ny = my + (mh - ph) // 2
-        cur_x = progress_overlay.winfo_x()
-        cur_y = progress_overlay.winfo_y()
-        if abs(nx - cur_x) > 2 or abs(ny - cur_y) > 2:
-            progress_overlay.geometry(f"+{nx}+{ny}")
-    except Exception:
-        pass
+    """No-op: mpv PIL overlays auto-track the OSD; resize is handled each redraw tick."""
+    pass
 
 def _get_fixed_playlist_progress(current_round_elapsed_secs):
     """Return (elapsed*100, total*100) across the whole fixed playlist, or None if not active.
@@ -23073,106 +23401,481 @@ def _get_fixed_playlist_progress(current_round_elapsed_secs):
     return (round(elapsed * 100), round(total * 100))
 
 
+def _rebuild_progress_bg_layer(osd_w, osd_h):
+    """Pre-render the static background, layout constants, and ALL icon sizes.
+    Called once at creation and again only if OSD resolution changes."""
+    global _progress_bg_layer, _progress_bg_np, _progress_canvas_np
+    global _progress_icon_cache, _progress_icon_frames, _progress_cached_osd
+    global _progress_icon_base_px, _progress_icon_max_px
+    global _progress_bar_x, _progress_bar_y, _progress_bar_w, _progress_bar_h, _progress_bar_ol
+    global _progress_icon_slot_w, _progress_icon_cy
+    global _progress_bg_col, _progress_fg_col
+    global _progress_prev_icon_box
+    global _progress_sub_x, _progress_sub_y, _progress_sub_w, _progress_sub_h
+    global _progress_bgra_arr, _progress_bgbg_arr
+    global _progress_fill_strip
+
+    osd_mod = min(osd_w / 2560, osd_h / 1440)
+    def ws(n): return max(1, int(n * osd_mod))
+
+    # Colours — resolve once here, cache for fast access every frame
+    try:
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_BACKGROUND_COLOR)
+        bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
+        r16, g16, b16 = root.winfo_rgb(OVERLAY_TEXT_COLOR)
+        fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        bg_r, bg_g, bg_b = 30, 30, 30
+        fg_r, fg_g, fg_b = 255, 255, 255
+    alpha  = round(0.8 * 255)
+    bg     = (bg_r, bg_g, bg_b, alpha)
+    fg     = (fg_r, fg_g, fg_b, 255)
+    _progress_bg_col = bg
+    _progress_fg_col = fg
+
+    # Layout
+    box_w  = round(osd_w * 0.7)
+    box_h  = round(osd_h * 0.5)
+    box_x  = (osd_w - box_w) // 2
+    box_y  = (osd_h - box_h) // 2
+    border = max(1, round(4 * osd_mod))
+    inner_x = box_x + border
+    inner_y = box_y + border
+    inner_w = box_w - 2 * border
+    inner_h = box_h - 2 * border
+
+    bar_w  = round(osd_w * 0.6)
+    bar_h  = max(8, round(osd_h / 10))
+    bar_cx = inner_x + inner_w // 2
+    bar_cy = inner_y + round(inner_h * 0.7)
+    bar_x  = bar_cx - bar_w // 2
+    bar_y  = bar_cy - bar_h // 2
+    bar_ol = max(2, round(5 * osd_mod))   # bar outline thickness
+
+    _progress_bar_x = bar_x
+    _progress_bar_y = bar_y
+    _progress_bar_w = bar_w
+    _progress_bar_h = bar_h
+    _progress_bar_ol = bar_ol
+    _progress_icon_slot_w = ws(40)
+    _progress_icon_cy = inner_y + round(inner_h * 0.35)
+    _progress_prev_icon_box = (0, 0, 0, 0)  # reset on rebuild
+
+    # Icon size range — DPI queried once here
+    _screen_dpi = root.winfo_fpixels('1i')
+    _progress_icon_base_px = max(8,  round(ws(160) * _screen_dpi / 72))
+    _progress_icon_max_px  = max(10, round(ws(200) * _screen_dpi / 72))
+
+    # ── Static background layer (PIL then numpy) ─────────────────────────
+    layer = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
+    d     = ImageDraw.Draw(layer)
+    d.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], fill=bg)
+    d.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], outline=fg, width=border)
+    tr = max(0, bg_r - 30); tg = max(0, bg_g - 30); tb_ = max(0, bg_b - 30)
+    d.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
+                fill=(tr, tg, tb_, alpha))
+    d.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
+                outline=fg, width=bar_ol)
+    _progress_bg_layer  = layer
+    _progress_bg_np     = np.array(layer, dtype=np.uint8)  # read-only reference
+    _progress_canvas_np = _progress_bg_np.copy()           # writable working buffer
+    _progress_cached_osd = (osd_w, osd_h)
+
+    # ── Sub-image BGRA premult buffer — covers only the box, not the full OSD ──
+    # This lets overlay_add work on ~3× less data than a full OSD-sized image.
+    _progress_sub_x = box_x
+    _progress_sub_y = box_y
+    _progress_sub_w = box_w
+    _progress_sub_h = box_h
+    _bg_sub = _progress_bg_np[box_y:box_y + box_h, box_x:box_x + box_w]
+    _a16    = _bg_sub[:, :, 3].astype(np.uint16)
+    _bgbg   = np.empty_like(_bg_sub)
+    _bgbg[:, :, 0] = (_bg_sub[:, :, 2].astype(np.uint16) * _a16 // 255).astype(np.uint8)  # B = R·α
+    _bgbg[:, :, 1] = (_bg_sub[:, :, 1].astype(np.uint16) * _a16 // 255).astype(np.uint8)  # G = G·α
+    _bgbg[:, :, 2] = (_bg_sub[:, :, 0].astype(np.uint16) * _a16 // 255).astype(np.uint8)  # R = B·α
+    _bgbg[:, :, 3] = _bg_sub[:, :, 3]
+    _progress_bgbg_arr = _bgbg            # read-only bg reference
+    _progress_bgra_arr = _bgbg.copy()     # writable per-frame buffer
+
+    # ── Pre-compute shaded fill strip: (bar_inner_h, 1, 4) BGRA premult ──
+    # All fully opaque (α=255) so premult == identity — cheap broadcast per frame.
+    br, bg_c, bb = _progress_bar_color
+    inner_h_bar = max(1, bar_h - bar_ol * 2)   # height of fill region
+    _strip = np.empty((inner_h_bar, 1, 4), dtype=np.uint8)
+    for _row in range(inner_h_bar):
+        _t = _row / max(1, inner_h_bar - 1)    # 0.0 (top) → 1.0 (bottom)
+        _style = _PROGRESS_BAR_SHADE_STYLE
+        if _style == 1:
+            # ── Refined glossy pill ──────────────────────────────────────────
+            # Thin bright gloss at top, quick drop to base, gentle shadow at bottom.
+            if _t < 0.12:   _f = 1.45
+            elif _t < 0.30: _f = 1.15
+            elif _t < 0.80: _f = 1.0
+            else:            _f = 0.72
+        elif _style == 2:
+            # ── Tubular / center-lit ─────────────────────────────────────────
+            # Brightest at the vertical centre, symmetrically dark toward both edges.
+            _f = 0.75 + 0.50 * (1.0 - abs(_t - 0.5) * 2.0)
+        elif _style == 3:
+            # ── Flat + inner bevel ───────────────────────────────────────────
+            # 2px bright line on top, 2px dark line on bottom, solid in between.
+            if _row < 2:                      _f = 1.70
+            elif _row >= inner_h_bar - 2:     _f = 0.45
+            else:                              _f = 1.0
+        elif _style == 4:
+            # ── Soft linear gradient (light → dark) ──────────────────────────
+            _f = 1.30 - 0.60 * _t
+        else:
+            # ── Two-tone split ───────────────────────────────────────────────
+            # Top half bright, 1px separator, bottom half dark.
+            _mid = inner_h_bar // 2
+            if _row == _mid:                  _f = 1.55   # bright separator line
+            elif _row < _mid:                 _f = 1.25
+            else:                             _f = 0.72
+        _rr = int(min(255, br * _f))
+        _gg = int(min(255, bg_c * _f))
+        _bb = int(min(255, bb * _f))
+        _strip[_row, 0] = (_bb, _gg, _rr, 255)   # BGRA layout
+    _progress_fill_strip = _strip
+
+    # ── Icon range: pulsation oscillates AROUND base_px by ±delta/2 ────────
+    # formula: base + sin * (max - base) / 2  →  range [base-delta/2, base+delta/2]
+    _screen_dpi        = root.winfo_fpixels('1i')
+    _progress_icon_base_px = max(8,  round(ws(160) * _screen_dpi / 72))
+    _progress_icon_max_px  = max(10, round(ws(200) * _screen_dpi / 72))
+    _ic_delta          = _progress_icon_max_px - _progress_icon_base_px
+    _ic_cache_min      = max(8, _progress_icon_base_px - _ic_delta // 2)
+    _ic_cache_max      = _progress_icon_base_px + _ic_delta // 2
+
+    # ── Detect whether the icon is emoji or plain text ───────────────────
+    ic = unicodedata.normalize('NFC', _progress_music_icon)
+    _is_emoji = any(
+        0x1F300 <= ord(ch) or
+        0x2600  <= ord(ch) <= 0x27BF or   # misc symbols / dingbats
+        0xFE00  <= ord(ch) <= 0xFE0F      # variation selectors
+        for ch in ic
+    )
+
+    # ── Pre-render icon at max size (LANCZOS once) ───────────────────────
+    max_px = _ic_cache_max
+    if _is_emoji:
+        _efont_em = None
+        for _fp in [r"C:\Windows\Fonts\seguiemj.ttf",
+                    r"C:\Windows\Fonts\NotoColorEmoji.ttf",
+                    r"C:\Windows\Fonts\seguisym.ttf"]:
+            if os.path.exists(_fp):
+                try:
+                    _efont_em = ImageFont.truetype(_fp, size=max_px * 8)
+                    break
+                except Exception:
+                    pass
+        cs = max_px * 12   # extra headroom for ascenders
+        em = Image.new("RGBA", (cs, cs), (0, 0, 0, 0))
+        if _efont_em:
+            ImageDraw.Draw(em).text((cs // 2, cs // 2), ic,
+                                    font=_efont_em, anchor="mm", embedded_color=True)
+    else:
+        # Plain text icon (e.g. "( ͡° ͜ʖ ͡°)", "📺" text etc.) — use a regular Unicode font
+        _efont_txt = None
+        for _fp in [r"C:\Windows\Fonts\segoeui.ttf",
+                    r"C:\Windows\Fonts\arial.ttf",
+                    r"C:\Windows\Fonts\DejaVuSans.ttf"]:
+            if os.path.exists(_fp):
+                try:
+                    _efont_txt = ImageFont.truetype(_fp, size=max_px * 4)
+                    break
+                except Exception:
+                    pass
+        cs = max_px * 12
+        em = Image.new("RGBA", (cs, cs), (0, 0, 0, 0))
+        _txt_col = (*_progress_icon_color, 255)
+        if _efont_txt:
+            ImageDraw.Draw(em).text((cs // 2, cs // 2), ic,
+                                    font=_efont_txt, fill=_txt_col, anchor="mm")
+        else:
+            # absolute fallback
+            ImageDraw.Draw(em).text((cs // 2, cs // 2), ic, fill=_txt_col, anchor="mm")
+
+    bbox = em.getbbox()
+    if bbox:
+        # Add a small margin so glyphs with ascenders don't clip at the bbox edge
+        pad  = max(4, (bbox[3] - bbox[1]) // 10)
+        bbox = (max(0, bbox[0] - pad), max(0, bbox[1] - pad),
+                min(cs, bbox[2] + pad), min(cs, bbox[3] + pad))
+        cropped = em.crop(bbox)
+        cw0, ch0 = cropped.size
+        sc  = min(max_px / cw0, max_px / ch0) if cw0 and ch0 else 1.0
+        cw2 = max(1, int(cw0 * sc))
+        ch2 = max(1, int(ch0 * sc))
+        master = cropped.resize((cw2, ch2), Image.LANCZOS)
+        # ── Tint the icon with the random icon colour ─────────────────────
+        _tr, _tg, _tb = _progress_icon_color
+        _master_np = np.array(master, dtype=np.uint16)
+        _master_np[:, :, 0] = (_master_np[:, :, 0] * _tr // 255).clip(0, 255)
+        _master_np[:, :, 1] = (_master_np[:, :, 1] * _tg // 255).clip(0, 255)
+        _master_np[:, :, 2] = (_master_np[:, :, 2] * _tb // 255).clip(0, 255)
+        _master_np = _master_np.astype(np.uint8)
+
+        # ── Bake white outline (done once here, free at runtime) ──────────
+        # Dilate the alpha channel by _OL pixels in 8 directions → outline mask.
+        _OL  = max(1, max_px // 28)           # outline thickness scales with icon size
+        _PAD = _OL * 2 + 6                    # generous margin: covers diagonal + LANCZOS bleed at all cache sizes
+        # Pad canvas so outline always has room and doesn't clip at any edge
+        _ph_np, _pw_np = _master_np.shape[:2]
+        _padded = np.zeros((_ph_np + _PAD * 2, _pw_np + _PAD * 2, 4), dtype=np.uint8)
+        _padded[_PAD:_PAD + _ph_np, _PAD:_PAD + _pw_np] = _master_np
+        _master_np = _padded
+        _orig_a  = _master_np[:, :, 3].astype(np.uint8)
+        _dil_a   = _orig_a.copy()
+        for _dy in range(-_OL, _OL + 1):
+            for _dx in range(-_OL, _OL + 1):
+                if _dx == 0 and _dy == 0:
+                    continue
+                if _dx * _dx + _dy * _dy > _OL * _OL:   # circular kernel — skip corners
+                    continue
+                _shifted = np.roll(np.roll(_orig_a, _dy, axis=0), _dx, axis=1)
+                # Zero out wrapped edges so roll doesn't bleed across borders
+                if _dy > 0:  _shifted[:_dy,  :] = 0
+                elif _dy < 0: _shifted[_dy:,  :] = 0
+                if _dx > 0:  _shifted[:,  :_dx] = 0
+                elif _dx < 0: _shifted[:, _dx:] = 0
+                np.maximum(_dil_a, _shifted, out=_dil_a)
+        # Outline pixels = dilated area minus original opaque pixels
+        _outline_mask = (_dil_a.astype(np.uint16) * (255 - _orig_a.astype(np.uint16)) // 255).astype(np.uint8)
+        # Build final RGBA: start with white outline layer, composite tinted icon on top
+        _out_np = np.zeros((_master_np.shape[0], _master_np.shape[1], 4), dtype=np.uint8)
+        _out_np[:, :, 0] = 255   # R white
+        _out_np[:, :, 1] = 255   # G white
+        _out_np[:, :, 2] = 255   # B white
+        _out_np[:, :, 3] = _outline_mask
+        # Alpha-composite tinted icon over white outline
+        _fa = _master_np[:, :, 3].astype(np.uint16)
+        _ia = (255 - _fa)
+        _out_np[:, :, 0] = (_master_np[:, :, 0].astype(np.uint16) * _fa // 255 +
+                            _out_np[:, :, 0].astype(np.uint16) * _ia // 255).clip(0, 255).astype(np.uint8)
+        _out_np[:, :, 1] = (_master_np[:, :, 1].astype(np.uint16) * _fa // 255 +
+                            _out_np[:, :, 1].astype(np.uint16) * _ia // 255).clip(0, 255).astype(np.uint8)
+        _out_np[:, :, 2] = (_master_np[:, :, 2].astype(np.uint16) * _fa // 255 +
+                            _out_np[:, :, 2].astype(np.uint16) * _ia // 255).clip(0, 255).astype(np.uint8)
+        _out_np[:, :, 3] = np.maximum(_orig_a, _outline_mask)
+
+        master = Image.fromarray(_out_np)
+        _progress_icon_cache = master
+    else:
+        _progress_icon_cache = None
+
+    # ── Pre-cache ALL icon pixel sizes for the FULL pulsation range ───────
+    # Each frame is a dict lookup — zero resize cost per frame.
+    _progress_icon_frames = {}
+    if _progress_icon_cache is not None:
+        src = _progress_icon_cache
+        sw, sh = src.size
+        for px in range(_ic_cache_min, _ic_cache_max + 1):
+            sc  = min(px / sw, px / sh) if sw and sh else 1.0
+            pw  = max(1, int(sw * sc))
+            ph  = max(1, int(sh * sc))
+            resized = src.resize((pw, ph), Image.LANCZOS)
+            _progress_icon_frames[px] = (np.array(resized, dtype=np.uint8), pw, ph)
+    # Store the effective cache bounds so the redraw clamp uses the same range
+    _progress_icon_base_px = _ic_cache_min
+    _progress_icon_max_px  = _ic_cache_max
+
+    # Convert all cached RGBA icon frames → premultiplied BGRA (done once at build time)
+    for _px in list(_progress_icon_frames.keys()):
+        _rgba, _pw, _ph = _progress_icon_frames[_px]
+        _ia16   = _rgba[:, :, 3].astype(np.uint16)
+        _bgra_f = np.empty_like(_rgba)
+        _bgra_f[:, :, 0] = (_rgba[:, :, 2].astype(np.uint16) * _ia16 // 255).astype(np.uint8)  # B
+        _bgra_f[:, :, 1] = (_rgba[:, :, 1].astype(np.uint16) * _ia16 // 255).astype(np.uint8)  # G
+        _bgra_f[:, :, 2] = (_rgba[:, :, 0].astype(np.uint16) * _ia16 // 255).astype(np.uint8)  # R
+        _bgra_f[:, :, 3] = _rgba[:, :, 3]
+        _progress_icon_frames[_px] = (_bgra_f, _pw, _ph)
+
+
+def _redraw_progress_overlay():
+    """Render one frame directly into a premultiplied-BGRA sub-image buffer
+    and upload via overlay_add — no full-OSD PIL copies, no alpha_composite."""
+    global _progress_prev_icon_box
+
+    if _progress_bgra_arr is None or _progress_img_overlay is None:
+        return
+    try:
+        osd_w = player._p.osd_width
+        osd_h = player._p.osd_height
+    except Exception:
+        return
+    if not osd_w or not osd_h:
+        return
+
+    if _progress_cached_osd != (osd_w, osd_h):
+        _rebuild_progress_bg_layer(osd_w, osd_h)
+
+    # Icon size: pulsates symmetrically around the midpoint of the cached range
+    _ic_mid = (_progress_icon_base_px + _progress_icon_max_px) // 2
+    _ic_amp = (_progress_icon_max_px - _progress_icon_base_px) / 2
+    icon_px = int(round(_ic_mid + math.sin(_progress_pulse_step) * _ic_amp))
+    icon_px = max(_progress_icon_base_px, min(_progress_icon_max_px, icon_px))
+
+    # Progress geometry
+    total   = _progress_last_total if _progress_last_total > 0 else 1
+    ratio   = min(max(_progress_last_time / total, 0.0), 1.0)
+    fill_w  = round(_progress_bar_w * ratio)
+    icon_cx = _progress_bar_x + round(ratio * max(0, _progress_bar_w - _progress_icon_slot_w))
+
+    # Sub-image coordinate offsets (all array indices are relative to the box corner)
+    sx = _progress_sub_x
+    sy = _progress_sub_y
+    sw = _progress_sub_w
+    sh = _progress_sub_h
+    bx = _progress_bar_x - sx
+    by = _progress_bar_y - sy
+    bw = _progress_bar_w
+    bh = _progress_bar_h
+    ol = _progress_bar_ol
+
+    # ── Restore bar region from bg ─────────────────────────────────────────
+    _progress_bgra_arr[by:by + bh, bx:bx + bw] = _progress_bgbg_arr[by:by + bh, bx:bx + bw]
+
+    # ── Restore previous icon region from bg (coordinates are sub-image) ──
+    ox0, oy0, ox1, oy1 = _progress_prev_icon_box
+    if ox1 > ox0 and oy1 > oy0:
+        oy0c = max(0, oy0); oy1c = min(sh, oy1)
+        ox0c = max(0, ox0); ox1c = min(sw, ox1)
+        if oy1c > oy0c and ox1c > ox0c:
+            _progress_bgra_arr[oy0c:oy1c, ox0c:ox1c] = _progress_bgbg_arr[oy0c:oy1c, ox0c:ox1c]
+
+    # ── Draw fill bar (inside outline) — shaded strip broadcast across fill width ──
+    if fill_w > ol * 2:
+        fill_x1 = bx + ol
+        fill_x2 = min(bx + fill_w, bx + bw - ol)
+        fill_y1 = by + ol
+        fill_y2 = by + bh - ol
+        if fill_x2 > fill_x1 and fill_y2 > fill_y1 and _progress_fill_strip is not None:
+            strip_h = _progress_fill_strip.shape[0]
+            # Guard in case strip height doesn't match (e.g. right after a rebuild)
+            use_h = min(fill_y2 - fill_y1, strip_h)
+            _progress_bgra_arr[fill_y1:fill_y1 + use_h, fill_x1:fill_x2] = \
+                _progress_fill_strip[:use_h]    # numpy broadcasts (use_h,1,4) → (use_h, fill_w, 4)
+
+    # ── Alpha-composite pre-cached icon (premultiplied BGRA frames) ────────
+    frame = _progress_icon_frames.get(icon_px)
+    if frame is not None:
+        icon_arr, iw, ih = frame                        # icon_arr is premult BGRA
+        ox  = icon_cx - sx - iw // 2
+        oy  = _progress_icon_cy - sy - ih // 2
+        src_x0 = max(0, -ox);    src_y0 = max(0, -oy)
+        dst_x0 = max(0,  ox);    dst_y0 = max(0,  oy)
+        dst_x1 = min(sw, ox + iw); dst_y1 = min(sh, oy + ih)
+        if dst_x1 > dst_x0 and dst_y1 > dst_y0:
+            src_x1 = src_x0 + (dst_x1 - dst_x0)
+            src_y1 = src_y0 + (dst_y1 - dst_y0)
+            src = icon_arr[src_y0:src_y1, src_x0:src_x1]
+            dst = _progress_bgra_arr[dst_y0:dst_y1, dst_x0:dst_x1]
+            # Premultiplied compositing (integer): out = src + dst·(1 − src_α/255)
+            inv_a  = (255 - src[:, :, 3]).astype(np.uint16)
+            result = (src.astype(np.uint16)
+                      + (dst.astype(np.uint16) * inv_a[:, :, None] + 127) // 255)
+            _progress_bgra_arr[dst_y0:dst_y1, dst_x0:dst_x1] = result.clip(0, 255).astype(np.uint8)
+        _progress_prev_icon_box = (ox, oy, ox + iw, oy + ih)    # sub-image coords
+    else:
+        _progress_prev_icon_box = (0, 0, 0, 0)
+
+    # ── Upload sub-image directly (bypass PIL alpha_composite + tobytes) ───
+    # ~3× less data than a full OSD-sized overlay; no PIL allocation per frame.
+    source = '&' + str(_progress_bgra_arr.ctypes.data)
+    player._p.overlay_add(
+        _progress_img_overlay.overlay_id,
+        sx, sy, source, 0, 'bgra',
+        sw, sh, sw * 4
+    )
+
+
+def _progress_overlay_tick(_gen=None):
+    """50 ms animation tick: advance the pulse step and redraw the progress overlay."""
+    global _progress_pulse_step
+    if _gen != _progress_tick_gen:
+        return  # a newer tick loop has taken over — self-terminate
+    if _progress_img_overlay is None:
+        return  # overlay destroyed — let the loop die
+    if not player.is_playing():
+        root.after(500, _progress_overlay_tick, _gen)   # check again later when paused
+        return
+    _progress_pulse_step += 0.55
+    _redraw_progress_overlay()
+    root.after(50, _progress_overlay_tick, _gen)
+
+
 def set_progress_overlay(current_time=None, total_length=None, destroy=False):
-    global progress_overlay, light_progress_bar, music_icon_label, progress_bar_ready, _pulse_sizes
+    global progress_overlay, light_progress_bar, music_icon_label, progress_bar_ready
+    global _progress_img_overlay, _progress_bar_color, _progress_icon_color, _progress_music_icon
+    global _progress_pulse_step, _progress_last_time, _progress_last_total, _progress_tick_gen
+    global _progress_bg_layer, _progress_bg_np, _progress_canvas_np
+    global _progress_icon_cache, _progress_icon_frames, _progress_cached_osd, _progress_prev_icon_box
+    global _progress_bgra_arr, _progress_bgbg_arr, _progress_fill_strip
+    global _progress_sub_x, _progress_sub_y, _progress_sub_w, _progress_sub_h
 
     if destroy:
         _unregister_mpv_tracked_window("progress_overlay")
-        if progress_overlay is not None:
+        if _progress_img_overlay is not None:
             try:
-                progress_overlay.destroy()
+                _progress_img_overlay.remove()
             except Exception:
                 pass
-        progress_overlay = None
-        light_progress_bar = None
-        music_icon_label = None
-        progress_bar_ready = False
+            _progress_img_overlay = None
+        progress_overlay    = None
+        light_progress_bar  = None
+        music_icon_label    = None
+        progress_bar_ready  = False
+        _progress_pulse_step  = 0.0
+        _progress_tick_gen  += 1      # invalidate any running tick loop
+        _progress_bg_layer    = None
+        _progress_bg_np       = None
+        _progress_canvas_np   = None
+        _progress_icon_cache  = None
+        _progress_icon_frames = {}
+        _progress_cached_osd  = (0, 0)
+        _progress_prev_icon_box = (0, 0, 0, 0)
+        _progress_bgra_arr  = None
+        _progress_bgbg_arr  = None
+        _progress_fill_strip = None
+        _progress_sub_x = _progress_sub_y = _progress_sub_w = _progress_sub_h = 0
         return
 
+    # Store latest time so the animation tick always has fresh values
+    if current_time is not None:
+        _progress_last_time = current_time
+    if total_length is not None:
+        _progress_last_total = total_length
+
     if progress_overlay is None:
-        progress_overlay = tk.Toplevel(root)
-        progress_overlay.title("Blind Progress Bar")
-        progress_overlay.overrideredirect(True)
-        progress_overlay.attributes("-topmost", True)
-        progress_overlay.attributes("-alpha", 0.8)
-        progress_overlay.configure(bg=OVERLAY_TEXT_COLOR)  # outline colour
-
-        # Use mpv window rect for sizing/centering so it tracks the player window
-        mx, my, mw, mh = _get_mpv_window_rect() or (None, None, None, None)
-        if mw and mh:
-            screen_width, screen_height = mw, mh
-            _ox, _oy = mx, my
-        else:
-            screen_width = root.winfo_screenwidth()
-            screen_height = root.winfo_screenheight()
-            _ox, _oy = 0, 0
-        width, height = round(screen_width * 0.7), round(screen_height * 0.5)
-        x = _ox + (screen_width - width) // 2
-        y = _oy + (screen_height - height) // 2
-
-        # Place directly at final position — no slide animation
-        progress_overlay.geometry(f"{width}x{height}+{x}+{y}")
-        progress_overlay.update_idletasks()
-
-        # Inner frame fills everything except a border matching the synopsis box thickness
-        _border = scl(4)
-        _inner = tk.Frame(progress_overlay, bg=OVERLAY_BACKGROUND_COLOR, bd=0)
-        _inner.place(x=_border, y=_border, relwidth=1.0, relheight=1.0, width=-_border*2, height=-_border*2)
-
-        # Style configuration
-        style = ttk.Style(root)
-        style.theme_use('default')
-        style.configure("Horizontal.TProgressbar",
-                        thickness=round(screen_height / 15),
-                        background=generate_random_color(0, 200),
-                        bordercolor='black',
-                        borderwidth=10,
-                        relief="solid")
-
-        light_progress_bar = ttk.Progressbar(_inner, orient="horizontal", mode="determinate",
-                                             length=round(screen_width * 0.6))
-        light_progress_bar.place(relx=0.5, rely=0.7, anchor="center")
-
-        # Music icon
+        # First call: pick random colours and icon, create OSD, start animation loop
+        _progress_bar_color  = (random.randint(0, 200), random.randint(0, 200), random.randint(0, 200))
+        import colorsys
+        _ic_h = random.random()                              # random hue 0–1
+        _ic_r, _ic_g, _ic_b = colorsys.hsv_to_rgb(_ic_h, 0.85, 1.0)   # vivid, full brightness
+        _progress_icon_color = (int(_ic_r * 255), int(_ic_g * 255), int(_ic_b * 255))
         if fixed_current_round and fixed_current_round.get("music_icon"):
-            music_icon = fixed_current_round["music_icon"]
+            _progress_music_icon = fixed_current_round["music_icon"]
         elif light_mode == 'ost':
-            music_icon = "🎼"
+            _progress_music_icon = "\U0001f3bc"   # 🎼
         else:
-            music_icon = "🎵"
-
-        # Font size = screen-percentage size (scl-based, same as original) scaled
-        # proportionally by how much of the screen the mpv window occupies.
-        # At fullscreen: ratio=1.0 → identical to the old scl(160)/scl(200) values.
-        _screen_h = root.winfo_screenheight()
-        _mpv_frac = screen_height / _screen_h if _screen_h else 1.0
-        _pulse_base = max(8, round(scl(160) * _mpv_frac))
-        _pulse_max  = max(10, round(scl(200) * _mpv_frac))
-        _pulse_sizes = (_pulse_base, _pulse_max)
-        music_icon_label = tk.Label(_inner, text=music_icon, font=("Segoe UI Emoji", _pulse_base),
-                                    bg=OVERLAY_BACKGROUND_COLOR, fg=generate_random_color(100, 255))
-
-        music_icon_label.place(x=0, rely=0.35, anchor="center")  # Temporarily place far left
-
-        # Schedule pulsation on main thread — do NOT call Tkinter from a worker thread
-        root.after(50, pulsate_music_icon, music_icon_label)
-
-        # Mark ready and position icon immediately (no animation callback needed)
-        progress_overlay.update_idletasks()
-        move_music_icon(current_time, total_length)
+            _progress_music_icon = "\U0001f3b5"   # 🎵
+        _progress_img_overlay = player._p.create_image_overlay()
+        progress_overlay   = True   # sentinel
+        light_progress_bar = True   # sentinel checked externally (line ~14773)
         progress_bar_ready = True
-        _register_mpv_tracked_window("progress_overlay", progress_overlay,
-                                     _progress_overlay_on_mpv_rect, keep_topmost=False, lift_on_focus=True)
-        global _progress_overlay_last_mpv_size
-        _progress_overlay_last_mpv_size = (screen_width, screen_height)
-
-    elif current_time is not None and total_length is not None:
-        # Wait until layout is complete
-        if progress_bar_ready:
-            move_music_icon(current_time, total_length)
-        light_progress_bar["maximum"] = total_length
-        light_progress_bar["value"] = current_time
-        progress_overlay.wm_attributes("-topmost", True)
+        # Build the cached background layer and pre-render emoji before first draw
+        try:
+            _osd_w = player._p.osd_width
+            _osd_h = player._p.osd_height
+        except Exception:
+            _osd_w, _osd_h = 0, 0
+        if _osd_w and _osd_h:
+            _rebuild_progress_bg_layer(_osd_w, _osd_h)
+        # Draw one frame immediately, then start the 50 ms animation loop
+        _progress_tick_gen += 1
+        _redraw_progress_overlay()
+        root.after(50, _progress_overlay_tick, _progress_tick_gen)
 
 def pulsate_music_icon(label, sizes=None, _step=None, _font="Arial", _interval=50):
     global pulse_step
@@ -24737,19 +25440,19 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 set_btn = tk.Button(time_frame, text="GO TO", font=font_entry, bg="black", fg="white", width=6)
                 set_btn.pack(side="left")
                 
-                def increment_time(e=entry):
+                def increment_time(step=0.1, e=entry):
                     try:
                         val = float(e.get() or 0)
                         e.delete(0, tk.END)
-                        e.insert(0, f"{val + 0.1:.1f}")
+                        e.insert(0, f"{val + step:.1f}")
                     except:
                         pass
-                
-                def decrement_time(e=entry):
+
+                def decrement_time(step=0.1, e=entry):
                     try:
                         val = float(e.get() or 0)
                         e.delete(0, tk.END)
-                        e.insert(0, f"{max(0, val - 0.1):.1f}")
+                        e.insert(0, f"{max(0, val - step):.1f}")
                     except:
                         pass
                 
@@ -24771,6 +25474,8 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 
                 plus_btn.config(command=increment_time)
                 minus_btn.config(command=decrement_time)
+                plus_btn.bind("<Button-3>", lambda e, f=increment_time: f(1.0))
+                minus_btn.bind("<Button-3>", lambda e, f=decrement_time: f(1.0))
                 now_btn.config(command=set_now)
                 set_btn.config(command=set_to_time)
                 
@@ -26161,7 +26866,10 @@ def _get_osd_video_rect():
     return osd_w, osd_h, vid_x, vid_y, disp_w, disp_h
 
 def _hide_title_popup_osd():
-    """Remove the anime info ASS overlay from the mpv canvas."""
+    """Remove the anime info ASS overlay from the mpv canvas and stop any slide animation."""
+    global _title_popup_anim_state
+    _title_popup_slide_cancel()
+    _title_popup_anim_state = None
     try:
         _osd_command('osd-overlay', _INFO_POPUP_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
     except Exception:
@@ -26369,7 +27077,7 @@ def _title_popup_slide_out():
             _title_popup_anim_state  = None
             _hide_title_popup_osd()
 
-    _step()
+    _title_popup_anim_after = root.after(0, _step)
 
 
 def _title_popup_on_mpv_rect(mx, my, mw, mh):
@@ -26394,7 +27102,7 @@ artist_info_display = False
 studio_info_display = False
 season_info_display = False
 year_info_display = False
-def toggle_title_popup(show, info_type=None):
+def toggle_title_popup(show, info_type=None, instant=False):
     """Creates or destroys the title popup at the bottom middle of the screen."""
     global light_mode, title_info_only, artist_info_display, studio_info_display, season_info_display, year_info_display, _title_popup_intent
     global _title_popup_info_type_cache, _title_popup_last_mpv_size
@@ -26422,7 +27130,10 @@ def toggle_title_popup(show, info_type=None):
         update_popout_title_button_text(show)
         web_server.set_info_public(False)
         _unregister_mpv_tracked_window("title_popup")
-        _title_popup_slide_out()
+        if instant:
+            _hide_title_popup_osd()
+        else:
+            _title_popup_slide_out()
         return
     
     if guessing_extra == "buzzer":
@@ -26516,11 +27227,7 @@ def toggle_title_popup(show, info_type=None):
                 else:
                     score = ""
             else:
-                episodes =  data.get("episodes")
-                if not episodes:
-                    episodes = "Airing"
-                else:
-                    episodes = str(episodes) + " Episodes"
+                episodes = get_episode_display(data)
                 _members_num = _safe_int(data.get("members", 0), 0)
                 _pop_display = data.get("popularity") or "N/A"
                 members = f"MAL Members: {_members_num:,} (#{_pop_display})"
@@ -26703,6 +27410,16 @@ def get_format(data):
             return "TV Short"
     # Fallback to regular anime metadata format
     return data.get("type", "")
+
+def get_episode_display(data, suffix=" Episodes"):
+    """Return a human-readable episode count string.
+    Games with no episode data show 'N/A'; still-airing shows show 'Airing'.
+    When an episode count exists it is returned as '<n> Episodes' (suffix can be overridden or set to '' for bare number).
+    """
+    episodes = data.get("episodes")
+    if episodes:
+        return f"{episodes}{suffix}" if suffix else str(episodes)
+    return "N/A" if is_game(data) else "Airing"
 
 def get_tags_string(data):
     return ", ".join(get_tags(data))
@@ -28616,12 +29333,12 @@ def play_video_retry(retries, filename=None):
     retry_delay = 2000
     if animethemes_stream:
         retry_delay = 5000 + 1000*(5-retries)  # Increase delay with each retry for streaming
-    if (not player.is_playing() or player.get_length() == 0) and (not filename or (currently_playing.get("filename") == filename)):
+    if (not player.is_playing() or player.get_length() == 0) and filename and currently_playing.get("filename") == filename:
         if retries > 0:
             if retries < 5:
                 print(f"Retrying playback for: {currently_playing.get('filename')}")
                 player_play()
-            root.after(retry_delay, play_video_retry, retries - 1)  # Retry playback
+            root.after(retry_delay, play_video_retry, retries - 1, filename)  # Retry playback
             return
         else:
             play_video(playlist["current_index"] + skip_direction)
@@ -29050,7 +29767,7 @@ def update_seek_bar():
                                     guess_extra("yt_bonus")
                                 break
                     else:
-                        if not light_round_started and (length - time) <= 8:
+                        if not light_round_started and not video_stopped and (length - time) <= 8:
                             if (not is_title_window_up() or title_info_only) and auto_info_end:
                                 toggle_title_popup(True)
                             if coming_up_queue:
@@ -29709,6 +30426,7 @@ def set_black_screen(toggle, smooth=True, color=None):
         black_overlay = None
         _unregister_mpv_tracked_window("blind_osd")
         set_blind_enabled(False)
+        _commit_censor_osd()  # restore censor overlay now that blind is gone
     root.after(100, configure_style)
 
 def set_blind_enabled(toggle):
@@ -29796,7 +30514,9 @@ def _commit_censor_osd():
     global _censor_osd, _censor_osd_img, _censor_osd_last_size
     active = [(d["censor"], d.get("color", "black"))
               for d in censor_boxes.values() if not d.get("destroying")]
-    if not active:
+    # Hide censor overlay while blind/black overlay is active — it sits above the blind
+    # OSD layer and would otherwise punch through the black screen at round start.
+    if not active or black_overlay is not None:
         if _censor_osd is not None:
             try:
                 _censor_osd.remove()
@@ -33416,8 +34136,12 @@ def get_op_ed_counts(themes):
             slug = file_data['slug']
             version = file_data.get('version')
         else:
-            slug = filename.split("-")[1].split(".")[0].split("v")[0]  # Fallback to filename parsing
-            version_part = filename.split("-")[1].split(".")[0]
+            parts = filename.split("-")
+            if len(parts) < 2:
+                # Filename doesn't match expected pattern — skip it
+                continue
+            slug = parts[1].split(".")[0].split("v")[0]  # Fallback to filename parsing
+            version_part = parts[1].split(".")[0]
             if "v" in version_part:
                 version = version_part.split("v")[1] if len(version_part.split("v")) > 1 else None
             else:
@@ -36302,25 +37026,27 @@ def _get_menu_registry():
          "command": lambda: open_censor_editor(True),
          "tooltip": "Opens the censor editor to add, edit, or delete censor boxes for the current theme."},
         "---",
+        {"id": "always_on_top", "icon": "📌", "label": "Always On Top",
+         "button_label": "ON TOP",
+         "command": toggle_mpv_always_on_top,
+         "toggle": lambda: mpv_always_on_top,
+         "tooltip": "Keep the mpv player window on top of all other windows."},
         {"id": "auto_refresh", "icon": "♻", "label": "Auto Refresh Metadata",
          "button_label": "AUTO REFRESH",
          "command": toggle_auto_auto_refresh,
          "toggle":  lambda: auto_refresh_toggle,
          "tooltip": "Toggle auto refreshing jikan metadata (score, members) as themes play — never refreshes the same anime twice per session."},
-        {"id": "progress_bar", "icon": "▬", "label": "Progress Bar",
-         "button_label": "PROGRESS",
-         "shortcut": True, "command": toggle_progress_bar,
-         "toggle":  lambda: progress_bar_enabled,
-         "tooltip": "Toggle a subtle progress bar overlay showing the current playback position."},
         {"id": "fullscreen", "icon": "⛶", "label": "Fullscreen",
          "button_label": "FULLSCREEN",
          "command": toggle_autoplay_fullscreen,
          "toggle": lambda: autoplay_fullscreen,
          "tooltip": "Toggle whether the player starts in fullscreen when a track plays."},
-        {"id": "fullscreen_now", "icon": "⛶", "label": "Toggle Fullscreen Now",
-         "button_label": "FS NOW",
-         "command": lambda: player.toggle_fullscreen(),
-         "tooltip": "Immediately toggle mpv fullscreen (same as TAB)."},
+        {"id": "progress_bar", "icon": "▬", "label": "Progress Bar",
+         "button_label": "PROGRESS",
+         "shortcut": True, "command": toggle_progress_bar,
+         "toggle":  lambda: progress_bar_enabled,
+         "tooltip": "Toggle a subtle progress bar overlay showing the current playback position."},
+         "---",
         {"id": "enable_shortcuts", "icon": "", "label": "Enable Shortcuts",
          "button_label": "SHORTCUTS",
          "shortcut": True, "command": toggle_disable_shortcuts,
@@ -37052,6 +37778,16 @@ next_button.pack(side="left", padx=0)
 
 autoplay_toggle = 0
 autoplay_fullscreen = True
+mpv_always_on_top = False
+
+def toggle_mpv_always_on_top():
+    global mpv_always_on_top
+    mpv_always_on_top = not mpv_always_on_top
+    try:
+        player._p.ontop = mpv_always_on_top
+    except Exception:
+        pass
+    save_config()
 
 def toggle_autoplay_fullscreen():
     global autoplay_fullscreen
