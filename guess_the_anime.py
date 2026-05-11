@@ -1,10 +1,9 @@
-# -*- coding: utf-8 -*-
-# =========================================
+﻿# =========================================
 #      GUESS THE ANIME - PLAYLIST TOOL
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "19.1"  # Update this when making releases
+APP_VERSION = "19.2"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -16,7 +15,6 @@ import json
 import requests
 import xml.etree.ElementTree as ET
 import re
-import dxcam
 import time
 import copy
 import ast
@@ -607,15 +605,74 @@ try:
     player._p.observe_property('idle-active', _on_player_idle)
 
     def _on_fullscreen_change(name, is_fs):
-        # Sync autoplay_fullscreen whenever the user toggles fullscreen in mpv
-        # (double-click, TAB keybind, etc.) so the next play follows the new state.
+        # Sync autoplay_fullscreen when the user toggles fullscreen in mpv while a video
+        # is actively playing (double-click, TAB, etc.). Do NOT sync during startup or
+        # shutdown — mpv exits fullscreen on close which would poison the saved preference.
         try:
             root = globals().get('root')
-            if root:
+            p = globals().get('player')
+            if root and p and p.is_playing():
                 root.after(0, lambda: globals().update({'autoplay_fullscreen': bool(is_fs)}))
         except Exception:
             pass
     player._p.observe_property('fullscreen', _on_fullscreen_change)
+
+    def _on_osd_width_change(name, new_w):
+        """Re-render the coming-up PIL image overlay when the OSD is resized."""
+        try:
+            if not globals().get('_coming_up_osd_visible'):
+                return
+            frame = globals().get('_coming_up_current_frame')
+            if not frame:
+                return
+            title_text, details, pil_image = frame
+            osd_w, osd_h = int(player._p.osd_width or 0), int(player._p.osd_height or 0)
+            if not osd_w or not osd_h:
+                return
+            target_y = max(4, round(osd_h * 0.014))
+            _root = globals().get('root')
+            if _root:
+                _root.after(0, lambda: _render_coming_up_frame(
+                    title_text, details, pil_image, target_y, osd_w, osd_h, 1.0))
+        except Exception:
+            pass
+    player._p.observe_property('osd-width', _on_osd_width_change)
+
+    @player._p.event_callback('playback-restart')
+    def _on_playback_restart(_):
+        """Fired once per file load when the first frame is ready and OSD dims are valid.
+        Reapplies blind/reveal overlays that may have been lost during the mpv OSD reset."""
+        try:
+            _root = globals().get('root')
+            if not _root:
+                return
+            def _reapply():
+                _bo = globals().get('black_overlay')
+                _cache = globals().get('_blind_osd_color_cache', 'black')
+                # Reapply blind OSD (covers blind rounds AND the pre-load cover for reveal rounds)
+                if _bo:
+                    _set_blind_osd_alpha(_cache, 255)
+                # For non-lightning reveal rounds: reapply active peek overlay then lift blind
+                if not globals().get('light_mode') and not globals().get('light_round_started'):
+                    _fvf = globals().get('filter_vf_active')
+                    _fvf_var = globals().get('_filter_vf_variant')
+                    _eo = globals().get('edge_overlay_box')
+                    _po = globals().get('peek_overlay1')
+                    _go = globals().get('grow_overlay_boxes')
+                    # Reapply ASS-based overlays (osd dims are now valid)
+                    if _fvf and _fvf_var:
+                        toggle_filter_vf(_fvf_var, globals().get('_filter_vf_last_progress', [0.0])[0])
+                    if _eo:
+                        toggle_edge_overlay(block_percent=99)
+                    if _po:
+                        toggle_peek_overlay()
+                    # If any peek overlay is active and we put up a pre-load black screen, lift it
+                    if _bo and (_fvf or _eo or _po or _go):
+                        _root.after(50, lambda: set_black_screen(False))
+            _root.after(0, _reapply)
+        except Exception:
+            pass
+
 except Exception as _e:
     try:
         messagebox.showerror("mpv error", f"Failed to create mpv player:\n{_e}")
@@ -1091,6 +1148,7 @@ CENSOR_JSON_FILE = "censors/censors.json"
 THEMES_CACHE_FOLDER = "themes_cache"
 CACHE_METADATA_FILE = "themes_cache/cache_metadata.json"
 themes_cache_size = 500  # Size in MB
+auto_download_themes = False  # overwritten by load_config() via SETTINGS_SCHEMA
 HIGHLIGHT_COLOR = "gray26"
 OVERLAY_BACKGROUND_COLOR = "black"
 OVERLAY_TEXT_COLOR = "white"
@@ -1118,6 +1176,7 @@ SETTINGS_SCHEMA = [
     {"key": "stream_volume_boost",             "config_key": "stream_volume_boost",             "label": "Stream Volume Boost:",       "type": "int",      "default": 0,     "width": 10, "tooltip": "Additional volume boost specifically for stream audio from YouTube clips/trailers."},
     {"key": "bgm_volume","config_key": "bgm_volume","label": "BGM Volume:",     "type": "float",    "default": 1.0,   "width": 10, "min": 0.0, "max": 1.5, "tooltip": "Volume multiplier for background music (0.0 - 1.5). Scales the dB curve output."},
     {"key": "themes_cache_size",               "config_key": "themes_cache_size",               "label": "Themes Cache Size (MB):",    "type": "int",      "default": 500,   "width": 10, "min": 0,   "tooltip": "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."},
+    {"key": "auto_download_themes",             "config_key": "auto_download_themes",             "label": "Auto-Download Themes:",       "type": "bool",     "default": False,          "tooltip": "When enabled, downloaded themes are saved directly to your themes directory as permanent files instead of the temporary cache."},
     # Skip group — 4 entries rendered as one row in the popup
     {"key": "skip_play_seconds",     "config_key": "skip_play_seconds",  "label": "Skip Play Settings:", "type": "float", "default": 0,   "width": 6, "min": 0, "group": "skip_group", "tooltip": "Play Seconds: Duration to play before auto-skip (0 = disabled)"},
     {"key": "skip_jump_seconds",     "config_key": "skip_jump_seconds",  "label": None,                  "type": "float", "default": 5,   "width": 6, "min": 0, "group": "skip_group", "tooltip": "Jump Seconds: Distance to jump forward when skip triggers"},
@@ -3991,7 +4050,7 @@ def update_popout_currently_playling(data, clear=False):
         source = data.get("source")
         marks = get_file_marks(currently_playing.get("filename", ""))
         if data.get("platforms"):
-            episodes = ", ".join(data.get("platforms"))
+            episodes = ", ".join(_shorten_platform(p) for p in data.get("platforms"))
             _reviews_num = _safe_int(data.get("reviews", 0), 0)
             members = f"Reviews: {_reviews_num:,}"
             score = f"Score: {data.get("score")}" if data.get("score") else ""
@@ -8159,85 +8218,156 @@ def _get_pop_time_entry(order_val):
 def get_next_infinite_track(increment=True, speculative=False):
     if not playlist.get("infinite", False):
         return
-    
-    inf_settings = get_infinite_settings()
-    # In speculative mode use shadow order counters so the real playlist order
-    # is not advanced prematurely (it is advanced on promotion instead).
-    if speculative:
-        next_spec_order()
-        _order_key = "spec_order"
-    else:
-        if increment:
-            next_playlist_order()
-        _order_key = "order"
-    groups, shows_files_map = get_pop_time_groups()
-    effective_difficulty_range = difficulty_ranges[playlist["difficulty"]]
-    min_s_limit, min_f_limit = base_series_cooldown, base_file_cooldown = get_cooldown_for_popularity(1, effective_difficulty_range, groups)
-    s_limit_mod, f_limit_mod = 1, 1
-    if speculative:
-        p, t = _get_pop_time_entry(playlist[_order_key])
-    else:
-        p, t = playlist["pop_time_order"][playlist[_order_key]]
 
+    if speculative:
+        snap = _build_spec_snapshot()
+        next_spec_order()
+        result, final_spec_order = _select_speculative_track(snap)
+        if result and final_spec_order > playlist.get("spec_order", 0):
+            playlist["spec_order"] = final_spec_order
+        return result
+
+    # Non-speculative: advance order, build snapshot without spec_tail, delegate to selector.
+    if increment:
+        next_playlist_order()
+    inf_settings = get_infinite_settings()
+    snap = _build_spec_snapshot()
+    # Override snapshot fields so the selector sees the real playlist history only
+    # (no spec_tail bleed) and starts at exactly playlist["order"].
+    snap["initial_spec_order"] = playlist["order"] - 1
+    snap["spec_tail"] = []
+    hist_limit = inf_settings.get("max_history_check", 5000)
+    snap["playlist_history"] = list(playlist["playlist"][-hist_limit:])
+    snap["last50"] = list(playlist["playlist"][-50:])
+
+    result, _ = _select_speculative_track(snap)
+    if result:
+        playlist["playlist"].append(result)
+        if playlist["current_index"] == -1:
+            update_current_index(0)
+        else:
+            update_current_index()
+        if list_loaded == "playlist":
+            global current_list_content, current_list_selected
+            current_list_content = convert_playlist_to_dict(playlist["playlist"])
+            current_list_selected = playlist["current_index"]
+            refresh_current_list()
+        prefetch_next_themes()
+    return result
+
+# --- Off-main-thread speculative track picking ---
+_spec_pick_running = False  # guard: only one background pick at a time
+
+
+def _build_spec_snapshot():
+    """Snapshot all data needed by _select_speculative_track. MUST be called on the main thread."""
+    inf_settings = get_infinite_settings()
+    groups, shows_files_map = get_pop_time_groups()   # returns deep copies
+    spec_tail = list(playlist.get("speculative_tail", []))
+    full_hist = playlist["playlist"] + spec_tail
+    hist_limit = inf_settings.get("max_history_check", 5000)
+    return {
+        "groups": groups,
+        "shows_files_map": shows_files_map,
+        "spec_tail": spec_tail,
+        "playlist_history": list(full_hist[-hist_limit:]),
+        "last50": list(playlist["playlist"][-50:]) + spec_tail,
+        "initial_spec_order": playlist.get("spec_order", playlist["order"]),
+        "pop_time_order": list(playlist["pop_time_order"]),
+        "next_pop_time_order": list(playlist.get("next_pop_time_order", [])),
+        "difficulty": playlist["difficulty"],
+        "inf_settings": inf_settings,
+        "light_mode": light_mode,
+    }
+
+
+def _select_speculative_track(snap):
+    """Pure selection function — reads only from *snap*, writes nothing global.
+    Safe to run in a background thread.
+    Returns (selected_file, final_spec_order).
+    """
+    inf_settings  = snap["inf_settings"]
+    groups        = snap["groups"]
+    shows_files_map = snap["shows_files_map"]
+    pop_time_order  = snap["pop_time_order"]
+    nxt_pop_order   = snap["next_pop_time_order"]
+    playlist_history = snap["playlist_history"]
+    spec_tail     = snap["spec_tail"]
+    snap_light_mode = snap["light_mode"]
+    # spec_order starts one slot ahead (the slot reserved by the caller via next_spec_order)
+    spec_order = snap["initial_spec_order"] + 1
+
+    def _local_pop_entry(order_val):
+        if order_val < len(pop_time_order):
+            return pop_time_order[order_val]
+        idx = order_val - len(pop_time_order)
+        if idx < len(nxt_pop_order):
+            return nxt_pop_order[idx]
+        return pop_time_order[order_val % max(len(pop_time_order), 1)]
+
+    effective_difficulty_range = difficulty_ranges[snap["difficulty"]]
+    _min_s_limit, _min_f_limit = get_cooldown_for_popularity(1, effective_difficulty_range, groups)
+    s_limit_mod, f_limit_mod = 1, 1
+
+    p, t = _local_pop_entry(spec_order)
     if p < len(groups) and t < len(groups[p]) and groups[p][t]:
         random.shuffle(groups[p][t])
+
     selected_file = None
     checked_mal_ids = set()
     try_count = 0
     tag_cooldown_failures = 0
     tag_failed_files = []
-    max_tag_tries = len(groups[p][t]) // 3
-    # In speculative mode include already-queued tail entries in the history window
-    # so consecutive speculative picks respect cooldowns with each other.
-    spec_tail = playlist.get("speculative_tail", []) if speculative else []
-    op_count, ed_count = get_op_ed_counts(playlist["playlist"][-50:] + spec_tail)
-    playlist_history = (playlist["playlist"] + spec_tail)[-inf_settings.get("max_history_check", 5000):]
+    max_tag_tries = min(len(groups[p][t]) // 3, 5) if (p < len(groups) and t < len(groups[p])) else 0
+    _hist_entry_cache = {}
+
+    op_count, ed_count = get_op_ed_counts(snap["last50"])
     series_boost_cache = {}
     current_session_lightning = get_current_session_lightning_tracks()
 
-    # Precompute recent tag union for tag cooldown checks
     recent_tags_union = set()
-    tag_source = playlist["playlist"] + spec_tail if speculative else playlist["playlist"]
-    if inf_settings["tag_cooldown"] and tag_source:
+    if inf_settings.get("tag_cooldown"):
         tag_cooldown_limit = inf_settings["tag_cooldown"]
-        for recent_file in tag_source[-tag_cooldown_limit:]:
+        for recent_file in (playlist_history + spec_tail)[-tag_cooldown_limit:]:
             recent_tags_union.update(get_tags(get_metadata(get_clean_filename(recent_file))))
 
     while not selected_file:
-        group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
+        if p < len(groups) and t < len(groups[p]):
+            group_op_count, group_ed_count = get_op_ed_counts(groups[p][t])
+        else:
+            group_op_count, group_ed_count = 0, 0
         if group_ed_count == 0 or (ed_count + op_count) == 0:
             need_op = False
         else:
-            need_op = ((ed_count / (ed_count+op_count)) > inf_settings["ending_limit_ratio"]) and (group_op_count / (2 * group_ed_count)) > 0.05
+            need_op = (
+                (ed_count / (ed_count + op_count)) > inf_settings["ending_limit_ratio"]
+                and (group_op_count / (2 * group_ed_count)) > 0.05
+            )
 
         if p >= len(groups) or t >= len(groups[p]) or not groups[p][t]:
             if try_count > 18:
-                return
-            if speculative:
-                next_spec_order()
-                p, t = _get_pop_time_entry(playlist[_order_key])
-            else:
-                next_playlist_order()
-                p, t = playlist["pop_time_order"][playlist[_order_key]]
-            if groups[p][t]:
+                return None, spec_order
+            spec_order += 1
+            p, t = _local_pop_entry(spec_order)
+            if p < len(groups) and t < len(groups[p]) and groups[p][t]:
                 random.shuffle(groups[p][t])
-            max_tag_tries = len(groups[p][t]) // 4
+            max_tag_tries = min(len(groups[p][t]) // 4, 5) if (p < len(groups) and t < len(groups[p])) else 0
             tag_cooldown_failures = 0
             try_count += 1
             continue
+
         file = groups[p][t].pop(0)
-        
-        # Skip if file is None
         if file is None:
             try_count += 1
             continue
-        
+
         extra_file = False
         if "[EXTRA]" in file:
             file = file.replace("[EXTRA]", "")
             extra_file = True
         else:
             selected_mal = get_metadata(file).get("mal")
+
         if extra_file or selected_mal not in checked_mal_ids:
             if extra_file:
                 show_files = [file]
@@ -8245,98 +8375,75 @@ def get_next_infinite_track(increment=True, speculative=False):
                 checked_mal_ids.add(selected_mal)
                 show_files = shows_files_map.get(selected_mal, [])
                 random.shuffle(show_files)
-            checked_files = []
+            checked_files = set()
             while show_files and not selected_file:
                 selected_file = show_files.pop(0)
                 if selected_file in checked_files:
                     selected_file = None
                     continue
-                checked_files.append(selected_file)
+                checked_files.add(selected_file)
                 d = get_metadata(selected_file)
-                s_pop = get_series_popularity(d)
-                f_pop = d.get("popularity") or INT_INF
-                # Get smooth cooldowns based on popularity rank
 
-                base_series_cooldown, series_file_cooldown = get_cooldown_for_popularity(s_pop, effective_difficulty_range, groups)
-                real_series_cooldown, base_file_cooldown = get_cooldown_for_popularity(f_pop, effective_difficulty_range, groups)
-
-                # Apply modifiers like the original system
-                s_limit = int(base_series_cooldown * s_limit_mod)
-                f_limit = int(base_file_cooldown * f_limit_mod)
-                
                 if need_op and not is_slug_op(d.get("slug")):
                     selected_file = None
                     continue
-                series = series_list(d)
-                file_boost = get_boost_multiplier(d.get("season", "Fall 2000"))
-                series_boost = get_series_boost_multiplier(series, cache=series_boost_cache)
-                
-                if inf_settings["tag_cooldown"]:
-                    # Tag cooldown check - prevent same tags within recent entries
+
+                s_pop = get_series_popularity(d)
+                f_pop = d.get("popularity") or INT_INF
+                _base_s_cd, _ = get_cooldown_for_popularity(s_pop, effective_difficulty_range, groups)
+                _, _base_f_cd  = get_cooldown_for_popularity(f_pop, effective_difficulty_range, groups)
+                s_limit = int(_base_s_cd * s_limit_mod)
+                f_limit = int(_base_f_cd * f_limit_mod)
+
+                if inf_settings.get("tag_cooldown") and recent_tags_union and tag_cooldown_failures < max_tag_tries:
                     selected_tags = set(get_tags(d))
-                    if selected_tags and recent_tags_union and tag_cooldown_failures < max_tag_tries:
-                        if selected_tags & recent_tags_union:  # Set intersection
-                            tag_failed_files.append(selected_file)
-                            selected_file = None
-                            tag_cooldown_failures += 1
-                            if tag_cooldown_failures >= max_tag_tries:
-                                #merge with group
-                                groups[p][t].extend(tag_failed_files)
-                                tag_failed_files = []
+                    if selected_tags & recent_tags_union:
+                        tag_failed_files.append(selected_file)
+                        selected_file = None
+                        tag_cooldown_failures += 1
+                        if tag_cooldown_failures >= max_tag_tries:
+                            groups[p][t].extend(tag_failed_files)
+                            tag_failed_files = []
                     if not selected_file:
                         continue
+
                 if s_limit > 1 or f_limit > 1:
+                    series     = series_list(d)
+                    file_boost = get_boost_multiplier(d.get("season", "Fall 2000"))
+                    series_boost = get_series_boost_multiplier(series, cache=series_boost_cache)
+                    d_mal   = d.get("mal")
+                    d_slug  = d.get("slug")
+                    d_series = set(series)
+                    f_break  = max(_min_f_limit * f_limit_mod, f_limit / file_boost)
+                    s_thresh = max(_min_s_limit * s_limit_mod, s_limit / series_boost)
                     cooldown_count = 0
                     selected_base_f = _play_name_key(selected_file)
-                    
-                    for f in reversed(playlist_history):
-                        if f.startswith("[L]"):
-                            cooldown_count += 0.25
-                        else:
-                            cooldown_count += 1
 
+                    for f in reversed(playlist_history):
+                        is_l = f.startswith("[L]")
+                        cooldown_count += 0.25 if is_l else 1
                         clean_f = get_clean_filename(f)
-                        base_f = _play_name_key(clean_f)
-                        
-                        # Skip lightning rounds from previous sessions in cooldown calculations
-                        if not light_mode and f.startswith("[L]") and clean_f not in current_session_lightning:
+                        if not snap_light_mode and is_l and clean_f not in current_session_lightning:
                             continue
-                        
-                        if cooldown_count >= max(min_f_limit*f_limit_mod, ((f_limit)/file_boost)):
+                        if cooldown_count >= f_break:
                             break
-                        
-                        f_d = get_metadata(clean_f)
-                        if clean_f == selected_file or base_f == selected_base_f or (f_d.get("mal") == d.get("mal") and f_d.get("slug") == d.get("slug")) or (cooldown_count <= max(min_s_limit*s_limit_mod, (s_limit/series_boost)) and series_overlap(d, f_d)):
+                        if clean_f not in _hist_entry_cache:
+                            f_d = get_metadata(clean_f)
+                            _hist_entry_cache[clean_f] = (
+                                _play_name_key(clean_f),
+                                f_d.get("mal"),
+                                f_d.get("slug"),
+                                series_set(f_d),
+                            )
+                        _base_f, _f_mal, _f_slug, _f_series = _hist_entry_cache[clean_f]
+                        if (clean_f == selected_file or _base_f == selected_base_f
+                                or (_f_mal == d_mal and _f_slug == d_slug)
+                                or (cooldown_count <= s_thresh and bool(d_series & _f_series))):
                             selected_file = None
                             break
-                        
-                if selected_file:
-                    if False:
-                        print(f"🎵 INFINITE TRACK: {selected_file}")
-                        print(f"   📊 Popularity Rank: {s_pop} | Simple Calculation")  
-                        print(f"   ⏰ Series Cooldown: {s_limit:.0f} tracks (base: {base_series_cooldown})")
-                        print(f"   ⏰ File Cooldown: {f_limit:.0f} tracks (base: {base_file_cooldown})")
-                    
-                    if speculative:
-                        # Speculative mode: just return the file without touching playlist/UI/downloads
-                        return selected_file
 
-                    playlist["playlist"].append(selected_file)
-                    if playlist["current_index"] == -1:
-                        update_current_index(0)
-                    else:
-                        update_current_index()
-                    #         playlist["playlist"].pop(0)
-                    #         update_current_index(playlist["current_index"]-1)
-                    
-                    if list_loaded == "playlist":
-                        global current_list_content, current_list_selected
-                        current_list_content = convert_playlist_to_dict(playlist["playlist"])
-                        current_list_selected = playlist["current_index"]
-                        refresh_current_list()
-                    prefetch_next_themes()
-                    return selected_file
         if not groups[p][t]:
+            # Groups exhausted — refresh from (already-cached) deep-copy
             groups, shows_files_map = get_pop_time_groups()
             if p < len(groups) and t < len(groups[p]) and groups[p][t]:
                 random.shuffle(groups[p][t])
@@ -8348,6 +8455,9 @@ def get_next_infinite_track(increment=True, speculative=False):
                 s_limit_mod = s_limit_mod * 0.9
                 f_limit_mod = f_limit_mod * 0.9
 
+    return selected_file, spec_order
+
+
 def fill_speculative_tail(n=None):
     """Pre-pick up to n speculative tracks beyond the committed next, without downloading them.
     These entries are stored in playlist['speculative_tail'] and promoted into the real
@@ -8355,30 +8465,63 @@ def fill_speculative_tail(n=None):
     spec_order tracks how far ahead the tail has been picked. It may exceed
     len(pop_time_order) and overflow into next_pop_time_order seamlessly.
     n defaults to the 'speculative_tail_depth' infinite setting.
-    Must be called from the main Tkinter thread.
+    The heavy selection work runs in a background thread so the main thread stays responsive.
+    Spawns at most one background pick at a time; schedules the next pick on result.
     """
+    global _spec_pick_running
     if not playlist.get("infinite", False):
         return
     if n is None:
         n = get_infinite_settings().get("preload_track_count", 3)
     if "speculative_tail" not in playlist:
         playlist["speculative_tail"] = []
-    # Ensure next_pop_time_order exists so spec picks can overflow beyond the current cycle.
     if "next_pop_time_order" not in playlist:
         playlist["next_pop_time_order"] = get_pop_time_order()
-    # Initialise shadow counter from the real order the first time (or after a reset).
     if "spec_order" not in playlist:
         playlist["spec_order"] = playlist["order"]
-    while len(playlist["speculative_tail"]) < n:
-        result = get_next_infinite_track(speculative=True)
-        if not result:
-            break
-        playlist["speculative_tail"].append(result)
+    if len(playlist["speculative_tail"]) >= n:
+        return
+    # Don't start a second pick while one is still running.
+    if _spec_pick_running:
+        root.after(30, lambda: fill_speculative_tail(n))
+        return
+
+    # --- snapshot & launch background thread ---
+    # Snapshot BEFORE advancing so initial_spec_order reflects the pre-advance value.
+    # _select_speculative_track does `initial_spec_order + 1` internally.
+    snap = _build_spec_snapshot()
+    # Now advance spec_order on the main thread to reserve the slot.
+    next_spec_order()
+    _spec_pick_running = True
+
+    def _worker():
+        global _spec_pick_running
+        try:
+            result, final_spec_order = _select_speculative_track(snap)
+        except Exception as e:
+            print(f"[spec pick thread error] {e}")
+            result, final_spec_order = None, snap["initial_spec_order"]
+
+        def _on_main():
+            global _spec_pick_running
+            _spec_pick_running = False
+            if result:
+                playlist["speculative_tail"].append(result)
+                # Only apply final_spec_order if it moved forward (thread may have retried groups)
+                if final_spec_order > playlist.get("spec_order", 0):
+                    playlist["spec_order"] = final_spec_order
+            if len(playlist.get("speculative_tail", [])) < n:
+                root.after(5, lambda: fill_speculative_tail(n))
+
+        root.after(0, _on_main)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
 
 def _promote_or_generate_next():
     """Advance infinite playlist by one track.
     Promotes the first entry from speculative_tail if available (fast, no re-pick needed),
-    otherwise falls back to a fresh get_next_infinite_track() call.
+    otherwise runs the selection in a background thread to avoid blocking the main thread.
     After promoting, schedules a background refill of the speculative tail.
     """
     if not playlist.get("infinite", False):
@@ -8387,9 +8530,6 @@ def _promote_or_generate_next():
     if tail:
         promoted = tail.pop(0)
         # Consume the real order slot that this speculative entry was picked for.
-        # next_playlist_order() automatically handles wrap by consuming next_pop_time_order
-        # (which spec already used) and generating a fresh next_pop_time_order, keeping
-        # real and speculative on the same cycle.
         next_playlist_order()
         playlist["playlist"].append(promoted)
         if playlist["current_index"] == -1:
@@ -8402,13 +8542,55 @@ def _promote_or_generate_next():
             current_list_selected = playlist["current_index"]
             refresh_current_list()
         prefetch_next_themes()
-        # Refill the speculative tail (pick only, downloads controlled by prefetch)
         root.after(50, lambda: fill_speculative_tail())
     else:
-        get_next_infinite_track()
-        # tail was empty — reset spec_order so next fill starts from real order
+        # Tail was empty — run a non-speculative pick in a background thread.
+        _threaded_generate_next()
         playlist.pop("spec_order", None)
         root.after(50, lambda: fill_speculative_tail())
+
+
+def _threaded_generate_next():
+    """Run a non-speculative infinite pick in a background thread.
+    Advances playlist order on the main thread first, then selects the track
+    off-thread and applies the result (playlist append + UI refresh) back on
+    the main thread via root.after.
+    """
+    # Advance order on main thread to claim the slot.
+    next_playlist_order()
+    snap = _build_spec_snapshot()
+    # For the non-speculative path the initial_spec_order was set to playlist["order"]
+    # (which was already advanced). Subtract 1 so _select_speculative_track's +1 lands
+    # on the correct slot.
+    snap["initial_spec_order"] = playlist["order"] - 1
+
+    def _worker():
+        try:
+            result, _ = _select_speculative_track(snap)
+        except Exception as e:
+            print(f"[threaded generate next error] {e}")
+            result = None
+
+        def _apply():
+            if result:
+                playlist["playlist"].append(result)
+                if playlist["current_index"] == -1:
+                    update_current_index(0)
+                else:
+                    update_current_index()
+                if list_loaded == "playlist":
+                    global current_list_content, current_list_selected
+                    current_list_content = convert_playlist_to_dict(playlist["playlist"])
+                    current_list_selected = playlist["current_index"]
+                    refresh_current_list()
+                prefetch_next_themes()
+            else:
+                # Fallback: try the original synchronous path
+                get_next_infinite_track()
+
+        root.after(0, _apply)
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 def get_cooldown_for_popularity(popularity_rank, difficulty_range, groups):
     """Calculate cooldowns using computed values with smooth interpolation based on popularity rank"""
@@ -8794,6 +8976,7 @@ def save_config():
         "tutorial_shown": globals().get("tutorial_shown", False),
         "set_toggles": {
             "censors_enabled": censors_enabled,
+            "censors_nsfw_enabled": censors_nsfw_enabled,
             "auto_info_start": auto_info_start,
             "auto_info_end": auto_info_end,
             "auto_refresh_toggle": auto_refresh_toggle,
@@ -8839,7 +9022,7 @@ def load_config():
     global popout_layout, popout_columns, shortcuts_config
     # Schema settings loaded via config keys below
     global OPENAI_API_KEY, selected_rules_file, OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, volume_level
-    global censors_enabled, auto_info_start, auto_info_end, auto_refresh_toggle, disable_shortcuts, tutorial_shown, keep_set_toggles, progress_bar_enabled
+    global censors_enabled, auto_info_start, auto_info_end, auto_refresh_toggle, disable_shortcuts, tutorial_shown, keep_set_toggles, progress_bar_enabled, autoplay_fullscreen, mpv_always_on_top, censors_nsfw_enabled
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
@@ -8929,6 +9112,8 @@ def load_config():
                 _t = config.get("set_toggles", {})
                 if "censors_enabled" in _t:
                     censors_enabled = bool(_t["censors_enabled"])
+                if "censors_nsfw_enabled" in _t:
+                    censors_nsfw_enabled = bool(_t["censors_nsfw_enabled"])
                 if "auto_info_start" in _t:
                     auto_info_start = bool(_t["auto_info_start"])
                 if "auto_info_end" in _t:
@@ -11987,50 +12172,169 @@ def compare_versions(version1, version2):
     except Exception:
         return False
 
-# Removed complex download/cleanup functions - now just opens GitHub releases page
+def cleanup_old_update_exes():
+    """Delete any versioned update exes left over from a previous update (e.g. guess_the_anime_v19.2.exe)."""
+    if not getattr(sys, 'frozen', False):
+        return
+    try:
+        exe_dir = os.path.dirname(sys.executable)
+        current_name = os.path.basename(sys.executable)
+        for fname in os.listdir(exe_dir):
+            if fname == current_name:
+                continue
+            if re.match(r'guess_the_anime_v[\d.]+\.exe$', fname, re.IGNORECASE):
+                try:
+                    os.remove(os.path.join(exe_dir, fname))
+                    print(f"Cleaned up old update exe: {fname}")
+                except Exception as e:
+                    print(f"Could not remove old update exe {fname}: {e}")
+    except Exception as e:
+        print(f"cleanup_old_update_exes error: {e}")
+
+def _download_update(update_info):
+    """Download the new exe from GitHub releases and exit, prompting user to run it.
+    
+    Called on the main thread after user confirms. Shows a progress window,
+    downloads in a background thread, then closes the app.
+    """
+    release_data = update_info.get("release_data", {})
+    latest_version = update_info["latest_version"]
+
+    # Find the exe asset in the release
+    asset_url = None
+    for asset in release_data.get("assets", []):
+        if asset.get("name", "").lower() == "guess_the_anime.exe":
+            asset_url = asset["browser_download_url"]
+            break
+
+    if not asset_url:
+        messagebox.showerror("Update Failed",
+                             "Could not find guess_the_anime.exe in the latest release.\n"
+                             "Please download it manually from the GitHub releases page.")
+        open_github_releases()
+        return
+
+    exe_dir = os.path.dirname(sys.executable)
+    new_exe_name = f"guess_the_anime_v{latest_version}.exe"
+    new_exe_path = os.path.join(exe_dir, new_exe_name)
+
+    # Progress window
+    prog_win = tk.Toplevel()
+    prog_win.title("Downloading Update...")
+    prog_win.geometry("380x110")
+    prog_win.configure(bg="black")
+    prog_win.resizable(False, False)
+    prog_win.transient(root)
+    prog_win.grab_set()
+    get_window_position_and_setup(prog_win, offset_x=100, offset_y=100)
+
+    tk.Label(prog_win, text=f"Downloading version {latest_version}...",
+             bg="black", fg="white", font=("Arial", 11)).pack(pady=(16, 4))
+    prog_var = tk.DoubleVar()
+    prog_bar = ttk.Progressbar(prog_win, variable=prog_var, maximum=100, length=320)
+    prog_bar.pack(pady=4)
+    pct_label = tk.Label(prog_win, text="0%", bg="black", fg="#aaaaaa", font=("Arial", 9))
+    pct_label.pack()
+    prog_win.update()
+
+    download_error = [None]
+
+    def do_download():
+        try:
+            response = requests.get(asset_url, stream=True, timeout=60)
+            response.raise_for_status()
+            total = int(response.headers.get("content-length", 0))
+            downloaded = 0
+            with open(new_exe_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total:
+                            pct = downloaded / total * 100
+                            prog_win.after(0, lambda p=pct: (prog_var.set(p),
+                                                              pct_label.config(text=f"{p:.0f}%")))
+        except Exception as e:
+            download_error[0] = str(e)
+        finally:
+            prog_win.after(0, on_download_done)
+
+    def on_download_done():
+        try:
+            prog_win.destroy()
+        except Exception:
+            pass
+
+        if download_error[0]:
+            # Clean up partial file
+            try:
+                os.remove(new_exe_path)
+            except Exception:
+                pass
+            messagebox.showerror("Download Failed",
+                                 f"Could not download the update:\n{download_error[0]}\n\n"
+                                 "Please download it manually from the GitHub releases page.")
+            open_github_releases()
+            return
+
+        messagebox.showinfo("Update Ready",
+                            f"Version {latest_version} has been downloaded as:\n"
+                            f"  {new_exe_name}\n\n"
+                            f"Please close this window and run {new_exe_name} to complete the update.\n"
+                            f"The old exe will be removed automatically on first launch.")
+        root.destroy()
+
+    threading.Thread(target=do_download, daemon=True).start()
+
+def _show_update_dialog(update_info):
+    """Show the update-available dialog and handle the user's choice."""
+    release_data = update_info.get("release_data", {})
+    release_body = release_data.get("body", "No release notes available.")
+    is_frozen = getattr(sys, 'frozen', False)
+
+    if is_frozen:
+        prompt = "Would you like to download the update? The app will close when the download is complete."
+    else:
+        prompt = "Would you like to open the GitHub releases page to download it?"
+
+    result = messagebox.askyesno("Update Available",
+                                 f"New version available!\n\n"
+                                 f"Current version: {update_info['current_version']}\n"
+                                 f"Latest version: {update_info['latest_version']}\n\n"
+                                 f"Release Notes:\n{release_body[:300]}{'...' if len(release_body) > 300 else ''}\n\n"
+                                 + prompt)
+    if result:
+        if is_frozen:
+            _download_update(update_info)
+        else:
+            open_github_releases()
 
 def check_for_updates_button():
     """Button handler to check for updates."""
     try:
-        # Show checking message
         check_window = tk.Toplevel()
         check_window.title("Checking for Updates...")
         check_window.geometry("300x80")
         check_window.configure(bg="black")
         check_window.resizable(False, False)
         get_window_position_and_setup(check_window, offset_x=100, offset_y=100)
-        
-        # Center the window
         check_window.transient(root)
         check_window.grab_set()
-        
-        check_label = tk.Label(check_window, text="Checking for updates...", 
-                             bg="black", fg="white", font=("Arial", 12))
-        check_label.pack(pady=20)
-        
+        tk.Label(check_window, text="Checking for updates...",
+                 bg="black", fg="white", font=("Arial", 12)).pack(pady=20)
         check_window.update()
-        
+
         update_info = check_for_updates()
         check_window.destroy()
-        
+
         if update_info.get("error"):
             messagebox.showerror("Update Check Failed", update_info["error"])
         elif update_info.get("update_available"):
-            release_data = update_info.get("release_data", {})
-            release_body = release_data.get("body", "No release notes available.")
-            
-            result = messagebox.askyesno("Update Available", 
-                                       f"New version available!\n\n"
-                                       f"Current version: {update_info['current_version']}\n"
-                                       f"Latest version: {update_info['latest_version']}\n\n"
-                                       f"Release Notes:\n{release_body[:300]}{'...' if len(release_body) > 300 else ''}\n\n"
-                                       "Would you like to open the GitHub releases page to download it?")
-            if result:
-                open_github_releases()
+            _show_update_dialog(update_info)
         else:
-            messagebox.showinfo("No Updates", 
-                              f"You have the latest version ({update_info['current_version']})")
-    
+            messagebox.showinfo("No Updates",
+                                f"You have the latest version ({update_info['current_version']})")
+
     except Exception as e:
         messagebox.showerror("Error", f"Failed to check for updates: {str(e)}")
 
@@ -12041,46 +12345,27 @@ def open_github_releases():
         webbrowser.open(releases_url)
     except Exception as e:
         releases_url = f"https://github.com/{GITHUB_REPO}/releases"
-        messagebox.showerror("Browser Error", 
-                           f"Could not open browser automatically.\n\n"
-                           f"Please manually visit:\n{releases_url}")
+        messagebox.showerror("Browser Error",
+                             f"Could not open browser automatically.\n\n"
+                             f"Please manually visit:\n{releases_url}")
 
 def check_for_updates_on_startup():
     """Check for updates on startup in a background thread to avoid blocking UI."""
     def background_check():
         try:
             update_info = check_for_updates()
-            
+
             if update_info.get("error"):
-                # Silently fail on startup - don't bother user with network errors
                 print(f"Update check failed: {update_info['error']}")
                 return
-            
+
             if update_info.get("update_available"):
-                # Update is available, schedule UI update on main thread
-                release_data = update_info.get("release_data", {})
-                release_body = release_data.get("body", "No release notes available.")
-                
-                def show_update_dialog():
-                    result = messagebox.askyesno("Update Available", 
-                                               f"New version available!\n\n"
-                                               f"Current version: {update_info['current_version']}\n"
-                                               f"Latest version: {update_info['latest_version']}\n\n"
-                                               f"Release Notes:\n{release_body[:200]}{'...' if len(release_body) > 200 else ''}\n\n"
-                                               "Would you like to open the GitHub releases page to download it?")
-                    if result:
-                        open_github_releases()
-                
-                # Schedule dialog on main thread
-                root.after(0, show_update_dialog)
-        
+                root.after(0, lambda: _show_update_dialog(update_info))
+
         except Exception as e:
-            # Silently fail on startup - don't bother user with errors
             print(f"Startup update check failed: {str(e)}")
-    
-    # Run check in background thread
-    update_thread = threading.Thread(target=background_check, daemon=True)
-    update_thread.start()
+
+    threading.Thread(target=background_check, daemon=True).start()
 
 # =========================================
 #           *STATS DISPLAY
@@ -13486,7 +13771,7 @@ light_modes = {
             "You hear part of the anime's OST."
         )
     },
-    "peek":{
+    "reveal":{
         "icon":"👀",
         "desc":(
             "Opening/Ending starts at a random point muted.\n"
@@ -13863,13 +14148,18 @@ lightning_mode_settings_default = {
             }
         }
     },
-    "peek": {
+    "reveal": {
         "length": 12,
         "muted": True,
         "variants": {
-            "slice": True,
+            "blur": True,
             "edge": True,
-            "grow": True
+            "grow": True,
+            "outline": False,
+            "pixelize": True,
+            "slice": True,
+            "wave": False,
+            "zoom": True
         },
         "variety": {
             "enabled": True,
@@ -14412,6 +14702,9 @@ def open_bonus_settings_editor():
     )
 
 def update_lightning_mode_settings(settings):
+    # Migrate old 'peek' key to 'reveal' for backward compatibility
+    if "peek" in settings and "reveal" not in settings:
+        settings["reveal"] = settings.pop("peek")
     settings = sync_with_default(settings, lightning_mode_settings_default)
     return dict(sorted(settings.items()))
 
@@ -14537,13 +14830,13 @@ def stop_all_queues():
 def get_light_round_time():
     if fixed_lightning_round_playlist_data and fixed_current_round and fixed_current_round.get("start_time") != None:
         start_time = fixed_current_round.get("start_time")
-        if fixed_current_round.get("type") not in ["regular", "peek", "blind", "song"]:
+        if fixed_current_round.get("type") not in ["regular", "reveal", "blind", "song"]:
             start_time = max(start_time - light_round_length, 1.1)
         if start_time is not None:
             return start_time
     length = player.get_length()/1000
     buffer = 10
-    need_censors = light_mode in ['regular', 'peek']
+    need_censors = light_mode in ['regular', 'reveal']
     need_mute_censors = light_mode in ['regular', 'blind', 'song']
     if not need_censors:
         buffer = 1
@@ -14571,10 +14864,11 @@ current_light_mode = None
 current_light_variant = None
 _light_answer_wall_start = None  # wall-clock time when the answer phase began (set on first tick)
 _wall_time = __import__('time').time  # alias so the 'time' parameter inside update_light_round doesn't shadow it
+_showed_lightning_answer = False
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
     global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count, current_light_mode
-    global _light_answer_wall_start
+    global _light_answer_wall_start, filter_vf_active, _filter_vf_variant, _showed_lightning_answer
     # During clip/OST rounds the stream runs in player on its own timeline.
     # Synthesise a fake player-time so all threshold logic keeps working unchanged.
     # Activate as soon as currently_streaming is set (use 0 elapsed until _stream_wall_start is seeded).
@@ -14617,10 +14911,8 @@ def update_light_round(time):
                         root.after(1000 * (s+1), update_light_blind_count)
                     set_countdown(round(blind_length - light_blind_one_second_count))
             else:
-                if not is_title_window_up():
-                    # if not fixed_current_round or (fixed_current_round and not fixed_current_round.get("clip_for_answer")):
-                    #     player.set_fullscreen(False)
-                    #     player.set_fullscreen(True)
+                if not _showed_lightning_answer:
+                    _showed_lightning_answer = True
                     char_answer = copy.copy(character_round_answer)
                     cover_answer = light_cover_image
                     image_answer_source = None  # source text shown as answer (no header, width_max=0.55)
@@ -14705,7 +14997,7 @@ def update_light_round(time):
                     # For fixed rounds where start_time means the theme's answer entry point
                     # (i.e. non-regular/peek/blind/song types), seek the theme to start_time and unmute
                     # so the theme plays during the answer phase regardless of where Player currently is.
-                    _seek_types = ["regular", "peek", "blind", "song"]
+                    _seek_types = ["regular", "reveal", "blind", "song"]
                     if (fixed_current_round and fixed_current_round.get("start_time") is not None
                             and fixed_current_round.get("type") not in _seek_types
                             and not fixed_current_round.get("clip_for_answer")):
@@ -14785,9 +15077,9 @@ def update_light_round(time):
                     track_name = extract_track_name_from_youtube_title(last_streamed[1], currently_playing.get("data", {}))
                     if track_name.strip() != "":
                         if time_left >= half_time:
-                            set_frame_number(f"TRACK NAME in...{round(time_left-half_time)}")
+                            bottom_info(f"TRACK NAME in...{round(time_left-half_time)}")
                         else:
-                            set_frame_number(track_name)
+                            bottom_info(track_name)
             elif (current_light_mode == 'title' and current_light_variant == 'reveal') or title_overlay:
                 if fixed_current_round and fixed_current_round.get("reveal_letter_order"):
                     starting_letters = int(fixed_current_round.get("reveal_starting_count", 0))
@@ -14799,7 +15091,7 @@ def update_light_round(time):
                     interval = len(title_light_letters) * 0.09
                     final_count = round((5*interval)+starting_letters)
                 word_num = min(final_count, int(((light_round_length-time_left)/3)*interval)+starting_letters)
-                set_frame_number(f"{word_num}/{final_count} REVEALS", inverse=character_round_answer)
+                bottom_info(f"{word_num}/{final_count} REVEALS", inverse=character_round_answer)
                 toggle_title_overlay(get_title_light_string(word_num))
             elif scramble_overlay_root or current_light_variant == 'scramble':
                 if fixed_current_round and fixed_current_round.get("scramble_place_order"):
@@ -14817,7 +15109,7 @@ def update_light_round(time):
                 else:
                     # Final 1/3 — all letters placed, time to guess
                     word_num = total_letters
-                set_frame_number(f"{word_num}/{total_letters} PLACEMENTS", inverse=character_round_answer)
+                bottom_info(f"{word_num}/{total_letters} PLACEMENTS", inverse=character_round_answer)
                 toggle_scramble_overlay(num_letters=word_num)
             elif swap_overlay_root or current_light_variant == 'swap':
                 # Total swaps you want to show, based on number of pairs
@@ -14837,7 +15129,7 @@ def update_light_round(time):
                 else:
                     # In the final 1/3 — guessing phase
                     word_num = total_swaps
-                set_frame_number(f"{word_num}/{total_swaps} SWAPS", inverse=character_round_answer)
+                bottom_info(f"{word_num}/{total_swaps} SWAPS", inverse=character_round_answer)
                 toggle_swap_overlay(num_swaps=word_num)
             elif peek_overlay1:
                 gap = get_peek_gap(currently_playing.get("data"))
@@ -14855,36 +15147,42 @@ def update_light_round(time):
                 block_percent = 100 - (grow_max * progress)  # from 100% to 80%
                 toggle_grow_overlay(block_percent=block_percent, position=grow_position)
                 now_playing_background_music(music_files[current_music_index])
+            elif filter_vf_active:
+                progress = (light_round_length - time_left) / light_round_length
+                progress = min(max(progress, 0.0), 1.0)
+                toggle_filter_vf(_filter_vf_variant, progress)
+                bottom_info(_filter_intensity_label(_filter_vf_variant, progress), size=40, inverse=character_round_answer)
+                now_playing_background_music(music_files[current_music_index])
             elif character_overlay_boxes:
                 reveal_num = min(4, (int(light_round_length - (time_left)) // (light_round_length // 4)) + 1)
                 toggle_character_overlay(num_characters=reveal_num)
-                set_frame_number(f"{reveal_num}/{4}", inverse=character_round_answer)
+                bottom_info(f"{reveal_num}/{4}", inverse=character_round_answer)
             elif character_image_overlay:
                 _update_character_image_overlay()
             elif character_pixel_overlay:
                 total_steps = len(character_pixel_images)
                 step_num = min(total_steps-1, (int(light_round_length - (time_left)) // (light_round_length // total_steps)))
                 toggle_character_pixel_overlay(step=step_num)
-                set_frame_number(f"{step_num+1}/{total_steps}", inverse=character_round_answer)
+                bottom_info(f"{step_num+1}/{total_steps}", inverse=character_round_answer)
             elif blur_reveal_image_window:
                 progress = (light_round_length - max(0, time_left)) / light_round_length
                 progress = min(max(progress, 0.0), 1.0)
                 blur_percent = 100 - (100 * progress)
                 toggle_character_blur_reveal_overlay(percent=blur_percent / 100, destroy=False)
-                set_frame_number(f"BLUR: {round(blur_percent)}%", inverse=character_round_answer)
+                bottom_info(f"BLUR: {round(blur_percent)}%", inverse=character_round_answer)
             elif zoom_reveal_image_window:
                 progress = ((light_round_length - 1) - max(0, time_left-1)) / (light_round_length-1)
                 progress = min(max(progress, 0.0), 1.0)
                 zoom_percent = 100 - (100 * progress)
                 toggle_character_zoom_reveal_overlay(percent=zoom_percent / 100, destroy=False)
-                set_frame_number(f"ZOOM OUT: {round(100 - zoom_percent)}%", inverse=character_round_answer)
+                bottom_info(f"ZOOM OUT: {round(100 - zoom_percent)}%", inverse=character_round_answer)
             elif slice_overlay_window:
                 progress = (light_round_length - max(0, time_left-1)) / light_round_length
                 progress = min(max(progress, 0.0), 1.0) 
                 total_parts = len(slice_overlay_parts) // 2
                 slices_to_show = max(1, min(total_parts, round(total_parts * progress)))
                 toggle_slice_overlay(num_revealed=slices_to_show)
-                set_frame_number(f"{slices_to_show}/{total_parts}", inverse=character_round_answer)
+                bottom_info(f"{slices_to_show}/{total_parts}", inverse=character_round_answer)
             elif tile_overlay_window:
                 if not tile_overlay_swap:
                     progress = (light_round_length - max(0, time_left-1)) / light_round_length
@@ -14892,7 +15190,7 @@ def update_light_round(time):
                     total_parts = len(tile_overlay_parts) // 2
                     tiles_to_show = max(1, min(total_parts, round(total_parts * progress)))
                     toggle_tile_overlay(num_revealed=tiles_to_show)
-                    set_frame_number(f"{tiles_to_show}/{total_parts}", inverse=character_round_answer)
+                    bottom_info(f"{tiles_to_show}/{total_parts}", inverse=character_round_answer)
                 else:
                     # Swap tiles one by one over the round
                     total_swaps = len(tile_overlay_parts) // 4
@@ -14900,7 +15198,7 @@ def update_light_round(time):
                     progress = max(0, min(1, elapsed / light_round_length))
                     swaps_to_show = max(1, round(total_swaps * progress))
                     toggle_tile_overlay(num_revealed=swaps_to_show, swap=True)
-                    set_frame_number(f"{swaps_to_show}/{total_swaps} SWAPS", inverse=character_round_answer)
+                    bottom_info(f"{swaps_to_show}/{total_swaps} SWAPS", inverse=character_round_answer)
             elif reveal_image_window:
                 progress = (light_round_length - max(0, time_left-1)) / light_round_length
                 progress = min(max(progress, 0.0), 1.0)
@@ -14926,9 +15224,9 @@ def update_light_round(time):
                 # Call the toggle
                 toggle_character_profile_overlay(word_count=words_to_show, image_countdown=image_countdown)
                 if image_countdown > 0:
-                    set_frame_number(f"IMAGE IN {image_countdown}...", inverse=True)
+                    bottom_info(f"IMAGE IN {image_countdown}...", inverse=True)
                 else:
-                    set_frame_number()
+                    bottom_info()
             elif tag_cloud_tags:
                 starting_tags = 1
                 final_count = len(tag_cloud_tags)
@@ -14943,13 +15241,13 @@ def update_light_round(time):
                 tags_num = min(final_count, int(progress * final_count) + starting_tags)
 
                 # Update overlay and label
-                set_frame_number(f"{tags_num}/{final_count}")
+                bottom_info(f"{tags_num}/{final_count}")
                 toggle_tag_cloud_overlay(tags_num)
             elif light_episode_names:
                 total_eps = min(len(light_episode_names), 6)
                 reveal_num = min(6, (int(light_round_length - time_left) // (light_round_length // total_eps)) + 1)
                 toggle_episode_overlay(reveal_num)
-                set_frame_number(f"{reveal_num}/{total_eps}", inverse=character_round_answer)
+                bottom_info(f"{reveal_num}/{total_eps}", inverse=character_round_answer)
             if edge_overlay_box:
                 set_countdown(round(time_left/light_speed_modifier), position="center")
             elif light_blind_one_second_count is not None:
@@ -14962,20 +15260,21 @@ def update_light_round(time):
             toggle_coming_up_popup(False, "Lightning Round")
         if not light_round_started and time < 1:
             light_round_started = True
+            _showed_lightning_answer = False
             current_light_mode = light_mode
-            if light_mode in ['regular', 'peek']:
+            if light_mode in ['regular', 'reveal']:
                 root.after(500, set_black_screen, False)
             def set_double_speed():
                 global light_round_length, light_speed_modifier
                 light_speed_modifier = 2
                 player.set_rate(light_speed_modifier)
                 light_round_length = light_round_length * light_speed_modifier
-                set_frame_number(f"x{light_speed_modifier} SPEED")
+                bottom_info(f"x{light_speed_modifier} SPEED")
             def set_one_second():
                 global light_round_length, light_blind_one_second_count
                 light_blind_one_second_count = 0
                 light_round_length = 1
-                set_frame_number(f"ONE SECOND")
+                bottom_info(f"ONE SECOND")
             if light_round_start_time is None:
                 light_round_start_time = get_light_round_time()
             if lightning_mode_settings.get(light_mode, {}).get("muted"):
@@ -15051,7 +15350,7 @@ def update_light_round(time):
                         spawn_pulsating_music_note()
                         set_black_screen(False)
                         top_info("MISMATCHED VISUALS")
-                        set_frame_number("GUESS BY MUSIC ONLY")
+                        bottom_info("GUESS BY MUSIC ONLY")
                         update_light_round_number()
                     _cur_fn = currently_playing.get("filename")
                     def _theme_worker():
@@ -15104,7 +15403,7 @@ def update_light_round(time):
                 else:
                     top_header = "MUST SAY FULL TITLE"
                 top_info(top_header.upper())
-            elif light_mode == 'peek':
+            elif light_mode == 'reveal':
                 send_scoreboard_command("hide")
                 peek_mode = get_next_peek_mode()
                 if peek_mode == 'edge':
@@ -15115,6 +15414,10 @@ def update_light_round(time):
                 elif peek_mode == 'slice':
                     choose_peek_direction()
                     toggle_peek_overlay()
+                elif peek_mode in ('blur', 'outline', 'pixelize', 'wave', 'zoom'):
+                    filter_vf_active = True
+                    _filter_vf_variant = peek_mode
+                    toggle_filter_vf(peek_mode, 0)
             elif light_mode == 'character':
                 character_round_characters = lightning_queue_data.get(currently_playing.get("filename", {}), {}).get("characters", [])
                 if not character_round_characters:
@@ -15242,6 +15545,8 @@ def update_light_round(time):
                                 test_print(f"Deferred stream start time: {stream_start_time} (length={actual_length})")
                             def stream_overlay():
                                 global black_overlay
+                                if _light_answer_wall_start is not None or not light_round_started:
+                                    return  # answer phase already started — don't re-apply overlays
                                 if light_mode == 'ost':
                                     if not black_overlay:  # already up — skip re-application
                                         set_black_screen(True)  # OST is audio-only; hide video with blind overlay
@@ -15281,11 +15586,26 @@ def update_light_round(time):
                                 _stream_volume_level = int(volume_level * (1 + ((stream_volume_boost + volume_adjustment) / 100)))
                                 player.audio_set_volume(_stream_volume_level)
                             def start_player():
-                                test_print(f"{player.get_time()} =?= {int(float(stream_start_time))*1000}")
-                                if player.get_time() == int(float(stream_start_time))*1000:
-                                    # Seek didn't take — restart the stream from the beginning
-                                    restart_player()
-                                # else: stream is playing from the right position, nothing to do
+                                if filename != currently_playing.get("filename") or not currently_streaming:
+                                    return
+                                if _light_answer_wall_start is not None or not light_round_started:
+                                    return  # answer phase already started — don't interfere
+                                target_ms = int(float(stream_start_time)) * 1000
+                                current_ms = player.get_time()
+                                test_print(f"start_player check: current={current_ms} target={target_ms}")
+                                # If the player is more than 2.5 s behind the target the seek
+                                # didn't take (stream playing from 0).  Re-attempt once.
+                                if player.is_playing() and current_ms < target_ms - 2500:
+                                    test_print(f"Seek miss — retrying seek to {target_ms}")
+                                    player.set_time(target_ms)
+                                    def _check_retry():
+                                        if filename != currently_playing.get("filename") or not currently_streaming:
+                                            return
+                                        if player.is_playing() and player.get_time() < target_ms - 2500:
+                                            test_print("Seek retry failed — restarting stream")
+                                            restart_player()
+                                    root.after(2000, _check_retry)
+                                # else: playing from (approximately) the right position
                             root.after(2000, start_player)
                             set_stream_start()
                             for time in [500, 1000, 1500, 2000]:
@@ -15306,11 +15626,9 @@ def update_light_round(time):
                 guess_extra("fixed_mc")
             append_lightning_history()
             set_countdown(int(light_round_length), inverse=character_round_answer)
-            set_light_round_number()
-            if light_mode != 'peek':
-                update_light_round_number(inverse=character_round_answer)
-        if not currently_streaming and light_round_started:
-            #only if not already at time
+            update_light_round_number(inverse=character_round_answer)
+        if not currently_streaming and light_round_started and _light_answer_wall_start is None:
+            #only if not already at time (skip during answer phase — answer seek may target an earlier position)
             if light_round_start_time is not None and projected_player_time < int(float(light_round_start_time))*1000:
                 player.set_time(int(float(light_round_start_time))*1000)
 
@@ -15377,7 +15695,7 @@ def start_title_round():
         #     starting_letters = len(fixed_current_round.get("reveal_starting_letters", "").lower().split(","))
         # starting_letters = min(5, max(1, len(title_light_letters) // 5))
         # toggle_title_overlay(get_title_light_string(starting_letters))
-        # set_frame_number(f"2/{min(7, len(title_light_string))}")
+        # bottom_info(f"2/{min(7, len(title_light_string))}")
 
 def set_title_light_text():
     global title_light_letters, title_light_string
@@ -15463,20 +15781,22 @@ def clean_up_light_round(new_round=False):
                     toggle_character_pixel_overlay, toggle_character_reveal_overlay, toggle_character_profile_overlay, spawn_pulsating_music_note, toggle_outer_edge_overlay,
                     toggle_emoji_overlay, toggle_character_image_overlay, toggle_character_blur_reveal_overlay, toggle_character_zoom_reveal_overlay, toggle_slice_overlay]:
         overlay(destroy=True)
+    toggle_filter_vf(destroy=True)
     if not new_round and fixed_current_round and fixed_current_round.get("overlay_during_answer") and _mc_last_choices:
         toggle_mc_choices_overlay(highlight=True)
     else:
         toggle_mc_choices_overlay(destroy=True)
     if new_round or not (fixed_current_round and fixed_current_round.get("overlay_during_answer")):
         toggle_synopsis_overlay(destroy=True)
-    for info in [set_frame_number, top_info]:
+    for info in [bottom_info, top_info]:
         info()
     send_scoreboard_command("show")
 
 def light_round_transition():
-    global video_stopped, light_round_started, _light_answer_wall_start
+    global video_stopped, light_round_started, _light_answer_wall_start, _showed_lightning_answer
     _light_answer_wall_start = None
     light_round_started = False
+    _showed_lightning_answer = False
     if autoplay_toggle == 2:
         stop()
         return
@@ -16059,14 +16379,13 @@ def update_frame_light_round(currently_playing_filename):
                 if player.is_playing():
                     player.pause()
                 
-                player.set_fullscreen(True)
                 update_progress_bar(time, length, currently_playing.get("filename"))
-                set_frame_number(str(frame_light_round_frame_index+1) + "/" + str(len(frame_light_round_frames)))
+                bottom_info(str(frame_light_round_frame_index+1) + "/" + str(len(frame_light_round_frames)))
             elif not is_title_window_up():
                 frame_light_round_frame_time = 0
                 player.play()
                 toggle_title_popup(True)
-                set_frame_number()
+                bottom_info()
                 play_background_music(False)
     
     root.after(SEEK_POLLING, update_frame_light_round, currently_playing_filename)
@@ -18253,7 +18572,7 @@ def get_next_peek_mode():
     if not available_peek_modes:
         all_variants = []
         available_variants = []
-        for variant, enabled in lightning_mode_settings.get("peek", {}).get("variants", {}).items():
+        for variant, enabled in lightning_mode_settings.get("reveal", {}).get("variants", {}).items():
             all_variants.append(variant)
             if enabled:
                 available_variants.append(variant)
@@ -18264,30 +18583,72 @@ def get_next_peek_mode():
                 available_peek_modes = []
 
     last_peek_mode = available_peek_modes.pop(0)
+    if _queued_peek_variant[0] is not None:
+        mode = _queued_peek_variant[0]
+        _queued_peek_variant[0] = None
+        return mode
     return last_peek_mode
 
 peek_modifier = 0
 gap_modifier = 0
+
+_PEEK_VARIANT_LABELS = {
+    "blur":      ("🌫", "Blur",     "Gaussian blur — strong at the start, fades as the round progresses."),
+    "edge":      ("◼",  "Edge",     "Edge-detect silhouette — shows outlines of shapes and characters."),
+    "grow":      ("⬛", "Grow",     "Small window that slowly expands to reveal more of the video."),
+    "outline":   ("✏️",  "Outline",  "Inverted edge-detect — white lines on black, density increases over time."),
+    "pixelize":  ("🟦", "Pixelize", "Heavy pixelation — block size shrinks as the round progresses."),
+    "slice":     ("◧",  "Slice",    "Two black panels slide apart to reveal a growing strip of video."),
+    "wave":      ("🌊", "Wave",     "Sine-wave spatial warp — distortion amplitude decreases over time."),
+    "zoom":      ("🔍", "Zoom",     "Extreme zoom-in on a random region, gradually pulls back to full frame."),
+}
+
+def _activate_peek_variant(peek_mode):
+    """Activate a specific peek variant by name."""
+    global peek_modifier, gap_modifier, filter_vf_active, _filter_vf_variant
+    _had_existing = bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)
+    gap_modifier = 0
+    send_scoreboard_command("hide")
+    # Activate the new variant first to avoid a visible gap
+    if peek_mode == 'edge':
+        toggle_edge_overlay(block_percent=99)
+    elif peek_mode == 'grow':
+        set_grow_position()
+        toggle_grow_overlay(block_percent=96, position=grow_position)
+    elif peek_mode == 'slice':
+        peek_modifier = random.randint(0, 24)
+        toggle_peek_overlay()
+    elif peek_mode in ('blur', 'outline', 'pixelize', 'wave', 'zoom'):
+        filter_vf_active = True
+        _filter_vf_variant = peek_mode
+        if peek_mode == 'zoom':
+            _filter_zoom_offset[0] = random.uniform(-0.35, 0.35)
+            _filter_zoom_offset[1] = random.uniform(-0.35, 0.35)
+        toggle_filter_vf(peek_mode, 0)
+        bottom_info(_filter_intensity_label(peek_mode, 0), size=40)
+    # Now remove the old variant (new one is already visible)
+    if _had_existing:
+        if peek_mode != 'slice':
+            toggle_peek_overlay(destroy=True)
+        if peek_mode != 'edge':
+            toggle_edge_overlay(destroy=True)
+        if peek_mode != 'grow':
+            toggle_grow_overlay(destroy=True)
+        if peek_mode not in ('blur', 'outline', 'pixelize', 'wave', 'zoom'):
+            toggle_filter_vf(destroy=True)
+    if black_overlay:
+        root.after(100, blind)
+    _refresh_popout_toggles()
+
 def toggle_peek():
-    global peek_modifier, gap_modifier
-    if not (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
-        gap_modifier = 0
-        peek_mode = get_next_peek_mode()
-        send_scoreboard_command("hide")
-        if peek_mode == 'edge':
-            toggle_edge_overlay(block_percent=99)
-        elif peek_mode == 'grow':
-            set_grow_position()
-            toggle_grow_overlay(block_percent=96, position=grow_position)
-        elif peek_mode == 'slice':
-            peek_modifier = random.randint(0,24)
-            toggle_peek_overlay()
-        if black_overlay:
-            root.after(100, blind)
+    global peek_modifier, gap_modifier, filter_vf_active, _filter_vf_variant
+    if not (peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active):
+        _activate_peek_variant(get_next_peek_mode())
     else:
         send_scoreboard_command("show")
         for overlay in [toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay]:
             overlay(destroy=True)
+        toggle_filter_vf(destroy=True)
         toggle_mute(False)
 
 peek_round_toggle = False
@@ -18300,9 +18661,9 @@ def toggle_peek_round():
         if mute_peek_round_toggle:
             toggle_mute_peek_round()
         if special_round_warning:
-            toggle_coming_up_popup(True, "Peek Round", "Guess the anime from a small window revealing the visuals.\nNormal rules apply.", queue=True)
+            toggle_coming_up_popup(True, "Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nNormal rules apply.", queue=True)
     else:
-        toggle_coming_up_popup(False, "Peek Round")
+        toggle_coming_up_popup(False, "Reveal Round")
 
 mute_peek_round_toggle = False
 def toggle_mute_peek_round():
@@ -18314,9 +18675,45 @@ def toggle_mute_peek_round():
         if blind_round_toggle:
             toggle_blind_round()
         if special_round_warning:
-            toggle_coming_up_popup(True, "Mute Peek Round", "Guess the anime from a small window revealing the visuals.\nAudio will also be muted.\nNormal rules apply.", queue=True)
+            toggle_coming_up_popup(True, "Mute Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nAudio will also be muted.\nNormal rules apply.", queue=True)
     else:
-        toggle_coming_up_popup(False, "Mute Peek Round")
+        toggle_coming_up_popup(False, "Mute Reveal Round")
+
+_queued_peek_variant = [None]  # [variant_name | None] — forced variant for next reveal round
+
+def _queue_peek_variant(variant, mute=False):
+    """Queue a specific reveal variant for the next round and ensure the round toggle is on."""
+    _queued_peek_variant[0] = variant
+    if mute:
+        if not mute_peek_round_toggle:
+            toggle_mute_peek_round()
+    else:
+        if not peek_round_toggle:
+            toggle_peek_round()
+    # Override the generic popup with a variant-specific title and description
+    if special_round_warning:
+        _, label, tooltip = _PEEK_VARIANT_LABELS.get(variant, ('', variant.title(), ''))
+        mute_suffix = "\nAudio will also be muted." if mute else ""
+        toggle_coming_up_popup(
+            True,
+            f"Reveal Round: {label}",
+            f"Guess the anime from a partially obscured visual.\n{tooltip}{mute_suffix}\nNormal rules apply.",
+            queue=True
+        )
+
+def _queue_peek_random(mute=False):
+    """Clear any queued variant (use random selection) and ensure the round toggle is on."""
+    _queued_peek_variant[0] = None
+    if mute:
+        if not mute_peek_round_toggle:
+            toggle_mute_peek_round()
+        elif special_round_warning:
+            toggle_coming_up_popup(True, "Mute Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nAudio will also be muted.\nNormal rules apply.", queue=True)
+    else:
+        if not peek_round_toggle:
+            toggle_peek_round()
+        elif special_round_warning:
+            toggle_coming_up_popup(True, "Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nNormal rules apply.", queue=True)
 
 def narrow_peek():
     global gap_modifier
@@ -18326,6 +18723,11 @@ def narrow_peek():
         toggle_edge_overlay(block_percent=99-gap_modifier)
     elif grow_overlay_boxes:
         toggle_grow_overlay(block_percent=96-gap_modifier, position=grow_position)
+    elif filter_vf_active:
+        progress = max(0.0, round(_filter_vf_last_progress[0] - 0.05, 3))
+        _filter_vf_last_progress[0] = progress
+        toggle_filter_vf(_filter_vf_variant, progress)
+        bottom_info(_filter_intensity_label(_filter_vf_variant, progress), size=40)
 
 def widen_peek():
     global gap_modifier
@@ -18334,9 +18736,99 @@ def widen_peek():
         toggle_edge_overlay(block_percent=99-gap_modifier)
     elif grow_overlay_boxes:
         toggle_grow_overlay(block_percent=96-gap_modifier, position=grow_position)
+    elif filter_vf_active:
+        progress = min(1.0, round(_filter_vf_last_progress[0] + 0.05, 3))
+        _filter_vf_last_progress[0] = progress
+        toggle_filter_vf(_filter_vf_variant, progress)
+        bottom_info(_filter_intensity_label(_filter_vf_variant, progress), size=40)
+
+filter_vf_active = False   # True while a vf filter peek variant is running
+_filter_vf_variant = None  # which filter variant is active ('blur', 'pixelize', 'zoom')
+_filter_vf_last = None     # last vf string sent — skip redundant mpv calls
+_filter_vf_last_progress = [0.0]  # mutable box so widen/narrow can read/write current progress
+_filter_zoom_offset = [0.0, 0.0]  # [ox, oy] crop centre offset in [-0.5, 0.5] for zoom_filter
+
+def _filter_intensity_label(variant, progress):
+    """Return a human-readable intensity label for the current filter peek variant."""
+    intensity = round((1.0 - progress) * 100)
+    if variant == 'blur':
+        return f"BLUR: {intensity}%"
+    elif variant == 'outline':
+        return f"OUTLINE: {intensity}%"
+    elif variant == 'pixelize':
+        return f"PIXELIZE: {intensity}%"
+    elif variant == 'wave':
+        return f"WAVE: {intensity}%"
+    elif variant == 'zoom':
+        return f"ZOOM: {intensity}%"
+    return variant.upper()
+
+def toggle_filter_vf(variant=None, progress=0, destroy=False):
+    """Apply or remove the vf filter for filter-peek variants.
+    variant: 'blur' | 'pixelize'
+    progress: 0.0 (start, max filter) → 1.0 (end, no filter)
+    destroy: clear the filter immediately.
+    """
+    global filter_vf_active, _filter_vf_variant, _filter_vf_last
+    if destroy:
+        filter_vf_active = False
+        _filter_vf_variant = None
+        _filter_vf_last = None
+        _filter_vf_last_progress[0] = 0.0
+        _filter_zoom_offset[0] = 0.0
+        _filter_zoom_offset[1] = 0.0
+        bottom_info()  # clear blur/pixelize/zoom intensity label
+        try:
+            player._p.command('vf', 'set', '')
+        except Exception:
+            pass
+        return
+    progress = min(max(progress, 0.0), 1.0)
+    _filter_vf_last_progress[0] = progress
+    vf_str = ''
+    if variant == 'blur':
+        sigma = round(120 * (1 - progress), 1)
+        if sigma >= 0.2:
+            vf_str = f'lavfi=[gblur=sigma={sigma}]'
+    elif variant == 'pixelize':
+        divisor = max(1, round(80 * (1 - progress)))
+        if divisor > 1:
+            vf_str = f'lavfi=[scale=iw/{divisor}:ih/{divisor}:flags=neighbor,scale=iw*{divisor}:ih*{divisor}:flags=neighbor]'
+    elif variant == 'outline':
+        # Edge-detect: high threshold controls how many edges show
+        # progress=0 → high=0.99 (only boldest edges, sparsest outline)
+        # progress=1 → high=0.01 (maximum edges, densest outline)
+        high = round(max(0.01, 0.99 - 0.98 * progress), 4)
+        vf_str = f'lavfi=[edgedetect=low=0.005:high={high},negate]'
+    elif variant == 'wave':
+        # Sine-wave spatial warp using geq: large amplitude (progress=0) → flat (progress=1)
+        # format=gbrp forces RGB so r()/g()/b() pixel access works correctly
+        amp = round(150 * (1 - progress))  # 150px → 0
+        if amp > 0:
+            expr = f"r(X+{amp}*sin(6.28318*Y/80),Y)"
+            vf_str = f"lavfi=[format=gbrp,geq=r='{expr}':g='{expr.replace('r(','g(')}':b='{expr.replace('r(','b(')}',format=yuv420p]"
+        else:
+            vf_str = ''
+    elif variant == 'zoom':
+        z = round(1 + 14 * (1 - progress), 4)  # 15x zoomed in → 1.0x (full frame)
+        if z > 1.005:
+            ox, oy = _filter_zoom_offset
+            # ox/oy in [-0.5, 0.5] — shift crop within the spare space (iw - iw/z)
+            crop_w = f'iw/{z}'
+            crop_h = f'ih/{z}'
+            cx_expr = f'(iw-iw/{z})*(0.5+{round(ox, 4)})'
+            cy_expr = f'(ih-ih/{z})*(0.5+{round(oy, 4)})'
+            vf_str = f'lavfi=[crop={crop_w}:{crop_h}:{cx_expr}:{cy_expr},scale=iw*{z}:ih*{z}]'
+    if vf_str == _filter_vf_last:
+        return
+    _filter_vf_last = vf_str
+    try:
+        player._p.command('vf', 'set', vf_str)
+    except Exception as e:
+        print(f"[vf] error setting filter '{vf_str}': {e}")
 
 def get_peek_gap(data):
-    if light_mode == 'peek' or light_round_started:
+    if light_mode == 'reveal' or light_round_started:
         gap = (0 + min(9, (data.get('popularity') or 3000)/100))
     else:
         gap = 0
@@ -18358,6 +18850,7 @@ _GROW_ASS_OSD_ID = 51  # unique ID for osd-overlay (ASS-based) grow panel
 _PROGRESS_ASS_OSD_ID = 52  # unique ID for osd-overlay (ASS-based) thin progress bar
 _BLIND_ASS_OSD_ID = 53  # unique ID for osd-overlay (ASS-based) blind/black overlay
 _OUTER_EDGE_ASS_OSD_ID = 54  # unique ID for osd-overlay (ASS-based) bottom censor bar
+_CENSOR_ASS_OSD_IDS = list(range(100, 140))  # IDs 100–139 for up to 40 censor boxes — mpv renders lower IDs on top, so higher IDs render behind peek/grow/edge (50–59)
 _EPISODE_ASS_OSD_ID = 55  # unique ID for osd-overlay (ASS-based) episode title grid
 _TAG_CLOUD_ASS_OSD_ID = 56  # unique ID for osd-overlay (ASS-based) tag cloud
 _OST_COVER_ASS_OSD_ID = 57  # unique ID for osd-overlay (ASS-based) OST answer transition cover
@@ -21955,102 +22448,80 @@ def download_to_cache(filename, silent=False):
     
     def do_cache_download():
         global downloads_completed, cache_metadata, download_ui_update_pending, download_cancel_flags
-        cancelled = False
         try:
             # Get metadata to determine season/year
             data = get_metadata(filename)
             season_str = data.get("season", "")
-            
-            # Parse season string (format: "Season Year", e.g., "Winter 2024")
             if season_str and season_str != "N/A":
                 parts = season_str.split()
-                if len(parts) >= 2:
-                    season = parts[0]  # e.g., "Winter"
-                    year = parts[1]    # e.g., "2024"
-                else:
-                    season = "Unknown"
-                    year = "Unknown"
+                season = parts[0] if len(parts) >= 2 else "Unknown"
+                year   = parts[1] if len(parts) >= 2 else "Unknown"
             else:
-                season = "Unknown"
-                year = "Unknown"
-            
-            # Create cache directory structure: themes_cache/year/season/
-            cache_subdir = os.path.join(year, season)
-            full_cache_dir = os.path.join(THEMES_CACHE_FOLDER, cache_subdir)
-            os.makedirs(full_cache_dir, exist_ok=True)
-            
-            # Store in nested structure
-            rel_path = os.path.join(cache_subdir, filename)
-            dest_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
-            
-            # Download using core function with progress callback
-            last_percent = [-1]  # Use list to allow modification in nested function
-            
+                season = year = "Unknown"
+
+            # Determine destination: themes directory (auto_download_themes) or cache folder
+            to_directory = auto_download_themes and bool(directory)
+            if to_directory:
+                dest_path = os.path.join(directory, year, season, filename)
+                rel_path  = None
+            else:
+                rel_path  = os.path.join(year, season, filename)
+                dest_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+            # Shared progress callback
+            last_percent = [-1]
             def progress_callback(mb_downloaded, mb_total):
-                # Update progress dict (will be read by main thread checker)
                 if filename in download_progress:
                     download_progress[filename]['downloaded_mb'] = mb_downloaded
                     download_progress[filename]['total_mb'] = mb_total
-                
                 if not silent:
                     percent = int((mb_downloaded / mb_total) * 100)
-                    # Only print every 5% to reduce spam
                     if percent != last_percent[0] and percent % 5 == 0:
-                        print(f"\rCaching {filename}: {percent}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end='', flush=True)
+                        print(f"\r{'Downloading' if to_directory else 'Caching'} {filename}: {percent}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end='', flush=True)
                         last_percent[0] = percent
-            
+
             if not silent:
-                print(f"Caching {filename}: 0%", end='', flush=True)
-            
+                print(f"{'Downloading' if to_directory else 'Caching'} {filename}: 0%", end='', flush=True)
+
             success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
-            
-            # Check if cancelled
+
+            # Handle cancellation
             if filename in download_cancel_flags and download_cancel_flags[filename]:
-                cancelled = True
-                # Delete partial file
                 if os.path.exists(dest_path):
                     try:
                         os.remove(dest_path)
-                    except:
+                    except Exception:
                         pass
                 if not silent:
                     print(f"\rDownload cancelled: {filename}" + " " * 30)
                 return
-            
+
             if not success:
                 if not silent:
-                    print(f"\rCache download failed: {filename}" + " " * 30)  # Clear line
+                    print(f"\r{'Download' if to_directory else 'Cache download'} failed: {filename}" + " " * 30)
                 return
-            
-            # Get actual file size
+
             actual_size = os.path.getsize(dest_path)
-            
-            # Evict old files if needed to make room for this new file
-            # Important: Do this BEFORE adding to metadata so the new file can't evict itself
-            evict_cache_for_size(actual_size)
-            
-            # Update cache metadata with path
-            cache_metadata[filename] = {
-                'path': rel_path,
-                'size': actual_size,
-                'play_count': 0,
-                'last_played': datetime.now().isoformat()
-            }
-            save_cache_metadata()
-            
-            # Update completed counter
             downloads_completed += 1
-            
+
+            if to_directory:
+                directory_files[filename] = dest_path
+            else:
+                evict_cache_for_size(actual_size)
+                cache_metadata[filename] = {
+                    'path': rel_path,
+                    'size': actual_size,
+                    'play_count': 0,
+                    'last_played': datetime.now().isoformat()
+                }
+                save_cache_metadata()
+
             if not silent:
-                filesize_mb = cache_metadata[filename]['size'] / 1024 / 1024
-                print(f"\rCached: {filename} ({filesize_mb:.1f} MB)" + " " * 30)  # Clear line and show final status
-            
-            # Set flag to indicate UI needs update (checked periodically on main thread)
-            # Only trigger for non-silent downloads — silent prefetch completions don't
-            # need to refresh the up-next display.
-            if not silent:
+                filesize_mb = actual_size / 1024 / 1024
+                print(f"\r{'Downloaded' if to_directory else 'Cached'}: {filename} ({filesize_mb:.1f} MB)" + " " * 30)
                 download_ui_update_pending = True
-            
+
         except Exception as e:
             if not silent:
                 print(f"Cache download error for {filename}: {e}")
@@ -22299,9 +22770,6 @@ def stream_url(url, name=None, channel=None, new_player=True):
         # bare name and mpv can't resolve it on its own.
         _stream_theme_path = previous_media
         player.set_media(direct_stream)
-        # Clip/trailer: ensure fullscreen. OST: blind overlay hides the video.
-        if light_mode != 'ost':
-            player.set_fullscreen(True)
     else:
         currently_streaming = None
     return length
@@ -22324,7 +22792,21 @@ def stop_stream(restore=True):
         # for a fixed delay before seeking.  Capture start_time now so we can bail if a
         # new round has already begun by the time the callback fires.
         _expected_start = light_round_start_time
-        _target_ms = int((light_round_start_time + light_round_length) * 1000) if light_round_start_time is not None else None
+        _seek_types = ["regular", "reveal", "blind", "song"]
+        _fixed_answer_start = (
+            fixed_current_round.get("start_time")
+            if (fixed_current_round
+                and fixed_current_round.get("start_time") is not None
+                and fixed_current_round.get("type") not in _seek_types
+                and not fixed_current_round.get("clip_for_answer"))
+            else None
+        )
+        if _fixed_answer_start is not None:
+            _target_ms = int(_fixed_answer_start * 1000)
+        elif light_round_start_time is not None:
+            _target_ms = int((light_round_start_time + light_round_length) * 1000)
+        else:
+            _target_ms = None
         def _seek_to_answer(attempt=0):
             if (light_round_start_time != _expected_start
                     or currently_streaming
@@ -22336,8 +22818,10 @@ def stop_stream(restore=True):
             if abs(current_ms - _target_ms) <= 1000:
                 _hide_ost_cover()
                 return
+            # seek if not already close enough, otherwise retry until we are or the round changes
             if player.is_playing():
-                player.set_time(_target_ms)
+                if projected_player_time < _target_ms - 500 or projected_player_time > _target_ms + 500:
+                    player.set_time(_target_ms)
                 _hide_ost_cover()
             elif attempt < 12:  # retry up to ~600 ms
                 try:
@@ -23063,7 +23547,10 @@ def set_countdown(value=None, position="top right", inverse=False):
         position = "top left"
     
     if guessing_extra and value is not None and web_server.is_running():
-        web_server.push_timer(value, paused=True)
+        try:
+            web_server.push_timer(float(value), paused=True)
+        except (TypeError, ValueError):
+            pass
     set_floating_text("Countdown", value, position=position, inverse=inverse)
 
 def update_light_round_number(inverse=False):
@@ -23084,8 +23571,8 @@ def set_light_round_number(value=None, inverse=False):
             size = 62
     set_floating_text("Lightning Round Number", value, position="bottom right", size=size, inverse=inverse)
 
-def set_frame_number(value=None, inverse=False):
-    set_floating_text("Frame Number", value, position="bottom center", inverse=inverse)
+def bottom_info(value=None, size=80, width_max=0.7, inverse=False):
+    set_floating_text("Bottom Info", value, position="bottom center", size=size, width_max=width_max, inverse=inverse)
 
 def top_info(value=None, size=80, width_max=0.7, inverse=False):
     set_floating_text("Top Info", value, position="top center", size=size, width_max=width_max, inverse=inverse)
@@ -23471,7 +23958,11 @@ def _rebuild_progress_bg_layer(osd_w, osd_h):
     d     = ImageDraw.Draw(layer)
     d.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], fill=bg)
     d.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], outline=fg, width=border)
-    tr = max(0, bg_r - 30); tg = max(0, bg_g - 30); tb_ = max(0, bg_b - 30)
+    try:
+        mr16, mg16, mb16 = root.winfo_rgb(MIDDLE_OVERLAY_BACKGROUND_COLOR)
+        tr, tg, tb_ = mr16 >> 8, mg16 >> 8, mb16 >> 8
+    except Exception:
+        tr = max(0, bg_r - 30); tg = max(0, bg_g - 30); tb_ = max(0, bg_b - 30)
     d.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
                 fill=(tr, tg, tb_, alpha))
     d.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
@@ -26291,7 +26782,7 @@ def record_background_track_usage(track_path):
 
 def now_playing_background_music(track = None):
     hide_during_peek = lightning_mode_settings.get("_misc_settings", {}).get("background_music", {}).get("hide_display_during_peek", False)
-    is_peek_mode = (light_mode == 'peek' or not light_muted or peek_overlay1 or edge_overlay_box or grow_overlay_boxes)
+    is_peek_mode = (light_mode == 'reveal' or not light_muted or peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)
     if not frame_light_round_started and (hide_during_peek and is_peek_mode):
         track = None
     if track:
@@ -27204,19 +27695,31 @@ def toggle_title_popup(show, info_type=None, instant=False):
                 marks = "❤"
             else:
                 marks = ""
-            song = get_song_string(data)
+            song_title = get_song_string(data, type="title") or ""
+            song_artist = get_song_string(data, type="artist_string") or ""
+            if len(song_title) > 40:
+                song_title = song_title[:37] + "…"
+            song = f"{song_title} by {song_artist}" if song_title else song_artist
             if is_game(data):
                 aired = data.get("release")
                 bg_color = "Dark Red"
                 fg_color = "white"
             else:
                 aired = data.get("season")
-            studio = ", ".join(data.get("studios"))
-            tags = get_tags_string(data)
+            _studios_list = data.get("studios")
+            if len(_studios_list) > 3:
+                studio = ", ".join(_studios_list[:3]) + f" +{len(_studios_list) - 3}"
+            else:
+                studio = ", ".join(_studios_list)
+            _tags_list = get_tags(data)
+            if len(_tags_list) > 10:
+                tags = ", ".join(_tags_list[:10]) + f" +{len(_tags_list) - 10}"
+            else:
+                tags = ", ".join(_tags_list)
             type = get_format(data)
             source = data.get("source")
             if data.get("platforms"):
-                episodes = ", ".join(data.get("platforms"))
+                episodes = ", ".join(_shorten_platform(p) for p in data.get("platforms"))
                 if data.get("reviews"):
                     _reviews_num = _safe_int(data.get("reviews", 0), 0)
                     members = f"Reviews: {_reviews_num:,}"
@@ -27421,6 +27924,15 @@ def get_episode_display(data, suffix=" Episodes"):
         return f"{episodes}{suffix}" if suffix else str(episodes)
     return "N/A" if is_game(data) else "Airing"
 
+def _shorten_platform(name):
+    if name == "PC (Microsoft Windows)":
+        return "PC"
+    if name.startswith("Nintendo "):
+        return name[len("Nintendo "):]
+    if name.startswith("PlayStation "):
+        return "PS" + name[len("PlayStation "):]
+    return name
+
 def get_tags_string(data):
     return ", ".join(get_tags(data))
 
@@ -27472,7 +27984,7 @@ BONUS_SETTINGS_DEFAULT = {
     "artist":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
     "song":       {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
     "tags":       {"points_per_tag": 1.0, "lightning_points_per_tag": 1.0, "included_in_random": True},
-    "characters": {"included_in_random": False},
+    "characters": {"num_correct": 1, "points_per_correct": 1.0, "lightning_points_per_correct": 1.0, "scale": 1.0, "included_in_random": False},
     "freeform":   {"points": 1.0, "lightning_points": 1.0, "included_in_random": False},
     "buzzer":     {"popup": False, "player_buzz_popup": True, "sound": True, "sound_volume": 1.0, "included_in_random": False,
                    "player_buzz_popup_properties": {
@@ -27505,7 +28017,7 @@ used_multiple_titles = {}  # tracks how many times each title has appeared as an
 def guess_extra(extra = None):
     global guessing_extra, showing_bonus_answer, bonus_chars, bonus_correct_indices, _bonus_correct_answer
     ROUND_PREFIX = "BONUS?: "
-    def reset_bonus():
+    def reset_bonus(destory_characters=True):
         global guessing_extra, showing_bonus_answer
         # Flush any silent (not formally submitted) selections into the answer queue
         # and _pending_bonus_answers BEFORE scoring, so they count.
@@ -27517,9 +28029,10 @@ def guess_extra(extra = None):
                 _pending_bonus_answers.append(_entry)
                 send_scoreboard_command(f"[SUBMITTED]{_entry['name']}")
         _evaluate_and_submit_bonus_answers()
-        guessing_extra = None
-        showing_bonus_answer = False
-        destroy_bonus_characters()
+        if destory_characters:
+            guessing_extra = None
+            destroy_bonus_characters()
+            showing_bonus_answer = False
         toggle_coming_up_popup(False, ROUND_PREFIX)
         web_server.clear_question()
         # Hide the web timer when the bonus closes
@@ -27535,8 +28048,10 @@ def guess_extra(extra = None):
                 showing_bonus_answer = True
                 toggle_coming_up_popup(False, ROUND_PREFIX)
                 show_bonus_characters(bonus_chars, reveal_correct=True)
+                reset_bonus(destory_characters=False)
                 return
-            reset_bonus()
+            else:
+                reset_bonus()
         else:
             if guessing_extra == "buzzer":
                 send_scoreboard_command("[CLEAR_BUZZ_ORDER]")
@@ -27576,7 +28091,7 @@ def guess_extra(extra = None):
             _bs_pt_exact = _bs_members["lightning_points_exact" if _is_light_mode else "points_exact"]
             _exact_pct = int(_bs_members.get("exact_pct", 0.10) * 100)
             toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The # Of Members This Anime Has", 
+                                ROUND_PREFIX + "Guess The Members", 
                                 ("Members are users who added the anime to their list on MyAnimeList.\n"
                                  "EG: Death Note has over 4 million. Only 1 guess per person, no repeats.\n"
                                 f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
@@ -27603,7 +28118,7 @@ def guess_extra(extra = None):
             _bs_pt_exact = _bs_pop["lightning_points_exact" if _is_light_mode else "points_exact"]
             _exact_pct = int(_bs_pop.get("exact_pct", 0.10) * 100)
             toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The Popularity Rank This Anime Has", 
+                                ROUND_PREFIX + "Guess The Popularity Rank", 
                                 ("The rank is based on users who added the anime to their list on MyAnimeList.\n"
                                  f"Ranks range from {get_lowest_parameter('popularity')} to {get_highest_parameter('popularity')}. "
                                  "Only 1 guess per person, no repeats.\n"
@@ -27620,7 +28135,7 @@ def guess_extra(extra = None):
             _bs_pt_close = _bs_score["lightning_points_close" if _is_light_mode else "points_close"]
             _bs_pt_exact = _bs_score["lightning_points_exact" if _is_light_mode else "points_exact"]
             toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The Score This Anime Has", 
+                                ROUND_PREFIX + "Guess The Score", 
                                 ("Scores taken from MyAnimeList and range from 0.0 to 10.0.\n"
                                  "Only 1 guess per person, no repeats.\n"
                                 f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
@@ -27643,12 +28158,12 @@ def guess_extra(extra = None):
             _bs_tags = bonus_settings.get("tags", BONUS_SETTINGS_DEFAULT["tags"])
             _bs_pt_tag = _bs_tags["lightning_points_per_tag" if _is_light_mode else "points_per_tag"]
             toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The " + tags_label + " This Anime Has", 
+                                ROUND_PREFIX + "Guess The " + tags_label, 
                                 (f"Pick up to {num_correct} tags. +{_fmt_pt(_bs_pt_tag)} per correct, -{_fmt_pt(_bs_pt_tag)} per wrong.\n\n"
                                 "[" + "] [".join(tags_array[0]) + "]\n[" + "] [".join(tags_array[1])) + "]",
                                 up_next=False)
             web_server.push_question(
-                f"Guess The {tags_label} This Anime Has",
+                f"Guess The {tags_label}",
                 f"Pick up to {num_correct} tags. +{_fmt_pt(_bs_pt_tag)} per correct, -{_fmt_pt(_bs_pt_tag)} per wrong.",
                 tags=random_tags,
                 tags_max=num_correct)
@@ -27659,7 +28174,7 @@ def guess_extra(extra = None):
             _bs_multiple = bonus_settings.get("multiple", BONUS_SETTINGS_DEFAULT["multiple"])
             _multiple_pt = _bs_multiple["lightning_points" if _is_light_mode else "points"]
             toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The Anime", 
+                                ROUND_PREFIX + "Guess The Anime",
                                 (f"Only one guess. +{_fmt_pt(_multiple_pt)} if correct.\n\n"
                                 f"[A] {titles[0]}\n[B] {titles[1]}\n"
                                 f"[C] {titles[2]}\n[D] {titles[3]}"),
@@ -27669,12 +28184,35 @@ def guess_extra(extra = None):
             _bonus_correct_answer = get_display_title(currently_playing.get("data") or {})
         elif guessing_extra == "characters":
             _bs_chars = bonus_settings.get("characters", BONUS_SETTINGS_DEFAULT["characters"])
-            toggle_coming_up_popup(True, 
-                                ROUND_PREFIX + "Guess The 2 Characters From This Anime", 
-                                "2 out of 6 characters are from this anime.",
+            _bs_num_correct = int(_bs_chars.get("num_correct", BONUS_SETTINGS_DEFAULT["characters"]["num_correct"]))
+            _bs_pt_char = float(_bs_chars.get("lightning_points_per_correct" if _is_light_mode else "points_per_correct",
+                                              BONUS_SETTINGS_DEFAULT["characters"]["lightning_points_per_correct" if _is_light_mode else "points_per_correct"]))
+            _char_word = "character" if _bs_num_correct == 1 else "characters"
+            _char_verb = "is" if _bs_num_correct == 1 else "are"
+            toggle_coming_up_popup(True,
+                                ROUND_PREFIX + f"Guess The {_bs_num_correct} {_char_word.title()} From This Anime",
+                                f"{_bs_num_correct} out of 6 {_char_word} {_char_verb} from this anime.\n" +
+                                (f"+{_fmt_pt(_bs_pt_char)} if correct." if _bs_num_correct == 1 else f"+{_fmt_pt(_bs_pt_char)} per correct character."),
                                 up_next=False)
             bonus_chars, bonus_correct_indices = pick_bonus_characters()
-            
+            # Build web payload: {label, image_url} for each card
+            _char_choices = [
+                {
+                    "label": chr(65 + i),
+                    "image_url": ("https://cdn-eu.anidb.net/images/main/" + c[2]) if len(c) > 2 and c[2] else "",
+                }
+                for i, c in enumerate(bonus_chars)
+            ]
+            _correct_labels = [chr(65 + i) for i in bonus_correct_indices]
+            _bonus_correct_answer = _correct_labels  # list of correct letter(s)
+            web_server.push_question(
+                f"Guess The {_char_word.title()} From This Anime",
+                f"Pick {_bs_num_correct} out of {len(bonus_chars)}. " +
+                (f"+{_fmt_pt(_bs_pt_char)} if correct." if _bs_num_correct == 1 else f"+{_fmt_pt(_bs_pt_char)} per correct."),
+                character_choices=_char_choices,
+                character_picks=_bs_num_correct,
+            )
+
             def worker():
                 show_bonus_characters(bonus_chars)
             threading.Thread(target=worker, daemon=True).start()
@@ -27843,11 +28381,6 @@ def guess_extra(extra = None):
             choices = [correct_answer] + _other
             random.shuffle(choices)
             _mc_pts = float(_fr.get("mc_points", 1))
-            # toggle_coming_up_popup(True,
-            #     ROUND_PREFIX + "Multiple Choice",
-            #     (f"Only one guess. +{_fmt_pt(_mc_pts)} if correct.\n\n" +
-            #      "\n".join(f"[{chr(65+i)}] {c}" for i, c in enumerate(choices))),
-            #     up_next=False)
             toggle_mc_choices_overlay(choices=choices, correct=correct_answer)
             web_server.push_question(
                 _fr.get("trivia_header", "Trivia") or "Trivia",
@@ -28024,16 +28557,27 @@ bonus_overlay_window = None    # True when OSD is showing; None when hidden (sen
 bonus_character_labels = []
 bonus_correct_indices = []
 _bonus_chars_img_overlay = None  # mpv ImageOverlay for bonus character portraits
+_bonus_chars_current = []        # characters currently displayed (for resize redraws)
+_bonus_chars_reveal = False      # whether the reveal state is active
+
+def _bonus_chars_on_mpv_rect(mx, my, mw, mh):
+    """Redraw bonus character overlay when mpv window is moved/resized."""
+    if bonus_overlay_window and _bonus_chars_current:
+        _draw_bonus_characters_osd(_bonus_chars_current, _bonus_chars_reveal)
 
 def pick_bonus_characters():
     """
-    Picks 2 'appears' characters from the current show and 2 distractors from different series.
+    Picks num_correct characters from the current show and (6 - num_correct) distractors.
     Prioritizes distractors from shows with shared studios or tags.
-    Returns: list of 4 character tuples, and indices of the correct ones.
+    Returns: list of 6 character tuples, and indices of the correct ones.
     """
     data = currently_playing.get("data", {})
     if not data or not data.get("characters"):
         return [], []
+
+    _bs_chars = bonus_settings.get("characters", BONUS_SETTINGS_DEFAULT["characters"])
+    num_correct = max(1, min(5, int(_bs_chars.get("num_correct", BONUS_SETTINGS_DEFAULT["characters"]["num_correct"]))))
+    num_distractors = 6 - num_correct
 
     # Get correct characters
     characters = data["characters"]
@@ -28045,15 +28589,15 @@ def pick_bonus_characters():
     # Try getting characters in order: appears -> secondary -> main
     for role in ["a", "s", "m"]:
         role_chars = get_chars_by_role(role)
-        needed = 2 - len(selected)
+        needed = num_correct - len(selected)
         if role_chars:
             selected.extend(random.sample(role_chars, min(needed, len(role_chars))))
-        if len(selected) == 2:
+        if len(selected) == num_correct:
             break
 
-    if len(selected) < 2:
+    if len(selected) < num_correct:
         backup = [c for c in characters if c[2]]
-        selected.extend(random.sample(backup, min(2 - len(selected), len(backup))))
+        selected.extend(random.sample(backup, min(num_correct - len(selected), len(backup))))
 
     correct_series = series_list(data)
     correct_year = int(data.get("season", "9999")[-4:])
@@ -28061,6 +28605,20 @@ def pick_bonus_characters():
     correct_studios = set(data.get("studios") or [])
     correct_tags = set(get_tags(data))
     correct_has_anthro = "Anthropomorphic" in correct_tags
+
+    # Build mal_id -> {tag_name: rank} from anilist_metadata (mirrors get_random_titles logic)
+    mal_to_anilist_tags = {}
+    for _mid, fm_entry in file_metadata.items():
+        _al_id = fm_entry.get("anilist")
+        if _al_id:
+            _al = anilist_metadata.get(str(_al_id))
+            if _al:
+                mal_to_anilist_tags[_mid] = {t["name"]: t.get("rank", 0) for t in _al.get("tags", []) if t.get("name")}
+
+    correct_mal_id = data.get("mal")
+    correct_anilist_tags = mal_to_anilist_tags.get(correct_mal_id, {})
+    # Determine anthropomorphic using anilist tags if available, else fall back to MAL tags
+    correct_has_anthro = (correct_anilist_tags.get("Anthropomorphic", 0) > 0) if correct_anilist_tags else ("Anthropomorphic" in correct_tags)
 
     distractors = []
 
@@ -28072,9 +28630,13 @@ def pick_bonus_characters():
         if series_set(anime).intersection(used_series):
             continue
 
-        # Anthropomorphic tag pairing rule
-        anime_tags = set(get_tags(anime))
-        if ("Anthropomorphic" in anime_tags) != correct_has_anthro:
+        # Anthropomorphic tag pairing rule — use anilist tags when available
+        anime_anilist_tags = mal_to_anilist_tags.get(mal_id, {})
+        if anime_anilist_tags:
+            anime_has_anthro = anime_anilist_tags.get("Anthropomorphic", 0) > 0
+        else:
+            anime_has_anthro = "Anthropomorphic" in set(get_tags(anime))
+        if anime_has_anthro != correct_has_anthro:
             continue
 
         # Get characters via mapping
@@ -28089,7 +28651,11 @@ def pick_bonus_characters():
         # Score based on studio and tag overlap
         score = 0
         score += len(set(anime.get("studios", [])) & correct_studios) * 3
-        score += len(anime_tags & correct_tags)
+        if correct_anilist_tags and anime_anilist_tags:
+            score += sum(min(correct_anilist_tags[name], anime_anilist_tags[name]) / 100
+                         for name in correct_anilist_tags if name in anime_anilist_tags)
+        else:
+            score += len(set(get_tags(anime)) & correct_tags)
         distractor_year = int(anime.get("season", "9999")[-4:])
         if correct_year and distractor_year:
             year_diff = abs(correct_year - distractor_year)
@@ -28110,10 +28676,10 @@ def pick_bonus_characters():
         if not used_series.intersection(distractor_series_set):
             final_distractors.append(char)
             used_series.update(distractor_series_set)
-        if len(final_distractors) == 4:
+        if len(final_distractors) == num_distractors:
             break
 
-    while len(final_distractors) < 4:
+    while len(final_distractors) < num_distractors:
         random_char = random.choice([c for c in characters if c not in selected and c[2]])
         final_distractors.append(random_char)
 
@@ -28133,7 +28699,8 @@ def get_anidb_metadata_from_anime(mal):
 
 def _draw_bonus_characters_osd(characters, reveal_correct=False):
     """Render bonus character portraits as an mpv image overlay (pure PIL, no ASS)."""
-    global _bonus_chars_img_overlay
+    global _bonus_chars_img_overlay, _bonus_chars_reveal
+    _bonus_chars_reveal = reveal_correct
     try:
         osd_w = int(player._p.osd_width or 0)
         osd_h = int(player._p.osd_height or 0)
@@ -28144,7 +28711,8 @@ def _draw_bonus_characters_osd(characters, reveal_correct=False):
 
     modifier = min(osd_w / 2560, osd_h / 1440)
 
-    # Sizes
+    _bs_chars = bonus_settings.get("characters", BONUS_SETTINGS_DEFAULT["characters"])
+    modifier *= float(_bs_chars.get("scale", BONUS_SETTINGS_DEFAULT["characters"]["scale"]))
     img_w    = max(80,  round(210 * modifier))
     img_h    = max(120, round(315 * modifier))
     label_fs = max(10,  round(24  * modifier * 1.6))
@@ -28238,15 +28806,21 @@ def show_bonus_characters(characters, reveal_correct=False):
     network requests may be slow on first call, but are cached afterwards), then
     the OSD update is dispatched to the main thread via root.after.
     """
-    global bonus_overlay_window
+    global bonus_overlay_window, _bonus_chars_current, _bonus_chars_reveal
 
     destroy_bonus_characters()
 
     if not characters:
         return
 
+    _bonus_chars_current = characters
+    _bonus_chars_reveal = reveal_correct
+
     # Set the visibility sentinel so the 'is visible?' check still works.
     bonus_overlay_window = True
+
+    # Register tracker so the overlay redraws on mpv window resize/move.
+    _register_mpv_tracked_window("bonus_chars", None, _bonus_chars_on_mpv_rect)
 
     # Show immediately (placeholder boxes for images not yet cached).
     try:
@@ -28268,8 +28842,11 @@ def show_bonus_characters(characters, reveal_correct=False):
         threading.Thread(target=_load_and_redraw, args=(char,), daemon=True).start()
 
 def destroy_bonus_characters():
-    global bonus_overlay_window, _bonus_chars_img_overlay
+    global bonus_overlay_window, _bonus_chars_img_overlay, _bonus_chars_current, _bonus_chars_reveal
     bonus_overlay_window = None
+    _bonus_chars_current = []
+    _bonus_chars_reveal = False
+    _unregister_mpv_tracked_window("bonus_chars")
     if _bonus_chars_img_overlay is not None:
         try:
             _bonus_chars_img_overlay.remove()
@@ -28748,6 +29325,13 @@ def play_filename(playlist_entry, fullscreen=True):
     # Update metadata display asynchronously
     update_metadata_queue(playlist["current_index"])
     previous_media = filepath  # store path string for repeat playback
+    # Pre-load black cover: applied before set_media so OSD dims from the previous
+    # video are still valid. Prevents the new file's first decoded frame from being
+    # visible before blind/reveal overlays are active. The playback-restart hook
+    # (or the blind_round_toggle branch below) reapplies/removes it as needed.
+    if not light_mode and (blind_round_toggle or peek_round_toggle or mute_peek_round_toggle):
+        _pre_load_blind_color = get_image_color() if blind_round_toggle else 'black'
+        set_black_screen(True, smooth=False, color=_pre_load_blind_color)
     player.set_media(filepath)
     remove_all_censor_boxes()
     _prime_start_censors(filename)
@@ -28767,7 +29351,7 @@ def play_filename(playlist_entry, fullscreen=True):
             background_music_rounds += 1
         
         light_round_number = light_round_number + 1
-        if light_mode != 'peek':
+        if light_mode != 'reveal':
             update_light_round_number()
             
         light_round_length = lightning_mode_settings.get(light_mode, {}).get("length", LIGHT_ROUND_LENGTH_DEFAULT)
@@ -28777,7 +29361,6 @@ def play_filename(playlist_entry, fullscreen=True):
             set_black_screen(True)
             root.after(500, player_play)
         else:
-            _recolor_blind_osd(get_image_color())
             player_play()
             set_volume(volume_level)
     else:
@@ -28789,7 +29372,6 @@ def play_filename(playlist_entry, fullscreen=True):
         toggle_coming_up_popup(False, "Lightning Round")
         if blind_round_toggle:
             manual_blind = True
-            set_black_screen(True)
             root.after(500, player_play)
         elif peek_round_toggle or mute_peek_round_toggle:
             manual_blind = False
@@ -28798,7 +29380,8 @@ def play_filename(playlist_entry, fullscreen=True):
                 next_background_track()
                 toggle_mute(True)
             root.after(500, player_play)
-            root.after(0, lambda: set_black_screen(False))
+            # Don't remove the black screen here — playback-restart hook lifts it
+            # once the peek overlay is confirmed active on the new file's first frame.
         else:
             manual_blind = False
             player_play()
@@ -29527,7 +30110,7 @@ def skip_to_lightning_answer():
             if frame_light_round_frame_index is None or frame_light_round_frame_index < 4:
                 frame_light_round_frame_index = 4
                 frame_light_round_frame_time = 0
-                set_frame_number()
+                bottom_info()
                 play_background_music(False)
                 set_black_screen(False)
                 toggle_title_popup(True)
@@ -29713,7 +30296,10 @@ def update_seek_bar():
                 length = player.get_length()/1000
                 time = projected_player_time/1000
                 if manual_blind and not light_round_started:
-                    set_progress_overlay(time, length)
+                    _eff_time, _eff_len = _apply_skip_censor_to_progress(
+                        time * 1000, length * 1000, currently_playing.get("filename")
+                    )
+                    set_progress_overlay(_eff_time / 1000, _eff_len / 1000)
                 if peek_overlay1 and not light_round_started:
                     gap = get_peek_gap(currently_playing.get("data"))
                     progress = ((time+peek_modifier)%24/12)*100
@@ -29825,12 +30411,14 @@ coming_up_rules_label = None   # always None (OSD-based)
 coming_up_queue       = None
 
 _COMING_UP_ASS_OSD_ID        = 80
+_SKIP_TO_END_ASS_OSD_ID      = 81  # brief "SKIPPED TO END" flash overlay
 _coming_up_osd_visible        = False
 _coming_up_osd_current_title  = ""     # uppercased title currently displayed
 _coming_up_img_overlay        = None   # mpv ImageOverlay for thumbnail
 _coming_up_anim_after         = None   # root.after ID for slide-in animation
 _coming_up_osd_box_h          = 0      # rendered box height in OSD px (for hide/resize)
 _coming_up_osd_box_w          = 0      # rendered box width in OSD px
+_coming_up_current_frame      = None   # (title_text, details, pil_image) of what is currently shown
 
 
 def _coming_up_get_osd_dims():
@@ -29847,7 +30435,8 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
     Mirrors the original Tkinter layout: title (large, underlined) → optional thumbnail → details.
     *pil_image* must be a PIL RGBA Image or None.
     """
-    global _coming_up_img_overlay, _coming_up_osd_box_h, _coming_up_osd_box_w
+    global _coming_up_img_overlay, _coming_up_osd_box_h, _coming_up_osd_box_w, _coming_up_current_frame
+    _coming_up_current_frame = (title_text, details, pil_image)
 
     modifier = min(osd_w / 2560, osd_h / 1440)
 
@@ -30003,6 +30592,134 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
         except Exception:
             pass
         _coming_up_img_overlay = None
+
+
+_skip_to_end_after = None  # root.after handle for the skip-to-end flash animation
+
+def show_skip_to_end_osd():
+    """Show a brief centered 'SKIPPED TO END' ASS overlay that fades out."""
+    global _skip_to_end_after
+    if _skip_to_end_after is not None:
+        try:
+            root.after_cancel(_skip_to_end_after)
+        except Exception:
+            pass
+        _skip_to_end_after = None
+
+    HOLD_MS  = 1400   # time fully visible
+    FADE_MS  = 500    # fade-out duration
+    STEPS    = 20
+
+    def _render(alpha_frac):
+        try:
+            osd_w = int(player._p.osd_width  or 0) or 1920
+            osd_h = int(player._p.osd_height or 0) or 1080
+            modifier = min(osd_w / 2560, osd_h / 1440)
+            fs = max(18, round(52 * modifier * 1.6))
+            cx, cy = osd_w // 2, osd_h // 2
+
+            label = "\u23ed SKIPPED TO END"
+            fnt = _get_ass_font(fs)
+            try:
+                text_w = round(fnt.getlength(label)) if fnt else round(len(label) * fs * 0.55)
+            except AttributeError:
+                text_w = fnt.getsize(label)[0] if fnt else round(len(label) * fs * 0.55)
+
+            pad_x = max(10, round(fs * 0.55))
+            pad_y = max(6,  round(fs * 0.30))
+            line_h = round(fs * 1.15)
+            box_w  = text_w + 2 * pad_x
+            box_h  = line_h + 2 * pad_y
+            bx = cx - box_w // 2
+            by = cy - box_h // 2
+
+            # Blue palette — dark navy fill, bright-blue border, white text
+            # ASS colors are &HBBGGRR& (little-endian BGR)
+            bg_bgr     = "3A1A0D"   # #0D1A3A dark navy
+            border_bgr = "AA6633"   # #3366AA medium blue
+            text_bgr   = "FFFFFF"   # white
+
+            bg_a     = max(0, min(255, round(0x1A + (255 - 0x1A) * (1.0 - alpha_frac))))  # nearly opaque
+            border_a = max(0, min(255, round(255 * (1.0 - alpha_frac))))
+            text_a   = border_a
+            bg_ah     = f"{bg_a:02X}"
+            border_ah = f"{border_a:02X}"
+            text_ah   = f"{text_a:02X}"
+
+            bord_w = max(2, round(3 * modifier * 1.6))
+
+            events = [
+                # Background fill + blue border using drawing mode
+                f"{{\\an7\\pos({bx},{by})"
+                f"\\1c&H{bg_bgr}&\\1a&H{bg_ah}&"
+                f"\\3c&H{border_bgr}&\\3a&H{border_ah}&"
+                f"\\bord{bord_w}\\shad0\\p1}}"
+                f"m 0 0 l {box_w} 0 {box_w} {box_h} 0 {box_h}{{\\p0}}",
+                # Text — white, dark outline for readability
+                f"{{\\an5\\pos({cx},{cy})"
+                f"\\1c&H{text_bgr}&\\1a&H{text_ah}&"
+                f"\\3c&H{border_bgr}&\\3a&H{border_ah}&"
+                f"\\bord{bord_w}\\shad0\\b1\\fs{fs}}}{label}",
+            ]
+            _osd_command('osd-overlay', _SKIP_TO_END_ASS_OSD_ID, 'ass-events',
+                         "\n".join(events), osd_w, osd_h, 3, 'no')
+        except Exception as e:
+            print(f"Skip-to-end OSD error: {e}")
+
+    def _clear():
+        global _skip_to_end_after
+        _skip_to_end_after = None
+        try:
+            _osd_command('osd-overlay', _SKIP_TO_END_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        except Exception:
+            pass
+
+    def _fade(step):
+        global _skip_to_end_after
+        if step > STEPS:
+            _clear()
+            return
+        alpha = 1.0 - (step / STEPS)
+        _render(alpha)
+        _skip_to_end_after = root.after(FADE_MS // STEPS, lambda s=step+1: _fade(s))
+
+    _render(1.0)
+    _skip_to_end_after = root.after(HOLD_MS, lambda: _fade(0))
+
+
+_ff_to_end_after = None   # root.after handle for fast-forward polling
+
+def fast_forward_to_end(speed=4, ff_ms=500):
+    """Play at `speed`x for `ff_ms` milliseconds for a visual FF effect,
+    then seek directly to 3 seconds before the end and restore normal rate."""
+    global _ff_to_end_after
+    length_ms = player.get_length()
+    if length_ms <= 3000:
+        return
+    # Cancel any existing FF session
+    if _ff_to_end_after is not None:
+        try:
+            root.after_cancel(_ff_to_end_after)
+        except Exception:
+            pass
+        _ff_to_end_after = None
+    filename_at_start = currently_playing.get("filename")
+    normal_rate = light_speed_modifier  # preserve lightning-round rate
+    player.set_rate(speed)
+    show_skip_to_end_osd()
+
+    def _finish():
+        global _ff_to_end_after
+        _ff_to_end_after = None
+        if currently_playing.get("filename") != filename_at_start:
+            return
+        player.set_rate(normal_rate)
+        cur_length_ms = player.get_length()
+        if cur_length_ms > 3000:
+            seek_to(cur_length_ms - 3000)
+        # root.after(0, show_skip_to_end_osd)
+
+    _ff_to_end_after = root.after(ff_ms, _finish)
 
 
 def _hide_coming_up_osd():
@@ -30266,6 +30983,40 @@ def _draw_grow_osd(block_percent, cx_osd, cy_osd):
 def create_progress_bar(color="grey"):
     pass  # no longer needed — OSD is created on first update
 
+def _apply_skip_censor_to_progress(current_time_ms, total_time_ms, filename):
+    """Adjust current/total time (in ms) to exclude skip-censor durations.
+    Returns (effective_current_ms, effective_total_ms).
+    Falls back to the original values on any error or when no filename is given.
+    """
+    if not filename:
+        return current_time_ms, total_time_ms
+    try:
+        if not os.path.exists(CENSOR_JSON_FILE):
+            return current_time_ms, total_time_ms
+        with open(CENSOR_JSON_FILE, "r") as f:
+            censor_data = json.load(f)
+        file_censors = censor_data.get(filename, [])
+        cur_s = current_time_ms / 1000.0
+        tot_s = total_time_ms / 1000.0
+        total_skip = 0.0
+        skip_before = 0.0
+        for censor in [c for c in file_censors if c.get("skip")]:
+            s, e = censor["start"], censor["end"]
+            dur = e - s
+            if dur <= 0:
+                continue
+            total_skip += dur
+            if e <= cur_s:
+                skip_before += dur
+            elif s < cur_s:
+                skip_before += cur_s - s
+        eff_cur = max(0.0, cur_s - skip_before) * 1000.0
+        eff_tot = max(1.0, tot_s - total_skip) * 1000.0
+        return eff_cur, eff_tot
+    except Exception:
+        return current_time_ms, total_time_ms
+
+
 def update_progress_bar(current_time, total_time, filename=None):
     global progress_bar
 
@@ -30297,41 +31048,9 @@ def update_progress_bar(current_time, total_time, filename=None):
         return
 
     # Calculate effective time excluding skip censors
-    effective_current_time = current_time
-    effective_total_time = total_time
-
-    if filename:
-        try:
-            if os.path.exists(CENSOR_JSON_FILE):
-                with open(CENSOR_JSON_FILE, "r") as f:
-                    censor_data = json.load(f)
-
-                file_censors = censor_data.get(filename, [])
-                current_time_seconds = current_time / 1000.0
-                total_time_seconds = total_time / 1000.0
-                total_skip_duration_seconds = 0
-                skip_duration_before_current_seconds = 0
-
-                for censor in [c for c in file_censors if c.get("skip")]:
-                    skip_start = censor['start']
-                    skip_end = censor['end']
-                    skip_duration = skip_end - skip_start
-                    if skip_duration > 0:
-                        total_skip_duration_seconds += skip_duration
-                        if skip_end <= current_time_seconds:
-                            skip_duration_before_current_seconds += skip_duration
-                        elif skip_start < current_time_seconds < skip_end:
-                            skip_duration_before_current_seconds += (current_time_seconds - skip_start)
-
-                effective_current_time = (current_time_seconds - skip_duration_before_current_seconds) * 1000
-                effective_total_time = (total_time_seconds - total_skip_duration_seconds) * 1000
-        except Exception:
-            pass
-
-    if effective_total_time <= 0:
-        effective_total_time = total_time
-    if effective_current_time < 0:
-        effective_current_time = 0
+    effective_current_time, effective_total_time = _apply_skip_censor_to_progress(
+        current_time, total_time, filename
+    )
 
     fraction = effective_current_time / effective_total_time
     _draw_progress_osd(fraction)
@@ -30502,28 +31221,28 @@ def _hide_ost_cover():
 
 censor_list = {}
 other_censor_lists = []
-censors_enabled = True
+censors_enabled      = True
+censors_nsfw_enabled = True
 
 censor_boxes = {}
-_censor_osd = None      # mpv ImageOverlay for all active censor boxes
-_censor_osd_img = None  # PIL RGBA canvas for censor compositing
+_censor_osd = None      # unused; kept so any stale references don't NameError
+_censor_osd_img = None  # unused; kept so any stale references don't NameError
 _censor_osd_last_size = (0, 0)  # (osd_w, osd_h) at last commit — redraw on resize
 
 def _commit_censor_osd():
-    """Composite all active censor boxes into a single mpv OSD overlay."""
-    global _censor_osd, _censor_osd_img, _censor_osd_last_size
+    """Draw censor boxes via ASS osd-overlay (IDs 40–49), one slot per box, all below peek/grow/edge (50+)."""
+    global _censor_osd_last_size
     active = [(d["censor"], d.get("color", "black"))
               for d in censor_boxes.values() if not d.get("destroying")]
-    # Hide censor overlay while blind/black overlay is active — it sits above the blind
-    # OSD layer and would otherwise punch through the black screen at round start.
+
+    def _clear_all_slots():
+        for _sid in _CENSOR_ASS_OSD_IDS:
+            _osd_command('osd-overlay', _sid, 'none', '', 0, 0, 0, 'no')
+
+    # Hide while blind/black overlay is active.
     if not active or black_overlay is not None:
-        if _censor_osd is not None:
-            try:
-                _censor_osd.remove()
-            except Exception:
-                pass
-            _censor_osd = None
-        _censor_osd_img = None
+        _clear_all_slots()
+        _censor_osd_last_size = (0, 0)
         return
 
     # Get actual mpv OSD (window) dimensions — attribute access avoids the options/ prefix bug
@@ -30560,31 +31279,85 @@ def _commit_censor_osd():
     else:
         video_x, video_y, video_w, video_h = 0, 0, osd_w, osd_h
 
-    _censor_osd_img = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(_censor_osd_img)
-    for censor, color_str in active:
+    # Each active censor box gets its own osd-overlay slot (IDs 40–49).
+    # One box → one slot → one positioned ASS event with its own color. No tag interaction.
+    def _to_ass_color(color_str):
         try:
-            rgb = ImageColor.getrgb(color_str)
-            fill = (*rgb, 255)
+            r, g, b = ImageColor.getrgb(color_str)[:3]
         except Exception:
-            fill = (0, 0, 0, 255)
+            r, g, b = 0, 0, 0
+        return f"&H{b:02X}{g:02X}{r:02X}&"
+
+    used_slots = 0
+    for censor, color_str in active:
+        if used_slots >= len(_CENSOR_ASS_OSD_IDS):
+            break
         cw = int(video_w * censor['size_w'] / 100)
         ch = int(video_h * censor['size_h'] / 100)
         if cw <= 0 or ch <= 0:
             continue
         cx = video_x + int((video_w - cw) * censor['pos_x'] / 100)
         cy = video_y + int((video_h - ch) * censor['pos_y'] / 100)
-        draw.rectangle([cx, cy, cx + cw - 1, cy + ch - 1], fill=fill)
+        ass_color = _to_ass_color(color_str)
+        slot_id = _CENSOR_ASS_OSD_IDS[used_slots]
+        rotation = censor.get('rotation') or 0.0
+        shape    = censor.get('shape') or 'rect'
+        import math as _math_osd
+        rcx = cx + cw / 2
+        rcy = cy + ch / 2
+        hw_f, hh_f = cw / 2.0, ch / 2.0
+        if rotation:
+            _rad = _math_osd.radians(rotation)
+            _cos_r, _sin_r = _math_osd.cos(_rad), _math_osd.sin(_rad)
+            def _rot(lx, ly):
+                return (int(rcx + lx * _cos_r - ly * _sin_r),
+                        int(rcy + lx * _sin_r + ly * _cos_r))
+        else:
+            def _rot(lx, ly):
+                return (int(rcx + lx), int(rcy + ly))
+        if shape == 'ellipse':
+            KAPPA = 0.5523
+            kw, kh = hw_f * KAPPA, hh_f * KAPPA
+            hw, hh = hw_f, hh_f
+            pts = [_rot(x, y) for x, y in [
+                (0, -hh),
+                (kw, -hh), (hw, -kh), (hw, 0),
+                (hw,  kh), (kw,  hh), (0,  hh),
+                (-kw, hh), (-hw, kh), (-hw, 0),
+                (-hw, -kh), (-kw, -hh), (0, -hh),
+            ]]
+            def _c(p): return f"{p[0]} {p[1]}"
+            ass_payload = (
+                f"{{\\an7\\pos(0,0)\\1c{ass_color}\\bord0\\shad0\\p1}}"
+                f"m {_c(pts[0])} "
+                f"b {_c(pts[1])} {_c(pts[2])} {_c(pts[3])} "
+                f"b {_c(pts[4])} {_c(pts[5])} {_c(pts[6])} "
+                f"b {_c(pts[7])} {_c(pts[8])} {_c(pts[9])} "
+                f"b {_c(pts[10])} {_c(pts[11])} {_c(pts[12])}"
+                f"{{\\p0}}"
+            )
+        else:
+            p0 = _rot(-hw_f, -hh_f)
+            p1 = _rot( hw_f, -hh_f)
+            p2 = _rot( hw_f,  hh_f)
+            p3 = _rot(-hw_f,  hh_f)
+            ass_payload = (
+                f"{{\\an7\\pos(0,0)\\1c{ass_color}\\bord0\\shad0\\p1}}"
+                f"m {p0[0]} {p0[1]} l {p1[0]} {p1[1]} {p2[0]} {p2[1]} {p3[0]} {p3[1]}"
+                f"{{\\p0}}"
+            )
+        try:
+            _osd_command('osd-overlay', slot_id, 'ass-events',
+                         ass_payload, osd_w, osd_h, -1, 'no')
+        except Exception as e:
+            print(f"Censor OSD slot {slot_id} error: {e}")
+        used_slots += 1
 
-    # python-mpv's update() calls tobytes('raw', 'BGRA') internally — pass RGBA directly
-    try:
-        # Overlay ID 0 — rendered below progress bar overlay (ID 1)
-        if _censor_osd is None:
-            _censor_osd = player._p.create_image_overlay()
-        _censor_osd.update(_censor_osd_img)
-        _censor_osd_last_size = (osd_w, osd_h)
-    except Exception as e:
-        print(f"Censor OSD error: {e}")
+    # Clear any unused slots from a previous call that had more boxes
+    for slot_id in _CENSOR_ASS_OSD_IDS[used_slots:]:
+        _osd_command('osd-overlay', slot_id, 'none', '', 0, 0, 0, 'no')
+
+    _censor_osd_last_size = (osd_w, osd_h)
 
 def toggle_censor_box(filename, censor, enabled, time=None):
     censor_id = f"{filename}:{censor['pos_x']}x{censor['pos_y']}--{censor['size_w']}x{censor['size_h']}-{censor['start']}-{censor['end']}"
@@ -30597,7 +31370,7 @@ def toggle_censor_box(filename, censor, enabled, time=None):
                 if cid not in censor_boxes:
                     return
                 pj_time = projected_player_time / 1000
-                if not blind_enabled and show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
+                if show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
                     censor_boxes[cid]["destroying"] = False
                 elif censor_boxes[cid].get("destroying"):
                     del censor_boxes[cid]
@@ -30620,20 +31393,14 @@ def lift_peek():
     pass  # peek overlays are now OSD-based; nothing to lift
 
 def remove_all_censor_boxes(filename=None):
-    global _censor_osd, _censor_osd_img
     # If filename given, remove boxes for OTHER files (not the current one).
     # If no filename, remove everything.
     censors_to_delete = [cid for cid in censor_boxes if not filename or filename not in cid]
     for cid in censors_to_delete:
         del censor_boxes[cid]
     if not censor_boxes:
-        if _censor_osd is not None:
-            try:
-                _censor_osd.remove()
-            except Exception:
-                pass
-            _censor_osd = None
-        _censor_osd_img = None
+        for _sid in _CENSOR_ASS_OSD_IDS:
+            _osd_command('osd-overlay', _sid, 'none', '', 0, 0, 0, 'no')
 
 def load_censors():
     global censor_list, other_censor_lists
@@ -30670,7 +31437,7 @@ def _prime_start_censors(filename):
     where a censor-at-zero would otherwise be missed by the poll loop.
     Mute censors are skipped here (they need the player to be playing).
     """
-    if not censors_enabled or mismatch_visuals or currently_streaming or black_overlay or blind_enabled:
+    if (not censors_enabled and not censors_nsfw_enabled) or mismatch_visuals or currently_streaming:
         return
     file_censors = get_file_censors(filename)
     if not file_censors:
@@ -30680,6 +31447,10 @@ def _prime_start_censors(filename):
         if censor.get('start', 1) != 0:
             continue
         if censor.get('mute') or censor.get('skip'):
+            continue
+        if censor.get('nsfw') and not censors_nsfw_enabled:
+            continue
+        if not censor.get('nsfw') and not censors_enabled:
             continue
         if not show_censor(censor, check_title=False):
             continue
@@ -30700,12 +31471,13 @@ def apply_censors(time, length):
     global censor_used, mute_censor_used
     global censor_list
     global censors_enabled
-    if censors_enabled and not mismatch_visuals and not currently_streaming:
+    if (censors_enabled or censors_nsfw_enabled) and not mismatch_visuals and not currently_streaming:
         check_file_censors(currently_playing.get('filename'), time, True)
     else:
         remove_all_censor_boxes()
         if mute_censor_used:
-            player.audio_set_mute(disable_video_audio)
+            _target_mute = light_muted if light_round_started else disable_video_audio
+            player.audio_set_mute(_target_mute)
             mute_censor_used = False
 
 def get_file_censors(filename):
@@ -30736,7 +31508,13 @@ def check_file_censors(filename, time, check_title=True):
     _osd_dirty = False
     if file_censors:
         for censor in file_censors:
-            if ((not blind_enabled or time <= 0.25) or censor.get("mute")) and show_censor(censor, check_title) and (time >= censor['start'] and time <= censor['end']):
+            if censor.get('nsfw') and not censors_nsfw_enabled:
+                toggle_censor_box(filename, censor, False)
+                continue
+            if not censor.get('nsfw') and not censors_enabled:
+                toggle_censor_box(filename, censor, False)
+                continue
+            if show_censor(censor, check_title) and (time >= censor['start'] and time <= censor['end']):
                 if censor.get("skip"):
                     skip_length = censor['end'] - censor['start']
                     if not light_round_started and time < censor['start']+(skip_length / 4):
@@ -30774,8 +31552,9 @@ def check_file_censors(filename, time, check_title=True):
                 entry["committed"] = True
         _osd_dirty = False
 
-    if not mute_found and not light_round_started and mute_censor_used:
-        player.audio_set_mute(disable_video_audio)
+    if not mute_found and mute_censor_used:
+        _target_mute = light_muted if light_round_started else disable_video_audio
+        player.audio_set_mute(_target_mute)
         mute_censor_used = False
 
     return censor_found
@@ -30810,138 +31589,46 @@ def set_window_position(window, pos_x, pos_y):
     # Set exact position (left edge at x=0)
     window.geometry(f"+{x_position}+{y_position}")
 
-camera = None
-camera_init_attempts = 0
-camera_disabled = False  # Flag to disable camera permanently if too many errors
-camera_error_count = 0  # Count COM/access errors
-MAX_CAMERA_INIT_ATTEMPTS = 3
-CAMERA_DISABLE_THRESHOLD = 5  # Disable camera after this many errors
+import random as _random
 
-def initialize_camera():
-    global camera, camera_init_attempts
-    
-    try:
-        if camera is not None:
-            try:
-                camera.stop()
-                time.sleep(0.05)  # Brief pause for cleanup
-            except:
-                pass
-            camera = None
-        
-        # Create new camera with fallback options
-        try:
-            # Try with explicit device parameters first
-            camera = dxcam.create(device_idx=0, output_idx=0)
-        except:
-            try:
-                # Fallback to default parameters
-                camera = dxcam.create()
-            except Exception as create_err:
-                raise Exception(f"Failed to create DXCam object: {create_err}")
-        
-        if camera is None:
-            raise Exception("DXCam create() returned None")
-            
-        camera.start(target_fps=30)
-        camera_init_attempts = 0
-        return True
-        
-    except Exception as e:
-        print(f"DXCam initialization failed (attempt {camera_init_attempts + 1}): {e}")
-        camera_init_attempts += 1
-        camera = None
-        return False
-
-# Initialize camera with retry logic
-for _ in range(MAX_CAMERA_INIT_ATTEMPTS):
-    if initialize_camera():
-        break
-    time.sleep(1)
-
-def _crop_to_video_content(im_arr):
-    """Crop a captured screen array to the active video region, excluding letterbox/pillarbox bars."""
-    try:
-        fh, fw = im_arr.shape[0], im_arr.shape[1]
-        vw, vh = player.video_get_size(0)
-        if vw and vh and fh and fw:
-            video_ar = vw / vh
-            frame_ar = fw / fh
-            if video_ar > frame_ar + 0.01:
-                # Letterboxed: bars on top/bottom — crop height
-                crop_h = int(fw / video_ar)
-                y0 = (fh - crop_h) // 2
-                return im_arr[y0:y0 + crop_h, :, :]
-            elif frame_ar > video_ar + 0.01:
-                # Pillarboxed: bars on left/right — crop width
-                crop_w = int(fh * video_ar)
-                x0 = (fw - crop_w) // 2
-                return im_arr[:, x0:x0 + crop_w, :]
-    except Exception:
-        pass
-    return im_arr
-
-
-def _average_color_from_frame(im_arr):
-    """Return the hex average colour of a numpy frame array."""
-    l = im_arr.shape[0] * im_arr.shape[1]
-    if l == 0:
-        return None
-    r = im_arr[:, :, 0].sum() / l
-    g = im_arr[:, :, 1].sum() / l
-    b = im_arr[:, :, 2].sum() / l
-    return rgbtohex(int(r), int(g), int(b))
-
+def get_random_blind_color():
+    """Return a fully random color for blind transitions (prevents video color leaking as a clue)."""
+    return f"#{_random.randint(0, 0xFFFFFF):06x}"
 
 def get_image_color():
-    global camera, camera_init_attempts, camera_disabled, camera_error_count
-    
+    """Return the average colour of the current mpv video frame as a hex string.
+    Areas covered by active censor boxes are excluded from the average.
+    """
     fallback_color = "#000000"
-    
-    if camera_disabled:
-        return fallback_color
-    
     try:
-        if camera is None:
-            if camera_init_attempts < MAX_CAMERA_INIT_ATTEMPTS:
-                if not initialize_camera():
-                    return fallback_color
-            else:
-                return fallback_color
-        
-        img = camera.get_latest_frame()
+        try:
+            img = player._p.screenshot_raw()
+        except Exception as mpv_err:
+            # mpv error -12 (MPV_ERROR_COMMAND) = no video frame available
+            return fallback_color
         if img is None:
-            raise Exception("Failed to capture frame")
-
-        color = _average_color_from_frame(_crop_to_video_content(np.array(img)))
-        return color or fallback_color
-        
-    except (OSError, Exception) as e:
-        error_msg = str(e).lower()
-        
-        if any(keyword in error_msg for keyword in ["keyed mutex", "com error", "access violation", "comtypes"]):
-            camera_error_count += 1
-            
-            if camera_error_count >= CAMERA_DISABLE_THRESHOLD:
-                camera_disabled = True
-                print(f"DXCam disabled after {camera_error_count} COM errors. Background color will use fallback.")
-                return fallback_color
-            
-            print(f"DXCam COM/mutex error detected ({camera_error_count}/{CAMERA_DISABLE_THRESHOLD}), reinitializing camera...")
-            camera_init_attempts = 0
-            
-            if initialize_camera():
-                try:
-                    img = camera.get_latest_frame()
-                    if img is not None:
-                        color = _average_color_from_frame(_crop_to_video_content(np.array(img)))
-                        if color:
-                            return color
-                except:
-                    pass
-        else:
-            print(f"DXCam capture error: {e}")
-        
+            return fallback_color
+        arr = np.array(img.convert('RGB'))
+        ih, iw = arr.shape[0], arr.shape[1]
+        # Build a boolean mask: True = include pixel in average
+        mask = np.ones((ih, iw), dtype=bool)
+        active_censors = [d["censor"] for d in censor_boxes.values() if not d.get("destroying")]
+        for censor in active_censors:
+            cw = int(iw * censor['size_w'] / 100)
+            ch = int(ih * censor['size_h'] / 100)
+            if cw <= 0 or ch <= 0:
+                continue
+            cx = int((iw - cw) * censor['pos_x'] / 100)
+            cy = int((ih - ch) * censor['pos_y'] / 100)
+            mask[cy:cy + ch, cx:cx + cw] = False
+        pixels = arr[mask]  # shape: (N, 3)
+        l = len(pixels)
+        if l == 0:
+            return fallback_color
+        r, g, b = (int(pixels[:, i].sum() / l) for i in range(3))
+        return rgbtohex(r, g, b)
+    except Exception as e:
+        print(f"get_image_color error: {e}")
         return fallback_color
 
 def rgbtohex(r,g,b):
@@ -30954,11 +31641,26 @@ def update_censor_button_count():
         #     popout_buttons_by_name["censors"].configure(text=f"CENSORS({censors_num})")
 
 class RectangleDrawerOverlay:
-    def __init__(self, on_rectangle_picked):
+    """
+    Draw a selection on the mpv window, then enter an edit mode where:
+      - Dragging outside the selection rotates it
+      - Dragging a handle resizes it
+      - Confirm/Redraw/Cancel buttons are embedded in the canvas (no popup window)
+    """
+    _HS  = 7   # handle half-size in pixels
+    _HIT = 13  # handle hit-test radius
+
+    def __init__(self, on_rectangle_picked, initial=None):
+        """
+        initial: dict with keys w_pct, h_pct, x_pct, y_pct, rotation (all floats, same units as _confirm output)
+        If provided the overlay opens directly in edit mode with that selection pre-loaded.
+        """
+        import math as _math
+        self._math = _math
         self.on_rectangle_picked = on_rectangle_picked
 
-        # Position overlay over the mpv window, not the whole screen
         mpv_x, mpv_y, mpv_w, mpv_h = _get_mpv_client_rect_logical()
+        self.mpv_w, self.mpv_h = mpv_w, mpv_h
 
         self.root = tk.Toplevel()
         self.root.overrideredirect(True)
@@ -30968,99 +31670,425 @@ class RectangleDrawerOverlay:
         self.root.configure(cursor="cross")
         self.root.focus_force()
 
-        self.canvas = tk.Canvas(self.root, bg="black")
+        self.canvas = tk.Canvas(self.root, bg="black", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        self.start_x = None
-        self.start_y = None
-        self.rect = None
+        # Draw state
+        self._draw_rect = None
+        self.start_x = self.start_y = None
 
-        # Compute video rect within the mpv window dimensions (letterbox/pillarbox)
+        # Edit state
+        self.sel_cx = self.sel_cy = 0.0
+        self.sel_w = self.sel_h = 0.0
+        self.sel_rot = 0.0          # degrees, CW in screen coords (matches ASS \frz)
+        self.sel_shape = "rect"     # "rect" or "ellipse"
+        self._mode = "draw"
+        self._drag_mode = None
+        self._drag_ref = {}
+        self._static_items = []     # button bar / hint — created once per edit session
+        self._dynamic_items = []    # polygon / handles — refreshed every drag
+        self._rot_knob_x = -9999.0  # off-screen sentinel until first redraw
+        self._rot_knob_y = -9999.0
+
+        # Compute video rect
         try:
             vw, vh = player.video_get_size(0)
         except Exception:
             vw, vh = 0, 0
         if vw and vh:
-            video_ar = 16 / 9 if ((vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478)) else vw / vh
+            video_ar = 16/9 if ((vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478)) else vw/vh
             win_ar = mpv_w / mpv_h if mpv_h else 1
             if video_ar >= win_ar:
                 self.video_w = mpv_w
                 self.video_h = int(mpv_w / video_ar)
-                self.video_x = 0
-                self.video_y = (mpv_h - self.video_h) // 2
+                self.video_x, self.video_y = 0, (mpv_h - self.video_h) // 2
             else:
                 self.video_h = mpv_h
                 self.video_w = int(mpv_h * video_ar)
-                self.video_x = (mpv_w - self.video_w) // 2
-                self.video_y = 0
-            self.has_video = True
+                self.video_x, self.video_y = (mpv_w - self.video_w) // 2, 0
         else:
-            self.video_x, self.video_y = 0, 0
+            self.video_x = self.video_y = 0
             self.video_w, self.video_h = mpv_w, mpv_h
-            self.has_video = False
 
-        # Draw guide rectangle showing video boundaries (only visible when letterboxed)
-        if self.has_video and (self.video_x > 0 or self.video_y > 0):
+        if self.video_x > 0 or self.video_y > 0:
             self.canvas.create_rectangle(
                 self.video_x, self.video_y,
                 self.video_x + self.video_w, self.video_y + self.video_h,
-                outline="green", width=3, dash=(10, 5)
-            )
+                outline="green", width=3, dash=(10, 5))
 
-        self.canvas.bind("<ButtonPress-1>", self.on_press)
-        self.canvas.bind("<B1-Motion>", self.on_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_release)
-        self.root.bind("<Escape>", lambda e: self.root.destroy())
-        self.root.bind("<ButtonRelease-2>", lambda e: self.root.destroy())
+        self.canvas.bind("<ButtonPress-1>",   self._draw_press)
+        self.canvas.bind("<B1-Motion>",       self._draw_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._draw_release)
+        self.root.bind("<Escape>",            lambda e: self.root.destroy())
+        self.root.bind("<ButtonRelease-2>",   lambda e: self.root.destroy())
 
-    def on_press(self, event):
+        # If an initial selection was provided, skip draw mode and jump straight to edit.
+        if initial:
+            try:
+                w_px  = self.video_w * initial['w_pct'] / 100
+                h_px  = self.video_h * initial['h_pct'] / 100
+                # Reverse the pos_x/pos_y formula: cx = video_x + (video_w - w) * pos_x/100 + w/2
+                cx = self.video_x + (self.video_w - w_px) * initial['x_pct'] / 100 + w_px / 2
+                cy = self.video_y + (self.video_h - h_px) * initial['y_pct'] / 100 + h_px / 2
+                self.sel_cx, self.sel_cy = cx, cy
+                self.sel_w,  self.sel_h  = w_px, h_px
+                self.sel_rot = initial.get('rotation', 0.0)
+                self.sel_shape = initial.get('shape', 'rect') or 'rect'
+                self._mode = "edit"
+                self.root.after(10, self._enter_edit)  # defer until canvas is mapped
+            except Exception as _e:
+                print("RectangleDrawerOverlay: bad initial values:", _e)
+
+    # ------------------------------------------------------------------ math
+
+    def _to_screen(self, lx, ly):
+        """Rotate local (lx, ly) CW by sel_rot, offset by selection center."""
+        m = self._math
+        r = m.radians(self.sel_rot)
+        c, s = m.cos(r), m.sin(r)
+        return (self.sel_cx + lx*c - ly*s,
+                self.sel_cy + lx*s + ly*c)
+
+    def _to_local(self, sx, sy):
+        """Inverse: canvas point → selection local space."""
+        m = self._math
+        r = m.radians(self.sel_rot)
+        c, s = m.cos(r), m.sin(r)
+        dx, dy = sx - self.sel_cx, sy - self.sel_cy
+        return c*dx + s*dy, -s*dx + c*dy
+
+    def _corners(self):
+        hw, hh = self.sel_w/2, self.sel_h/2
+        return [self._to_screen(lx, ly) for lx, ly in [(-hw,-hh),(hw,-hh),(hw,hh),(-hw,hh)]]
+
+    def _handles(self):
+        """8 handles: NW N NE E SE S SW W, returns (name, (sx, sy)) list."""
+        hw, hh = self.sel_w/2, self.sel_h/2
+        pts = [("nw",-hw,-hh), ("n",0,-hh), ("ne",hw,-hh),
+               ("e", hw, 0),
+               ("se",hw, hh), ("s",0, hh), ("sw",-hw,hh),
+               ("w",-hw, 0)]
+        return [(n, self._to_screen(lx, ly)) for n, lx, ly in pts]
+
+    def _hit_handle(self, mx, my):
+        for name, (hx, hy) in self._handles():
+            if abs(mx-hx) <= self._HIT and abs(my-hy) <= self._HIT:
+                return name
+        return None
+
+    def _in_selection(self, mx, my):
+        lx, ly = self._to_local(mx, my)
+        return abs(lx) <= self.sel_w/2 and abs(ly) <= self.sel_h/2
+
+    # ------------------------------------------------------------------ draw mode
+
+    def _draw_press(self, event):
         self.start_x, self.start_y = event.x, event.y
-        _h = 4  # half of border width (8 // 2)
-        self.rect = self.canvas.create_rectangle(
-            event.x - _h, event.y - _h,
-            event.x + _h, event.y + _h,
-            outline="#FF3333", width=8, fill=""
-        )
+        self._draw_rect = self.canvas.create_rectangle(
+            event.x, event.y, event.x, event.y,
+            outline="#FF3333", width=3, fill="")
 
-    def on_drag(self, event):
-        _h = 4
+    def _draw_drag(self, event):
         sx, sy = self.start_x, self.start_y
-        ex, ey = event.x, event.y
-        self.canvas.coords(
-            self.rect,
-            min(sx, ex) - _h, min(sy, ey) - _h,
-            max(sx, ex) + _h, max(sy, ey) + _h
-        )
+        self.canvas.coords(self._draw_rect,
+                           min(sx, event.x), min(sy, event.y),
+                           max(sx, event.x), max(sy, event.y))
 
-    def on_release(self, event):
-        end_x, end_y = event.x, event.y
-        width = abs(end_x - self.start_x)
-        height = abs(end_y - self.start_y)
+    def _draw_release(self, event):
+        w = abs(event.x - self.start_x)
+        h = abs(event.y - self.start_y)
+        if w < 4 or h < 4:
+            return
+        self.sel_cx = (self.start_x + event.x) / 2
+        self.sel_cy = (self.start_y + event.y) / 2
+        self.sel_w, self.sel_h, self.sel_rot = w, h, 0.0
+        self.canvas.delete(self._draw_rect)
+        self._draw_rect = None
+        self.canvas.unbind("<ButtonPress-1>")
+        self.canvas.unbind("<B1-Motion>")
+        self.canvas.unbind("<ButtonRelease-1>")
+        self._mode = "edit"
+        self._enter_edit()
 
-        left_edge = min(self.start_x, end_x)
-        top_edge = min(self.start_y, end_y)
+    # ------------------------------------------------------------------ edit mode
 
-        # Calculate positions relative to video area, not screen
-        # Convert screen coordinates to video-relative coordinates
-        video_left = left_edge - self.video_x
-        video_top = top_edge - self.video_y
-        
-        # Calculate percentages relative to video dimensions
-        x_percent = (video_left / (self.video_w - width)) * 100 if (self.video_w - width) > 0 else 0
-        y_percent = (video_top / (self.video_h - height)) * 100 if (self.video_h - height) > 0 else 0
-        width_percent = width / self.video_w * 100 if self.video_w > 0 else 0
-        height_percent = height / self.video_h * 100 if self.video_h > 0 else 0
+    def _enter_edit(self):
+        self._setup_static_ui()
+        self._redraw_selection()
+        self.canvas.bind("<ButtonPress-1>",   self._edit_press)
+        self.canvas.bind("<B1-Motion>",       self._edit_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._edit_release)
+        self.canvas.bind("<Motion>",          self._edit_motion)
 
-        x_percent = self.edge_round(x_percent)
-        y_percent = self.edge_round(y_percent)
-        width_percent = self.edge_round(width_percent)
-        height_percent = self.edge_round(height_percent)
+    def _setup_static_ui(self):
+        """Create button bar, snap tools and hint text once for this edit session."""
+        FONT    = ("Arial", 11, "bold")
+        FONT_SM = ("Arial", 10)
 
-        result = f"{width_percent:.2f}x{height_percent:.2f},{x_percent:.2f}x{y_percent:.2f}"
+        # ── main action bar (bottom-centre) ──────────────────────────────────
+        bar = tk.Frame(self.canvas, bg="#1e1e1e", bd=0)
+        tk.Button(bar, text="✔ Confirm", font=FONT, bg="#226622", fg="white",
+                  bd=0, relief="flat", command=self._confirm).pack(side="left", padx=6, pady=4)
+        tk.Button(bar, text="↩ Redraw",  font=FONT, bg="#555555", fg="white",
+                  bd=0, relief="flat", command=self._do_redraw).pack(side="left", padx=6, pady=4)
+        tk.Button(bar, text="✕ Cancel",  font=FONT, bg="#662222", fg="white",
+                  bd=0, relief="flat", command=self.root.destroy).pack(side="left", padx=6, pady=4)
+        tk.Frame(bar, bg="#444", width=1).pack(side="left", fill="y", padx=8, pady=4)
+        _full_btn = tk.Button(bar, text="\u26f6 Full",    font=FONT_SM, bg="#334", fg="white",
+                  bd=0, relief="flat", command=self._snap_fullscreen)
+        _full_btn.pack(side="left", padx=4, pady=4)
+        ToolTip(_full_btn, "Expand selection to cover the entire video")
+        _rot0_btn = tk.Button(bar, text="\u21ba 0\u00b0",      font=FONT_SM, bg="#334", fg="#FFFF00",
+                  bd=0, relief="flat", command=self._reset_rotation)
+        _rot0_btn.pack(side="left", padx=4, pady=4)
+        ToolTip(_rot0_btn, "Reset rotation to 0\u00b0")
+        # Shape toggle
+        _shape_labels = {'rect': '\u25ad Rect', 'ellipse': '\u2b2d Ellipse'}
+        self._shape_btn = tk.Button(bar, text=_shape_labels[self.sel_shape],
+                                    font=FONT_SM, bg="#334", fg="white",
+                                    bd=0, relief="flat", command=self._toggle_shape)
+        self._shape_btn.pack(side="left", padx=4, pady=4)
+        ToolTip(self._shape_btn, "Toggle censor shape between rectangle and ellipse")
+        self._static_items.append(
+            self.canvas.create_window(self.mpv_w // 2, self.mpv_h - 10,
+                                      window=bar, anchor="s"))
+
+        # ── edge-snap panel (top-right corner) ───────────────────────────────
+        snap = tk.Frame(self.canvas, bg="#1e1e1e")
+        bkw = dict(font=("Arial", 11), bg="#334", fg="white", width=2, bd=1, relief="raised")
+        tk.Label(snap, text="Snap", font=("Arial", 9), bg="#1e1e1e", fg="#aaa").grid(row=0, column=0, columnspan=3, pady=(2, 0))
+        _s_up  = tk.Button(snap, text="\u2191",  command=self._snap_top,     **bkw); _s_up.grid(row=1, column=1, padx=2, pady=2);  ToolTip(_s_up,  "Snap top edge to video boundary")
+        _s_lft = tk.Button(snap, text="\u2190",  command=self._snap_left,    **bkw); _s_lft.grid(row=2, column=0, padx=2, pady=2); ToolTip(_s_lft, "Snap left edge to video boundary")
+        _s_ctr = tk.Button(snap, text="\u25a3",  command=self._snap_center,  **bkw); _s_ctr.grid(row=2, column=1, padx=2, pady=2); ToolTip(_s_ctr, "Centre selection in the video")
+        _s_rgt = tk.Button(snap, text="\u2192",  command=self._snap_right,   **bkw); _s_rgt.grid(row=2, column=2, padx=2, pady=2); ToolTip(_s_rgt, "Snap right edge to video boundary")
+        _s_dn  = tk.Button(snap, text="\u2193",  command=self._snap_bottom,  **bkw); _s_dn.grid(row=3, column=1, padx=2, pady=2);  ToolTip(_s_dn,  "Snap bottom edge to video boundary")
+        self._static_items.append(
+            self.canvas.create_window(self.mpv_w - 8, 8, window=snap, anchor="ne"))
+
+        # ── hint text (top-left) ─────────────────────────────────────────────
+        self._static_items.append(
+            self.canvas.create_text(
+                10, 10,
+                text="Drag yellow circle = rotate   |   Drag handles = resize   |   Drag inside box = move",
+                anchor="nw", fill="#aaaaaa", font=("Arial", 10)))
+
+    def _toggle_shape(self):
+        self.sel_shape = 'ellipse' if self.sel_shape == 'rect' else 'rect'
+        _labels = {'rect': '\u25ad Rect', 'ellipse': '\u2b2d Ellipse'}
+        self._shape_btn.config(text=_labels[self.sel_shape])
+        self._redraw_selection()
+
+    # ── snap / utility helpers ────────────────────────────────────────────────
+    def _reset_rotation(self):
+        self.sel_rot = 0.0
+        self._redraw_selection()
+
+    def _snap_fullscreen(self):
+        self.sel_cx  = self.video_x + self.video_w / 2
+        self.sel_cy  = self.video_y + self.video_h / 2
+        self.sel_w   = self.video_w
+        self.sel_h   = self.video_h
+        self.sel_rot = 0.0
+        self._redraw_selection()
+
+    def _snap_left(self):
+        self.sel_cx = self.video_x + self.sel_w / 2
+        self._redraw_selection()
+
+    def _snap_right(self):
+        self.sel_cx = self.video_x + self.video_w - self.sel_w / 2
+        self._redraw_selection()
+
+    def _snap_top(self):
+        self.sel_cy = self.video_y + self.sel_h / 2
+        self._redraw_selection()
+
+    def _snap_bottom(self):
+        self.sel_cy = self.video_y + self.video_h - self.sel_h / 2
+        self._redraw_selection()
+
+    def _snap_center(self):
+        self.sel_cx = self.video_x + self.video_w / 2
+        self.sel_cy = self.video_y + self.video_h / 2
+        self._redraw_selection()
+
+    def _redraw_selection(self):
+        """Delete and recreate the shape outline, handles, and rotation arm."""
+        for item in self._dynamic_items:
+            self.canvas.delete(item)
+        self._dynamic_items.clear()
+
+        if self.sel_shape == 'ellipse':
+            # Approximate ellipse with 60 rotated points
+            import math as _m
+            hw, hh = self.sel_w / 2, self.sel_h / 2
+            pts = []
+            for i in range(60):
+                a = _m.radians(i * 6)
+                pts.append(self._to_screen(hw * _m.cos(a), hh * _m.sin(a)))
+            flat = [v for p in pts for v in p]
+            self._dynamic_items.append(
+                self.canvas.create_polygon(*flat, outline="#FF3333", width=3,
+                                           fill="#FF3333", stipple="gray25", smooth=False))
+        else:
+            # Rectangle polygon (rotated)
+            pts = self._corners()
+            flat = [v for p in pts for v in p]
+            self._dynamic_items.append(
+                self.canvas.create_polygon(*flat, outline="#FF3333", width=3,
+                                           fill="#FF3333", stipple="gray25"))
+
+        # Rotation arm: line from top-center handle to rotate knob
+        tc_x, tc_y = self._to_screen(0, -self.sel_h/2)  # top-center of box
+        tx, ty = self._to_screen(0, -self.sel_h/2 - 36)  # knob position
+        self._rot_knob_x, self._rot_knob_y = tx, ty      # cache for hit-test
+        self._dynamic_items += [
+            self.canvas.create_line(tc_x, tc_y, tx, ty,
+                                    fill="#FFFF00", width=2, dash=(6, 3)),
+            self.canvas.create_oval(tx-8, ty-8, tx+8, ty+8,
+                                    fill="#FFFF00", outline="#cccc00", width=2)]
+
+        # Rotation degrees label beside the knob
+        rot_label = f"{self.sel_rot:.1f}°"
+        self._dynamic_items.append(
+            self.canvas.create_text(tx + 12, ty, text=rot_label,
+                                    anchor="w", fill="#FFFF00", font=("Arial", 9)))
+
+        # 8 resize handles
+        HS = self._HS
+        for name, (hx, hy) in self._handles():
+            self._dynamic_items.append(
+                self.canvas.create_rectangle(hx-HS, hy-HS, hx+HS, hy+HS,
+                                             fill="white", outline="#333333", width=1))
+
+    def _hit_rot_knob(self, mx, my):
+        return (abs(mx - self._rot_knob_x) <= self._HIT and
+                abs(my - self._rot_knob_y) <= self._HIT)
+
+    def _edit_motion(self, event):
+        mx, my = event.x, event.y
+        if self._hit_rot_knob(mx, my):
+            self.root.configure(cursor="exchange")
+        elif self._hit_handle(mx, my):
+            self.root.configure(cursor="sizing")
+        elif self._in_selection(mx, my):
+            self.root.configure(cursor="fleur")
+        else:
+            self.root.configure(cursor="")
+
+    def _edit_press(self, event):
+        mx, my = event.x, event.y
+        if self._hit_rot_knob(mx, my):
+            self._drag_mode = "rotate"
+            angle = self._math.atan2(my - self.sel_cy, mx - self.sel_cx)
+            self._drag_ref = dict(angle0=angle, rot0=self.sel_rot)
+        else:
+            handle = self._hit_handle(mx, my)
+            if handle:
+                self._drag_mode = f"resize_{handle}"
+                self._drag_ref = dict(cx=self.sel_cx, cy=self.sel_cy,
+                                      w=self.sel_w,   h=self.sel_h,
+                                      rot=self.sel_rot)
+            elif self._in_selection(mx, my):
+                self._drag_mode = "move"
+                self._drag_ref = dict(mx0=mx, my0=my,
+                                      cx0=self.sel_cx, cy0=self.sel_cy)
+            else:
+                self._drag_mode = None
+
+    def _edit_drag(self, event):
+        mx, my = event.x, event.y
+        mode = self._drag_mode
+        if not mode:
+            return
+
+        if mode == "rotate":
+            curr = self._math.atan2(my - self.sel_cy, mx - self.sel_cx)
+            delta = self._math.degrees(curr - self._drag_ref["angle0"])
+            self.sel_rot = (self._drag_ref["rot0"] + delta) % 360
+            self._redraw_selection()
+
+        elif mode == "move":
+            ref = self._drag_ref
+            self.sel_cx = ref["cx0"] + (mx - ref["mx0"])
+            self.sel_cy = ref["cy0"] + (my - ref["my0"])
+            self._redraw_selection()
+
+        elif mode.startswith("resize_"):
+            handle = mode[7:]
+            ref = self._drag_ref
+            # Work in the coordinate system of the original press state
+            old_cx, old_cy = ref["cx"], ref["cy"]
+            old_w,  old_h  = ref["w"],  ref["h"]
+            old_rot        = ref["rot"]
+            # Temporarily set state to original so _to_local uses the right transform
+            self.sel_cx, self.sel_cy = old_cx, old_cy
+            self.sel_w,  self.sel_h  = old_w,  old_h
+            self.sel_rot             = old_rot
+            lx, ly = self._to_local(mx, my)
+            hw0, hh0 = old_w/2, old_h/2
+            new_hw, new_hh = hw0, hh0
+            dcx, dcy = 0.0, 0.0
+            if "e" in handle:
+                new_hw = max(6, (lx + hw0) / 2);  dcx = (lx - hw0) / 2
+            if "w" in handle:
+                new_hw = max(6, (hw0 - lx) / 2);  dcx = (lx + hw0) / 2
+            if "s" in handle:
+                new_hh = max(6, (ly + hh0) / 2);  dcy = (ly - hh0) / 2
+            if "n" in handle:
+                new_hh = max(6, (hh0 - ly) / 2);  dcy = (ly + hh0) / 2
+            self.sel_w = new_hw * 2
+            self.sel_h = new_hh * 2
+            # Shift center in screen space by rotating the local offset
+            m = self._math
+            r = m.radians(old_rot)
+            c, s = m.cos(r), m.sin(r)
+            self.sel_cx = old_cx + dcx*c - dcy*s
+            self.sel_cy = old_cy + dcx*s + dcy*c
+            self._redraw_selection()
+
+    def _edit_release(self, event):
+        self._drag_mode = None
+        self._drag_ref = {}
+
+    # ------------------------------------------------------------------ actions
+
+    def _confirm(self):
+        cx, cy = self.sel_cx, self.sel_cy
+        w,  h  = self.sel_w,  self.sel_h
+        left   = cx - w/2
+        top    = cy - h/2
+        vl     = left - self.video_x
+        vt     = top  - self.video_y
+        x_pct  = (vl / (self.video_w - w)) * 100 if (self.video_w - w) > 0 else 0
+        y_pct  = (vt / (self.video_h - h)) * 100 if (self.video_h - h) > 0 else 0
+        w_pct  = w / self.video_w * 100 if self.video_w > 0 else 0
+        h_pct  = h / self.video_h * 100 if self.video_h > 0 else 0
+        # Do NOT clamp pos_x/pos_y — rotated boxes intentionally extend off-screen
+        w_pct  = max(0.0, w_pct)
+        h_pct  = max(0.0, h_pct)
+        rot    = round(self.sel_rot, 2)
+        result = f"{w_pct:.2f}x{h_pct:.2f},{x_pct:.2f}x{y_pct:.2f},{rot:.2f},{self.sel_shape}"
         pyperclip.copy(result)
-
         self.on_rectangle_picked(result)
         self.root.destroy()
+
+    def _do_redraw(self):
+        for item in self._static_items + self._dynamic_items:
+            self.canvas.delete(item)
+        self._static_items.clear()
+        self._dynamic_items.clear()
+        self._drag_mode = None
+        self._drag_ref = {}
+        self._mode = "draw"
+        self.canvas.unbind("<Motion>")
+        self.canvas.unbind("<ButtonPress-1>")
+        self.canvas.unbind("<B1-Motion>")
+        self.canvas.unbind("<ButtonRelease-1>")
+        self.canvas.bind("<ButtonPress-1>",   self._draw_press)
+        self.canvas.bind("<B1-Motion>",       self._draw_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._draw_release)
+        self.root.configure(cursor="cross")
 
     def edge_round(self, position):
         if position < 1:
@@ -31199,9 +32227,12 @@ def open_censor_editor(refresh=False, refresh_only=False):
     if filename:
         current_censors = copy.deepcopy(get_file_censors(filename))
 
-    font_big = ("Arial", 14)
+    font_size = 14      # reduce to shrink the editor horizontally
+    font_big = ("Arial", font_size)
     fg_color = "white"
     bg_color = "black"
+    row_pady = 0        # vertical padding between censor rows
+    entry_ipady = 4     # internal vertical padding for Entry widgets (matches button height)
 
     if censor_editor:
         # If refresh_only is True, just update the content without closing the window
@@ -31274,21 +32305,25 @@ def open_censor_editor(refresh=False, refresh_only=False):
             
             header_row = 1
         
-        # Column headers
-        headers = ["SIZE", "POSITION", "START", "END", "COLOR", "NSFW", "ACTIONS"]
+        # Column headers — ACTIONS header is a frame containing the label + PIN button
+        headers = ["SIZE", "POSITION", "START", "END", "COLOR", "NSFW"]
         for col, header in enumerate(headers):
             tk.Label(censor_editor, text=header, font=font_big, bg=BACKGROUND_COLOR, fg=fg_color).grid(row=header_row, column=col, padx=8, pady=6)
 
-        # Always-on-top toggle button in top-right (col 7)
+        # ACTIONS header with PIN button right-aligned inside it (col 6)
         def _toggle_aot(btn=None):
             _aot_state[0] = not _aot_state[0]
             censor_editor.attributes("-topmost", _aot_state[0])
             if btn:
                 btn.config(text="📌 PIN",
                            fg="#00cc66" if _aot_state[0] else fg_color)
-        aot_btn = tk.Button(censor_editor, text="📌 PIN", font=("Arial", 11), bg=bg_color, fg="#00cc66" if _aot_state[0] else fg_color,
+        actions_header_frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
+        tk.Label(actions_header_frame, text="ACTIONS", font=font_big, bg=BACKGROUND_COLOR, fg=fg_color).pack(side="left")
+        aot_btn = tk.Button(actions_header_frame, text="📌 PIN", font=("Arial", 11), bg=bg_color,
+                            fg="#00cc66" if _aot_state[0] else fg_color,
                             bd=0, relief="flat", command=lambda: _toggle_aot(aot_btn))
-        aot_btn.grid(row=header_row, column=7, padx=8, pady=6)
+        aot_btn.pack(side="right", padx=(8, 0))
+        actions_header_frame.grid(row=header_row, column=6, padx=8, pady=6, sticky="ew")
     
     def page_prev():
         global censor_page_offset
@@ -31316,15 +32351,36 @@ def open_censor_editor(refresh=False, refresh_only=False):
         ColorPickerOverlay(set_color)
         save_to_current()
 
-    def pick_target_func(size_var, pos_var):
+    def pick_target_func(size_var, pos_rot_var, shape_btn=None):
+        # pos_rot_var holds "pos_x x pos_y x rotation" as a single StringVar
+        initial = None
+        try:
+            sw, sh = (float(v) for v in size_var.get().split("x"))
+            pr = pos_rot_var.get().split("x")
+            px, py = float(pr[0]), float(pr[1])
+            rot = float(pr[2]) if len(pr) > 2 else 0.0
+            shape = getattr(shape_btn, 'shape', 'rect') if shape_btn else 'rect'
+            # Only pre-load when not all-defaults (100x100, 0x0, 0 rot)
+            if not (sw == 100.0 and sh == 100.0 and px == 0.0 and py == 0.0 and rot == 0.0):
+                initial = dict(w_pct=sw, h_pct=sh, x_pct=px, y_pct=py, rotation=rot, shape=shape)
+        except Exception:
+            pass
+
         def set_target(rect_text):
             try:
-                size_part, pos_part = rect_text.split(",")
-                size_var.set(size_part)
-                pos_var.set(pos_part)
+                parts = rect_text.split(",")
+                size_var.set(parts[0])
+                rot_str = parts[2] if len(parts) > 2 else "0.0"
+                pos_rot_var.set(f"{parts[1]}x{rot_str}")
+                if shape_btn is not None and len(parts) > 3:
+                    new_shape = parts[3] if parts[3] in ('rect', 'ellipse') else 'rect'
+                    shape_btn.shape = new_shape
+                    _lbl = {'rect': '\u25ad', 'ellipse': '\u2b2d'}
+                    shape_btn.config(text=_lbl[new_shape])
+                    save_to_current()
             except Exception as e:
                 print("Failed to parse rectangle:", e)
-        RectangleDrawerOverlay(set_target)
+        RectangleDrawerOverlay(set_target, initial=initial)
 
     def save_censor_func():
         global censor_list
@@ -31363,26 +32419,43 @@ def open_censor_editor(refresh=False, refresh_only=False):
             
             row_widgets = []
 
+            _rot0 = round(censor.get('rotation') or 0.0, 2) if not censor.get("mute") and not censor.get("skip") else 0.0
+
             size_frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
             if not censor.get("mute") and not censor.get("skip"):
                 size_var = tk.StringVar(value=f"{censor['size_w']}x{censor['size_h']}")
-                pos_var = tk.StringVar(value=f"{censor['pos_x']}x{censor['pos_y']}")
-                size_entry = tk.Entry(size_frame, textvariable=size_var, width=12, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color)
-                size_entry.pack(side="left")
-                tk.Button(size_frame, text="🎯", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda sv=size_var, pv=pos_var: pick_target_func(sv, pv)).pack(side="left")
-            size_frame.grid(row=display_idx+censor_start_row, column=0, padx=(6, 0), pady=4)
+                pos_rot_var = tk.StringVar(value=f"{censor['pos_x']}x{censor['pos_y']}x{_rot0}")
+                size_entry = tk.Entry(size_frame, textvariable=size_var, width=10, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color)
+                size_entry.pack(side="left", ipady=entry_ipady)
+                # Shape button must be created before pick button (pick lambda captures it)
+                _shape0 = censor.get('shape') or 'rect'
+                _shape_labels = {'rect': '\u25ad', 'ellipse': '\u2b2d'}
+                shape_btn = tk.Button(size_frame, text=_shape_labels.get(_shape0, '\u25ad'), width=2,
+                                      font=font_big, bg=bg_color, fg=fg_color)
+                shape_btn.shape = _shape0
+                def _cycle_shape(btn=shape_btn, labels=_shape_labels):
+                    btn.shape = 'ellipse' if btn.shape == 'rect' else 'rect'
+                    btn.config(text=labels[btn.shape])
+                    save_to_current()
+                shape_btn.config(command=_cycle_shape)
+                _pick_btn = tk.Button(size_frame, text="\ud83c\udfaf", width=3, font=font_big, bg=bg_color, fg=fg_color,
+                                      command=lambda sv=size_var, prv=pos_rot_var, sb=shape_btn: pick_target_func(sv, prv, sb))
+                _pick_btn.pack(side="left")
+                ToolTip(_pick_btn, "Open area selector to visually pick the censor region")
+                shape_btn.pack(side="left", padx=(2, 0))
+                ToolTip(shape_btn, "Toggle censor shape: rectangle (\u25ad) or ellipse (\u2b2d)")
+            size_frame.grid(row=display_idx+censor_start_row, column=0, padx=(6, 0), pady=row_pady)
 
             pos_frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
             if not censor.get("mute") and not censor.get("skip"):
-                pos_entry = tk.Entry(pos_frame, textvariable=pos_var, width=12, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color)
-                pos_entry.pack(side="left")
-            pos_frame.grid(row=display_idx+censor_start_row, column=1, padx=(0, 6), pady=4)
+                tk.Entry(pos_frame, textvariable=pos_rot_var, width=14, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left", ipady=entry_ipady)
+            pos_frame.grid(row=display_idx+censor_start_row, column=1, padx=(0, 6), pady=row_pady)
 
             def build_time_frame(var, row, col, back_color, is_start=True):
                 frame = tk.Frame(censor_editor, bg=back_color)
-                tk.Button(frame, text="-", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() - 0.1, 1))).pack(side="left")
-                tk.Entry(frame, textvariable=var, width=6, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left")
-                tk.Button(frame, text="+", width=3, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() + 0.1, 1))).pack(side="left")
+                tk.Button(frame, text="➖", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() - 0.1, 1))).pack(side="left")
+                tk.Entry(frame, textvariable=var, width=5, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left", ipady=entry_ipady)
+                tk.Button(frame, text="➕", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() + 0.1, 1))).pack(side="left")
                 now_button = tk.Button(frame, text="NOW", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(current_time_func(), 1)))
                 now_button.pack(side="left")
                 # Right-click binding: start sets to 0, end sets to video length + 5 seconds
@@ -31390,7 +32463,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
                     now_button.bind("<Button-3>", lambda e, v=var: v.set(0.0))
                 else:
                     now_button.bind("<Button-3>", lambda e, v=var: v.set(round((player.get_length() / 1000) + 0.1, 1)))
-                frame.grid(row=row, column=col, padx=6, pady=4)
+                frame.grid(row=row, column=col, padx=6, pady=row_pady)
                 return frame
 
             start_var = tk.DoubleVar(value=censor['start'])
@@ -31408,50 +32481,53 @@ def open_censor_editor(refresh=False, refresh_only=False):
 
             color_frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
             if censor.get("mute"):
-                mute_label = tk.Label(color_frame, text="MUTE CENSOR", width=16, font=font_big, justify="center", bg=bg_color, fg=fg_color, highlightbackground="white", highlightthickness=2)
-                mute_label.pack(side="left")
+                mute_label = tk.Label(color_frame, text="MUTE CENSOR", width=15, font=font_big, justify="center", bg=bg_color, fg=fg_color, highlightbackground="white", highlightthickness=2)
+                mute_label.pack(side="left", ipady=entry_ipady)
             elif censor.get("skip"):
-                skip_label = tk.Label(color_frame, text="SKIP CENSOR", width=16, font=font_big, justify="center", bg=bg_color, fg=fg_color, highlightbackground="white", highlightthickness=2)
-                skip_label.pack(side="left")
+                skip_label = tk.Label(color_frame, text="SKIP CENSOR", width=15, font=font_big, justify="center", bg=bg_color, fg=fg_color, highlightbackground="white", highlightthickness=2)
+                skip_label.pack(side="left", ipady=entry_ipady)
             else:
                 color = censor.get("color")
-                color_box = tk.Label(color_frame, text="AUTO" if not color else "", width=8, font=font_big, bg=color if color else "#333", fg=fg_color, relief="groove")
-                color_box.pack(side="left")
+                color_box = tk.Label(color_frame, text="AUTO" if not color else "", width=6, font=font_big, bg=color if color else "#333", fg=fg_color, relief="groove")
+                color_box.pack(side="left", ipady=entry_ipady)
                 tk.Button(color_frame, text="PICK", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda b=color_box: pick_color_func(b)).pack(side="left", padx=2)
-                tk.Button(color_frame, text="X", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda c=color_box: remove_color(c)).pack(side="left")
-            color_frame.grid(row=display_idx+censor_start_row, column=4, padx=6, pady=4)
+                tk.Button(color_frame, text="⟳", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda c=color_box: remove_color(c)).pack(side="left")
+            color_frame.grid(row=display_idx+censor_start_row, column=4, padx=6, pady=row_pady)
 
-            # NSFW Toggle Button
-            def add_nsfw_toggle_button(censor, parent, row, column=5):
-                nsfw_var = censor.get("nsfw")
+            # Per-row NSFW toggle button (column 5) — stored as .var, read by save_to_current
+            def _make_nsfw_btn(c=censor):
+                _nsfw_btn = tk.Button(censor_editor, text="", font=font_big, width=8, height=1,
+                                      fg="white", activeforeground="white", activebackground="#333",
+                                      bd=0, relief="flat")
+                _nsfw_btn.var = bool(c.get("nsfw", False))
+                def _update(b=_nsfw_btn):
+                    b.config(text="✗ NSFW" if b.var else "✓ SFW",
+                             bg="#880000" if b.var else "#444444")
+                def _toggle(b=_nsfw_btn, u=_update):
+                    b.var = not b.var; u()
+                _nsfw_btn.config(command=_toggle)
+                _update()
+                return _nsfw_btn
+            nsfw_button = _make_nsfw_btn()
+            nsfw_button.grid(row=display_idx+censor_start_row, column=5, padx=6, pady=row_pady)
 
-                def toggle_nsfw():
-                    nsfw_button.var = not nsfw_button.var
-                    update_nsfw_button()
-
-                def update_nsfw_button():
-                    if nsfw_button.var:
-                        nsfw_button.config(text="✗ NSFW", bg="#880000")
-                    else:
-                        nsfw_button.config(text="✓ SFW", bg="#444444")
-
-                nsfw_button = tk.Button(parent, text="", command=toggle_nsfw, font=font_big, width=8, height=1, fg="white", activeforeground="white", activebackground="#333", bd=0, relief="flat", bg="#444444")
-                nsfw_button.grid(row=row, column=column, padx=6, pady=4)
-                nsfw_button.var = nsfw_var  # Optional, to match original 
-
-                update_nsfw_button()
-                return nsfw_button
-            
-            nsfw_button = add_nsfw_toggle_button(censor, censor_editor, row=display_idx+censor_start_row)
-
-            # Test Button with left/right click functionality
-            test_button = tk.Button(censor_editor, text="▶TEST", command=lambda c=actual_idx: test_censor_playback(c), font=font_big, bg="#226622", fg="white", activebackground="#2a8a2a", bd=0, relief="raised", width=6)
-            test_button.grid(row=display_idx+censor_start_row, column=6, padx=6, pady=4)
-            # Bind right-click to test from end time
+            # Test + Delete buttons together in ACTIONS column
+            actions_frame = tk.Frame(censor_editor, bg=BACKGROUND_COLOR)
+            test_button = tk.Button(actions_frame, text="▶TEST", command=lambda c=actual_idx: test_censor_playback(c), font=font_big, bg="#226622", fg="white", activebackground="#2a8a2a", bd=0, relief="raised", width=6)
+            test_button.pack(side="left", padx=(0, 2))
+            ToolTip(test_button, "Preview from 1 second before censor start (right-click = test from end)")
             test_button.bind("<Button-3>", lambda event, c=actual_idx: test_censor_playback_from_end(c))
-            delete_button = tk.Button(censor_editor, text="DELETE", bg=bg_color, fg="red", width=8, font=font_big, command=lambda i=actual_idx: delete_censor(i))
-            delete_button.grid(row=display_idx+censor_start_row, column=7, padx=6, pady=4)
-            row_widgets.extend([size_frame, pos_frame, start_frame, end_frame, color_frame, nsfw_button, delete_button, test_button])
+            test_end_button = tk.Button(actions_frame, text="⏭", command=lambda c=actual_idx: test_censor_playback_from_end(c), font=font_big, bg="#226622", fg="white", activebackground="#2a8a2a", bd=0, relief="raised", width=2)
+            test_end_button.pack(side="left", padx=(0, 4))
+            ToolTip(test_end_button, "Preview from 1 second before censor end")
+            dup_button = tk.Button(actions_frame, text="🗐", bg=bg_color, fg=fg_color, width=2, font=font_big, command=lambda i=actual_idx: duplicate_censor(i))
+            dup_button.pack(side="left", padx=(0, 4))
+            ToolTip(dup_button, "Duplicate this censor")
+            delete_button = tk.Button(actions_frame, text="❌", bg=bg_color, fg="red", width=2, font=font_big, command=lambda i=actual_idx: delete_censor(i))
+            delete_button.pack(side="left")
+            ToolTip(delete_button, "Delete this censor")
+            actions_frame.grid(row=display_idx+censor_start_row, column=6, padx=6, pady=row_pady)
+            row_widgets.extend([size_frame, pos_frame, start_frame, end_frame, color_frame, nsfw_button, actions_frame])
             censor_entry_widgets.append(row_widgets)
         
         # Update header with current pagination info
@@ -31498,6 +32574,17 @@ def open_censor_editor(refresh=False, refresh_only=False):
                 censor_page_offset = 0
             
             refresh_ui()
+
+    def duplicate_censor(index):
+        global censor_page_offset
+        save_to_current()
+        import copy as _copy
+        dup = _copy.deepcopy(current_censors[index])
+        current_censors.insert(index + 1, dup)
+        # Navigate to the page that contains the duplicate
+        target_offset = ((index + 1) // CENSORS_PER_PAGE) * CENSORS_PER_PAGE
+        censor_page_offset = target_offset
+        refresh_ui()
 
     def add_new_censor():
         global censor_page_offset
@@ -31612,12 +32699,17 @@ def open_censor_editor(refresh=False, refresh_only=False):
                     }
                 else:
                     size_parts = widgets[0].winfo_children()[0].get().split("x")
-                    pos_parts = widgets[1].winfo_children()[0].get().split("x")
+                    pr_parts = widgets[1].winfo_children()[0].get().split("x")
+                    rot_val = float(pr_parts[2]) if len(pr_parts) > 2 else 0.0
+                    _shape_btn = widgets[0].winfo_children()[1] if len(widgets[0].winfo_children()) > 1 else None
+                    _shape_val = getattr(_shape_btn, 'shape', 'rect') if _shape_btn else 'rect'
                     current_censors[actual_i] = {
                         "size_w": float(size_parts[0]),
                         "size_h": float(size_parts[1]),
-                        "pos_x": float(pos_parts[0]),
-                        "pos_y": float(pos_parts[1]),
+                        "pos_x": float(pr_parts[0]),
+                        "pos_y": float(pr_parts[1]),
+                        "rotation": rot_val if rot_val != 0.0 else None,
+                        "shape": _shape_val if _shape_val != 'rect' else None,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
                         "color": widgets[4].winfo_children()[0].cget("bg") if widgets[4].winfo_children()[0].cget("text") != "AUTO" else None,
@@ -31701,11 +32793,11 @@ def open_censor_editor(refresh=False, refresh_only=False):
         add_censor_btn.grid(row=999, column=0, columnspan=2, pady=12)
         bottom_button_widgets.append(add_censor_btn)
         
-        add_mute_btn = tk.Button(censor_editor, text="ADD NEW MUTE", width=18, font=font_big, bg=bg_color, fg=fg_color, command=add_new_mute)
+        add_mute_btn = tk.Button(censor_editor, text="ADD NEW MUTE", width=16, font=font_big, bg=bg_color, fg=fg_color, command=add_new_mute)
         add_mute_btn.grid(row=999, column=2, columnspan=1, pady=12)
         bottom_button_widgets.append(add_mute_btn)
         
-        add_skip_btn = tk.Button(censor_editor, text="ADD NEW SKIP", width=18, font=font_big, bg=bg_color, fg=fg_color, command=add_new_skip)
+        add_skip_btn = tk.Button(censor_editor, text="ADD NEW SKIP", width=16, font=font_big, bg=bg_color, fg=fg_color, command=add_new_skip)
         add_skip_btn.grid(row=999, column=3, columnspan=1, pady=12)
         bottom_button_widgets.append(add_skip_btn)
         
@@ -31718,6 +32810,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
 
         def _toggle_censor_from_editor():
             toggle_censor_bar()
+            toggle_censor_nsfw_bar()
             censor_toggle_btn.configure(
                 text="CENSORS: ON" if censors_enabled else "CENSORS: OFF",
                 bg="#226622" if censors_enabled else "#662222"
@@ -31725,7 +32818,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
 
         global save_censors_button
         save_censors_button = tk.Button(censor_editor, text="SAVE CENSOR(S)", width=19, font=font_big, bg=bg_color, fg=fg_color, command=save_all)
-        save_censors_button.grid(row=999, column=6, columnspan=1, pady=12)
+        save_censors_button.grid(row=999, column=5, columnspan=2, pady=12)
         bottom_button_widgets.append(save_censors_button)
         
         current_has_censors = len(current_censors) > 0
@@ -31776,15 +32869,18 @@ def _push_web_toggles():
     if not fixed_lightning_rounds_list:
         load_fixed_lightning_rounds(filter_missing_themes=True)
     fn = currently_playing.get("filename", "")
-    censor_count = len(get_file_censors(fn) or []) if fn else 0
+    _all_censors = get_file_censors(fn) or [] if fn else []
+    censor_count      = sum(1 for c in _all_censors if not c.get('nsfw'))
+    censor_nsfw_count = sum(1 for c in _all_censors if c.get('nsfw'))
     mute_state = light_muted if (light_mode or light_round_started) else disable_video_audio
     scoreboard_open = bool(is_scoreboard_running())
     scoreboard_visible = bool(scoreboard_open and (scoreboard_visible_hint is not False))
     web_server.push_toggles({
         "blind":        black_overlay is not None,
-        "peek":         bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes),
+        "reveal":         bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes),
         "mute":         bool(mute_state),
         "censors":      censors_enabled,
+        "censors_nsfw": censors_nsfw_enabled,
         "shortcuts":    not disable_shortcuts,
         "dock":         bool(is_docked()),
         "info_start":   bool(auto_info_start),
@@ -31796,9 +32892,18 @@ def _push_web_toggles():
         "season_popup": bool(_title_popup_intent and season_info_display),
         "year_popup":   bool(_title_popup_intent and year_info_display),
         "censor_count": censor_count,
+        "censor_nsfw_count": censor_nsfw_count,
         "queue_blind":   bool(blind_round_toggle),
-        "queue_peek":    bool(peek_round_toggle),
-        "queue_mute_peek": bool(mute_peek_round_toggle),
+        "queue_reveal":    bool(peek_round_toggle),
+        "queue_mute_reveal": bool(mute_peek_round_toggle),
+        "queued_peek_variant": _queued_peek_variant[0] or "",
+        "live_peek_variant": (
+            "slice" if peek_overlay1
+            else "edge" if edge_overlay_box
+            else "grow" if grow_overlay_boxes
+            else (_filter_vf_variant or "") if filter_vf_active
+            else ""
+        ),
         "light_mode":    light_mode or "",
         "has_fixed_lightning": bool(fixed_lightning_rounds_list),
         "has_youtube":   bool(youtube_metadata.get("videos")),
@@ -32318,8 +33423,8 @@ def _theme_context_menu(filename, refresh_func, play_func=None, remove_func=None
         ("Tagged",    "Tagged Themes",    None),
         ("Favorite",  "Favorite Themes",  None),
         ("Blind",     "Blind Themes",     ["Peek Themes", "Mute Peek Themes"]),
-        ("Peek",      "Peek Themes",      ["Blind Themes", "Mute Peek Themes"]),
-        ("Mute Peek", "Mute Peek Themes", ["Blind Themes", "Peek Themes"]),
+        ("Reveal",    "Peek Themes",      ["Blind Themes", "Mute Peek Themes"]),
+        ("Mute Reveal", "Mute Peek Themes", ["Blind Themes", "Peek Themes"]),
     ]
     for label, pname, exclusive in marks:
         is_marked = check_theme(filename, pname, recache=True)
@@ -34068,14 +35173,28 @@ def toggle_auto_auto_refresh():
     auto_refresh_toggle = not auto_refresh_toggle
     print("Auto refresh metadata: " + str(auto_refresh_toggle))
 
-def toggle_censor_bar():
+def toggle_censor_bar(toggle=None):
     global censors_enabled
-    censors_enabled = not censors_enabled
+    if toggle is not None:
+        censors_enabled = toggle
+    else:
+        censors_enabled = not censors_enabled
     print("Censor Bar Enabled: " + str(censors_enabled))
     apply_censors(player.get_time()/1000, player.get_length()/1000)
-    if not censors_enabled:
+    if not censors_enabled and not censors_nsfw_enabled:
         remove_all_censor_boxes()
-        
+
+def toggle_censor_nsfw_bar(toggle=None):
+    global censors_nsfw_enabled
+    if toggle is not None:
+        censors_nsfw_enabled = toggle
+    else:
+        censors_nsfw_enabled = not censors_nsfw_enabled
+    print("NSFW Censor Bar Enabled: " + str(censors_nsfw_enabled))
+    apply_censors(player.get_time()/1000, player.get_length()/1000)
+    if not censors_enabled and not censors_nsfw_enabled:
+        remove_all_censor_boxes()
+
 def toggle_progress_bar():
     global progress_bar_enabled
     progress_bar_enabled = not progress_bar_enabled
@@ -34085,6 +35204,38 @@ def toggle_progress_bar():
 
 disable_video_audio = False
 light_muted = False
+
+# ── Audio distortion (testing) ──────────────────────────────────────────────
+_AUDIO_DISTORTION_FILTERS = {
+    "echo":      "aecho=0.8:0.8:500|700:0.4|0.3",                        # echo / reverb
+    "flanger":   "flanger",                                               # swirling wobble
+    "vibrato":   "lavfi=[vibrato=f=7:d=0.5]",                            # pitch oscillation
+    "telephone": "lavfi=[highpass=f=300,lowpass=f=3400]",                 # narrow phone band
+    "underwater": "lavfi=[lowpass=f=400,aecho=0.5:0.5:300:0.8]",         # muffled + reverb
+    "chipmunk":  "lavfi=[asetrate=88200,aresample=44100]",                # 2x pitch up
+    "demon":     "lavfi=[asetrate=22050,aresample=44100]",                # 0.5x pitch down
+    "vaporwave": "lavfi=[asetrate=35280,aresample=44100]",                # 0.8x pitch + slow
+    "8bit_game": "lavfi=[acrusher=level_in=8:bits=2:mode=log,aresample=8000,aresample=44100]",  # 2-bit @ 8kHz
+    "robot":     "lavfi=[aecho=0.9:0.9:10|20|30:0.9|0.9|0.9,vibrato=f=30:d=0.9]",  # robotic stutter
+}
+_audio_distortions_active = set()
+
+def _apply_audio_distortions():
+    filters = [_AUDIO_DISTORTION_FILTERS[k] for k in _audio_distortions_active if k in _AUDIO_DISTORTION_FILTERS]
+    try:
+        player._p['af'] = ','.join(filters) if filters else ''
+    except Exception as e:
+        print(f"Audio distortion apply error: {e}")
+
+def toggle_audio_distortion(key):
+    global _audio_distortions_active
+    if key in _audio_distortions_active:
+        _audio_distortions_active.discard(key)
+    else:
+        _audio_distortions_active.add(key)
+    _apply_audio_distortions()
+    print(f"Audio distortions active: {_audio_distortions_active}")
+
 def toggle_mute(muted=None, lightning=False):
     global disable_video_audio, light_muted
     if light_mode or light_round_started or lightning:
@@ -34465,8 +35616,8 @@ POPOUT_LAYOUT_DEFAULT = [
     {"type": "action", "id": "peek_mark",             "colspan": 1, "custom_label": "MARK"},
     {"type": "action", "id": "peek",                  "colspan": 1},
     {"type": "action", "id": "queue_peek_round",      "colspan": 1},
-    {"type": "action", "id": "widen_peek",            "colspan": 1},
     {"type": "action", "id": "narrow_peek",           "colspan": 1},
+    {"type": "action", "id": "widen_peek",            "colspan": 1},
     # ── Bonus questions ─────────────────────────────────────────────────────
     {"type": "action", "id": "bonus_year",            "colspan": 1},
     {"type": "action", "id": "bonus_members",         "colspan": 1},
@@ -36194,7 +37345,9 @@ def build_menu(parent_menu, items):
 
         for item in item_list:
             # --- separator ---
-            if item == "---":
+            if item == "---" or (isinstance(item, dict) and item.get("type") == "separator"):
+                if isinstance(item, dict) and "condition" in item and not item["condition"]():
+                    continue
                 menu.add_separator()
                 visual_idx += 1
                 continue
@@ -36725,7 +37878,7 @@ def _get_menu_registry():
                      "Won't interrupt the currently playing theme.")},
         {"id": "load_system_playlist", "icon": "📋", "label": "Load System Playlist",
          "button_label": "SYSTEM LIST", "command": load_system_playlist,
-         "tooltip": "Load a system playlist: Tagged, Favorite, Blind, Peek, Mute Peek, New, or Missing Artists."},
+         "tooltip": "Load a system playlist: Tagged, Favorite, Blind, Reveal, Mute Reveal, New, or Missing Artists."},
         {"id": "merge_playlist", "icon": "➕", "label": "Merge Playlist",
          "button_label": "MERGE", "command": merge_playlist,
          "condition": lambda: not playlist.get("infinite", False),
@@ -36834,13 +37987,13 @@ def _get_menu_registry():
               "tooltip": "Bulk favorite or unfavorite every theme in the current playlist. Requires confirmation."},
              {"id": "bulk_blind_mark",    "icon": "👁", "label": "Bulk Blind Mark Playlist",
               "button_label": "BULK BLIND",    "command": bulk_blind_mark_playlist,
-              "tooltip": "Bulk blind-mark or unmark every theme. Mutually exclusive with Peek/Mute Peek. Requires confirmation."},
-             {"id": "bulk_peek_mark",     "icon": "👀", "label": "Bulk Peek Mark Playlist",
-              "button_label": "BULK PEEK",     "command": bulk_peek_mark_playlist,
-              "tooltip": "Bulk peek-mark or unmark every theme. Mutually exclusive with Blind/Mute Peek. Requires confirmation."},
-             {"id": "bulk_mute_peek_mark","icon": "🔇", "label": "Bulk Mute Peek Mark Playlist",
-              "button_label": "BULK MUTE PK",  "command": bulk_mute_peek_mark_playlist,
-              "tooltip": "Bulk mute-peek-mark or unmark every theme. Mutually exclusive with Blind/Peek. Requires confirmation."},
+              "tooltip": "Bulk blind-mark or unmark every theme. Mutually exclusive with Reveal/Mute Reveal. Requires confirmation."},
+             {"id": "bulk_peek_mark",     "icon": "👀", "label": "Bulk Reveal Mark Playlist",
+              "button_label": "BULK RV",        "command": bulk_peek_mark_playlist,
+              "tooltip": "Bulk reveal-mark or unmark every theme in the playlist. Mutually exclusive with Blind/Mute Reveal. Requires confirmation."},
+             {"id": "bulk_mute_peek_mark","icon": "🔇", "label": "Bulk Mute Reveal Mark Playlist",
+              "button_label": "BULK MUTE RV",   "command": bulk_mute_peek_mark_playlist,
+              "tooltip": "Bulk mute-reveal-mark or unmark every theme in the playlist. Mutually exclusive with Blind/Reveal. Requires confirmation."},
          ]},
     ],
 
@@ -36851,16 +38004,40 @@ def _get_menu_registry():
          "toggle":  lambda: blind_round_toggle,
          "cycle_pos": ("cycle_blind_peek", 1),
          "tooltip": "Queue the next theme as a Blind Round — audio only, screen covered."},
-        {"id": "queue_peek_round", "icon": "👀", "label": "Peek Round",
-         "button_label": "PEEK NEXT", "shortcut": True, "command": toggle_peek_round,
+        {"id": "queue_peek_round", "icon": "👀", "label": "Reveal Round",
+         "button_label": "REVEAL NEXT", "shortcut": True, "command": toggle_peek_round,
          "toggle":  lambda: peek_round_toggle,
          "cycle_pos": ("cycle_blind_peek", 2),
-         "tooltip": "Queue the next theme as a Peek Round — only a small moving window is visible."},
-        {"id": "queue_mute_peek_round", "icon": "🔇", "label": "Mute Peek Round",
-         "button_label": "MUTE PK NEXT", "shortcut": True, "command": toggle_mute_peek_round,
+         "tooltip": "Queue the next theme as a Reveal Round — visuals are partially obscured (blur, zoom, slice, etc.).",
+         "submenu": [
+             {"label": "Turn Off", "icon": "✖", "command": toggle_peek_round,
+              "condition": lambda: peek_round_toggle},
+             {"icon": "🔀", "label": "Random", "command": lambda: _queue_peek_random(mute=False),
+              "toggle": lambda: peek_round_toggle and _queued_peek_variant[0] is None},
+             "---",
+             *[{"icon": icon, "label": label,
+                "command": lambda v=v: _queue_peek_variant(v, mute=False),
+                "toggle": lambda v=v: peek_round_toggle and _queued_peek_variant[0] == v,
+                "tooltip": tooltip}
+               for v, (icon, label, tooltip) in _PEEK_VARIANT_LABELS.items()],
+         ]},
+        {"id": "queue_mute_peek_round", "icon": "🔇", "label": "Mute Reveal Round",
+         "button_label": "MUTE RV NEXT", "shortcut": True, "command": toggle_mute_peek_round,
          "toggle":  lambda: mute_peek_round_toggle,
          "cycle_pos": ("cycle_blind_peek", 3),
-         "tooltip": "Queue the next theme as a Mute Peek Round — small window visible, audio muted."},
+         "tooltip": "Queue the next theme as a Mute Reveal Round — visuals partially obscured, audio muted.",
+         "submenu": [
+             {"label": "Turn Off", "icon": "✖", "command": toggle_mute_peek_round,
+              "condition": lambda: mute_peek_round_toggle},
+             {"icon": "🔀", "label": "Random", "command": lambda: _queue_peek_random(mute=True),
+              "toggle": lambda: mute_peek_round_toggle and _queued_peek_variant[0] is None},
+             "---",
+             *[{"icon": icon, "label": label,
+                "command": lambda v=v: _queue_peek_variant(v, mute=True),
+                "toggle": lambda v=v: mute_peek_round_toggle and _queued_peek_variant[0] == v,
+                "tooltip": tooltip}
+               for v, (icon, label, tooltip) in _PEEK_VARIANT_LABELS.items()],
+         ]},
         "---",
         {"icon": "⚡", "label": "Lightning Rounds",
          "tooltip": "Start a lightning round of a chosen type.",
@@ -36996,31 +38173,85 @@ def _get_menu_registry():
          "shortcut": True, "command": lambda: blind(True),
          "toggle":  lambda: black_overlay is not None,
          "tooltip": "Covers the screen with a color matching the average screen color. Shows a progress bar if a video is playing."},
-        {"id": "peek", "icon": "👀", "label": "Peek",
-         "button_label": "PEEK",
+        {"id": "peek", "icon": "👀", "label": "Reveal",
+         "button_label": "REVEAL",
          "shortcut": True, "command": toggle_peek,
-         "toggle":  lambda: bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes),
-         "tooltip": "Covers the screen except for a small moving peek window. Picks one of three variants at random."},
-        {"id": "narrow_peek", "icon": "◀", "label": "Narrow Peek",
-         "button_label": "NARROW PK",
+         "toggle":  lambda: bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active),
+         "submenu": [
+             {"label": "Turn Off", "icon": "✖", "command": toggle_peek,
+              "condition": lambda: bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)},
+             {"id": "peek_random",   "label": "Random",   "icon": "🔀", "shortcut": True, "command": lambda: _activate_peek_variant(get_next_peek_mode()),
+              "condition": lambda: not bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)},
+             {"type": "separator", "condition": lambda: not bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)},
+             {"id": "peek_blur",     "label": "Blur",     "icon": "🌫", "shortcut": True,
+              "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'blur') else _activate_peek_variant('blur'),
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'blur')},
+             {"id": "peek_edge",     "label": "Edge",     "icon": "◼",  "shortcut": True,
+              "command": lambda: toggle_peek() if edge_overlay_box else _activate_peek_variant('edge'),
+              "toggle": lambda: bool(edge_overlay_box)},
+             {"id": "peek_grow",     "label": "Grow",     "icon": "⬛", "shortcut": True,
+              "command": lambda: toggle_peek() if grow_overlay_boxes else _activate_peek_variant('grow'),
+              "toggle": lambda: bool(grow_overlay_boxes)},
+             {"id": "peek_outline",   "label": "Outline",   "icon": "✏️",  "shortcut": True,
+              "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'outline') else _activate_peek_variant('outline'),
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'outline')},
+             {"id": "peek_pixelize", "label": "Pixelize", "icon": "🟦", "shortcut": True,
+              "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'pixelize') else _activate_peek_variant('pixelize'),
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'pixelize')},
+             {"id": "peek_slice",    "label": "Slice",    "icon": "◧",  "shortcut": True,
+              "command": lambda: toggle_peek() if peek_overlay1 else _activate_peek_variant('slice'),
+              "toggle": lambda: bool(peek_overlay1)},
+             {"id": "peek_wave",     "label": "Wave",     "icon": "🌊", "shortcut": True,
+              "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'wave') else _activate_peek_variant('wave'),
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'wave'),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("variants",{}).get("wave", True)},
+             {"id": "peek_zoom",     "label": "Zoom",     "icon": "🔍", "shortcut": True,
+              "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'zoom') else _activate_peek_variant('zoom'),
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'zoom')},
+         ],
+         "tooltip": "When off: opens a submenu to pick a variant (or random). When on: turns off."},
+        {"id": "narrow_peek", "icon": "◀", "label": "Reveal Less",
+         "button_label": "RV LESS",
          "shortcut": True, "command": narrow_peek,
-         "tooltip": "Narrows the gap of the peek window."},
-        {"id": "widen_peek", "icon": "▶", "label": "Widen Peek",
-         "button_label": "WIDEN PK",
+         "tooltip": "Reveals less — increases the obscuring effect."},
+        {"id": "widen_peek", "icon": "▶", "label": "Reveal More",
+         "button_label": "RV MORE",
          "shortcut": True, "command": widen_peek,
-         "tooltip": "Widens the gap of the peek window."},
+         "tooltip": "Reveals more — decreases the obscuring effect."},
         {"id": "mute", "icon": "🔇", "label": "Mute",
          "button_label": "MUTE",
          "shortcut": True, "command": toggle_mute,
          "toggle":  lambda: light_muted if (light_mode or light_round_started) else disable_video_audio,
          "tooltip": "Toggles muting the video/theme audio."},
+        {"id": "distort_audio", "icon": "🎚", "label": "Distort Audio",
+         "button_label": "DISTORT",
+         "toggle": lambda: bool(_audio_distortions_active),
+         "tooltip": "Apply audio distortion filters to make themes harder to recognise.",
+         "submenu": [
+             {"id": "distort_echo",       "icon": "🔊", "label": "Echo",       "shortcut": True, "command": lambda: toggle_audio_distortion("echo"),      "toggle": lambda: "echo"       in _audio_distortions_active, "tooltip": "Echo / reverb effect."},
+             {"id": "distort_flanger",    "icon": "🌀", "label": "Flanger",    "shortcut": True, "command": lambda: toggle_audio_distortion("flanger"),   "toggle": lambda: "flanger"    in _audio_distortions_active, "tooltip": "Swirling / wobbly flanger effect."},
+             {"id": "distort_vibrato",    "icon": "🎵", "label": "Vibrato",    "shortcut": True, "command": lambda: toggle_audio_distortion("vibrato"),   "toggle": lambda: "vibrato"    in _audio_distortions_active, "tooltip": "Pitch oscillation at 7 Hz."},
+             {"id": "distort_telephone",  "icon": "📞", "label": "Telephone",  "shortcut": True, "command": lambda: toggle_audio_distortion("telephone"), "toggle": lambda: "telephone"  in _audio_distortions_active, "tooltip": "Narrow phone-band filter (300–3400 Hz only)."},
+             {"id": "distort_underwater", "icon": "🌊", "label": "Underwater", "shortcut": True, "command": lambda: toggle_audio_distortion("underwater"),"toggle": lambda: "underwater" in _audio_distortions_active, "tooltip": "Heavy lowpass + reverb — muffled underwater effect."},
+             {"id": "distort_chipmunk",   "icon": "🐿", "label": "Chipmunk",   "shortcut": True, "command": lambda: toggle_audio_distortion("chipmunk"),  "toggle": lambda: "chipmunk"   in _audio_distortions_active, "tooltip": "2× pitch up — chipmunk voice."},
+             {"id": "distort_demon",      "icon": "😈", "label": "Demon",      "shortcut": True, "command": lambda: toggle_audio_distortion("demon"),     "toggle": lambda: "demon"      in _audio_distortions_active, "tooltip": "0.5× pitch down — deep demon voice."},
+             {"id": "distort_vaporwave",  "icon": "🌸", "label": "Vaporwave",  "shortcut": True, "command": lambda: toggle_audio_distortion("vaporwave"), "toggle": lambda: "vaporwave"  in _audio_distortions_active, "tooltip": "0.8× pitch — slowed + slightly lower."},
+             {"id": "distort_8bit_game",  "icon": "👾", "label": "8-bit Game", "shortcut": True, "command": lambda: toggle_audio_distortion("8bit_game"), "toggle": lambda: "8bit_game"  in _audio_distortions_active, "tooltip": "2-bit depth @ 8 kHz — retro video game bleeps."},
+             {"id": "distort_robot",      "icon": "🤖", "label": "Robot",      "shortcut": True, "command": lambda: toggle_audio_distortion("robot"),     "toggle": lambda: "robot"      in _audio_distortions_active, "tooltip": "Rapid micro-echoes + 30 Hz vibrato — robotic stutter."},
+         ]},
         "---",
         {"id": "censors", "label": "Censors Toggle",
-         "icon": lambda: f"({len(get_file_censors(currently_playing.get('filename','')) or [])})",
+         "icon": lambda: f"({sum(1 for c in (get_file_censors(currently_playing.get('filename','')) or []) if not c.get('nsfw') and not c.get('mute') and not c.get('skip'))})",
          "button_label": "CENSORS",
          "shortcut": True, "command": toggle_censor_bar,
          "toggle":  lambda: censors_enabled,
-         "tooltip": "Toggle censor bars on or off. Censor data is loaded from censors.json and any json files with 'censor' in the name."},
+         "tooltip": "Toggle regular censor bars on or off. NSFW censors have a separate toggle."},
+        {"id": "censors_nsfw", "label": "NSFW Censors Toggle",
+         "icon": lambda: f"({sum(1 for c in (get_file_censors(currently_playing.get('filename','')) or []) if c.get('nsfw'))})",
+         "button_label": "NSFW CENS.",
+         "shortcut": True, "command": toggle_censor_nsfw_bar,
+         "toggle":  lambda: censors_nsfw_enabled,
+         "tooltip": "Toggle NSFW censor bars on or off. Regular censors have a separate toggle."},
         {"id": "censor_editor", "icon": "➕", "label": "Censor Editor",
          "button_label": "CENSOR ED.",
          "command": lambda: open_censor_editor(True),
@@ -37078,16 +38309,16 @@ def _get_menu_registry():
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_blind_mark(currently_playing.get("filename"))),
          "tooltip": "Add or remove the current theme from the 'Blind Themes' auto-round playlist."},
-        {"id": "peek_mark", "icon": "👀", "label": "Peek Mark",
-         "button_label": "PEEK MARK", "shortcut": True, "command": peek_mark,
+        {"id": "peek_mark", "icon": "👀", "label": "Reveal Mark",
+         "button_label": "RV MARK", "shortcut": True, "command": peek_mark,
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_peek_mark(currently_playing.get("filename"))),
-         "tooltip": "Add or remove the current theme from the 'Peek Themes' auto-round playlist."},
-        {"id": "mute_peek_mark", "icon": "🔇", "label": "Mute Peek Mark",
-         "button_label": "MUTE PK MRK", "shortcut": True, "command": mute_peek_mark,
+         "tooltip": "Add or remove the current theme from the Reveal playlist (plays as a Reveal Round)."},
+        {"id": "mute_peek_mark", "icon": "🔇", "label": "Mute Reveal Mark",
+         "button_label": "MUTE RV MRK", "shortcut": True, "command": mute_peek_mark,
          "condition": lambda: bool(currently_playing.get("filename")),
          "toggle":  lambda: bool(check_mute_peek_mark(currently_playing.get("filename"))),
-         "tooltip": "Add or remove the current theme from the 'Mute Peek Themes' auto-round playlist."},
+         "tooltip": "Add or remove the current theme from the Mute Reveal playlist (plays as a Mute Reveal Round)."},
         {"id": "add_to_playlist", "icon": "➕", "label": "Add to Playlist",
          "button_label": "ADD TO LIST", "command": add_to_saved_playlist,
          "condition": lambda: bool(currently_playing.get("filename")),
@@ -37209,9 +38440,9 @@ def _get_menu_registry():
         {"id": "cycle_light_mode",  "label": "Cycle Lightning Mode",
          "button_label": "CYCLE LIGHT", "shortcut": True, "command": cycle_light_mode,
          "tooltip": "Cycle through all lightning round modes in order."},
-        {"id": "cycle_blind_peek",  "label": "Cycle Blind / Peek",
-         "button_label": "CYCLE BLIND/PEEK", "shortcut": True, "command": cycle_blind_peek,
-         "tooltip": "Cycle: off → blind round → peek round → mute peek round."},
+        {"id": "cycle_blind_peek",  "label": "Cycle Blind / Reveal",
+         "button_label": "CYCLE BLIND/RV", "shortcut": True, "command": cycle_blind_peek,
+         "tooltip": "Cycle: off → blind round → reveal round → mute reveal round."},
         {"id": "cycle_guess_stats", "label": "Cycle Stat Questions",
          "button_label": "CYCLE STAT ?s", "shortcut": True, "command": cycle_guess_stats,
          "tooltip": "Cycle bonus questions: year → score → popularity → members."},
@@ -37227,6 +38458,23 @@ def _get_menu_registry():
          "shortcut": True, "command": play_previous, "tooltip": "Go to the previous theme."},
         {"id": "next", "icon": "⏭", "label": "Next","button_label": "NEXT",
          "shortcut": True, "command": play_next, "tooltip": "Go to the next theme."},
+        {"id": "skip_to_end", "icon": "⏭", "label": "Skip to End", "button_label": "SKIP TO END",
+         "shortcut": True, "command": lambda: (seek_to(player.get_length() - 3000), root.after(0, show_skip_to_end_osd)) if player.get_length() > 3000 else None,
+         "tooltip": "Seek the current track to the last few seconds.",
+         "submenu": [
+             {"id": "skip_to_end_seek",    "icon": "⏭", "label": "Skip to End (Seek)",
+              "shortcut": True,
+              "command": lambda: (seek_to(player.get_length() - 3000), root.after(0, show_skip_to_end_osd)) if player.get_length() > 3000 else None,
+              "tooltip": "Instantly seek the current track to the last few seconds."},
+             {"id": "skip_to_end_ff",      "icon": "⏩", "label": "Fast Forward to End",
+              "shortcut": True,
+              "command": lambda: fast_forward_to_end(4, 500) if player.get_length() > 3000 else None,
+              "tooltip": "Play at 4× speed for 0.5 s then seek to the last few seconds."},
+             {"id": "skip_to_end_ff_slow", "icon": "⏩", "label": "Fast Forward to End (slow)",
+              "shortcut": True,
+              "command": lambda: fast_forward_to_end(4, 2000) if player.get_length() > 3000 else None,
+              "tooltip": "Play at 4× speed for 2 s then seek to the last few seconds."},
+         ]},
         {"id": "lightning_start", "label": "Start/Stop Lightning",
          "button_label": lambda: "⏹ STOP" if light_mode else "▶ START",
          "shortcut": True, "command": select_lightning_mode,
@@ -37696,7 +38944,7 @@ def set_volume(value):
             # BGM_DB_RANGE controls how many dB separate silence (0%) from full (100%).
             # 40dB is standard for audio faders; increase for a steeper drop-off.
             BGM_DB_RANGE = 45
-            vol = bgm_volume * (10 ** ((volume_level / 100 - 1) * BGM_DB_RANGE / 20))
+            vol = bgm_volume * (10 ** ((volume_level / 200 - 1) * BGM_DB_RANGE / 20))
         pygame.mixer.music.set_volume(vol)  # Adjust volume
     update_volume_display()
 
@@ -37775,10 +39023,16 @@ previous_button.pack(side="left", padx=0)
 
 next_button = tk.Button(controls_frame, text="⏭", command=play_next, bg="black", fg="white", font=("Arial", scl(30, "UI"), "bold"), border=0, width=2)
 next_button.pack(side="left", padx=0)
+def _next_btn_right_click(e):
+    root.after(0, lambda: _invoke_registry_by_id("skip_to_end_ff"))
+next_button.bind("<Button-3>", _next_btn_right_click)
 
 autoplay_toggle = 0
-autoplay_fullscreen = True
-mpv_always_on_top = False
+# load_config() already ran and may have set these; only initialise if missing.
+if 'autoplay_fullscreen' not in globals():
+    autoplay_fullscreen = True
+if 'mpv_always_on_top' not in globals():
+    mpv_always_on_top = False
 
 def toggle_mpv_always_on_top():
     global mpv_always_on_top
@@ -37927,7 +39181,7 @@ def cycle_light_mode():
         toggle_light_mode(mode)
 
 def cycle_blind_peek():
-    """Cycle: off → blind round → peek round → mute peek round."""
+    """Cycle: off → blind round → reveal round → mute reveal round."""
     if not (mute_peek_round_toggle or peek_round_toggle or blind_round_toggle):
         toggle_blind_round()
     elif not (peek_round_toggle or mute_peek_round_toggle):
@@ -38170,8 +39424,43 @@ def on_release(key):
 # Mouse state tracking
 mouse_left_pressed = False
 mouse_dragging_grow_overlay = False
+mouse_dragging_zoom_filter = False
 target_mouse_position = None
 animation_after_id = None
+zoom_filter_animation_after_id = None
+
+def smooth_move_zoom_filter_overlay():
+    """Smoothly animate the zoom crop centre toward the target mouse position."""
+    global zoom_filter_animation_after_id, _filter_vf_last
+    if not mouse_dragging_zoom_filter or not target_mouse_position:
+        zoom_filter_animation_after_id = None
+        return
+    tx, ty = target_mouse_position
+    # Normalise relative to the mpv player window so windowed mode works correctly
+    try:
+        mx, my, mw, mh = _get_mpv_window_rect()
+    except Exception:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    if mw <= 0 or mh <= 0:
+        mx, my, mw, mh = 0, 0, root.winfo_screenwidth(), root.winfo_screenheight()
+    norm_x = (tx - mx) / mw - 0.5
+    norm_y = (ty - my) / mh - 0.5
+    norm_x = max(-0.45, min(0.45, norm_x))
+    norm_y = max(-0.45, min(0.45, norm_y))
+    lerp = 0.15
+    _filter_zoom_offset[0] += (norm_x - _filter_zoom_offset[0]) * lerp
+    _filter_zoom_offset[1] += (norm_y - _filter_zoom_offset[1]) * lerp
+    # force cache miss so vf is actually updated
+    _filter_vf_last = None
+    try:
+        toggle_filter_vf(_filter_vf_variant, _filter_vf_last_progress[0])
+    except Exception:
+        pass
+    dist = ((norm_x - _filter_zoom_offset[0])**2 + (norm_y - _filter_zoom_offset[1])**2) ** 0.5
+    if mouse_dragging_zoom_filter and dist > 0.003:
+        zoom_filter_animation_after_id = root.after(16, smooth_move_zoom_filter_overlay)
+    else:
+        zoom_filter_animation_after_id = None
 
 def smooth_move_grow_overlay():
     """Smoothly animate the grow overlay toward the target mouse position."""
@@ -38183,29 +39472,24 @@ def smooth_move_grow_overlay():
     
     current_x, current_y = grow_position if grow_position else (0, 0)
     raw_target_x, raw_target_y = target_mouse_position
-    
-    # Apply offset so grow window appears at bottom-left of cursor (cursor won't block the window)
-    # Incorporate gap_modifier to adjust offset based on grow overlay size
-    base_offset_x = -50  # Base offset: 50 pixels to the left of cursor
-    base_offset_y = -50  # Base offset: 50 pixels above cursor  
-    
-    # Scale offset by gap_modifier (starts at 0, increases by 1 each time grow is widened)
-    offset_multiplier = (gap_modifier * 6)  # Increase offset by 50% per gap level
-    offset_x = base_offset_x - offset_multiplier
-    offset_y = base_offset_y - offset_multiplier
-    
-    target_x = raw_target_x + offset_x
-    target_y = raw_target_y + offset_y
+
+    # Convert screen coordinates to OSD (mpv client area) coordinates
+    try:
+        mpv_ox, mpv_oy, mpv_ow, mpv_oh = _get_mpv_window_rect()
+    except Exception:
+        mpv_ox, mpv_oy = 0, 0
+    osd_target_x = raw_target_x - mpv_ox
+    osd_target_y = raw_target_y - mpv_oy
     
     lerp_factor = 0.15  # Adjust this value: lower = smoother/slower, higher = faster
-    new_x = current_x + (target_x - current_x) * lerp_factor
-    new_y = current_y + (target_y - current_y) * lerp_factor
+    new_x = current_x + (osd_target_x - current_x) * lerp_factor
+    new_y = current_y + (osd_target_y - current_y) * lerp_factor
     
     # Update position
     grow_position = (int(new_x), int(new_y))
     toggle_grow_overlay(block_percent=last_grow_block_percent, position=grow_position)
     
-    distance = ((target_x - new_x) ** 2 + (target_y - new_y) ** 2) ** 0.5
+    distance = ((osd_target_x - new_x) ** 2 + (osd_target_y - new_y) ** 2) ** 0.5
     if mouse_dragging_grow_overlay and distance > 2:  # Stop when very close
         animation_after_id = root.after(16, smooth_move_grow_overlay)  # ~60 FPS
     else:
@@ -38214,19 +39498,25 @@ def smooth_move_grow_overlay():
 # Mouse event handlers
 def on_mouse_click(x, y, button, pressed):
     """Handle mouse click events."""
-    global mouse_left_pressed, mouse_dragging_grow_overlay, target_mouse_position, animation_after_id, last_seek_time, can_seek
+    global mouse_left_pressed, mouse_dragging_grow_overlay, mouse_dragging_zoom_filter, target_mouse_position, animation_after_id, zoom_filter_animation_after_id, last_seek_time, can_seek
     
     if pressed:
         if button == mouse.Button.left:
             mouse_left_pressed = True
             if grow_overlay_boxes:
-                screen_w = root.winfo_screenwidth()
-                screen_h = root.winfo_screenheight()
-                if 0 <= x < screen_w and 0 <= y < screen_h:
+                mx, my, mw, mh = _get_mpv_window_rect()
+                if mx <= x < mx + mw and my <= y < my + mh:
                     mouse_dragging_grow_overlay = True
                     target_mouse_position = (x, y)
                     if animation_after_id is None:
                         smooth_move_grow_overlay()
+            elif filter_vf_active and _filter_vf_variant == 'zoom':
+                mx, my, mw, mh = _get_mpv_window_rect()
+                if mx <= x < mx + mw and my <= y < my + mh:
+                    mouse_dragging_zoom_filter = True
+                    target_mouse_position = (x, y)
+                    if zoom_filter_animation_after_id is None:
+                        smooth_move_zoom_filter_overlay()
         
         elif button == mouse.Button.right:
             widen_peek()
@@ -38234,6 +39524,7 @@ def on_mouse_click(x, y, button, pressed):
         if button == mouse.Button.left:
             mouse_left_pressed = False
             mouse_dragging_grow_overlay = False
+            mouse_dragging_zoom_filter = False
             target_mouse_position = None
             # Cancel animation
             if animation_after_id:
@@ -38255,12 +39546,17 @@ def on_mouse_move(x, y):
     
     # If left mouse is pressed and we're dragging the grow overlay
     if mouse_dragging_grow_overlay and mouse_left_pressed:
-        screen_w = root.winfo_screenwidth()
-        screen_h = root.winfo_screenheight()
-        if 0 <= x < screen_w and 0 <= y < screen_h:
+        mx, my, mw, mh = _get_mpv_window_rect()
+        if mx <= x < mx + mw and my <= y < my + mh:
             target_mouse_position = (x, y)
             if animation_after_id is None:
                 smooth_move_grow_overlay()
+    elif mouse_dragging_zoom_filter and mouse_left_pressed:
+        mx, my, mw, mh = _get_mpv_window_rect()
+        if mx <= x < mx + mw and my <= y < my + mh:
+            target_mouse_position = (x, y)
+            if zoom_filter_animation_after_id is None:
+                smooth_move_zoom_filter_overlay()
 
 def on_mouse_scroll(x, y, dx, dy):
     """Handle mouse scroll events."""
@@ -38408,6 +39704,23 @@ def _score_bonus_answers(answers, q_type, correct):
                     wrong = len(picked) - right
                     result[name] = max(0.0, _pt_tag * right - _pt_tag * wrong)
 
+    elif q_type == "characters":
+        _s = bonus_settings.get("characters", {})
+        _def_chars = BONUS_SETTINGS_DEFAULT["characters"]
+        if light_round_started:
+            _pt_char = float(_s.get("lightning_points_per_correct", _def_chars["lightning_points_per_correct"]))
+        else:
+            _pt_char = float(_s.get("points_per_correct", _def_chars["points_per_correct"]))
+        correct_labels = {l.strip().upper() for l in correct} if isinstance(correct, (list, set)) else set()
+        seen = set()
+        for entry in answers:
+            name = entry["name"].strip()
+            if name and name not in seen:
+                seen.add(name)
+                picked = [l.strip().upper() for l in entry["answer"].split(",") if l.strip()]
+                right = sum(1 for l in picked if l in correct_labels)
+                result[name] = _pt_char * right
+
     return result
 
 
@@ -38417,7 +39730,7 @@ def _evaluate_and_submit_bonus_answers():
     answers  = _pending_bonus_answers[:]
     correct  = _bonus_correct_answer
     q_type   = guessing_extra          # still set at this point (cleared after we return)
-    if correct is not None and q_type and q_type != "characters":
+    if correct is not None and q_type:
         if isinstance(correct, list):
             correct_display = ", ".join(str(t) for t in correct)
         else:
@@ -38434,8 +39747,8 @@ def _evaluate_and_submit_bonus_answers():
     can_score = bool(answers and correct is not None and web_server.is_running())
     scores = _score_bonus_answers(answers, q_type, correct) if (answers and correct is not None) else {}
 
-    # Log to session whenever answers were submitted (excludes characters which are visual-only)
-    if answers and q_type and q_type != "characters":
+    # Log to session whenever answers were submitted
+    if answers and q_type:
         seen_names = set()
         log_entries = []
         for e in answers:
@@ -38820,6 +40133,22 @@ def _handle_host_action(action: str, data: dict):
                 _invoke_registry_by_id(item_id)
                 _push_web_toggles()
                 _push_web_marks()
+        elif action == 'queue_peek_variant':
+            variant = str(data.get('variant', '')).strip()
+            mute = bool(data.get('mute', False))
+            if variant and variant in _PEEK_VARIANT_LABELS:
+                _queue_peek_variant(variant, mute=mute)
+            else:
+                _queue_peek_random(mute=mute)
+            _push_web_toggles()
+        elif action == 'set_peek_variant':
+            # Set queued variant without touching the round toggle (used by live tgl_peek dropdown)
+            variant = str(data.get('variant', '')).strip()
+            if variant and variant in _PEEK_VARIANT_LABELS:
+                _queued_peek_variant[0] = variant
+            else:
+                _queued_peek_variant[0] = None
+            _push_web_toggles()
         elif action in ('stop_queues', 'stop_lightning'):
             stop_all_queues()
             _push_web_toggles()
@@ -38827,9 +40156,7 @@ def _handle_host_action(action: str, data: dict):
             ms = int(data.get('position_ms', 0))
             seek_to(ms)
         elif action == 'seek_near_end':
-            length_ms = player.get_length()
-            if length_ms > 3000:
-                seek_to(length_ms - 3000)
+            root.after(0, lambda: _invoke_registry_by_id("skip_to_end_ff"))
         elif action == 'set_volume':
             vol = max(0, min(100, int(data.get('volume', 100))))
             set_volume(vol)
@@ -39834,40 +41161,43 @@ def _show_buzz_toast(rank, name):
     rank_labels = {1: '1st \u2013 BUZZ IN', 2: '2nd \u2013 BUZZ IN', 3: '3rd \u2013 BUZZ IN'}
     rank_str = rank_labels.get(rank, f'#{rank} \u2013 BUZZ IN')
 
+    mx, my, mw, mh = _get_mpv_window_rect()
+    _sw = root.winfo_screenwidth()
+    _sh = root.winfo_screenheight()
+    mpv_frac = max(0.25, min(1.0, min(mw / max(_sw, 1), mh / max(_sh, 1))))
+
     win = tk.Toplevel(root)
     win.overrideredirect(True)
     win.attributes('-topmost', True)
     win.attributes('-alpha', 0.0)
     win.configure(bg=border_c)
 
-    border_px = max(2, scl(3))
+    border_px = max(1, int(scl(3) * mpv_frac))
     outer = tk.Frame(win, bg=border_c, padx=border_px, pady=border_px)
     outer.pack()
-    inner = tk.Frame(outer, bg=bg, padx=scl(40), pady=scl(20))
+    inner = tk.Frame(outer, bg=bg, padx=int(scl(40) * mpv_frac), pady=int(scl(20) * mpv_frac))
     inner.pack()
     tk.Label(inner, text=rank_str,
-             font=('Segoe UI', max(18, scl(24, 'UI')), 'bold'),
+             font=('Segoe UI', max(9, int(scl(24, 'UI') * mpv_frac)), 'bold'),
              fg=fg, bg=bg).pack()
     tk.Label(inner, text=name,
-             font=('Segoe UI', max(28, scl(48, 'UI')), 'bold'),
+             font=('Segoe UI', max(14, int(scl(48, 'UI') * mpv_frac)), 'bold'),
              fg=fg, bg=bg).pack()
 
     win.update_idletasks()
     w  = win.winfo_width()
     h  = win.winfo_height()
-    sw = root.winfo_screenwidth()
-    sh = root.winfo_screenheight()
 
     _pp = bonus_settings.get('buzzer', BONUS_SETTINGS_DEFAULT['buzzer']).get(
         'player_buzz_popup_properties', BONUS_SETTINGS_DEFAULT['buzzer']['player_buzz_popup_properties'])
-    margin  = scl(int(_pp.get('margin',     40)))
-    gap     = scl(int(_pp.get('gap',        10)))
-    rise_px = scl(int(_pp.get('rise_px',    50)))
+    margin  = int(scl(int(_pp.get('margin',     40))) * mpv_frac)
+    gap     = int(scl(int(_pp.get('gap',        10))) * mpv_frac)
+    rise_px = int(scl(int(_pp.get('rise_px',    50))) * mpv_frac)
     PUSH_MS    = int(_pp.get('push_ms',    220))
     PUSH_STEPS = int(_pp.get('push_steps', 18))
 
-    cx      = (sw - w) // 2
-    base_y  = sh - h - margin
+    cx      = mx + (mw - w) // 2
+    base_y  = my + mh - h - margin
 
     entry = {'win': win, 'base_y': base_y, 'cx': cx, 'h': h}
     _buzz_toast_wins.append(entry)
@@ -40035,7 +41365,7 @@ def _play_buzz_sound(rank, name):
                 vol_scale = 0.0
             else:
                 BGM_DB_RANGE = 45
-                vol_scale = 10 ** ((volume_level / 100 - 1) * BGM_DB_RANGE / 20)
+                vol_scale = 10 ** ((volume_level / 200 - 1) * BGM_DB_RANGE / 20)
             sound_volume = float(_buz_cfg.get("sound_volume", 1.0))
             scaled = [{**s, 'vol': s.get('vol', 0.7) * vol_scale * sound_volume} for s in segs]
             wav = _make_wav_segments(scaled)
@@ -40182,6 +41512,7 @@ root.after(1000, update_seek_bar)
 root.after(1000, check_video_end)
 # Set initial volume
 root.after(1000, set_volume, volume_level)
+root.after(1000, cleanup_old_update_exes)
 root.after(3000, check_for_updates_on_startup)
 root.after(3000, check_for_scoreboard_update_on_startup)
 root.after(1000, update_living_playlists)

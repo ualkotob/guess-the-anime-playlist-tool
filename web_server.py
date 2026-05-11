@@ -475,6 +475,32 @@ _HTML = r"""<!DOCTYPE html>
     .tag-chip.pq-tag-correct { background: #1a3a1a; color: #55cc55; border: 2px solid #55cc55; }
     .tag-chip.pq-tag-missed  { background: #0d1a0d; color: #55cc55; border: 2px dashed #55cc55; }
     .tag-chip.pq-tag-wrong   { background: #3a1a1a; color: #ff6666; border: 2px solid #cc4444; }
+
+    /* ── Character image choice grid ── */
+    .char-grid {
+      display: flex; flex-wrap: wrap; gap: 8px; justify-content: center;
+      margin-bottom: 14px;
+    }
+    .char-card {
+      display: flex; flex-direction: column; align-items: center;
+      width: 90px;
+      background: #1e1e1e; border: 2px solid #444; border-radius: 8px;
+      padding: 5px; cursor: pointer; user-select: none;
+      transition: border-color .15s, background .15s;
+    }
+    .char-card img {
+      width: 80px; height: 110px; object-fit: cover; border-radius: 5px;
+      display: block;
+    }
+    .char-card .char-lbl {
+      font-size: 0.88em; color: #ccc; margin-top: 4px; font-weight: bold;
+    }
+    .char-card:hover    { background: #2a2a2a; border-color: #666; }
+    .char-card.selected { background: #1a2e45; border-color: #3a7abf; }
+    .char-card.pq-char-correct { background: #1a3a1a; border-color: #55cc55; }
+    .char-card.pq-char-missed  { background: #0d1a0d; border: 2px dashed #55cc55; }
+    .char-card.pq-char-wrong   { background: #3a1a1a; border-color: #cc4444; }
+    .char-card.pq-char-dim     { opacity: 0.3; }
     #q-card {
       background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px;
       padding: 14px 18px; margin-bottom: 18px;
@@ -1010,6 +1036,7 @@ _HTML = r"""<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: center;
+      touch-action: manipulation;
     }
     #buzz-btn:hover:not(:disabled) { background: #3a6ab8; border-color: #44f; }
     #buzz-btn:disabled { background: #555; color: #999; border-color: #666; cursor: default; opacity: 1; }
@@ -1851,6 +1878,38 @@ _HTML = r"""<!DOCTYPE html>
       background: #3a1010; border-color: #cc5050; color: #ff8888;
       box-shadow: 0 0 6px 0 rgba(200,60,60,0.5);
     }
+    /* Reveal / Mute-RV queue button groups with variant picker */
+    .ctrl-queue-group { position: relative; display: inline-flex; }
+    .ctrl-queue-group .ctrl-queue-main {
+      border-radius: 5px 0 0 5px !important; padding-right: 10px;
+    }
+    .ctrl-peek-var-trigger {
+      border-radius: 0 5px 5px 0 !important;
+      border-left: 1px solid #1c2530 !important;
+      padding: 4px 7px !important; font-size: 0.78em;
+      min-width: 0 !important;
+    }
+    .ctrl-peek-var-trigger.ctrl-toggle-active { border-left-color: #7a2020 !important; }
+    .ctrl-peek-var-dropdown {
+      position: absolute; top: calc(100% + 5px); left: 0; z-index: 220;
+      background: #0f1218; border: 1px solid #3a4450; border-radius: 7px;
+      min-width: 152px; padding: 4px 0;
+      box-shadow: 0 6px 22px rgba(0,0,0,0.65);
+    }
+    .ctrl-peek-var-dropdown.ctrl-peek-var-up {
+      top: auto; bottom: calc(100% + 5px);
+    }
+    .ctrl-peek-var-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 5px 13px; cursor: pointer;
+      font-size: 0.82em; color: #778899; white-space: nowrap;
+      transition: background .1s, color .1s;
+    }
+    @media (hover: hover) {
+      .ctrl-peek-var-item:hover { background: #1a2230; color: #aabbcc; }
+    }
+    .ctrl-peek-var-item.ctrl-peek-var-active { color: #ff9a9a; font-weight: 600; }
+    .ctrl-peek-var-sep { height: 1px; background: #1e2530; margin: 3px 6px; }
     #ctrl-upnext-reroll {
       background: #071825; border-color: #1a6090; color: #44aadd;
       box-shadow: 0 0 5px 0 rgba(30,120,200,0.25);
@@ -1874,7 +1933,7 @@ _HTML = r"""<!DOCTYPE html>
       background: #1a1a30; border: 1px solid #334; border-radius: 5px;
       color: #aac; font-size: 0.78em; padding: 5px 10px; cursor: pointer;
       transition: background .15s, color .15s;
-      min-width: 54px; text-align: center; line-height: 1.2;
+      min-width: 44px; text-align: center; line-height: 1.2;
     }
     .ctrl-bonus-btn:hover { background: #252540; color: #ddf; }
     .ctrl-bonus-btn.ctrl-bonus-more {
@@ -1895,6 +1954,8 @@ _HTML = r"""<!DOCTYPE html>
     .ctrl-sect-mark:hover   { background: #2a1020; color: #eaa; border-color: #eaa; box-shadow: 0 0 5px 0 rgba(140,40,80,0.40); }
     .ctrl-sect-session { background: #1e0c0c; border-color: #5a2d2d; color: #d96a6a; box-shadow: none; }
     .ctrl-sect-session:hover { background: #2e1010; color: #ff9a9a; border-color: #ff8a8a; box-shadow: 0 0 5px 0 rgba(180,50,50,0.40); }
+    .ctrl-sect-playback { background: #0a1830; border-color: #2255aa; color: #5599ee; box-shadow: none; }
+    .ctrl-sect-playback:hover { background: #0e2248; color: #88ccff; border-color: #66aaff; box-shadow: 0 0 5px 0 rgba(60,130,255,0.40); }
     /* Scoreboard-specific color (distinct) */
     .ctrl-sect-scoreboard { background: #2a083a; border-color: #334; color: #f6a; box-shadow: none; }
     .ctrl-sect-scoreboard:hover { background: #3a0f50; color: #ffd; border-color: #e6a; box-shadow: 0 0 5px 0 rgba(200,80,160,0.40); }
@@ -1954,9 +2015,26 @@ _HTML = r"""<!DOCTYPE html>
     #ctrl-pinned-extras { display: contents; }
     .ctrl-pinned-break { flex-basis: 100%; height: 0; min-width: 100%; }
     .ctrl-pinned-space { width: 16px; flex-shrink: 0; }
-    .ctrl-layout-chip { display:inline-flex; align-items:center; gap:3px; font-size:0.72em; color:#778; background:#0a0a18; border:1px solid #223; border-radius:4px; padding:2px 5px; }
-    .ctrl-layout-chip-remove { background:none; border:none; color:#445; cursor:pointer; font-size:0.88em; padding:0 0 0 2px; line-height:1; }
-    .ctrl-layout-chip-remove:hover { color:#c88; }
+    #ctrl-arrange-bar { display:none; }
+    .ctrl-pinned-drag-over { outline: 2px dashed #66a !important; outline-offset: 2px; border-radius: 3px; }
+    .ctrl-pinned-dragging { opacity: 0.3 !important; }
+    /* Pin order tray (shown inside the popup in edit mode) */
+    #ctrl-pin-order-tray { display:none; flex-wrap:wrap; gap:4px; padding:6px 4px 4px; border-bottom:1px solid #1e1e38; margin-bottom:4px; }
+    #ctrl-pin-order-tray.active { display:flex; }
+    .ctrl-pin-chip { display:inline-flex; align-items:center; gap:3px; font-size:0.72em; color:#aab; background:#0d0d20; border:1px solid #2a2a55; border-radius:4px; padding:2px 6px 2px 3px; cursor:grab; user-select:none; white-space:nowrap; }
+    .ctrl-pin-chip:hover { border-color:#44a; }
+    .ctrl-pin-chip.chip-dragging { opacity:0.3; }
+    .ctrl-pin-chip.chip-drop-before { box-shadow: -3px 0 0 0 #66f; margin-left: 3px; }
+    .ctrl-pin-chip.chip-drop-after  { box-shadow:  3px 0 0 0 #66f; margin-right: 3px; }
+    .ctrl-pin-chip-handle { color:#445; font-size:0.9em; margin-right:1px; }
+    .ctrl-pin-chip-label { }
+    .ctrl-pin-chip-rm { background:none; border:none; color:#445; cursor:pointer; font-size:1em; padding:0 0 0 3px; line-height:1; }
+    .ctrl-pin-chip-rm:hover { color:#c88; }
+    .ctrl-pin-chip.ctrl-pin-chip-break { flex-basis:100%; justify-content:center; background:transparent; border-style:dashed; border-color:#2a2a55; color:#446; font-size:0.78em; padding:1px 8px; }
+    .ctrl-pin-chip-space { color:#557; font-style:italic; }
+    #ctrl-pin-tray-actions { display:none; gap:5px; align-items:center; padding:0 4px 4px; border-bottom:1px solid #1e1e38; margin-bottom:4px; }
+    #ctrl-pin-tray-actions.active { display:flex; }
+    #ctrl-pin-tray-label { font-size:0.7em; color:#557; flex:1; }
     .ctrl-sect-div {
       width: 1px; height: 24px; background: #334;
       align-self: center; flex-shrink: 0; margin: 0 3px;
@@ -3036,11 +3114,18 @@ _HTML = r"""<!DOCTYPE html>
       <div id="ctrl-extras-popup-header">
         <span id="ctrl-extras-popup-title">More Options</span>
         <div style="display:flex;gap:6px;align-items:center">
-          <button id="ctrl-extras-edit-btn" onclick="_ctrlToggleExtrasEditMode()" title="Pin buttons to main panel">&#x1F4CC; Pin</button>
+          <button id="ctrl-extras-edit-btn" onclick="_ctrlToggleExtrasEditMode()" title="Pin/unpin and reorder buttons">&#x1F4CC; Edit Pins</button>
           <button id="ctrl-extras-popup-close" onclick="_ctrlCloseExtrasPopup()">&#x2715;</button>
         </div>
       </div>
-      <div id="ctrl-extras-edit-hint">Click a button to pin/unpin it from the main controls</div>
+      <div id="ctrl-extras-edit-hint">Click to pin/unpin &middot; Drag chips above to reorder</div>
+      <!-- Order tray: shown in edit mode, chips are draggable -->
+      <div id="ctrl-pin-tray-actions">
+        <span id="ctrl-pin-tray-label">Pinned order &mdash; drag to reorder, &times; to remove:</span>
+        <button class="ctrl-bonus-btn" style="font-size:0.7em;padding:2px 7px;color:#667;border-color:#223" onclick="_ctrlAddLayoutItem('br')" title="Add line break">&#x21B5; Break</button>
+        <button class="ctrl-bonus-btn" style="font-size:0.7em;padding:2px 7px;color:#667;border-color:#223" onclick="_ctrlAddLayoutItem('sp')" title="Add space">&#x25A1; Space</button>
+      </div>
+      <div id="ctrl-pin-order-tray"></div>
       <div id="ctrl-extras-edit-actions" style="display:none;gap:5px;justify-content:flex-end">
         <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#c77;border-color:#422" onclick="_ctrlClearPinned()" title="Remove all pinned buttons">Clear All</button>
         <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#778;border-color:#223" onclick="_ctrlResetPinned()" title="Reset to default layout">Reset to Defaults</button>
@@ -3079,11 +3164,16 @@ _HTML = r"""<!DOCTYPE html>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Toggles &amp; Session</span>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_blind" onclick="_ctrlExtraClick('tgl_blind')">Blind</button>
-        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_peek" onclick="_ctrlExtraClick('tgl_peek')">Peek</button>
+        <div class="ctrl-queue-group" style="display:inline-flex">
+          <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle ctrl-queue-main" data-extra-id="tgl_peek" onclick="_ctrlExtraClick('tgl_peek')">Reveal</button>
+          <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle ctrl-peek-var-trigger" id="ctrl-peek-var-trigger-tgl" data-extra-id="tgl_peek" onclick="_ctrlExtrasEditMode ? _ctrlExtraClick('tgl_peek') : _ctrlTogglePeekVarMenu('tgl')" ontouchend="this.blur()" title="Pick reveal style">&#x25B4;</button>
+          <div class="ctrl-peek-var-dropdown ctrl-peek-var-up" id="ctrl-peek-var-tgl" style="display:none"></div>
+        </div>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_narrow" onclick="_ctrlExtraClick('tgl_narrow')">&#x25C0;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_widen" onclick="_ctrlExtraClick('tgl_widen')">&#x25B6;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_mute" onclick="_ctrlExtraClick('tgl_mute')">Mute</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-censors" data-extra-id="tgl_censors" onclick="_ctrlExtraClick('tgl_censors')" title="Toggle censors">Censors (<span class="ctrl-censor-count">0</span>)</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-censors-nsfw" data-extra-id="tgl_censors_nsfw" onclick="_ctrlExtraClick('tgl_censors_nsfw')" title="Toggle NSFW censors">NSFW Cens. (<span class="ctrl-censor-nsfw-count">0</span>)</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" data-extra-id="tgl_fullscreen" onclick="_ctrlExtraClick('tgl_fullscreen')">Fullscreen</button>
         <button class="ctrl-bonus-btn ctrl-sect-toggle" data-extra-id="difficulty" onclick="_ctrlExtraClick('difficulty')">Difficulty</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-shortcuts" data-extra-id="tgl_shortcuts" onclick="_ctrlExtraClick('tgl_shortcuts')" title="Toggle keyboard shortcuts">Keys</button>
@@ -3096,7 +3186,7 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-session" data-extra-id="end_session" onclick="_ctrlExtraClick('end_session')">End</button>
       </div>
       <div class="ctrl-extras-sect-row">
-        <span class="ctrl-extras-sect-label">Info Reveal &amp; Marks</span>
+        <span class="ctrl-extras-sect-label">Info Reveal &amp; Marks &amp; Playback</span>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="rev_info" onclick="_ctrlExtraClick('rev_info')">Show Information</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="rev_title" onclick="_ctrlExtraClick('rev_title')">Title</button>
         <button class="ctrl-bonus-btn ctrl-sect-reveal" data-extra-id="reveal_artist" onclick="_ctrlExtraClick('reveal_artist')">Artist</button>
@@ -3108,6 +3198,7 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-blind" data-extra-id="mark_blind" onclick="_ctrlExtraClick('mark_blind')">&#x1F441;</button>
         <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-peek" data-extra-id="mark_peek" onclick="_ctrlExtraClick('mark_peek')">&#x1F440;</button>
         <button class="ctrl-bonus-btn ctrl-mark-btn ctrl-sect-mark" id="ctrl-mark-mute-peek" data-extra-id="mark_mute_peek" onclick="_ctrlExtraClick('mark_mute_peek')">&#x1F507;</button>
+        <button class="ctrl-bonus-btn ctrl-sect-playback" data-extra-id="skip_to_end" onclick="_ctrlExtraClick('skip_to_end')" title="Skip current track to the last few seconds">&#x23ED; Skip to End</button>
       </div>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Scoreboard</span>
@@ -3119,10 +3210,8 @@ _HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-scoreboard" data-extra-id="scoreboard_shrink" onclick="_ctrlExtraClick('scoreboard_shrink')">Shrink</button>
       </div>
       <div class="ctrl-extras-sect-row" id="ctrl-extras-layout-sect" style="display:none">
-        <span class="ctrl-extras-sect-label">Layout</span>
-        <div id="ctrl-extras-layout-chips" style="display:contents"></div>
-        <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#667;border-color:#223" onclick="_ctrlAddLayoutItem('br')" title="Insert a line break in the pinned buttons">&#x21B5; Break</button>
-        <button class="ctrl-bonus-btn" style="font-size:0.72em;padding:3px 8px;color:#667;border-color:#223" onclick="_ctrlAddLayoutItem('sp')" title="Insert a space in the pinned buttons">&#x25A1; Space</button>
+        <!-- kept for legacy save/load; hidden -->
+        <div id="ctrl-extras-layout-chips" style="display:none"></div>
       </div>
     </div>
   </div>
@@ -3137,9 +3226,17 @@ _HTML = r"""<!DOCTYPE html>
         </div>
         <div id="ctrl-upnext-panel" style="display:none">
           <div id="ctrl-upnext-actions">
-            <button class="ctrl-upnext-queue-btn" id="ctrl-queue-blind" onclick="socket.emit('host_action',{action:'invoke',id:'queue_blind_round'})" ontouchend="this.blur()" title="Queue Blind Round">&#x1F441; Blind</button>
-            <button class="ctrl-upnext-queue-btn" id="ctrl-queue-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_peek_round'})" ontouchend="this.blur()" title="Queue Peek Round">&#x1F440; Peek</button>
-            <button class="ctrl-upnext-queue-btn" id="ctrl-queue-mute-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_mute_peek_round'})" ontouchend="this.blur()" title="Queue Mute Peek Round">&#x1F507; Mute Peek</button>
+            <button class="ctrl-upnext-queue-btn" id="ctrl-queue-blind" onclick="socket.emit('host_action',{action:'invoke',id:'queue_blind_round'})" ontouchend="this.blur()" title="Queue Blind Round">Blind</button>
+            <div class="ctrl-queue-group">
+              <button class="ctrl-upnext-queue-btn ctrl-queue-main" id="ctrl-queue-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_peek_round'})" ontouchend="this.blur()" title="Queue Reveal Round">Reveal</button>
+              <button class="ctrl-upnext-queue-btn ctrl-peek-var-trigger" id="ctrl-peek-var-trigger-peek" onclick="_ctrlTogglePeekVarMenu('peek')" ontouchend="this.blur()" title="Pick reveal style">&#x25BE;</button>
+              <div class="ctrl-peek-var-dropdown" id="ctrl-peek-var-peek" style="display:none"></div>
+            </div>
+            <div class="ctrl-queue-group">
+              <button class="ctrl-upnext-queue-btn ctrl-queue-main" id="ctrl-queue-mute-peek" onclick="socket.emit('host_action',{action:'invoke',id:'queue_mute_peek_round'})" ontouchend="this.blur()" title="Queue Mute Reveal Round">Mute RV</button>
+              <button class="ctrl-upnext-queue-btn ctrl-peek-var-trigger" id="ctrl-peek-var-trigger-mute" onclick="_ctrlTogglePeekVarMenu('mute')" ontouchend="this.blur()" title="Pick reveal style">&#x25BE;</button>
+              <div class="ctrl-peek-var-dropdown" id="ctrl-peek-var-mute" style="display:none"></div>
+            </div>
             <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-reroll" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'reroll_next'})" ontouchend="this.blur()" title="Re-roll next track">&#x1F504; Re-roll</button>
           </div>
           <div id="ctrl-upnext-mode"></div>
@@ -3169,6 +3266,7 @@ _HTML = r"""<!DOCTYPE html>
           <span class="ctrl-collapse-chevron" id="ctrl-controls-chevron">&#x25BE;</span>
         </div>
         <div id="ctrl-controls-panel" style="display:none">
+            <div id="ctrl-arrange-bar" style="display:none"></div>
             <div id="ctrl-pinned-extras"></div>
             <button class="ctrl-bonus-btn ctrl-sect-toggle" onclick="_ctrlOpenExtrasPopup()" title="More options">More…</button>
         </div>
@@ -3200,7 +3298,7 @@ _HTML = r"""<!DOCTYPE html>
           <div id="ctrl-vol-slider-wrap" style="display:none">
             <div id="ctrl-bzz-row" class="vol-row">
               <span class="vol-hd" id="ctrl-bzz-label-hd">BUZZ</span>
-              <input id="ctrl-bzz-slider" class="vol-slider" type="range" min="0" max="150" value="100"
+              <input id="ctrl-bzz-slider" class="vol-slider" type="range" min="0" max="200" value="100"
                      oninput="_ctrlBzzChange(this.value)">
               <button class="vol-step-btn" onclick="_ctrlBzzStep(-1)" oncontextmenu="_ctrlBzzStep(-1,1);return false;">&#x2212;</button>
               <button class="vol-step-btn" onclick="_ctrlBzzStep(1)" oncontextmenu="_ctrlBzzStep(1,1);return false;">+</button>
@@ -3218,7 +3316,7 @@ _HTML = r"""<!DOCTYPE html>
             <hr class="vol-sep">
             <div id="ctrl-bgm-row" class="vol-row">
               <span class="vol-hd" id="ctrl-bgm-label-hd">BGM</span>
-              <input id="ctrl-bgm-slider" class="vol-slider" type="range" min="0" max="150" value="100"
+              <input id="ctrl-bgm-slider" class="vol-slider" type="range" min="0" max="200" value="100"
                      oninput="_ctrlBgmChange(this.value)">
               <button class="vol-step-btn" onclick="_ctrlBgmStep(-1)" oncontextmenu="_ctrlBgmStep(-1,1);return false;">&#x2212;</button>
               <button class="vol-step-btn" onclick="_ctrlBgmStep(1)" oncontextmenu="_ctrlBgmStep(1,1);return false;">+</button>
@@ -3227,7 +3325,7 @@ _HTML = r"""<!DOCTYPE html>
             <hr class="vol-sep">
             <div id="ctrl-vol-slider-row" class="vol-row">
               <span class="vol-hd">VOL</span>
-              <input id="ctrl-vol-slider" class="vol-slider" type="range" min="0" max="100" value="100"
+              <input id="ctrl-vol-slider" class="vol-slider" type="range" min="0" max="200" value="100"
                      oninput="_ctrlVolumeChange(this.value)">
               <button class="vol-step-btn" onclick="_ctrlVolStep(-1)" oncontextmenu="_ctrlVolStep(-1,1);return false;">&#x2212;</button>
               <button class="vol-step-btn" onclick="_ctrlVolStep(1)" oncontextmenu="_ctrlVolStep(1,1);return false;">+</button>
@@ -4098,6 +4196,78 @@ _HTML = r"""<!DOCTYPE html>
       };
     }
 
+    function buildCharacters(area, chars, maxPicks) {
+      let selectedLabels = new Set();
+      const limit = maxPicks || 1;
+
+      const counter = document.createElement('div');
+      counter.style.cssText = 'text-align:center; font-size:0.85em; color:#aaa; margin-bottom:10px;';
+
+      const grid = document.createElement('div');
+      grid.className = 'char-grid';
+
+      function updateCounter() {
+        counter.textContent = selectedLabels.size + ' / ' + limit + ' selected';
+        document.getElementById('submit-btn').disabled = selectedLabels.size === 0;
+        if (selectedLabels.size > 0) _emitSelect(Array.from(selectedLabels).sort().join(','), true);
+      }
+
+      chars.forEach(ch => {
+        const card = document.createElement('div');
+        card.className = 'char-card';
+        card.dataset.label = ch.label;
+        const img = document.createElement('img');
+        img.src = ch.image_url ? '/proxy_image?url=' + encodeURIComponent(ch.image_url) : '';
+        img.alt = ch.label;
+        img.onerror = () => { img.style.display = 'none'; };
+        const lbl = document.createElement('div');
+        lbl.className = 'char-lbl';
+        lbl.textContent = '[' + ch.label + ']';
+        card.appendChild(img);
+        card.appendChild(lbl);
+        card.onclick = () => {
+          if (card.classList.contains('locked')) return;
+          if (card.classList.contains('selected')) {
+            card.classList.remove('selected');
+            selectedLabels.delete(ch.label);
+          } else {
+            if (selectedLabels.size >= limit) {
+              // single-pick: deselect previous
+              if (limit === 1) {
+                grid.querySelectorAll('.char-card.selected').forEach(c => c.classList.remove('selected'));
+                selectedLabels.clear();
+              } else {
+                return;
+              }
+            }
+            card.classList.add('selected');
+            selectedLabels.add(ch.label);
+          }
+          updateCounter();
+        };
+        grid.appendChild(card);
+      });
+
+      if (limit > 1) area.appendChild(counter);
+      area.appendChild(grid);
+      updateCounter();
+
+      return {
+        getValue: () => Array.from(selectedLabels).sort().join(','),
+        restoreSelected: (csv) => {
+          if (!csv) return;
+          csv.split(',').forEach(l => {
+            const card = grid.querySelector('[data-label="' + l.trim() + '"]');
+            if (card) { card.classList.add('selected'); selectedLabels.add(l.trim()); }
+          });
+          updateCounter();
+        },
+        lock: () => {
+          grid.querySelectorAll('.char-card').forEach(c => c.classList.add('locked'));
+        }
+      };
+    }
+
     /* ── Drum ↔ text toggle wrapper ── */
     const _textModeKeys = { year: 'gta_text_year', score: 'gta_text_score' };
 
@@ -4195,6 +4365,7 @@ _HTML = r"""<!DOCTYPE html>
     let stepperHandle     = null;
     let rankSliderHandle  = null;
     let tagHandle         = null;
+    let charHandle        = null;
     let _takenYears   = new Set();  // years taken this round (year questions only)
     let _takenScores  = new Set();  // scores taken this round (drum questions only)
     let _takenRanks   = new Set();  // ranks taken this round (rank_slider questions only)
@@ -4364,7 +4535,7 @@ _HTML = r"""<!DOCTYPE html>
       const acInpReset = document.getElementById('anime-ac-input');
       if (acInpReset) acInpReset.disabled = false;
       selectedChoice = null;
-      drumHandle = null; stepperHandle = null; rankSliderHandle = null; tagHandle = null;
+      drumHandle = null; stepperHandle = null; rankSliderHandle = null; tagHandle = null; charHandle = null;
       _takenYears  = new Set();
       _takenScores = new Set();
       _takenRanks  = new Set();
@@ -4447,6 +4618,12 @@ _HTML = r"""<!DOCTYPE html>
         tagHandle = buildTags(area, data.tags, data.tags_max);
         if (_savedAnswer) tagHandle.restoreSelected(_savedAnswer);
         // Submit starts disabled until at least one chip is picked
+        document.getElementById('submit-btn').disabled = true;
+
+      } else if (data.character_choices) {
+        /* ── Character image grid ── */
+        charHandle = buildCharacters(area, data.character_choices, data.character_picks || 1);
+        if (_savedAnswer) charHandle.restoreSelected(_savedAnswer);
         document.getElementById('submit-btn').disabled = true;
 
       } else {
@@ -4764,6 +4941,35 @@ _HTML = r"""<!DOCTYPE html>
           noAns.textContent = 'Your answer: No answer submitted';
           body.appendChild(noAns);
         }
+
+      } else if (qd.character_choices && qd.character_choices.length) {
+        /* ── Character image grid: colour-code correct / wrong / missed ── */
+        const correctSet = new Set(_prevQCorrectTags.map(l => l.trim().toUpperCase()));
+        const mySet      = new Set(myAnswer ? myAnswer.split(',').map(l => l.trim().toUpperCase()).filter(Boolean) : []);
+        const correctLine = document.createElement('div');
+        correctLine.style.cssText = 'color:#5c5; margin-bottom:8px; font-size:0.9em;';
+        correctLine.textContent = 'Correct: [' + Array.from(correctSet).sort().join('] [') + ']';
+        body.appendChild(correctLine);
+        const grid = document.createElement('div');
+        grid.className = 'char-grid'; grid.style.pointerEvents = 'none';
+        qd.character_choices.forEach(ch => {
+          const lbl  = ch.label.toUpperCase();
+          const isCorrect = correctSet.has(lbl);
+          const isMine    = mySet.has(lbl);
+          const card = document.createElement('div');
+          const img  = document.createElement('img');
+          img.src = ch.image_url ? '/proxy_image?url=' + encodeURIComponent(ch.image_url) : ''; img.alt = lbl;
+          img.onerror = () => { img.style.display = 'none'; };
+          const lblEl = document.createElement('div');
+          lblEl.className = 'char-lbl'; lblEl.textContent = '[' + lbl + ']';
+          card.appendChild(img); card.appendChild(lblEl);
+          if (isCorrect && isMine)    card.className = 'char-card pq-char-correct';
+          else if (isCorrect)         card.className = 'char-card pq-char-missed';
+          else if (isMine)            card.className = 'char-card pq-char-wrong';
+          else                        card.className = 'char-card pq-char-dim';
+          grid.appendChild(card);
+        });
+        body.appendChild(grid);
 
       } else if (qd.rank_slider) {
         /* ── Rank slider: read-only track reusing rank-* CSS, with correct + mine + peer marks ── */
@@ -5778,6 +5984,10 @@ _HTML = r"""<!DOCTYPE html>
         const v = tagHandle.getValue();
         if (!v) return;   // nothing selected
         answer = v;
+      } else if (charHandle) {
+        const v = charHandle.getValue();
+        if (!v) return;
+        answer = v;
       } else if (selectedChoice !== null) {
         answer = selectedChoice;
       } else if (_acWrap().style.display !== 'none') {
@@ -5939,6 +6149,88 @@ _HTML = r"""<!DOCTYPE html>
     let _ctrlAutoBonusCurrent = null;
     let _ctrlListPopupMode = null;
     let _ctrlListPopupDownInsideBox = false;
+
+    // Reveal variant picker
+    const _CTRL_PEEK_VARIANTS = [
+      {variant:'', icon:'🔀', label:'Random'},
+      null,
+      {variant:'blur',     icon:'🌫', label:'Blur'},
+      {variant:'edge',     icon:'◼',  label:'Edge'},
+      {variant:'grow',     icon:'⬛', label:'Grow'},
+      {variant:'outline',  icon:'✏️',  label:'Outline'},
+      {variant:'pixelize', icon:'🟦', label:'Pixelize'},
+      {variant:'slice',    icon:'◧',  label:'Slice'},
+      {variant:'wave',     icon:'🌊', label:'Wave'},
+      {variant:'zoom',     icon:'🔍', label:'Zoom'},
+    ];
+    let _ctrlPeekVarOpen = null; // null | 'peek' | 'mute'
+
+    function _ctrlBuildPeekVarPanel(which) {
+      const panel = document.getElementById('ctrl-peek-var-' + which);
+      if (!panel) return;
+      panel.innerHTML = '';
+      const mute = which === 'mute';
+      // tgl/tgl-pinned: this is the live toggle variant picker (not a queue action)
+      const isTgl = which === 'tgl' || which === 'tgl-pinned';
+      const active = isTgl ? (_ctrlCurrentToggles.live_peek_variant || '') : (_ctrlCurrentToggles.queued_peek_variant || '');
+      _CTRL_PEEK_VARIANTS.forEach(v => {
+        if (v === null) {
+          const sep = document.createElement('div');
+          sep.className = 'ctrl-peek-var-sep';
+          panel.appendChild(sep);
+          return;
+        }
+        const row = document.createElement('div');
+        row.className = 'ctrl-peek-var-item' + (v.variant === active ? ' ctrl-peek-var-active' : '');
+        row.setAttribute('data-pv-variant', v.variant);
+        row.setAttribute('data-pv-mute', mute ? '1' : '0');
+        row.innerHTML = '<span>' + v.icon + '</span><span>' + v.label + '</span>';
+        row.addEventListener('click', () => {
+          if (isTgl) {
+            // Live toggle: just set the variant then invoke peek directly
+            socket.emit('host_action', {action:'set_peek_variant', variant:v.variant});
+            socket.emit('host_action', {action:'invoke', id:'peek'});
+          } else {
+            socket.emit('host_action', {action:'queue_peek_variant', variant:v.variant, mute:mute});
+          }
+          _ctrlClosePeekVarMenu();
+        });
+        panel.appendChild(row);
+      });
+    }
+
+    function _ctrlTogglePeekVarMenu(which) {
+      if (_ctrlPeekVarOpen === which) {
+        _ctrlClosePeekVarMenu();
+      } else {
+        _ctrlClosePeekVarMenu();
+        _ctrlPeekVarOpen = which;
+        _ctrlBuildPeekVarPanel(which);
+        const panel = document.getElementById('ctrl-peek-var-' + which);
+        if (panel) panel.style.display = '';
+      }
+    }
+
+    function _ctrlClosePeekVarMenu() {
+      if (!_ctrlPeekVarOpen) return;
+      const panel = document.getElementById('ctrl-peek-var-' + _ctrlPeekVarOpen);
+      if (panel) panel.style.display = 'none';
+      _ctrlPeekVarOpen = null;
+    }
+
+    function _ctrlGetPeekTriggerEl(which) {
+      // tgl-pinned has its own id; others follow the standard pattern
+      return document.getElementById('ctrl-peek-var-trigger-' + which);
+    }
+
+    document.addEventListener('click', ev => {
+      if (!_ctrlPeekVarOpen) return;
+      const panel = document.getElementById('ctrl-peek-var-' + _ctrlPeekVarOpen);
+      const trigger = _ctrlGetPeekTriggerEl(_ctrlPeekVarOpen);
+      if (panel && !panel.contains(ev.target) && trigger && !trigger.contains(ev.target)) {
+        _ctrlClosePeekVarMenu();
+      }
+    });
 
     function _ctrlListPopupOverlayMouseDown(ev) {
       const box = document.getElementById('ctrl-list-popup-box');
@@ -6224,7 +6516,7 @@ _HTML = r"""<!DOCTYPE html>
           seen.add(id);
           cleaned.push(id);
         });
-        _ctrlPinnedExtras = new Set(cleaned);
+        _ctrlPinnedExtras = cleaned;
         _ctrlRenderPinnedExtras();
         // Persist migrated/cleaned preferences immediately.
         _ctrlSavePanels();
@@ -7286,7 +7578,7 @@ _HTML = r"""<!DOCTYPE html>
     const _ctrlLtTypes = [
       {id:'lightning_regular',   mode:'regular',   label:'Regular'},
       {id:'lightning_blind',     mode:'blind',     label:'Blind'},
-      {id:'lightning_peek',      mode:'peek',      label:'Peek'},
+      {id:'lightning_reveal',     mode:'reveal',    label:'Reveal'},
       {id:'lightning_frame',     mode:'frame',     label:'Frame'},
       {id:'lightning_cover',     mode:'cover',     label:'Cover'},
       {id:'lightning_image',     mode:'image',     label:'Image'},
@@ -8082,7 +8374,7 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlUpdateResetSessionButton(sessionCount);
       const map = {
         'ctrl-tgl-blind':     !!data.blind,
-        'ctrl-tgl-peek':      !!data.peek,
+        'ctrl-tgl-peek':      !!data.reveal,
         'ctrl-tgl-mute':      !!data.mute,
         'ctrl-tgl-censors':   !!data.censors,
         'ctrl-tgl-shortcuts': !!data.shortcuts,
@@ -8090,13 +8382,25 @@ _HTML = r"""<!DOCTYPE html>
         'ctrl-tgl-info-start':!!data.info_start,
         'ctrl-tgl-info-end':  !!data.info_end,
         'ctrl-queue-blind':    !!data.queue_blind,
-        'ctrl-queue-peek':     !!data.queue_peek,
-        'ctrl-queue-mute-peek':!!data.queue_mute_peek,
+        'ctrl-queue-peek':     !!data.queue_reveal,
+        'ctrl-queue-mute-peek':!!data.queue_mute_reveal,
       };
       for (const [id, active] of Object.entries(map)) {
         const el = document.getElementById(id);
         if (el) el.classList.toggle('ctrl-toggle-active', active);
       }
+      // Sync the ▾/▴ trigger buttons' active state
+      const peekTrig = document.getElementById('ctrl-peek-var-trigger-peek');
+      if (peekTrig) peekTrig.classList.toggle('ctrl-toggle-active', !!data.queue_reveal);
+      const muteTrig = document.getElementById('ctrl-peek-var-trigger-mute');
+      if (muteTrig) muteTrig.classList.toggle('ctrl-toggle-active', !!data.queue_mute_reveal);
+      // tgl trigger buttons don't need their own active-state; the main button already reflects reveal state
+      ['ctrl-peek-var-trigger-tgl','ctrl-peek-var-trigger-tgl-pinned'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('ctrl-toggle-active');
+      });
+      // Refresh open variant dropdown to reflect new active variant
+      if (_ctrlPeekVarOpen) _ctrlBuildPeekVarPanel(_ctrlPeekVarOpen);
       // Highlight active lightning round button (dice = variety)
       document.querySelectorAll('[data-lt-mode]').forEach(el => {
         el.classList.toggle('ctrl-toggle-active', el.dataset.ltMode === data.light_mode);
@@ -8116,9 +8420,9 @@ _HTML = r"""<!DOCTYPE html>
       });
       // Active state on tgl proxy buttons in main panel
       const tglProxyIds = {
-        'tgl_blind': !!data.blind, 'tgl_peek': !!data.peek, 'tgl_mute': !!data.mute,
-        'tgl_narrow': !!data.peek, 'tgl_widen': !!data.peek,
-        'tgl_censors': !!data.censors, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock,
+        'tgl_blind': !!data.blind, 'tgl_peek': !!data.reveal, 'tgl_mute': !!data.mute,
+        'tgl_narrow': !!data.reveal, 'tgl_widen': !!data.reveal,
+        'tgl_censors': !!data.censors, 'tgl_censors_nsfw': !!data.censors_nsfw, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock,
         'tgl_info_start': !!data.info_start, 'tgl_info_end': !!data.info_end,
         'tgl_fullscreen': !!data.autoplay_fullscreen,
         'lt':      !!data.light_mode,
@@ -8141,9 +8445,13 @@ _HTML = r"""<!DOCTYPE html>
       document.querySelectorAll('.ctrl-censor-count').forEach(el => {
         el.textContent = data.censor_count != null ? data.censor_count : 0;
       });
+      document.querySelectorAll('.ctrl-censor-nsfw-count').forEach(el => {
+        el.textContent = data.censor_nsfw_count != null ? data.censor_nsfw_count : 0;
+      });
       // Update proxy state for extra toggle buttons in pinned area
       const tglProxyMap = {
         'tgl_censors': !!data.censors,
+        'tgl_censors_nsfw': !!data.censors_nsfw,
         'tgl_shortcuts': !!data.shortcuts,
         'tgl_dock': !!data.dock,
         'tgl_info_start': !!data.info_start,
@@ -8214,7 +8522,8 @@ _HTML = r"""<!DOCTYPE html>
       'rev_info','rev_title','mark_tag','mark_fav','_br_2',
       'tgl_censors','tgl_shortcuts','tgl_dock',
     ];
-    let _ctrlPinnedExtras = new Set(_CTRL_DEFAULT_PINNED);
+    let _ctrlPinnedExtras = [..._CTRL_DEFAULT_PINNED];
+    let _ctrlTrayDragSrcIdx = null;
     let _ctrlExtrasEditMode = false;
     let _ctrlCurrentToggles = {};
 
@@ -8269,11 +8578,12 @@ _HTML = r"""<!DOCTYPE html>
       'difficulty':   { classes: 'ctrl-sect-toggle',                          html: 'Difficulty', title: 'Set playlist difficulty filter' },
       'tgl_fullscreen':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Fullscreen', title: 'Toggle autoplay fullscreen' },
       'tgl_blind':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Blind',     title: 'Toggle blind mode' },
-      'tgl_peek':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Peek',      title: 'Toggle peek (partial reveal)' },
-      'tgl_narrow':   { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25C0;',  title: 'Narrow peek window' },
-      'tgl_widen':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25B6;',  title: 'Widen peek window' },
+      'tgl_peek':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Reveal',    title: 'Toggle reveal (partial reveal)' },
+      'tgl_narrow':   { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25C0;',  title: 'Reveal less' },
+      'tgl_widen':    { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: '&#x25B6;',  title: 'Reveal more' },
       'tgl_mute':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Mute',      title: 'Toggle mute' },
       'tgl_censors':  { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Censors (<span class="ctrl-censor-count">0</span>)', title: 'Toggle censors' },
+      'tgl_censors_nsfw': { classes: 'ctrl-toggle-btn ctrl-sect-toggle',       html: 'NSFW Cens. (<span class="ctrl-censor-nsfw-count">0</span>)', title: 'Toggle NSFW censors' },
       'tgl_shortcuts':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Keys',      title: 'Toggle keyboard shortcuts' },
       'tgl_dock':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Dock',      title: 'Toggle docked player' },
       'tgl_info_start':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',         html: 'Info Start', title: 'Toggle auto-show info at start' },
@@ -8289,13 +8599,14 @@ _HTML = r"""<!DOCTYPE html>
       'mark_tag':     { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x2717;',  title: 'Tag' },
       'mark_fav':     { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '♥',         title: 'Favorite' },
       'mark_blind':   { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x1F441;', title: 'Blind Mark' },
-      'mark_peek':    { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x1F440;', title: 'Peek Mark' },
-      'mark_mute_peek':{ classes: 'ctrl-mark-btn ctrl-sect-mark',             html: '&#x1F507;', title: 'Mute Peek Mark' },
+      'mark_peek':    { classes: 'ctrl-mark-btn ctrl-sect-mark',              html: '&#x1F440;', title: 'Reveal Mark' },
+      'mark_mute_peek':{ classes: 'ctrl-mark-btn ctrl-sect-mark',             html: '&#x1F507;', title: 'Mute Reveal Mark' },
       // Session
       'rules_file':   { classes: 'ctrl-sect-session',                          html: 'Rules',     title: 'Select rules file' },
       'load_playlist':{ classes: 'ctrl-sect-session',                          html: 'Playlist',  title: 'Load a saved playlist' },
       'reset_session_history': { classes: 'ctrl-sect-session',                html: 'Reset Session [0]', title: 'Clear the current session history' },
       'end_session':  { classes: 'ctrl-sect-session',                         html: 'End',       title: 'End the current session' },
+      'skip_to_end':  { classes: 'ctrl-sect-playback',                        html: '&#x23ED; Skip to End', title: 'Skip current track to the last few seconds' },
       // Scoreboard actions (invoke menu commands in main app)
       'scoreboard_open_close': { classes: 'ctrl-sect-scoreboard',             html: 'Open/Close', title: 'Open or close the scoreboard window' },
       'scoreboard_toggle': { classes: 'ctrl-sect-scoreboard',                 html: 'Toggle',    title: 'Toggle scoreboard visibility on screen' },
@@ -8336,6 +8647,7 @@ _HTML = r"""<!DOCTYPE html>
       'tgl_widen':    () => socket.emit('host_action',{action:'invoke',id:'widen_peek'}),
       'tgl_mute':     () => socket.emit('host_action',{action:'invoke',id:'mute'}),
       'tgl_censors':  () => socket.emit('host_action',{action:'invoke',id:'censors'}),
+      'tgl_censors_nsfw': () => socket.emit('host_action',{action:'invoke',id:'censors_nsfw'}),
       'tgl_shortcuts':() => socket.emit('host_action',{action:'invoke',id:'enable_shortcuts'}),
       'tgl_dock':     () => socket.emit('host_action',{action:'invoke',id:'dock_player'}),
       'tgl_info_start':() => socket.emit('host_action',{action:'invoke',id:'auto_info_start'}),
@@ -8361,6 +8673,7 @@ _HTML = r"""<!DOCTYPE html>
       'load_playlist': () => { _ctrlCloseExtrasPopup(); _ctrlTogglePlaylistList(); },
       'rules_file':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleRulesList(); },
       'end_session':  () => { socket.emit('host_action',{action:'invoke',id:'end_session'}); _ctrlCloseExtrasPopup(); },
+      'skip_to_end':  () => { socket.emit('host_action',{action:'seek_near_end'}); },
       // Scoreboard actions — call main app menu registry via invoke
       'scoreboard_open_close': () => socket.emit('host_action',{action:'toggle_scoreboard'}),
       'scoreboard_toggle':      () => socket.emit('host_action',{action:'invoke', id:'scoreboard_toggle'}),
@@ -8397,14 +8710,14 @@ _HTML = r"""<!DOCTYPE html>
     }
 
     function _ctrlToggleExtraPin(eid) {
-      if (_ctrlPinnedExtras.has(eid)) {
-        _ctrlPinnedExtras.delete(eid);
+      if (_ctrlPinnedExtras.includes(eid)) {
+        _ctrlPinnedExtras = _ctrlPinnedExtras.filter(e => e !== eid);
       } else {
-        _ctrlPinnedExtras.add(eid);
+        _ctrlPinnedExtras.push(eid);
       }
-      // Update popup button highlight
       const popupBtn = document.querySelector(`[data-extra-id="${eid}"]`);
-      if (popupBtn) popupBtn.classList.toggle('ctrl-extra-pinned', _ctrlPinnedExtras.has(eid));
+      if (popupBtn) popupBtn.classList.toggle('ctrl-extra-pinned', _ctrlPinnedExtras.includes(eid));
+      _ctrlRenderOrderTray();
       _ctrlRenderPinnedExtras();
       _ctrlSavePanels();
     }
@@ -8413,38 +8726,66 @@ _HTML = r"""<!DOCTYPE html>
       const container = document.getElementById('ctrl-pinned-extras');
       if (!container) return;
       container.innerHTML = '';
-      _ctrlPinnedExtras.forEach(eid => {
-        if (typeof eid !== 'string') return;
+
+      for (let idx = 0; idx < _ctrlPinnedExtras.length; idx++) {
+        const eid = _ctrlPinnedExtras[idx];
+        if (typeof eid !== 'string') continue;
         if (eid.startsWith('_br_')) {
           const el = document.createElement('div');
           el.className = 'ctrl-pinned-break';
           el.setAttribute('data-layout-id', eid);
           container.appendChild(el);
-          return;
+          continue;
         }
         if (eid.startsWith('_sp_')) {
           const el = document.createElement('div');
           el.className = 'ctrl-pinned-space';
           el.setAttribute('data-layout-id', eid);
           container.appendChild(el);
-          return;
+          continue;
         }
         const cfg = _ctrlExtrasConfig[eid];
-        if (!cfg) return;
+        if (!cfg) continue;
+        if (eid === 'tgl_peek') {
+          const grp = document.createElement('div');
+          grp.className = 'ctrl-queue-group';
+          grp.style.display = 'inline-flex';
+          const btn = document.createElement('button');
+          btn.className = 'ctrl-bonus-btn ' + cfg.classes + ' ctrl-queue-main';
+          btn.innerHTML = cfg.html;
+          if (cfg.title) btn.title = cfg.title;
+          btn.setAttribute('data-proxy-extra', eid);
+          btn.onclick = () => _ctrlExtraAction(eid);
+          const trig = document.createElement('button');
+          trig.className = 'ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle ctrl-peek-var-trigger';
+          trig.id = 'ctrl-peek-var-trigger-tgl-pinned';
+          trig.title = 'Pick reveal style';
+          trig.innerHTML = '&#x25B4;';
+          trig.onclick = () => _ctrlTogglePeekVarMenu('tgl-pinned');
+          const panel = document.createElement('div');
+          panel.className = 'ctrl-peek-var-dropdown ctrl-peek-var-up';
+          panel.id = 'ctrl-peek-var-tgl-pinned';
+          panel.style.display = 'none';
+          grp.appendChild(btn);
+          grp.appendChild(trig);
+          grp.appendChild(panel);
+          container.appendChild(grp);
+          continue;
+        }
         const btn = document.createElement('button');
         btn.className = 'ctrl-bonus-btn ' + cfg.classes;
         btn.innerHTML = cfg.html;
         if (cfg.title) btn.title = cfg.title;
         btn.setAttribute('data-proxy-extra', eid);
         if (cfg.ltMode) btn.setAttribute('data-lt-mode', cfg.ltMode);
-        if (cfg.serverCtrl) btn.style.display = 'none'; // hidden until server update
+        if (cfg.serverCtrl) btn.style.display = 'none';
         btn.onclick = () => _ctrlExtraAction(eid);
         container.appendChild(btn);
-      });
-      _ctrlRenderLayoutChips();
+      }
     }
 
     function _ctrlRenderLayoutChips() {
+      // Legacy: kept so save/load doesn't error. No visible chips rendered.
       const chips = document.getElementById('ctrl-extras-layout-chips');
       if (!chips) return;
       chips.innerHTML = '';
@@ -8464,33 +8805,140 @@ _HTML = r"""<!DOCTYPE html>
       });
     }
 
+    function _ctrlRenderOrderTray() {
+      const tray = document.getElementById('ctrl-pin-order-tray');
+      if (!tray) return;
+      tray.innerHTML = '';
+
+      for (let idx = 0; idx < _ctrlPinnedExtras.length; idx++) {
+        const eid = _ctrlPinnedExtras[idx];
+        const chip = document.createElement('span');
+        chip.className = 'ctrl-pin-chip';
+        chip.draggable = true;
+
+        const handle = document.createElement('span');
+        handle.className = 'ctrl-pin-chip-handle';
+        handle.textContent = '☰';
+
+        const label = document.createElement('span');
+        label.className = 'ctrl-pin-chip-label';
+        if (eid.startsWith('_br_')) {
+          label.textContent = '↵';
+          chip.classList.add('ctrl-pin-chip-break');
+          chip.title = 'Line break';
+        } else if (eid.startsWith('_sp_')) {
+          label.textContent = '□';
+          chip.classList.add('ctrl-pin-chip-space');
+          chip.title = 'Space';
+        } else {
+          const cfg = _ctrlExtrasConfig[eid];
+          const tmp = document.createElement('div');
+          tmp.innerHTML = cfg ? cfg.html : eid;
+          label.textContent = tmp.textContent || eid;
+          chip.title = cfg ? (cfg.title || '') : '';
+        }
+
+        const rm = document.createElement('button');
+        rm.className = 'ctrl-pin-chip-rm';
+        rm.textContent = '×';
+        rm.title = 'Remove';
+        (function(capturedEid, capturedIdx) {
+          rm.onclick = (e) => {
+            e.stopPropagation();
+            _ctrlPinnedExtras.splice(capturedIdx, 1);
+            if (!capturedEid.startsWith('_')) {
+              const pb = document.querySelector(`[data-extra-id="${capturedEid}"]`);
+              if (pb) pb.classList.remove('ctrl-extra-pinned');
+            }
+            _ctrlRenderOrderTray();
+            _ctrlRenderPinnedExtras();
+            _ctrlSavePanels();
+          };
+        })(eid, idx);
+
+        chip.appendChild(handle);
+        chip.appendChild(label);
+        chip.appendChild(rm);
+
+        (function(capturedIdx) {
+          chip.addEventListener('dragstart', e => {
+            _ctrlTrayDragSrcIdx = capturedIdx;
+            e.dataTransfer.effectAllowed = 'move';
+            setTimeout(() => chip.classList.add('chip-dragging'), 0);
+          });
+          chip.addEventListener('dragend', () => {
+            chip.classList.remove('chip-dragging');
+            tray.querySelectorAll('.chip-drop-before,.chip-drop-after').forEach(x => {
+              x.classList.remove('chip-drop-before', 'chip-drop-after');
+            });
+          });
+          chip.addEventListener('dragover', e => {
+            e.preventDefault();
+            const rect = chip.getBoundingClientRect();
+            const isLeft = e.clientX < rect.left + rect.width / 2;
+            chip.classList.toggle('chip-drop-before', isLeft);
+            chip.classList.toggle('chip-drop-after', !isLeft);
+          });
+          chip.addEventListener('dragleave', () => {
+            chip.classList.remove('chip-drop-before', 'chip-drop-after');
+          });
+          chip.addEventListener('drop', e => {
+            e.preventDefault();
+            const rect = chip.getBoundingClientRect();
+            const isLeft = e.clientX < rect.left + rect.width / 2;
+            chip.classList.remove('chip-drop-before', 'chip-drop-after');
+            if (_ctrlTrayDragSrcIdx === null) return;
+            const src = _ctrlTrayDragSrcIdx;
+            _ctrlTrayDragSrcIdx = null;
+            // insertAt: index in original array where we want to insert
+            const insertAt = isLeft ? capturedIdx : capturedIdx + 1;
+            if (src === capturedIdx || src === capturedIdx - 1 && !isLeft || src === capturedIdx + 1 && isLeft) return;
+            const arr = [..._ctrlPinnedExtras];
+            const [moved] = arr.splice(src, 1);
+            // After removal, adjust target if src was before it
+            const adjustedInsert = src < insertAt ? insertAt - 1 : insertAt;
+            arr.splice(adjustedInsert, 0, moved);
+            _ctrlPinnedExtras = arr;
+            _ctrlRenderOrderTray();
+            _ctrlRenderPinnedExtras();
+            _ctrlSavePanels();
+          });
+        })(idx);
+
+        tray.appendChild(chip);
+      }
+    }
+
     function _ctrlClearPinned() {
-      _ctrlPinnedExtras.clear();
+      _ctrlPinnedExtras = [];
       document.querySelectorAll('[data-extra-id]').forEach(el => el.classList.remove('ctrl-extra-pinned'));
+      _ctrlRenderOrderTray();
       _ctrlRenderPinnedExtras();
       _ctrlSavePanels();
     }
 
     function _ctrlResetPinned() {
-      _ctrlPinnedExtras = new Set(_CTRL_DEFAULT_PINNED);
-      // Re-mark pinned state in popup if still in edit mode
+      _ctrlPinnedExtras = [..._CTRL_DEFAULT_PINNED];
       document.querySelectorAll('[data-extra-id]').forEach(el => {
-        el.classList.toggle('ctrl-extra-pinned', _ctrlPinnedExtras.has(el.dataset.extraId));
+        el.classList.toggle('ctrl-extra-pinned', _ctrlPinnedExtras.includes(el.dataset.extraId));
       });
+      _ctrlRenderOrderTray();
       _ctrlRenderPinnedExtras();
       _ctrlSavePanels();
     }
 
     function _ctrlAddLayoutItem(type) {
       let idx = 0;
-      while (_ctrlPinnedExtras.has('_' + type + '_' + idx)) idx++;
-      _ctrlPinnedExtras.add('_' + type + '_' + idx);
+      while (_ctrlPinnedExtras.includes('_' + type + '_' + idx)) idx++;
+      _ctrlPinnedExtras.push('_' + type + '_' + idx);
+      _ctrlRenderOrderTray();
       _ctrlRenderPinnedExtras();
       _ctrlSavePanels();
     }
 
     function _ctrlRemoveLayoutItem(eid) {
-      _ctrlPinnedExtras.delete(eid);
+      _ctrlPinnedExtras = _ctrlPinnedExtras.filter(e => e !== eid);
+      _ctrlRenderOrderTray();
       _ctrlRenderPinnedExtras();
       _ctrlSavePanels();
     }
@@ -8504,11 +8952,15 @@ _HTML = r"""<!DOCTYPE html>
       const hint = document.getElementById('ctrl-extras-edit-hint');
       if (hint) hint.classList.toggle('active', _ctrlExtrasEditMode);
       const layoutSect = document.getElementById('ctrl-extras-layout-sect');
-      if (layoutSect) layoutSect.style.display = _ctrlExtrasEditMode ? '' : 'none';
+      if (layoutSect) layoutSect.style.display = 'none';
       const editActions = document.getElementById('ctrl-extras-edit-actions');
       if (editActions) editActions.style.display = _ctrlExtrasEditMode ? 'flex' : 'none';
+      const tray = document.getElementById('ctrl-pin-order-tray');
+      if (tray) tray.classList.toggle('active', _ctrlExtrasEditMode);
+      const trayActions = document.getElementById('ctrl-pin-tray-actions');
+      if (trayActions) trayActions.classList.toggle('active', _ctrlExtrasEditMode);
       if (_ctrlExtrasEditMode) {
-        // Mark currently pinned buttons
+        _ctrlRenderOrderTray();
         _ctrlPinnedExtras.forEach(eid => {
           const btn = document.querySelector(`[data-extra-id="${eid}"]`);
           if (btn) btn.classList.add('ctrl-extra-pinned');
@@ -8523,7 +8975,6 @@ _HTML = r"""<!DOCTYPE html>
       document.getElementById('ctrl-extras-popup-overlay').classList.add('active');
     }
     function _ctrlCloseExtrasPopup() {
-      // Exit edit mode when closing
       if (_ctrlExtrasEditMode) _ctrlToggleExtrasEditMode();
       document.getElementById('ctrl-extras-popup-overlay').classList.remove('active');
     }
@@ -8612,12 +9063,12 @@ _HTML = r"""<!DOCTYPE html>
     function _ctrlVolStep(dir, step) {
       const sl = document.getElementById('ctrl-vol-slider');
       const cur = parseInt(sl ? sl.value : 100, 10);
-      const next = step ? Math.max(0, Math.min(100, cur + dir * step)) : _snap5(cur, dir, 0, 100);
+      const next = step ? Math.max(0, Math.min(200, cur + dir * step)) : _snap5(cur, dir, 0, 200);
       if (sl) sl.value = next;
       _ctrlVolumeChange(next);
     }
 
-    let _ctrlBzzPct = 100; // BZZ (buzz sound_volume) as percentage (0-150)
+    let _ctrlBzzPct = 100; // BZZ (buzz sound_volume) as percentage (0-200)
     function _ctrlBzzRender() {
       const sl = document.getElementById('ctrl-bzz-slider');
       const lb = document.getElementById('ctrl-bzz-label');
@@ -8625,18 +9076,18 @@ _HTML = r"""<!DOCTYPE html>
       if (lb) lb.textContent = _ctrlBzzPct + '%';
     }
     function _ctrlBzzChange(val) {
-      _ctrlBzzPct = Math.max(0, Math.min(150, Math.round(parseFloat(val) || 0)));
+      _ctrlBzzPct = Math.max(0, Math.min(200, Math.round(parseFloat(val) || 0)));
       const lb = document.getElementById('ctrl-bzz-label');
       if (lb) lb.textContent = _ctrlBzzPct + '%';
       socket.emit('host_action', { action: 'set_bzz_modifier', modifier: _ctrlBzzPct / 100 });
     }
     function _ctrlBzzStep(dir, step) {
-      _ctrlBzzPct = step ? Math.max(0, Math.min(150, _ctrlBzzPct + dir * step)) : _snap5(_ctrlBzzPct, dir, 0, 150);
+      _ctrlBzzPct = step ? Math.max(0, Math.min(200, _ctrlBzzPct + dir * step)) : _snap5(_ctrlBzzPct, dir, 0, 200);
       _ctrlBzzRender();
       socket.emit('host_action', { action: 'set_bzz_modifier', modifier: _ctrlBzzPct / 100 });
     }
 
-    let _ctrlBgmPct = 100; // BGM modifier as percentage (0-150)
+    let _ctrlBgmPct = 100; // BGM modifier as percentage (0-200)
     function _ctrlBgmRender() {
       const sl = document.getElementById('ctrl-bgm-slider');
       const lb = document.getElementById('ctrl-bgm-label');
@@ -8644,13 +9095,13 @@ _HTML = r"""<!DOCTYPE html>
       if (lb) lb.textContent = _ctrlBgmPct + '%';
     }
     function _ctrlBgmChange(val) {
-      _ctrlBgmPct = Math.max(0, Math.min(150, Math.round(parseFloat(val) || 0)));
+      _ctrlBgmPct = Math.max(0, Math.min(200, Math.round(parseFloat(val) || 0)));
       const lb = document.getElementById('ctrl-bgm-label');
       if (lb) lb.textContent = _ctrlBgmPct + '%';
       socket.emit('host_action', { action: 'set_bgm_modifier', modifier: _ctrlBgmPct / 100 });
     }
     function _ctrlBgmStep(dir, step) {
-      _ctrlBgmPct = step ? Math.max(0, Math.min(150, _ctrlBgmPct + dir * step)) : _snap5(_ctrlBgmPct, dir, 0, 150);
+      _ctrlBgmPct = step ? Math.max(0, Math.min(200, _ctrlBgmPct + dir * step)) : _snap5(_ctrlBgmPct, dir, 0, 200);
       _ctrlBgmRender();
       socket.emit('host_action', { action: 'set_bgm_modifier', modifier: _ctrlBgmPct / 100 });
     }
@@ -9836,7 +10287,7 @@ def set_rules_text(header: str, body: str):
         _socketio.emit('rules_update', _current_rules)
 
 
-def push_question(title, info='', choices=None, drum=None, stepper=None, tags=None, year=None, tags_max=None, autocomplete=None, rank_slider=None, buzzer_only=False):
+def push_question(title, info='', choices=None, drum=None, stepper=None, tags=None, year=None, tags_max=None, autocomplete=None, rank_slider=None, buzzer_only=False, character_choices=None, character_picks=None):
     """Push a question to all connected browser clients.
 
     Args:
@@ -9884,8 +10335,10 @@ def push_question(title, info='', choices=None, drum=None, stepper=None, tags=No
         _taken_years = set()
         _current_question['year']        = year
         _current_question['taken_years'] = []
-    if autocomplete:      _current_question['autocomplete'] = autocomplete
-    if buzzer_only:       _current_question['buzzer_only'] = True
+    if autocomplete:        _current_question['autocomplete']       = autocomplete
+    if buzzer_only:         _current_question['buzzer_only']        = True
+    if character_choices:   _current_question['character_choices']  = character_choices
+    if character_picks:     _current_question['character_picks']    = character_picks
 
     # Reset buzzer each round.
     # Buzzer bonus starts unlocked; other questions keep buzzer closed.
@@ -9952,6 +10405,9 @@ def reveal_answer(correct_display: str, q_type: str = '', correct_tags: list = N
     if q.get('rank_slider'):
         rs = q['rank_slider']
         question_data['rank_slider'] = {'min': rs.get('min', 1), 'max': rs.get('max', 9999)}
+    if q.get('character_choices'):
+        question_data['character_choices'] = q['character_choices']
+        question_data['character_picks']   = q.get('character_picks', 1)
     _socketio.emit('answer_reveal', {
         'question': title,
         'correct': correct_display,
@@ -10486,6 +10942,24 @@ def _build_app():
         from flask import jsonify
         names = _player_names_provider() if _player_names_provider else []
         return jsonify(names)
+
+    @_app.route('/proxy_image')
+    def proxy_image():
+        from flask import request as _req, Response
+        import urllib.request as _ur
+        import urllib.parse as _up
+        url = _req.args.get('url', '')
+        # Only proxy images from AniDB CDN to prevent SSRF
+        parsed = _up.urlparse(url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc.endswith('anidb.net'):
+            return Response('Forbidden', status=403)
+        try:
+            with _ur.urlopen(_ur.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=10) as resp:
+                data = resp.read()
+                ct = resp.headers.get_content_type() or 'image/jpeg'
+            return Response(data, content_type=ct)
+        except Exception:
+            return Response('Not Found', status=404)
 
     @_app.route('/player_colors')
     def get_player_colors_route():
