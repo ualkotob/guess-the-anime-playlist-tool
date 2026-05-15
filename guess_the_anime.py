@@ -51,6 +51,12 @@ import zipfile
 import tempfile
 import unicodedata
 import _app_scripts.web_server as web_server
+import _app_scripts.scoreboard_control as scoreboard_control
+import _app_scripts.youtube_control as youtube_control
+import _app_scripts.metadata_fetch as metadata_fetch
+import _app_scripts.utils as utils
+import _app_scripts.auto_update as auto_update
+import _app_scripts.cache_download as cache_download
 
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
 
@@ -1045,7 +1051,7 @@ AI_METADATA_FILE = "metadata/ai_metadata.json"
 anime_metadata_overrides = {}
 ANIME_METADATA_OVERRIDES_FILE = "metadata/anime_metadata_overrides.json"
 manual_metadata_file = "metadata/manual_metadata.json"
-youtube_metadata = {}
+youtube_metadata = youtube_control.youtube_metadata  # dict shared with youtube_control (updated in-place)
 YOUTUBE_METADATA_FILE = "metadata/youtube_metadata.json"
 anilist_metadata = {}
 ANILIST_METADATA_FILE = "metadata/anilist_metadata.json"
@@ -1094,27 +1100,9 @@ def get_clean_filename(playlist_entry, base_only=False):
         clean_entry = _play_name_key(clean_entry)
     return os.path.basename(clean_entry) if os.path.isabs(clean_entry) else clean_entry
 
-def is_youtube_file(filename):
-    """Check if a filename corresponds to a YouTube video in metadata."""
-    if not youtube_metadata.get("videos"):
-        return False
-    
-    for video_id, video in youtube_metadata.get("videos", {}).items():
-        if video.get("filename") == filename:
-            return True
-    return False
+def is_youtube_file(filename): return youtube_control.is_youtube_file(filename)
 
-def get_youtube_metadata_by_filename(filename):
-    """Get YouTube metadata for a specific filename."""
-    for video_id, video in youtube_metadata.get("videos", {}).items():
-        if video.get("filename") == filename:
-            # Add channel info
-            channel_info = youtube_metadata.get("channels", {}).get(video.get("channel_id"), {
-                "name": "N/A",
-                "subscriber_count": 0
-            })
-            return video | channel_info | {"url": video_id}
-    return None
+def get_youtube_metadata_by_filename(filename): return youtube_control.get_youtube_metadata_by_filename(filename)
 
 host = ""
 volume_level = 100
@@ -1142,8 +1130,6 @@ CLOUDFLARE_TUNNEL_TOKEN = ""
 CLOUDFLARE_PUBLIC_URL = ""
 NGROK_AVAILABLE = web_server.NGROK_AVAILABLE
 CLOUDFLARED_AVAILABLE = web_server.CLOUDFLARED_AVAILABLE
-SCOREBOARD_AVAILABLE = (os.path.isfile("scoreboard.exe") or os.path.isfile("scoreboard.py")
-                        or os.path.isfile("universal_scoreboard.exe") or os.path.isfile("universal_scoreboard.py"))
 LAUNCH_SCOREBOARD_ON_STARTUP = False
 AUTO_EXIT_SCOREBOARD = False
 CONFIG_FOLDER = "config"
@@ -1250,605 +1236,16 @@ def scl(num, type=None):
 #         *FETCHING ANIME METADATA
 # =========================================
 
-# Function to fetch anime metadata using AnimeThemes.moe API
-animethemes_cache = {}
+def fetch_arm_ids(mal_id): return metadata_fetch.fetch_arm_ids(mal_id)
+def fetch_animethemes_metadata(filename=None, mal_id=None, split=True): return metadata_fetch.fetch_animethemes_metadata(filename=filename, mal_id=mal_id, split=split)
+def fetch_jikan_metadata(mal_id): return metadata_fetch.fetch_jikan_metadata(mal_id)
 
-def fetch_arm_ids(mal_id):
-    """Fetch anilist_id and anidb_id for a given MAL ID using the ARM cross-reference service.
-    Returns a dict with 'anilist' and 'anidb' keys (string IDs or None)."""
-    try:
-        response = requests.get(
-            "https://arm.haglund.dev/api/v2/ids",
-            params={"source": "myanimelist", "id": str(mal_id)},
-            timeout=5
-        )
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                "anilist": str(data["anilist"]) if data.get("anilist") else None,
-                "anidb":   str(data["anidb"])   if data.get("anidb")   else None,
-            }
-    except Exception as e:
-        print(f" [ARM lookup ✗: {e}]", end="")
-    return {"anilist": None, "anidb": None}
-
-def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
-    url = "https://api.animethemes.moe/anime"
-    if filename:
-        if split:
-            filename = filename.split("-")[0]
-            filename_query = filename + "-%"
-        else:
-            filename_query = filename
-        if animethemes_cache.get(filename):
-            return animethemes_cache.get(filename)
-        params = {
-            "filter[has]": "animethemes.animethemeentries.videos",
-            "filter[video][basename-like]": filename_query,
-            "include": "series,resources,images,animethemes.animethemeentries.videos,animethemes.song.artists"
-        }
-    else:
-        params = {
-            "filter[has]": "resources",
-            "filter[resource][site]": "MyAnimeList",
-            "filter[resource][external_id]": str(mal_id),
-            "include": "series,resources,images,animethemes.animethemeentries.videos,animethemes.song.artists"
-        }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        if data.get("anime"):
-            if filename:
-                animethemes_cache[filename] = data["anime"][0]
-            return data["anime"][0]
-    return None
-
-# Function to fetch anime metadata using Jikan API
-last_jikan_error = None
-def fetch_jikan_metadata(mal_id):
-    global last_jikan_error
-    last_jikan_error = None
-    url = f"https://api.jikan.moe/v4/anime/{mal_id}/full"
-    try:
-        # Keep this responsive when Jikan is down/slow.
-        response = requests.get(url, timeout=12)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("data"):
-                return data["data"]
-            last_jikan_error = f"Jikan returned 200 but no data payload for MAL {mal_id}"
-            return None
-
-        # Jikan rate-limit / temporary outage handling hints.
-        if response.status_code == 429:
-            retry_after = response.headers.get("Retry-After")
-            last_jikan_error = f"Jikan rate-limited (429) for MAL {mal_id}" + (f", Retry-After={retry_after}s" if retry_after else "")
-        elif 500 <= response.status_code <= 599:
-            last_jikan_error = f"Jikan server error ({response.status_code}) for MAL {mal_id}"
-        else:
-            last_jikan_error = f"Jikan request failed ({response.status_code}) for MAL {mal_id}"
-    except requests.exceptions.Timeout:
-        last_jikan_error = f"Jikan timeout for MAL {mal_id}"
-    except requests.exceptions.RequestException as e:
-        last_jikan_error = f"Jikan network error for MAL {mal_id}: {e}"
-    except Exception as e:
-        last_jikan_error = f"Unexpected Jikan error for MAL {mal_id}: {e}"
-
-    return None
-
-# ---- IGDB (Twitch) game metadata ----
-_igdb_token_cache = {"token": None, "expires_at": 0}
-
-def fetch_igdb_token():
-    """Obtain or return a cached Twitch OAuth bearer token for IGDB."""
-    import time as _time
-    if _igdb_token_cache["token"] and _time.time() < _igdb_token_cache["expires_at"] - 60:
-        return _igdb_token_cache["token"]
-    if not IGDB_CLIENT_ID or not IGDB_CLIENT_SECRET:
-        return None
-    try:
-        resp = requests.post(
-            "https://id.twitch.tv/oauth2/token",
-            params={
-                "client_id": IGDB_CLIENT_ID,
-                "client_secret": IGDB_CLIENT_SECRET,
-                "grant_type": "client_credentials",
-            },
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            d = resp.json()
-            _igdb_token_cache["token"] = d["access_token"]
-            import time as _time2
-            _igdb_token_cache["expires_at"] = _time2.time() + d.get("expires_in", 3600)
-            return _igdb_token_cache["token"]
-        else:
-            print(f" [IGDB token] FAILED: {resp.status_code} {resp.text[:200]}")
-    except Exception as e:
-        print(f" [IGDB token error: {e}]")
-    return None
-
-def fetch_igdb_metadata(igdb_id):
-    """Fetch game metadata from IGDB and map it to the internal schema."""
-    token = fetch_igdb_token()
-    if not token:
-        return None
-    try:
-        headers = {
-            "Client-ID": IGDB_CLIENT_ID,
-            "Authorization": f"Bearer {token}",
-        }
-        # Support both numeric IDs and URL slugs
-        if str(igdb_id).lstrip("-").isdigit():
-            where_clause = f"where id = {igdb_id};"
-        else:
-            where_clause = f'where slug = "{igdb_id}";'
-        body = (
-            f"fields name,alternative_names.name,summary,first_release_date,"
-            f"cover.url,rating,rating_count,genres.name,themes.name,"
-            f"platforms.name,involved_companies.company.name,involved_companies.developer,"
-            f"involved_companies.publisher,game_type.type,videos.video_id,videos.name,"
-            f"collection.name,collections.name,franchise.name,franchises.name,slug;"
-            f" {where_clause}"
-        )
-        resp = requests.post(
-            "https://api.igdb.com/v4/games",
-            headers=headers,
-            data=body,
-            timeout=12,
-        )
-        if resp.status_code != 200:
-            print(f" [IGDB {resp.status_code} for id {igdb_id}]")
-            return None
-        results = resp.json()
-        if not results:
-            print(f" [IGDB] No results for id={igdb_id}")
-            return None
-        g = results[0]
-
-        # Title
-        title = g.get("name", "N/A")
-        alt_names = [a["name"] for a in g.get("alternative_names", []) if a.get("name")]
-
-        # Release date
-        release = None
-        if g.get("first_release_date"):
-            import datetime as _dt
-            release = _dt.datetime.fromtimestamp(g["first_release_date"], _dt.timezone.utc).strftime("%B %d, %Y")
-
-        # Cover  (IGDB URLs start with //images.igdb.com — add https: and upgrade to 720p)
-        cover_url = None
-        if g.get("cover") and g["cover"].get("url"):
-            raw = g["cover"]["url"]
-            if raw.startswith("//"):
-                raw = "https:" + raw
-            cover_url = raw.replace("/t_thumb/", "/t_720p/")
-
-        # Rating  (IGDB uses 0-100)
-        score = round(g["rating"] / 10, 1) if g.get("rating") else None
-        reviews = g.get("rating_count")
-
-        # Genres / themes
-        genres = [x["name"] for x in g.get("genres", []) if x.get("name")]
-        # Deduplicate themes against genres to avoid showing the same tag twice
-        _raw_themes = [x["name"] for x in g.get("themes", []) if x.get("name")]
-        themes = [t for t in _raw_themes if t not in genres]
-
-        # Platforms
-        platforms = [x["name"] for x in g.get("platforms", []) if x.get("name")]
-
-        # Studios = developers first, then publishers
-        studios = []
-        for ic in g.get("involved_companies", []):
-            name = (ic.get("company") or {}).get("name")
-            if name and ic.get("developer") and name not in studios:
-                studios.append(name)
-        for ic in g.get("involved_companies", []):
-            name = (ic.get("company") or {}).get("name")
-            if name and ic.get("publisher") and name not in studios:
-                studios.append(name)
-
-        # Determine type: Visual Novel check via IGDB game_type
-        game_type_str = ((g.get("game_type") or {}).get("type") or "").lower()
-        entry_type = "Visual Novel" if "visual novel" in game_type_str else "Game"
-
-        # Trailer — prefer a video named "Trailer", fall back to first video
-        trailer_yt_id = None
-        videos = g.get("videos", [])
-        for v in videos:
-            if "trailer" in (v.get("name") or "").lower() and v.get("video_id"):
-                trailer_yt_id = v["video_id"]
-                break
-        if not trailer_yt_id and videos:
-            trailer_yt_id = videos[0].get("video_id")
-
-        # Series — from collection/collections (primary) then franchise/franchises (broader)
-        series_names = []
-        if g.get("collection") and g["collection"].get("name"):
-            series_names.append(g["collection"]["name"])
-        for col in g.get("collections", []):
-            name = col.get("name")
-            if name and name not in series_names:
-                series_names.append(name)
-        if g.get("franchise") and g["franchise"].get("name"):
-            name = g["franchise"]["name"]
-            if name not in series_names:
-                series_names.append(name)
-        for fr in g.get("franchises", []):
-            name = fr.get("name")
-            if name and name not in series_names:
-                series_names.append(name)
-
-        mapped = {
-            "title": title,
-            "eng_title": title,
-            "synonyms": alt_names,
-            "igdb": str(igdb_id),
-            "igdb_slug": g.get("slug"),
-            "series": series_names,
-            "release": release,
-            "score": score,
-            "reviews": reviews,
-            "type": entry_type,
-            "source": "Original",
-            "studios": studios,
-            "genres": genres,
-            "themes": themes,
-            "demographics": [],
-            "platforms": platforms,
-            "synopsis": g.get("summary", "N/A"),
-            "cover": cover_url,
-            "trailer": trailer_yt_id,
-        }
-        return mapped
-    except Exception as e:
-        print(f" [IGDB fetch error for id {igdb_id}: {e}]")
-        return None
-
-def fetch_anidb_metadata(aid):
-    url = "http://api.anidb.net:9001/httpapi"
-    params = {
-        "request": "anime",
-        "client": "guesstheanime",
-        "clientver": "1",
-        "protover": "1",
-        "aid": str(aid)
-    }
-
-    response = requests.get(url, params=params)
-    if not response.ok:
-        raise Exception(f"AniDB request failed: {response.status_code}")
-
-    root = ET.fromstring(response.text)
-    result = {}
-
-    ### TAGS ###
-    tag_elements = root.findall("tags/tag")
-    tag_id_map = {tag.get("id"): tag for tag in tag_elements}
-    parent_ids = {tag.get("parentid") for tag in tag_elements if tag.get("parentid")}
-
-    tags = []
-    for tag in tag_elements:
-        if tag.get("globalspoiler") == "true" or tag.get("localspoiler") == "true":
-            continue
-        tag_id = tag.get("id")
-        if tag_id in parent_ids:
-            continue  # It's a parent
-        name = tag.findtext("name")
-        weight = int(tag.get("weight") or 0)
-        if name:
-            tags.append([name.lower(), weight])
-    result["tags"] = tags
-
-    ### CHARACTERS ###
-    max_types = {
-        "a":{"max":20},
-        "s":{"max":15},
-        "m":{"max":15}
-    }
-    characters = []
-    all_characters = root.findall("characters/character")
-    for char in all_characters:
-        name = char.findtext("name")
-        char_type = char.get("type")[:1] or "a"
-        pic = char.findtext("picture")
-        gender = char.findtext("gender")
-        desc = char.findtext("description")
-        if pic and char_type in ['a','s','m']:
-            character = [char_type, name, os.path.basename(pic), gender]
-            if desc:
-                character.append(desc.split("\nSource:")[0])
-            if max_types[char_type].get("count", 0) < max_types[char_type]["max"]:
-                max_types[char_type]["count"] = max_types[char_type].get("count", 0) + 1
-                characters.append(character)
-    result["characters"] = characters
-
-    ### EPISODES ###
-    episodes = []
-    for ep in root.findall("episodes/episode"):
-        epno_elem = ep.find("epno")
-        if epno_elem is None or epno_elem.get("type") != "1":
-            continue
-
-        epno = epno_elem.text
-        if not epno or not epno.isdigit() or (epno.isdigit() and int(epno) >= 50):
-            continue
-
-        number = int(epno)
-
-        # Loop through all titles and find the one with xml:lang="en"
-        title = None
-        for title_elem in ep.findall("title"):
-            if title_elem.attrib.get("{http://www.w3.org/XML/1998/namespace}lang") == "en":
-                title = title_elem.text.strip()
-                break
-
-        if not title:
-            title = f"Episode {number}"
-
-        episodes.append([number, title])
-
-    result["episodes"] = episodes
-
-    return result
-
-def fetch_anilist_user_ids(username, watched_only=False):
-    """Fetches a set of AniList anime IDs for a given username. Can filter for only watched anime."""
-    query = '''
-    query ($name: String) {
-      MediaListCollection(userName: $name, type: ANIME) {
-        lists {
-          entries {
-            status
-            media {
-              id
-            }
-          }
-        }
-      }
-    }
-    '''
-    variables = {
-        "name": username
-    }
-
-    response = requests.post(
-        "https://graphql.anilist.co",
-        json={"query": query, "variables": variables}
-    )
-
-    if response.status_code != 200:
-        print("AniList API error:", response.text)
-        return set()
-
-    try:
-        data = response.json()
-        ids = {
-            str(entry["media"]["id"])
-            for lst in data["data"]["MediaListCollection"]["lists"]
-            for entry in lst["entries"]
-            if (
-                "media" in entry
-                and entry["media"].get("id")
-                and (
-                    not watched_only or entry.get("status") in ("COMPLETED", "REPEATING")
-                )
-            )
-        }
-        return ids
-    except Exception as e:
-        print("Failed to parse AniList response:", e)
-        return set()
-
-def fetch_arm_ids(mal_id):
-    """Looks up AniList, aniDB, and Kitsu IDs for a given MAL ID via arm-server.
-    Returns a dict with keys: 'anilist', 'anidb', 'kitsu' (all strings), or empty dict on failure."""
-    try:
-        response = requests.get(
-            "https://arm.haglund.dev/api/v2/ids",
-            params={"source": "myanimelist", "id": str(mal_id)},
-            timeout=5
-        )
-        if response.status_code != 200:
-            return {}
-        data = response.json()
-        result = {}
-        if data.get("anilist"):
-            result["anilist"] = str(data["anilist"])
-        if data.get("anidb"):
-            result["anidb"] = str(data["anidb"])
-        if data.get("kitsu"):
-            result["kitsu"] = str(data["kitsu"])
-        return result
-    except Exception as e:
-        print(f" [ARM lookup ✗: {e}]", end="")
-        return {}
-
-def fetch_anilist_metadata(anilist_id=None, mal_id=None):
-    """Fetches detailed metadata for a specific AniList anime ID, or by MAL ID.
-    When mal_id is given the AniList ID is discovered from the response.
-    Returns (resolved_anilist_id_str, metadata_dict), or (None, None) on failure."""
-    if anilist_id is not None:
-        lookup_field = "id: $id"
-        variables = {"id": int(anilist_id)}
-    elif mal_id is not None:
-        lookup_field = "idMal: $id"
-        variables = {"id": int(mal_id)}
-    else:
-        return None, None
-
-    query = f'''
-    query ($id: Int) {{
-      Media({lookup_field}, type: ANIME) {{
-        id
-        idMal
-        title {{
-          romaji
-          english
-        }}
-        format
-        meanScore
-        popularity
-        rankings {{
-          rank
-          type
-          format
-          year
-          season
-          allTime
-          context
-        }}
-        tags {{
-          name
-          category
-          rank
-          isMediaSpoiler
-        }}
-        externalLinks {{
-          site
-          url
-        }}
-        characters(sort: ROLE, perPage: 25) {{
-          edges {{
-            role
-            node {{
-              name {{
-                full
-              }}
-              gender
-              age
-              description
-              image {{
-                large
-                medium
-              }}
-            }}
-            voiceActors(language: JAPANESE) {{
-              name {{
-                full
-              }}
-            }}
-          }}
-        }}
-      }}
-    }}
-    '''
-
-    try:
-        response = requests.post(
-            "https://graphql.anilist.co",
-            json={"query": query, "variables": variables}
-        )
-
-        if response.status_code != 200:
-            print(f"AniList API error: {response.text}")
-            return None, None
-
-        data = response.json()
-        media = data.get("data", {}).get("Media")
-        
-        if not media:
-            return None, None
-
-        # Resolve the AniList ID from the response (works for both lookup modes)
-        resolved_anilist_id = str(media.get("id")) if media.get("id") else str(anilist_id or "")
-
-        # Extract and format the metadata in desired order
-        metadata = {
-            "mal_id": media.get("idMal"),
-            "title": media.get("title", {}).get("romaji"),
-            "title_english": media.get("title", {}).get("english"),
-            "format": media.get("format"),
-            "score": media.get("meanScore"),
-            "popularity": media.get("popularity")
-        }
-
-        # Extract rankings - store all-time, yearly, and seasonal rankings
-        # Add these before tags to maintain order
-        if media.get("rankings"):
-            for ranking in media["rankings"]:
-                rank_type = ranking.get("type")
-                is_all_time = ranking.get("allTime", False)
-                year = ranking.get("year")
-                season = ranking.get("season")
-                rank_value = ranking.get("rank")
-                
-                if rank_type == "RATED":
-                    if is_all_time:
-                        metadata["score_rank_all"] = rank_value
-                    elif season:
-                        # Seasonal ranking
-                        metadata["score_rank_season"] = rank_value
-                    elif year:
-                        # Yearly ranking
-                        metadata["score_rank_year"] = rank_value
-                        
-                elif rank_type == "POPULAR":
-                    if is_all_time:
-                        metadata["popularity_rank_all"] = rank_value
-                    elif season:
-                        # Seasonal ranking
-                        metadata["popularity_rank_season"] = rank_value
-                    elif year:
-                        # Yearly ranking
-                        metadata["popularity_rank_year"] = rank_value
-
-        # Now add tags after rankings
-        metadata["tags"] = []
-        
-        if media.get("tags"):
-            sorted_tags = sorted(media["tags"], key=lambda x: x.get("rank", 0), reverse=True)
-            metadata["tags"] = [
-                {
-                    "name": tag.get("name"),
-                    "category": tag.get("category"),
-                    "rank": tag.get("rank"),
-                    "spoiler": tag.get("isMediaSpoiler", False)
-                }
-                for tag in sorted_tags
-            ]
-
-        # Extract aniDB ID from externalLinks
-        anidb_id_from_anilist = None
-        external_links = media.get("externalLinks") or []
-        for link in external_links:
-            if link.get("site") == "AniDB" and link.get("url"):
-                m = re.search(r'anidb\.net/anime/(\d+)', link["url"])
-                if m:
-                    anidb_id_from_anilist = m.group(1)
-                    break
-        if anidb_id_from_anilist:
-            metadata["anidb_id"] = anidb_id_from_anilist
-
-        # Finally add characters
-        metadata["characters"] = []
-        
-        # Extract character information (top 15, sorted by role)
-        if media.get("characters", {}).get("edges"):
-            for edge in media["characters"]["edges"]:
-                char_node = edge.get("node", {})
-                character_data = {
-                    "name": char_node.get("name", {}).get("full"),
-                    "role": edge.get("role"),
-                    "gender": char_node.get("gender"),
-                    "age": char_node.get("age"),
-                    "description": char_node.get("description"),
-                    "image": char_node.get("image", {}).get("large")
-                }
-                
-                voice_actors = edge.get("voiceActors", [])
-                if voice_actors:
-                    character_data["voice_actors"] = [
-                        va.get("name", {}).get("full") for va in voice_actors
-                    ]
-                
-                metadata["characters"].append(character_data)
-
-        return resolved_anilist_id, metadata
-
-    except Exception as e:
-        print(f"Failed to fetch AniList metadata: {e}")
-        return None, None
+def fetch_igdb_token(): return metadata_fetch.fetch_igdb_token()
+def fetch_igdb_metadata(igdb_id): return metadata_fetch.fetch_igdb_metadata(igdb_id)
+def fetch_anidb_metadata(aid): return metadata_fetch.fetch_anidb_metadata(aid)
+def fetch_anilist_user_ids(username, watched_only=False): return metadata_fetch.fetch_anilist_user_ids(username, watched_only=watched_only)
+def fetch_arm_ids(mal_id): return metadata_fetch.fetch_arm_ids(mal_id)
+def fetch_anilist_metadata(anilist_id=None, mal_id=None): return metadata_fetch.fetch_anilist_metadata(anilist_id=anilist_id, mal_id=mal_id)
 
 def fetch_all_anilist_metadata():
     """Fetches AniList metadata for all unique AniList IDs in file_metadata.
@@ -2157,26 +1554,7 @@ def extract_video_file_properties(filename):
         print(f"Failed to extract video properties for {filename}: {e}")
         return {}
 
-def extract_video_properties(anime_themes, filename):
-    """Extract video properties (lyrics, nc, resolution, source) from AnimThemes API response."""
-    properties = {}
-    
-    if not anime_themes or not anime_themes.get("animethemes"):
-        return properties
-    
-    # Find the matching video in the themes
-    for theme in anime_themes.get("animethemes", []):
-        for entry in theme.get("animethemeentries", []):
-            for video in entry.get("videos", []):
-                if video.get("basename") and filename.split(".")[0] == video.get("basename", "").split(".")[0]:
-                    # Extract properties from video
-                    properties["lyrics"] = video.get("lyrics", False)
-                    properties["nc"] = video.get("nc", False)
-                    properties["resolution"] = video.get("resolution")
-                    properties["source"] = video.get("source")
-                    return properties
-    
-    return properties
+def extract_video_properties(anime_themes, filename): return metadata_fetch.extract_video_properties(anime_themes, filename)
 
 def refetch_metadata():
     if currently_playing and currently_playing.get('type') == 'theme':
@@ -2186,33 +1564,7 @@ def refetch_metadata():
         filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
     fetch_metadata(filename, True)
 
-def get_external_site_id(anime_themes, site):
-    if anime_themes:
-        for resource in anime_themes.get("resources", []):
-            if resource.get("site") == site:
-                ext_id = resource.get("external_id")
-                if ext_id is not None:
-                    site_id = str(ext_id)
-                    if site_id != "None":
-                        return site_id
-
-                # Fallback: some resources may omit external_id but still include it in the link.
-                link = str(resource.get("link") or "")
-                if "/episode/" in link:
-                    return None
-                if site == "MyAnimeList":
-                    m = re.search(r"/anime/(\d+)", link)
-                    if m:
-                        return m.group(1)
-                elif site == "AniList":
-                    m = re.search(r"/anime/(\d+)", link)
-                    if m:
-                        return m.group(1)
-                elif site == "aniDB":
-                    m = re.search(r"/anime/(\d+)", link)
-                    if m:
-                        return m.group(1)
-    return None
+def get_external_site_id(anime_themes, site): return metadata_fetch.get_external_site_id(anime_themes, site)
 
 def reorder_file_metadata_entry(mal_id):
     """Reorder file_metadata entry to have name first, then IDs, then themes last."""
@@ -2245,21 +1597,7 @@ def reorder_file_metadata_entry(mal_id):
 anidb_cooldown = False
 fetching_metadata = {}
 
-def _song_slug_sort_key(song):
-    """Sort key for theme songs: OPs before EDs before others, numerically within each group."""
-    slug = song.get("slug") or "" if isinstance(song, dict) else (song or "")
-    m = re.match(r"([A-Z]+)(\d+)(.*)", slug)
-    if m:
-        prefix, num, variant = m.groups()
-        return (prefix, bool(variant), int(num))
-    return ("ZZZ", True, 999999)
-
-def sort_songs(songs):
-    """Return a new sorted list: openings, then endings, then others; numerically within each group."""
-    openings = [s for s in songs if "OP" in (s.get("slug") or "")]
-    endings  = [s for s in songs if "ED" in (s.get("slug") or "")]
-    others   = [s for s in songs if "OP" not in (s.get("slug") or "") and "ED" not in (s.get("slug") or "")]
-    return sorted(openings, key=_song_slug_sort_key) + sorted(endings, key=_song_slug_sort_key) + sorted(others, key=_song_slug_sort_key)
+def sort_songs(songs): return metadata_fetch.sort_songs(songs)
 
 def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False):
     global currently_playing, anidb_cooldown, anidb_delay
@@ -2671,7 +2009,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                     anime_metadata[mal_id] = anime_data
                     if anime_data.get("title") and mal_entry.get("name") in [None, "N/A", ""]:
                         mal_entry["name"] = anime_data.get("title")
-                _jikan_reason = f" ({last_jikan_error})" if last_jikan_error else ""
+                _jikan_reason = f" ({metadata_fetch.last_jikan_error})" if metadata_fetch.last_jikan_error else ""
                 print(f" [META DBG] Jikan missing/unavailable for MAL {mal_id}{_jikan_reason}; using minimal AniThemes-derived metadata", end="")
         anilist_fetched = False
         if not anilist_id and mal_id and (refetch or mal_id not in file_metadata or not file_metadata[mal_id].get("anilist")):
@@ -2944,7 +2282,7 @@ def refresh_jikan_data(mal_id, data, label=""):
         save_metadata()
         print(f"\r{label}Refreshing Jikan data for {data['title']}...COMPLETE")
     else:
-        _reason = f" ({last_jikan_error})" if last_jikan_error else ""
+        _reason = f" ({metadata_fetch.last_jikan_error})" if metadata_fetch.last_jikan_error else ""
         print(f"\r{label}Refreshing Jikan data for {title}...FAILED{_reason}")
 
 def refresh_anidb_data(anidb_id, data, label=""):
@@ -2981,96 +2319,11 @@ def refresh_anidb_data(anidb_id, data, label=""):
     else:
         print(f"\r{label}{fetch_string} aniDB data for {data['title']}...FAILED")
 
-def aired_to_season_year(aired_str, start=True):
-    """Converts an aired string to 'Season Year' format based on the start or end date."""
-    
-    _MONTHS = {
-        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
-    }
+def aired_to_season_year(aired_str, start=True): return metadata_fetch.aired_to_season_year(aired_str, start=start)
 
-    def parse_date(date_str):
-        # Normalise: "October 28, 2005" / "Oct 28, 2005" / "OCT 1, 2019"
-        date_str = date_str.strip()
-        m = re.match(r'([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})', date_str)
-        if m:
-            mon_key = m.group(1)[:3].lower()
-            mon_num = _MONTHS.get(mon_key)
-            if mon_num:
-                from datetime import datetime as _dt
-                return _dt(int(m.group(3)), mon_num, int(m.group(2)))
-        # Month + year only: "Oct 2005" / "October 2005" — default to 1st of month
-        m = re.match(r'([A-Za-z]+)\s+(\d{4})', date_str)
-        if m:
-            mon_key = m.group(1)[:3].lower()
-            mon_num = _MONTHS.get(mon_key)
-            if mon_num:
-                from datetime import datetime as _dt
-                return _dt(int(m.group(2)), mon_num, 1)
-        # ISO date: "2005-10-28" or "2005-10-28T00:00:00+00:00"
-        m = re.match(r'^(\d{4})-(\d{2})-(\d{2})', date_str)
-        if m:
-            from datetime import datetime as _dt
-            return _dt(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-        # Year only: "2005"
-        m = re.match(r'^(\d{4})$', date_str.strip())
-        if m:
-            from datetime import datetime as _dt
-            return _dt(int(m.group(1)), 1, 1)
-        # Fallback: try strptime formats
-        for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y"):
-            try:
-                from datetime import datetime as _dt
-                return _dt.strptime(date_str, fmt)
-            except ValueError:
-                pass
-        raise ValueError(f"Unrecognised date format: {date_str!r}")
+def get_last_two_folders(filepath): return metadata_fetch.get_last_two_folders(filepath)
 
-    def get_season_from_date(date_obj):
-        month = date_obj.month
-        if month in [1, 2, 3]:
-            return "Winter"
-        elif month in [4, 5, 6]:
-            return "Spring"
-        elif month in [7, 8, 9]:
-            return "Summer"
-        else:
-            return "Fall"
-
-    try:
-        if re.search(r'\bto\b', aired_str):
-            parts = re.split(r'\bto\b', aired_str, maxsplit=1)
-            chosen_part = parts[0].strip() if start else (parts[1].strip() if len(parts) > 1 else "?")
-        else:
-            chosen_part = aired_str.strip()
-        if chosen_part == "?":
-            aired_date = datetime.now()
-        else:
-            aired_date = parse_date(chosen_part)
-
-        season = get_season_from_date(aired_date)
-        return f"{season} {aired_date.year}"
-
-    except Exception as e:
-        print(f"Error parsing aired string: {aired_str} -> {e}")
-        return "N/A"
-
-def get_last_two_folders(filepath):
-    if not filepath:
-        return ["", ""]
-    path_parts = filepath.split(os.sep)
-    # Filter out empty strings that might occur due to leading/trailing separators or double separators
-    path_parts = list(filter(None, path_parts))
-    if len(path_parts) >= 3:
-        return [path_parts[-3], path_parts[-2]]
-    else:
-        return ["",""]
-    
-def get_name_list(data, get):
-    name_list = []
-    for item in data.get(get, []):
-        name_list.append(item.get("name"))
-    return name_list
+def get_name_list(data, get): return metadata_fetch.get_name_list(data, get)
 
 def get_artists_string(artists, total = False, limit=None):
     artists_string = "N/A"
@@ -3163,8 +2416,8 @@ def fetch_all_metadata(delay=0):
                 if temp_slug and not ("[MAL]" in filename or "[ID]" in filename):
                     # For AnimThemes files, check cache
                     temp_filename = filename.split("-")[0]
-                    if temp_filename in animethemes_cache:
-                        temp_anime = animethemes_cache.get(temp_filename)
+                    if temp_filename in metadata_fetch.animethemes_cache:
+                        temp_anime = metadata_fetch.animethemes_cache.get(temp_filename)
                         if temp_anime:
                             temp_mal_id = get_external_site_id(temp_anime, "MyAnimeList")
                             if temp_mal_id and temp_mal_id in anime_metadata and anime_metadata[temp_mal_id].get("title"):
@@ -3576,7 +2829,7 @@ def _build_web_series_themes(data, playing_filename):
                 theme_list.append({"type": t_type, "slug": slug_key, "title": None,
                                    "artist": [], "episodes": None, "versions": []})
 
-        theme_list.sort(key=_song_slug_sort_key)
+        theme_list.sort(key=metadata_fetch._song_slug_sort_key)
 
         sections_map = {}
         for theme in theme_list:
@@ -5708,24 +4961,9 @@ def toggleColumnEdit(toggle):
 # =========================================
 
 youtube_queue = None
-def get_youtube_duration(data):
-    start = data.get("start")
-    end = data.get("end")
-    length = data.get('duration')
-    if end == 0:
-        end = length
-    duration = round(end-start)
-    return duration
+def get_youtube_duration(data): return youtube_control.get_youtube_duration(data)
 
-def get_youtube_metadata_from_index(index=None, key_id=None):
-    for idx, (key, value) in enumerate(youtube_metadata.get("videos", {}).items()):
-        if key_id and key_id == key or idx == index:
-            value["url"] = key
-            channel_info = youtube_metadata.get("channels", {}).get(value.get("channel_id"), {
-                "name": "N/A",
-                "subscriber_count": 0
-            })
-            return value | channel_info
+def get_youtube_metadata_from_index(index=None, key_id=None): return youtube_control.get_youtube_metadata_from_index(index, key_id)
 
 def unload_youtube_video():
     global youtube_queue
@@ -5741,8 +4979,7 @@ def unload_youtube_video():
         pass
     youtube_queue = None
 
-def get_youtube_display_title(data):
-    return data.get("custom_title") or data.get("title")
+def get_youtube_display_title(data): return youtube_control.get_youtube_display_title(data)
 
 def stream_youtube(youtube_url):
     """Streams a YouTube video using mpv."""
@@ -5826,9 +5063,7 @@ def show_youtube_playlist(update = False):
     _youtube_playlist = all_videos
     show_list("youtube", right_column, all_videos, get_youtube_title, load_youtube_video, selected, update, title="YOUTUBE VIDEOS")
 
-def shorten_youtube_title(title):
-    pattern = re.compile(r'(can you guess the|guess the|how well do you know|can you|guess|their|from the|from|by|with|its|just)\s*', re.IGNORECASE)
-    return pattern.sub('', title)
+def shorten_youtube_title(title): return youtube_control.shorten_youtube_title(title)
 
 def get_youtube_title(key, value):
     icon = stream_icon if not value.get('downloaded', False) else ""
@@ -5930,24 +5165,11 @@ def load_archived_youtube_video(index):
     show_archived_youtube_playlist(True)
     up_next_text()
 
-def get_bonus_template_path(video_id):
-    return os.path.join("youtube", "bonus_templates", f"{video_id}.json")
+def get_bonus_template_path(video_id): return youtube_control.get_bonus_template_path(video_id)
 
-def load_bonus_template(video_id):
-    path = get_bonus_template_path(video_id)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f).get("questions", [])
-        except Exception:
-            return []
-    return []
+def load_bonus_template(video_id): return youtube_control.load_bonus_template(video_id)
 
-def save_bonus_template(video_id, questions):
-    os.makedirs(os.path.join("youtube", "bonus_templates"), exist_ok=True)
-    path = get_bonus_template_path(video_id)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"questions": questions}, f, indent=2, ensure_ascii=False)
+def save_bonus_template(video_id, questions): youtube_control.save_bonus_template(video_id, questions)
 
 def update_youtube_metadata(data=None):
     global youtube_queue, _yt_bonus_template_questions, _yt_bonus_template_triggered
@@ -6014,45 +5236,9 @@ def insert_column_line(column, title, data):
     column.insert(tk.END, f"{data}", "white")
     column.insert(tk.END, "\n\n", "blank")
 
-def save_youtube_metadata():
-    """Ensures the metadata folder exists before saving metadata file."""
-    metadata_folder = os.path.dirname(YOUTUBE_METADATA_FILE)  # Get the folder path
+def save_youtube_metadata(): youtube_control.save_youtube_metadata()
 
-    if not os.path.exists(metadata_folder):
-        os.makedirs(metadata_folder)
-
-    _atomic_json_write(YOUTUBE_METADATA_FILE, youtube_metadata, indent=4)
-
-def load_youtube_metadata():
-    global youtube_metadata
-    if os.path.exists(YOUTUBE_METADATA_FILE):
-        with open(YOUTUBE_METADATA_FILE, "r") as f:
-            youtube_metadata = json.load(f)
-            print("Loaded youtube metadata for " + str(len(youtube_metadata.get("videos", []))) + " videos...")
-        
-        # Migration: Add date_added field to existing videos that don't have it
-        migration_needed = False
-        for video_id, video in youtube_metadata.get("videos", {}).items():
-            if "date_added" not in video:
-                upload_date = video.get("upload_date", "")
-                if upload_date:
-                    try:
-                        # Convert upload_date to datetime and use as date_added
-                        upload_datetime = datetime.strptime(upload_date, "%Y%m%d")
-                        video["date_added"] = upload_datetime.isoformat()
-                    except (ValueError, TypeError):
-                        # If upload_date is invalid, use current date
-                        video["date_added"] = datetime.now().isoformat()
-                else:
-                    # No upload_date, use current date
-                    video["date_added"] = datetime.now().isoformat()
-                migration_needed = True
-        
-        if migration_needed:
-            save_youtube_metadata()
-        
-        return True
-    return False
+def load_youtube_metadata(): return youtube_control.load_youtube_metadata()
 
 def open_youtube_bonus_template_editor(video_id):
     """Open the bonus template editor for a YouTube video."""
@@ -6837,92 +6023,7 @@ def open_youtube_editor():
 
     refresh_ui()
 
-def download_youtube_video(video_id, button, refresh_ui_callback):
-
-    video = youtube_metadata["videos"][video_id]
-    filename = os.path.join("youtube", video["filename"])
-    last_percent = {"value": -1}  # Mutable object to track percent between threads
-
-    def update_button(text):
-        if isinstance(button, tk.Button):
-            button.config(text=text)
-
-    last_percent = {"value": -1}
-    max_total = {"bytes": 0}  # Track the largest stable filesize seen
-    def on_progress(d):
-        if d['status'] == 'downloading':
-            downloaded = d.get('downloaded_bytes', 0)
-            reported_total = d.get('total_bytes') or d.get('total_bytes_estimate') or 1
-
-            if reported_total > max_total["bytes"] * 1.05 or reported_total < max_total["bytes"] * .95:
-                max_total["bytes"] = reported_total
-            elif max_total["bytes"] == 0:
-                max_total["bytes"] = reported_total
-
-            total = max_total["bytes"]
-            percent = int((downloaded / total) * 100)
-
-            last_percent["value"] = percent
-            downloaded_mb = downloaded / 1024 / 1024
-            total_mb = total / 1024 / 1024
-            update_button(f"{downloaded_mb:.1f}/{total_mb:.1f} MB")
-
-        elif d['status'] == 'finished':
-            update_button("Merging...")
-
-    def do_download():
-        update_button("Starting...")
-        try:
-            #     'format': 'bv*[vcodec^=avc1]+ba*[acodec^=mp4a]/b[ext=mp4]/bv*+ba*/b',
-            #     'merge_output_format': 'webm',  # Ensure final file is mp4
-            #     'outtmpl': filename,
-            #     'quiet': True,
-            #     'progress_hooks': [on_progress],
-            # }
-            #     'format': 'bestvideo[ext=webm]+bestaudio[ext=webm]/bestvideo+bestaudio/best',
-            #     'merge_output_format': 'webm',
-            #     'outtmpl': filename,
-            #     'quiet': True,
-            #     'progress_hooks': [on_progress],
-            # }
-
-            # with YoutubeDL(ydl_opts) as ydl:
-            #     ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-
-            ydl_opts = {
-                'format': 'bestvideo+bestaudio/best',
-                'outtmpl': filename,
-                'quiet': True,
-                'progress_hooks': [on_progress] if on_progress else [],
-                'merge_output_format': 'mp4',  # merge first to mp4
-            }
-
-            with YoutubeDL(ydl_opts) as ydl:
-                ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
-
-            # # Now convert merged mp4 to webm
-            #     'ffmpeg',
-            #     '-i', filename.replace(".webm", ".mp4"),
-            #     '-c:v', 'libvpx-vp9',  # VP9 video codec
-            #     '-b:v', '2M',          # video bitrate (adjust as needed)
-            #     '-c:a', 'libopus',     # Opus audio codec
-            #     '-b:a', '128k',        # audio bitrate
-            #     filename
-            # ]
-
-            # subprocess.run(convert_cmd, check=True)
-
-            save_youtube_metadata()
-            refresh_ui_callback()
-        except Exception as e:
-            update_button("Error")
-            print(f"Download error for {video_id}: {e}")
-
-    if os.path.exists(filename):
-        filesize = os.path.getsize(filename)
-        update_button(f"{round(filesize / 1024 / 1024, 1)} MB")
-    else:
-        threading.Thread(target=do_download, daemon=True).start()
+def download_youtube_video(video_id, button, refresh_ui_callback): youtube_control.download_youtube_video(video_id, button, refresh_ui_callback)
 
 # =========================================
 #           *CREATE PLAYLIST
@@ -7835,7 +6936,7 @@ def _clear_speculative_tail():
     """Cancel downloads for and discard all speculative tail entries + shadow order counter."""
     for f in playlist.get("speculative_tail", []):
         clean = get_clean_filename(f)
-        if clean in active_downloads:
+        if cache_download.is_downloading(clean):
             cancel_download(clean)
     playlist["speculative_tail"] = []
     playlist.pop("spec_order", None)
@@ -7864,7 +6965,7 @@ def _start_refetch_prefetch():
     # then re-issue prefetch so it also covers the speculative tail.
     if playlist.get("playlist"):
         cn = get_clean_filename(playlist["playlist"][-1])
-        if cn in active_downloads:
+        if cache_download.is_downloading(cn):
             cancel_download(cn)
     prefetch_next_themes()
 
@@ -7874,7 +6975,7 @@ def refetch_next_track():
     # Cancel any in-flight download for the outgoing committed next
     if playlist.get("playlist"):
         old_next = get_clean_filename(playlist["playlist"][-1])
-        if old_next in active_downloads:
+        if cache_download.is_downloading(old_next):
             cancel_download(old_next)
 
     # Cancel and clear the speculative tail + shadow order counters —
@@ -7893,7 +6994,7 @@ def refetch_next_track():
     # Cancel the download that get_next_infinite_track may have just started
     if playlist.get("playlist"):
         new_next = get_clean_filename(playlist["playlist"][-1])
-        if new_next in active_downloads:
+        if cache_download.is_downloading(new_next):
             cancel_download(new_next)
 
     up_next_text()
@@ -8766,37 +7867,8 @@ def compute_cooldowns(groups, refetch=False):
 #         *SAVING/LOADING DATA
 # =========================================
 
-def convert_infinities_to_markers(obj):
-    """Recursively convert infinity values to special markers before JSON serialization"""
-    if isinstance(obj, float):
-        if obj == float('inf'):
-            return "__INFINITY__"
-        elif obj == float('-inf'):
-            return "__NEG_INFINITY__"
-        return obj
-    elif isinstance(obj, dict):
-        return {k: convert_infinities_to_markers(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_infinities_to_markers(item) for item in obj]
-    return obj
-
-def convert_infinity_markers(obj):
-    """Recursively convert special infinity markers back to float('inf')"""
-    if isinstance(obj, str):
-        if obj == "__INFINITY__":
-            return float('inf')
-        elif obj == "__NEG_INFINITY__":
-            return float('-inf')
-        elif obj == "inf":
-            return float('inf')
-        elif obj == "-inf":
-            return float('-inf')
-        return obj
-    elif isinstance(obj, dict):
-        return {k: convert_infinity_markers(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_infinity_markers(item) for item in obj]
-    return obj
+def convert_infinities_to_markers(obj): return utils.convert_infinities_to_markers(obj)
+def convert_infinity_markers(obj): return utils.convert_infinity_markers(obj)
 
 def _migrate_old_file_structure():
     """One-time migration from the legacy 'files/' folder to the new folder layout.
@@ -8890,20 +7962,7 @@ def _migrate_playlist_names():
             except Exception as e:
                 print(f"Warning: could not rename playlist '{old_name}': {e}")
 
-def _load_settings_presets(folder):
-    """Load all preset JSON files from a folder, returning {name: diff_dict}."""
-    presets = {}
-    if not os.path.exists(folder):
-        return presets
-    for fname in sorted(os.listdir(folder)):
-        if fname.endswith(".json"):
-            name = fname[:-5]
-            try:
-                with open(os.path.join(folder, fname), "r", encoding="utf-8") as f:
-                    presets[name] = json.load(f)
-            except Exception as e:
-                print(f"Failed to load preset '{fname}': {e}")
-    return presets
+def _load_settings_presets(folder): return utils._load_settings_presets(folder)
 
 def _load_popout_layout_presets():
     """Return {name: {layout: [...], columns: N}} for all saved popout layout presets."""
@@ -8926,51 +7985,9 @@ def _save_popout_layout_preset(name, layout_list, columns):
     path = os.path.join(POPOUT_LAYOUTS_FOLDER, f"{name}.json")
     _atomic_json_write(path, {"layout": layout_list, "columns": columns}, indent=4)
 
-def _atomic_json_write(path, data, **dump_kwargs):
-    """Write *data* as JSON to *path* atomically.
+def _atomic_json_write(path, data, **dump_kwargs): return utils._atomic_json_write(path, data, **dump_kwargs)
 
-    Writes to a sibling .tmp file first, then uses os.replace() to swap it in.
-    os.replace() is atomic on both Windows (same-volume) and POSIX, so a crash
-    mid-write will leave the original file intact rather than corrupting it.
-    """
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, **dump_kwargs)
-        os.replace(tmp, path)
-    except Exception:
-        # Clean up the temp file if anything went wrong, then re-raise
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
-
-def _save_settings_presets(folder, saved_dict, default_dict, update_fn=None, convert_inf=False):
-    """Sync all presets in saved_dict to individual JSON files in folder.
-    Writes current presets as diffs against default_dict, removes orphan files."""
-    os.makedirs(folder, exist_ok=True)
-    for name, settings in saved_dict.items():
-        if update_fn:
-            full = update_fn(settings)
-        else:
-            full = sync_with_default(copy.deepcopy(settings), default_dict)
-        diff = compute_settings_diff(default_dict, full)
-        data = diff if diff is not None else {}
-        if convert_inf:
-            data = convert_infinities_to_markers(data)
-        try:
-            _atomic_json_write(os.path.join(folder, f"{name}.json"), data, indent=4)
-        except Exception as e:
-            print(f"Failed to save preset '{name}': {e}")
-    # Remove orphan files
-    current_names = set(saved_dict.keys())
-    for fname in os.listdir(folder):
-        if fname.endswith(".json") and fname[:-5] not in current_names:
-            try:
-                os.remove(os.path.join(folder, fname))
-            except Exception:
-                pass
+def _save_settings_presets(folder, saved_dict, default_dict, update_fn=None, convert_inf=False): return utils._save_settings_presets(folder, saved_dict, default_dict, update_fn, convert_inf)
 
 def save_config():
     """Function to save configuration"""
@@ -8999,7 +8016,7 @@ def save_config():
         "popout_layout": popout_layout if popout_layout is not None else [],
         "metadata_last_updated": metadata_last_updated,
         "censors_last_updated": censors_last_updated,
-        "scoreboard_version_seen": scoreboard_version_seen,
+        "scoreboard_version_seen": scoreboard_control.version_seen,
         "popout_columns": popout_columns,
         "shortcuts": globals().get("shortcuts_config", {}),
         "playlist": playlist,
@@ -9027,24 +8044,12 @@ def save_config():
     update_current_index(save = False)
     _atomic_json_write(CONFIG_FILE, config, indent=4, allow_nan=False)
 
-_THEME_FLAG_MIGRATIONS = {
-    "OVERLAP": "OVERLAP (Without Censors)",
-    "SPOILER": "SPOILER (Without Censors)",
-}
-
-def _migrate_theme_flags(filter_dict):
-    """Rename legacy theme flag strings to their censor-split equivalents in-place."""
-    if not isinstance(filter_dict, dict):
-        return
-    for key in ("themes_exclude", "themes_include"):
-        val = filter_dict.get(key)
-        if isinstance(val, list):
-            filter_dict[key] = [_THEME_FLAG_MIGRATIONS.get(v, v) for v in val]
+def _migrate_theme_flags(filter_dict): utils._migrate_theme_flags(filter_dict)
 
 def load_config():
     """Function to load configuration"""
     global directory_files, directory, playlist, host, inverted_colors, scoreboard_rules
-    global metadata_last_updated, censors_last_updated, OVERLAY_COLOR_OPTIONS, scoreboard_version_seen
+    global metadata_last_updated, censors_last_updated, OVERLAY_COLOR_OPTIONS
     global lightning_mode_settings, selected_light_mode_settings, saved_lightning_mode_settings
     global infinite_settings, selected_infinite_settings, saved_infinite_settings
     global bonus_settings, saved_bonus_settings, selected_bonus_settings
@@ -9119,6 +8124,12 @@ def load_config():
             
             if OPENAI_API_KEY:
                 set_openai_client_key()
+            metadata_fetch.set_credentials(IGDB_CLIENT_ID, IGDB_CLIENT_SECRET)
+            cache_download.update_settings(
+                themes_cache_size=themes_cache_size,
+                auto_download_themes=auto_download_themes,
+                app_version=APP_VERSION,
+            )
             try:
                 update_playlist_name()
                 update_current_index()
@@ -9131,7 +8142,7 @@ def load_config():
             send_scoreboard_colors()
             metadata_last_updated = config.get("metadata_last_updated", 0)
             censors_last_updated = config.get("censors_last_updated", 0)
-            scoreboard_version_seen = config.get("scoreboard_version_seen", "")
+            scoreboard_control.version_seen = config.get("scoreboard_version_seen", "")
             # Popout layout — None means "use default"
             _saved_layout = config.get("popout_layout", None)
             popout_layout = _saved_layout if _saved_layout else None  # empty list → None (use default)
@@ -9169,68 +8180,11 @@ def load_config():
         return False
     return False
 
-def interpolate_color(color1, color2, factor=0.3):
-    """
-    Interpolate between two colors.
-    Args:
-        color1: Starting color (hex string or color name)
-        color2: Ending color (hex string or color name)
-        factor: Float between 0.0 and 1.0 (0.0 = color1, 1.0 = color2, 0.5 = halfway)
-    Returns:
-        Hex color string
-    """
-    # Convert both colors to RGB using tkinter's color resolution
-    rgb1 = color_to_rgb(color1)
-    rgb2 = color_to_rgb(color2)
-    
-    # Clamp factor between 0 and 1
-    factor = max(0.0, min(1.0, factor))
-    
-    # Interpolate each RGB component
-    r = rgb1[0] + (rgb2[0] - rgb1[0]) * factor
-    g = rgb1[1] + (rgb2[1] - rgb1[1]) * factor
-    b = rgb1[2] + (rgb2[2] - rgb1[2]) * factor
-    
-    return rgb_to_hex((int(r), int(g), int(b)))
+def interpolate_color(color1, color2, factor=0.3): return utils.interpolate_color(color1, color2, factor)
 
 # Color interpolation functions
-def color_to_rgb(color):
-    """Convert any color (hex, name, etc.) to RGB tuple using tkinter"""
-    try:
-        temp_root = None
-        if 'root' not in globals() or root is None:
-            temp_root = tk.Tk()
-            temp_root.withdraw()  # Hide the temporary window
-            widget_parent = temp_root
-        else:
-            widget_parent = root
-            
-        # Create a temporary tkinter widget to resolve color names
-        temp_widget = tk.Label(widget_parent)
-        # Use winfo_rgb to convert any color format to RGB values (0-65535 range)
-        rgb_16bit = temp_widget.winfo_rgb(color)
-        temp_widget.destroy()
-        
-        if temp_root:
-            temp_root.destroy()
-            
-        # Convert from 16-bit (0-65535) to 8-bit (0-255) RGB
-        return tuple(int(val / 257) for val in rgb_16bit)
-    except (tk.TclError, NameError):
-        # If color is invalid, try parsing as hex manually
-        if isinstance(color, str) and color.startswith('#'):
-            hex_color = color.lstrip('#')
-            if len(hex_color) == 3:  # Handle short hex like #FFF
-                hex_color = ''.join([c*2 for c in hex_color])
-            try:
-                return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-            except (ValueError, IndexError):
-                pass
-        return (128, 128, 128)
-
-def rgb_to_hex(rgb):
-    """Convert RGB tuple to hex color"""
-    return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+def color_to_rgb(color): return utils.color_to_rgb(color)
+def rgb_to_hex(rgb): return utils.rgb_to_hex(rgb)
 
 settings_window = None
 tutorial_window = None
@@ -9516,7 +8470,7 @@ def show_settings_popup():
             continue
         if s.get("requires_tunnel") and not (NGROK_AVAILABLE or CLOUDFLARED_AVAILABLE):
             continue
-        if s.get("requires_scoreboard") and not SCOREBOARD_AVAILABLE:
+        if s.get("requires_scoreboard") and not scoreboard_control.AVAILABLE:
             continue
         if s.get("group") == "skip_group":
             if not _skip_group_seen:
@@ -9559,57 +8513,8 @@ def update_playlist_name(name=None):
     if web_server.is_running():
         _push_web_toggles()
 
-def save_metadata_atomic(filepath, data, encoding=None, ensure_ascii=True):
-    """Atomically save JSON data to prevent corruption on crash."""
-    
-    metadata_folder = os.path.dirname(filepath)
-    if not os.path.exists(metadata_folder):
-        os.makedirs(metadata_folder)
-    
-    # Write to temp file first
-    fd, temp_path = tempfile.mkstemp(dir=metadata_folder, suffix='.json', text=True)
-    try:
-        with os.fdopen(fd, 'w', encoding=encoding) as f:
-            json.dump(data, f, indent=4, ensure_ascii=ensure_ascii)
-        # Atomic rename (overwrites existing file safely)
-        os.replace(temp_path, filepath)
-    except Exception as e:
-        # Clean up temp file on error
-        try:
-            os.unlink(temp_path)
-        except:
-            pass
-        raise e
-
-def save_metadata_compressed(filepath, data, encoding='utf-8', ensure_ascii=True):
-    """Save metadata with compressed version, and readable version only if it already exists."""
-    
-    if os.path.exists(filepath):
-        save_metadata_atomic(filepath, data, encoding=encoding, ensure_ascii=ensure_ascii)
-    
-    try:
-        metadata_folder = os.path.dirname(filepath)
-        if not os.path.exists(metadata_folder):
-            os.makedirs(metadata_folder)
-            
-        # Create temp file with .gz extension
-        fd, temp_path = tempfile.mkstemp(dir=metadata_folder, suffix='.json.gz')
-        
-        try:
-            # Use GzipFile to set the correct filename in gzip header
-            with gzip.GzipFile(filename=os.path.basename(filepath), fileobj=os.fdopen(fd, 'wb'), mode='wb') as gz_file:
-                json_str = json.dumps(data, ensure_ascii=ensure_ascii, indent=4)
-                gz_file.write(json_str.encode(encoding))
-            # Atomic rename
-            os.replace(temp_path, filepath + '.gz')
-        except Exception as e:
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-            raise e
-    except Exception as e:
-        pass  # Compression is optional optimization
+def save_metadata_atomic(filepath, data, encoding=None, ensure_ascii=True): utils.save_metadata_atomic(filepath, data, encoding=encoding, ensure_ascii=ensure_ascii)
+def save_metadata_compressed(filepath, data, encoding='utf-8', ensure_ascii=True): utils.save_metadata_compressed(filepath, data, encoding=encoding, ensure_ascii=ensure_ascii)
 
 def save_metadata():
     """Ensures the metadata folder exists before saving metadata files with atomic writes and compression."""
@@ -9629,21 +8534,7 @@ def save_metadata_overrides():
     save_metadata_atomic(FILE_METADATA_OVERRIDES_FILE, file_metadata_overrides)
     save_metadata_atomic(ANIME_METADATA_OVERRIDES_FILE, anime_metadata_overrides)
 
-def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
-    """Load metadata from compressed version first, fallback to regular file."""
-    
-    if os.path.exists(filepath + '.gz'):
-        try:
-            with gzip.open(filepath + '.gz', 'rt', encoding=encoding) as f:
-                return json.load(f), True
-        except Exception as e:
-            print(f"Warning: Failed to load compressed {name}: {e}")
-    
-    if os.path.exists(filepath):
-        with open(filepath, "r", encoding=encoding) as f:
-            return json.load(f), False
-    
-    return None, False
+def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"): return utils.load_metadata_compressed(filepath, encoding=encoding, name=name)
 
 def load_metadata():
     global file_metadata, file_metadata_overrides, anime_metadata, anidb_metadata, anime_metadata_overrides, ai_metadata, anilist_metadata
@@ -9722,15 +8613,6 @@ LOCAL_METADATA_PACKAGE = "metadata/metadata_package.zip"
 metadata_last_updated = 0
 censors_last_updated = 0
 
-# Track the latest scoreboard release tag we've already told the user about
-scoreboard_version_seen = ""
-# None = not yet checked, True = update available, False = up to date
-_scoreboard_update_available = None
-
-_SCOREBOARD_GITHUB_REPO = "ualkotob/universal-scoreboard"
-_SCOREBOARD_API_URL = f"https://api.github.com/repos/{_SCOREBOARD_GITHUB_REPO}/releases/latest"
-_SCOREBOARD_RELEASES_PAGE = f"https://github.com/{_SCOREBOARD_GITHUB_REPO}/releases"
-
 def check_for_metadata_updates():
     """Check if newer metadata is available on GitHub and prompt user to download."""
     global metadata_last_updated
@@ -9806,243 +8688,19 @@ def check_for_censor_updates():
         # Silently fail - don't bother user if check fails
         print(f"Could not check for censor updates: {e}")
 
-# ── Universal Scoreboard integration ─────────────────────────────────────────
+# ── Universal Scoreboard integration — see _app_scripts/scoreboard_control.py ─
 
 def _scoreboard_fetch_latest_release():
-    """Return (tag, download_url, body) for the latest scoreboard release, or raise."""
-    resp = requests.get(_SCOREBOARD_API_URL, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    tag = data.get("tag_name", "")
-    body = data.get("body", "")
-    url = next(
-        (a["browser_download_url"] for a in data.get("assets", [])
-         if a["name"] == "universal_scoreboard.exe"),
-        None,
-    )
-    return tag, url, body
+    return scoreboard_control._fetch_latest_release()
 
 def download_scoreboard():
-    """Show an explanation dialog, then download universal_scoreboard.exe on confirmation."""
-    confirmed = messagebox.askyesno(
-        "Download Universal Scoreboard",
-        "Universal Scoreboard is a separate overlay program that works alongside "
-        "the Guess the Anime! Playlist Tool.\n\n"
-        "It shows a live scoreboard for your players during sessions, lets you "
-        "adjust scores, archive past sessions, and more.\n\n"
-        "Download universal_scoreboard.exe from GitHub?\n"
-        "(~45 MB, saved next to this program)",
-    )
-    if not confirmed:
-        return
-
-    def _do_download():
-        try:
-            tag, url, _ = _scoreboard_fetch_latest_release()
-            if not url:
-                root.after(0, lambda: messagebox.showerror(
-                    "Download Failed",
-                    "Could not find universal_scoreboard.exe in the latest release.\n"
-                    f"Please download manually:\n{_SCOREBOARD_RELEASES_PAGE}",
-                ))
-                return
-
-            dest = "universal_scoreboard.exe"
-            with requests.get(url, stream=True, timeout=60) as r:
-                r.raise_for_status()
-                total = int(r.headers.get("content-length", 0))
-                downloaded = 0
-                with open(dest + ".tmp", "wb") as f:
-                    for chunk in r.iter_content(chunk_size=65536):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            if total:
-                                pct = int(downloaded * 100 / total)
-                                root.after(0, lambda p=pct: _sb_dl_progress(p))
-            os.replace(dest + ".tmp", dest)
-
-            global SCOREBOARD_AVAILABLE, scoreboard_version_seen, _scoreboard_update_available
-            SCOREBOARD_AVAILABLE = True
-            scoreboard_version_seen = tag
-            _scoreboard_update_available = False
-            save_config()
-
-            root.after(0, lambda: messagebox.showinfo(
-                "Download Complete",
-                f"universal_scoreboard.exe downloaded (version {tag}).\n\n"
-                "You can now launch it from the FILE menu → Open Scoreboard.",
-            ))
-            root.after(0, create_first_row_buttons)
-        except Exception as e:
-            try:
-                os.remove("universal_scoreboard.exe.tmp")
-            except OSError:
-                pass
-            root.after(0, lambda: messagebox.showerror(
-                "Download Failed",
-                f"Could not download the scoreboard:\n{e}\n\n"
-                f"Download manually from:\n{_SCOREBOARD_RELEASES_PAGE}",
-            ))
-        finally:
-            root.after(0, _sb_dl_close)
-
-    # Progress window
-    _sb_dl_win = tk.Toplevel(root)
-    _sb_dl_win.title("Downloading Scoreboard…")
-    _sb_dl_win.configure(bg="black")
-    _sb_dl_win.resizable(False, False)
-    _sb_dl_win.transient(root)
-    _sb_dl_win.grab_set()
-    get_window_position_and_setup(_sb_dl_win, offset_x=100, offset_y=100)
-    tk.Label(_sb_dl_win, text="Downloading universal_scoreboard.exe…",
-             bg="black", fg="white", font=("Arial", 11)).pack(padx=20, pady=(16, 6))
-    _sb_pct_var = tk.StringVar(value="0%")
-    tk.Label(_sb_dl_win, textvariable=_sb_pct_var,
-             bg="black", fg=HIGHLIGHT_COLOR, font=("Arial", 13, "bold")).pack(pady=(0, 16))
-
-    def _sb_dl_progress(pct):
-        try:
-            _sb_pct_var.set(f"{pct}%")
-            _sb_dl_win.update_idletasks()
-        except Exception:
-            pass
-
-    def _sb_dl_close():
-        try:
-            _sb_dl_win.grab_release()
-            _sb_dl_win.destroy()
-        except Exception:
-            pass
-
-    threading.Thread(target=_do_download, daemon=True).start()
-
+    scoreboard_control.download_scoreboard(root, HIGHLIGHT_COLOR, get_window_position_and_setup, save_config, create_first_row_buttons)
 
 def check_for_scoreboard_update(silent_if_current=True):
-    """Check GitHub for a newer scoreboard release and prompt to update if found.
-
-    silent_if_current: if True, show no dialog when already up to date (used for startup).
-    """
-    global scoreboard_version_seen, _scoreboard_update_available
-    if not SCOREBOARD_AVAILABLE:
-        return
-    try:
-        tag, url, body = _scoreboard_fetch_latest_release()
-        if not tag:
-            return
-
-        # Local scoreboard is already on this version.
-        if tag == scoreboard_version_seen:
-            _scoreboard_update_available = False
-            if not silent_if_current:
-                messagebox.showinfo(
-                    "Scoreboard Up to Date",
-                    f"You already have the latest scoreboard (version {tag}).",
-                )
-            return
-
-        # Check if local exe exists and if so whether it's older
-        local_exists = os.path.isfile("universal_scoreboard.exe") or os.path.isfile("scoreboard.exe")
-        if local_exists and not scoreboard_version_seen and silent_if_current:
-            # Existing exe with unknown local version: avoid false startup prompts.
-            return
-        if not local_exists:
-            # py script — version comparison not possible, skip silent check
-            if silent_if_current:
-                return
-
-        _scoreboard_update_available = True
-
-        # New version available
-        result = messagebox.askyesno(
-            "Scoreboard Update Available",
-            f"A new version of Universal Scoreboard is available!\n\n"
-            f"Version: {tag}\n\n"
-            f"Release notes:\n{body[:300]}{'…' if len(body) > 300 else ''}\n\n"
-            "Download and install it now? (~45 MB)",
-        )
-        if result:
-            if url:
-                _install_scoreboard_update(tag, url)
-            else:
-                webbrowser.open(_SCOREBOARD_RELEASES_PAGE)
-    except Exception as e:
-        if not silent_if_current:
-            messagebox.showerror("Update Check Failed", f"Could not check scoreboard updates:\n{e}")
-        else:
-            print(f"Scoreboard update check failed: {e}")
-
-
-def _install_scoreboard_update(tag, url):
-    """Download the new scoreboard exe in the background, replacing the old one."""
-    dest_candidates = ["universal_scoreboard.exe", "scoreboard.exe"]
-    dest = next((f for f in dest_candidates if os.path.isfile(f)), "universal_scoreboard.exe")
-
-    def _close_running_scoreboard(timeout_seconds=4.0):
-        """Ask the running scoreboard to quit and wait briefly for it to exit."""
-        try:
-            if not is_scoreboard_running():
-                return True
-            send_scoreboard_command("quit")
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
-                if not is_scoreboard_running():
-                    return True
-                time.sleep(0.1)
-            return not is_scoreboard_running()
-        except Exception:
-            return False
-
-    def _do_install():
-        try:
-            if not _close_running_scoreboard():
-                root.after(0, lambda: messagebox.showerror(
-                    "Update Failed",
-                    "Could not close the running scoreboard automatically.\n\n"
-                    "Please close the scoreboard and try updating again.",
-                ))
-                return
-
-            with requests.get(url, stream=True, timeout=60) as r:
-                r.raise_for_status()
-                with open(dest + ".tmp", "wb") as f:
-                    for chunk in r.iter_content(chunk_size=65536):
-                        if chunk:
-                            f.write(chunk)
-            os.replace(dest + ".tmp", dest)
-
-            global scoreboard_version_seen, _scoreboard_update_available
-            scoreboard_version_seen = tag
-            _scoreboard_update_available = False
-            save_config()
-
-            root.after(0, lambda: messagebox.showinfo(
-                "Scoreboard Updated",
-                f"Universal Scoreboard updated to version {tag}.",
-            ))
-        except Exception as e:
-            try:
-                os.remove(dest + ".tmp")
-            except OSError:
-                pass
-            root.after(0, lambda: messagebox.showerror(
-                "Update Failed",
-                f"Could not install update:\n{e}\n\n"
-                f"Download manually:\n{_SCOREBOARD_RELEASES_PAGE}",
-            ))
-
-    threading.Thread(target=_do_install, daemon=True).start()
-
+    scoreboard_control.check_for_update(root, save_config, silent_if_current)
 
 def check_for_scoreboard_update_on_startup():
-    """Background check for a newer scoreboard release — silent if already current."""
-    def _bg():
-        try:
-            check_for_scoreboard_update(silent_if_current=True)
-        except Exception as e:
-            print(f"Scoreboard startup update check failed: {e}")
-    threading.Thread(target=_bg, daemon=True).start()
-
+    scoreboard_control.check_for_update_on_startup(root, save_config)
 
 def check_for_local_metadata_package():
     """Check if metadata package exists locally and prompt user to import it."""
@@ -10480,26 +9138,8 @@ def estimate_manual_rank(score):
     # If it's lower than all known values, assign the worst rank
     return max(pop for _, pop in known_ranks)
 
-def deep_merge(base, override):
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            deep_merge(base[key], value)
-        elif isinstance(value, list) and isinstance(base.get(key), list) and key == "songs":
-            merge_songs_by_slug(base[key], value)
-        else:
-            base[key] = value
-
-def merge_songs_by_slug(base_songs, override_songs):
-    slug_index = {song.get("slug"): song for song in base_songs if isinstance(song, dict)}
-    for override_song in override_songs:
-        slug = override_song.get("slug")
-        if not slug:
-            continue
-        base_song = slug_index.get(slug)
-        if base_song:
-            deep_merge(base_song, override_song)
-        else:
-            base_songs.append(override_song)  # New song, not found in base
+def deep_merge(base, override): utils.deep_merge(base, override)
+def merge_songs_by_slug(base_songs, override_songs): utils.merge_songs_by_slug(base_songs, override_songs)
 
 
 # =========================================
@@ -11569,240 +10209,14 @@ def cut_after_current_time(filename):
 #           *AUTO-UPDATE FUNCTIONALITY
 # =========================================
 
-def check_for_updates():
-    """Check GitHub releases for newer version."""
-    try:
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-        response = requests.get(api_url, timeout=10)
-        
-        if response.status_code == 200:
-            release_data = response.json()
-            latest_version = release_data.get("tag_name", "").lstrip("v")  # Remove 'v' prefix if present
-            
-            if compare_versions(latest_version, APP_VERSION):
-                return {
-                    "update_available": True,
-                    "latest_version": latest_version,
-                    "current_version": APP_VERSION,
-                    "release_data": release_data
-                }
-            else:
-                return {
-                    "update_available": False,
-                    "latest_version": latest_version,
-                    "current_version": APP_VERSION
-                }
-        else:
-            return {"error": f"Failed to check for updates: HTTP {response.status_code}"}
-    
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Network error checking for updates: {str(e)}"}
-    except Exception as e:
-        return {"error": f"Error checking for updates: {str(e)}"}
-
-def compare_versions(version1, version2):
-    """Compare two version strings. Returns True if version1 > version2."""
-    try:
-        def version_tuple(v):
-            return tuple(map(int, (v.split("."))))
-        return version_tuple(version1) > version_tuple(version2)
-    except Exception:
-        return False
-
-def cleanup_old_update_exes():
-    """Delete any versioned update exes left over from a previous update (e.g. guess_the_anime_v19.2.exe)."""
-    if not getattr(sys, 'frozen', False):
-        return
-    try:
-        exe_dir = os.path.dirname(sys.executable)
-        current_name = os.path.basename(sys.executable)
-        for fname in os.listdir(exe_dir):
-            if fname == current_name:
-                continue
-            if re.match(r'guess_the_anime_v[\d.]+\.exe$', fname, re.IGNORECASE):
-                try:
-                    os.remove(os.path.join(exe_dir, fname))
-                    print(f"Cleaned up old update exe: {fname}")
-                except Exception as e:
-                    print(f"Could not remove old update exe {fname}: {e}")
-    except Exception as e:
-        print(f"cleanup_old_update_exes error: {e}")
-
-def _download_update(update_info):
-    """Download the new exe from GitHub releases and exit, prompting user to run it.
-    
-    Called on the main thread after user confirms. Shows a progress window,
-    downloads in a background thread, then closes the app.
-    """
-    release_data = update_info.get("release_data", {})
-    latest_version = update_info["latest_version"]
-
-    # Find the exe asset in the release
-    asset_url = None
-    for asset in release_data.get("assets", []):
-        if asset.get("name", "").lower() == "guess_the_anime.exe":
-            asset_url = asset["browser_download_url"]
-            break
-
-    if not asset_url:
-        messagebox.showerror("Update Failed",
-                             "Could not find guess_the_anime.exe in the latest release.\n"
-                             "Please download it manually from the GitHub releases page.")
-        open_github_releases()
-        return
-
-    exe_dir = os.path.dirname(sys.executable)
-    new_exe_name = f"guess_the_anime_v{latest_version}.exe"
-    new_exe_path = os.path.join(exe_dir, new_exe_name)
-
-    # Progress window
-    prog_win = tk.Toplevel()
-    prog_win.title("Downloading Update...")
-    prog_win.geometry("380x110")
-    prog_win.configure(bg="black")
-    prog_win.resizable(False, False)
-    prog_win.transient(root)
-    prog_win.grab_set()
-    get_window_position_and_setup(prog_win, offset_x=100, offset_y=100)
-
-    tk.Label(prog_win, text=f"Downloading version {latest_version}...",
-             bg="black", fg="white", font=("Arial", 11)).pack(pady=(16, 4))
-    prog_var = tk.DoubleVar()
-    prog_bar = ttk.Progressbar(prog_win, variable=prog_var, maximum=100, length=320)
-    prog_bar.pack(pady=4)
-    pct_label = tk.Label(prog_win, text="0%", bg="black", fg="#aaaaaa", font=("Arial", 9))
-    pct_label.pack()
-    prog_win.update()
-
-    download_error = [None]
-
-    def do_download():
-        try:
-            response = requests.get(asset_url, stream=True, timeout=60)
-            response.raise_for_status()
-            total = int(response.headers.get("content-length", 0))
-            downloaded = 0
-            with open(new_exe_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=65536):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if total:
-                            pct = downloaded / total * 100
-                            prog_win.after(0, lambda p=pct: (prog_var.set(p),
-                                                              pct_label.config(text=f"{p:.0f}%")))
-        except Exception as e:
-            download_error[0] = str(e)
-        finally:
-            prog_win.after(0, on_download_done)
-
-    def on_download_done():
-        try:
-            prog_win.destroy()
-        except Exception:
-            pass
-
-        if download_error[0]:
-            # Clean up partial file
-            try:
-                os.remove(new_exe_path)
-            except Exception:
-                pass
-            messagebox.showerror("Download Failed",
-                                 f"Could not download the update:\n{download_error[0]}\n\n"
-                                 "Please download it manually from the GitHub releases page.")
-            open_github_releases()
-            return
-
-        messagebox.showinfo("Update Ready",
-                            f"Version {latest_version} has been downloaded as:\n"
-                            f"  {new_exe_name}\n\n"
-                            f"Please close this window and run {new_exe_name} to complete the update.\n"
-                            f"The old exe will be removed automatically on first launch.")
-        root.destroy()
-
-    threading.Thread(target=do_download, daemon=True).start()
-
-def _show_update_dialog(update_info):
-    """Show the update-available dialog and handle the user's choice."""
-    release_data = update_info.get("release_data", {})
-    release_body = release_data.get("body", "No release notes available.")
-    is_frozen = getattr(sys, 'frozen', False)
-
-    if is_frozen:
-        prompt = "Would you like to download the update? The app will close when the download is complete."
-    else:
-        prompt = "Would you like to open the GitHub releases page to download it?"
-
-    result = messagebox.askyesno("Update Available",
-                                 f"New version available!\n\n"
-                                 f"Current version: {update_info['current_version']}\n"
-                                 f"Latest version: {update_info['latest_version']}\n\n"
-                                 f"Release Notes:\n{release_body[:300]}{'...' if len(release_body) > 300 else ''}\n\n"
-                                 + prompt)
-    if result:
-        if is_frozen:
-            _download_update(update_info)
-        else:
-            open_github_releases()
-
-def check_for_updates_button():
-    """Button handler to check for updates."""
-    try:
-        check_window = tk.Toplevel()
-        check_window.title("Checking for Updates...")
-        check_window.geometry("300x80")
-        check_window.configure(bg="black")
-        check_window.resizable(False, False)
-        get_window_position_and_setup(check_window, offset_x=100, offset_y=100)
-        check_window.transient(root)
-        check_window.grab_set()
-        tk.Label(check_window, text="Checking for updates...",
-                 bg="black", fg="white", font=("Arial", 12)).pack(pady=20)
-        check_window.update()
-
-        update_info = check_for_updates()
-        check_window.destroy()
-
-        if update_info.get("error"):
-            messagebox.showerror("Update Check Failed", update_info["error"])
-        elif update_info.get("update_available"):
-            _show_update_dialog(update_info)
-        else:
-            messagebox.showinfo("No Updates",
-                                f"You have the latest version ({update_info['current_version']})")
-
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to check for updates: {str(e)}")
-
-def open_github_releases():
-    """Open the GitHub releases page in the default browser."""
-    try:
-        releases_url = f"https://github.com/{GITHUB_REPO}/releases"
-        webbrowser.open(releases_url)
-    except Exception as e:
-        releases_url = f"https://github.com/{GITHUB_REPO}/releases"
-        messagebox.showerror("Browser Error",
-                             f"Could not open browser automatically.\n\n"
-                             f"Please manually visit:\n{releases_url}")
-
-def check_for_updates_on_startup():
-    """Check for updates on startup in a background thread to avoid blocking UI."""
-    def background_check():
-        try:
-            update_info = check_for_updates()
-
-            if update_info.get("error"):
-                print(f"Update check failed: {update_info['error']}")
-                return
-
-            if update_info.get("update_available"):
-                root.after(0, lambda: _show_update_dialog(update_info))
-
-        except Exception as e:
-            print(f"Startup update check failed: {str(e)}")
-
-    threading.Thread(target=background_check, daemon=True).start()
+def check_for_updates(): return auto_update.check_for_updates()
+def compare_versions(version1, version2): return auto_update.compare_versions(version1, version2)
+def cleanup_old_update_exes(): auto_update.cleanup_old_update_exes()
+def _download_update(update_info): auto_update._download_update(update_info)
+def _show_update_dialog(update_info): auto_update._show_update_dialog(update_info)
+def check_for_updates_button(): auto_update.check_for_updates_button()
+def open_github_releases(): auto_update.open_github_releases()
+def check_for_updates_on_startup(): auto_update.check_for_updates_on_startup()
 
 # =========================================
 #           *STATS DISPLAY
@@ -12493,14 +10907,7 @@ def get_all_studios(playlis, games=True, repeats=False):
                     studios.append(studio)
     return sorted(studios)
 
-def _season_to_tuple(season_str):
-    """Convert a season string like 'Fall 2020' to a sortable tuple."""
-    try:
-        part, year = season_str.split()
-        _season_order = {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}
-        return (int(year), _season_order.get(part, -1))
-    except Exception:
-        return (0, -1)  # Very early season so it passes min filters but fails max
+def _season_to_tuple(season_str): return utils._season_to_tuple(season_str)
 
 def filter_playlist(filters):
     """Filters the playlist based on given criteria."""
@@ -12767,12 +11174,7 @@ def filter_playlist(filters):
         messagebox.showinfo("Playlist Filtered", f"Playlist filtered to {len(playlist["playlist"])} videos.")
     return filtered
 
-def get_song_by_slug(data, slug):
-    """Returns the list of artists for the song matching the given slug."""
-    for theme in data.get("songs", []):  # Iterate through themes
-        if theme["slug"] == slug:  # Find the matching slug
-            return theme
-    return {}  # Return empty list if no match
+def get_song_by_slug(data, slug): return utils.get_song_by_slug(data, slug)
 
 _best_duplicate_map = {}
 def build_best_duplicate_map(playlis):
@@ -14179,47 +12581,8 @@ def update_lightning_mode_settings(settings):
     settings = sync_with_default(settings, lightning_mode_settings_default)
     return dict(sorted(settings.items()))
 
-def sync_with_default(saved, default):
-    # First, remove any keys not in the default
-    keys_to_remove = [key for key in saved if key not in default]
-    for key in keys_to_remove:
-        del saved[key]
-
-    # Then, add missing keys and recurse into nested dicts
-    for key, default_value in default.items():
-        if key not in saved:
-            saved[key] = default_value
-        elif isinstance(default_value, dict) and isinstance(saved[key], dict):
-            sync_with_default(saved[key], default_value)
-        else:
-            # Optional: If types mismatch, replace with default
-            if not isinstance(saved[key], type(default_value)):
-                saved[key] = default_value
-    return saved
-
-
-def compute_settings_diff(default, saved):
-    """Return a dict containing only the keys in `saved` that differ from `default`.
-    Works recursively for nested dicts. If a nested dict has no differing keys, it's omitted.
-    """
-    if not isinstance(saved, dict) or not isinstance(default, dict):
-        return copy.deepcopy(saved) if saved != default else None
-
-    diff = {}
-    for key, val in saved.items():
-        if key not in default:
-            # Key not in default - store it
-            diff[key] = copy.deepcopy(val)
-            continue
-        default_val = default[key]
-        if isinstance(val, dict) and isinstance(default_val, dict):
-            sub = compute_settings_diff(default_val, val)
-            if sub:
-                diff[key] = sub
-        else:
-            if val != default_val:
-                diff[key] = copy.deepcopy(val)
-    return diff if diff else None
+def sync_with_default(saved, default): return utils.sync_with_default(saved, default)
+def compute_settings_diff(default, saved): return utils.compute_settings_diff(default, saved)
 
 def toggle_light_mode(type=None, queue=True, show_popup=True):
     global light_mode, variety_light_mode_enabled
@@ -14359,17 +12722,17 @@ def update_light_round(time):
         # Once the wall clock is set we're permanently in the answer phase regardless of Player position
         # (seeking the theme backwards must not flip us back into question-phase logic)
         _in_answer_phase = _light_answer_wall_start is not None or time >= light_round_start_time + light_round_length
-        if _in_answer_phase and _light_answer_wall_start is None:
-            _light_answer_wall_start = _wall_time()
-            _light_answer_last_tick  = _wall_time()
-        # Compensate for time spent paused: if the gap since the last tick is
-        # larger than two normal poll intervals (~100 ms), the player was paused;
-        # advance the wall-start by the excess so elapsed freezes while paused.
         _now = _wall_time()
+        if _in_answer_phase and _light_answer_wall_start is None:
+            _light_answer_wall_start = _now
+            _light_answer_last_tick  = _now
+        # Pause compensation: when the player is paused, slide the reference
+        # start forward so that _answer_elapsed stays frozen.  Checking
+        # player.is_playing() directly is reliable and avoids false positives
+        # from OS timer jitter that plagued the old gap-threshold approach.
         if _light_answer_wall_start is not None and _light_answer_last_tick is not None:
-            _gap = _now - _light_answer_last_tick
-            if _gap > (SEEK_POLLING / 1000.0) * 2:
-                _light_answer_wall_start += _gap - (SEEK_POLLING / 1000.0)
+            if not player.is_playing():
+                _light_answer_wall_start += _now - _light_answer_last_tick
         _light_answer_last_tick = _now
         _answer_elapsed = (_now - _light_answer_wall_start) if _light_answer_wall_start is not None else 0
         if _in_answer_phase and _answer_elapsed >= light_round_answer_length:
@@ -15000,7 +13363,7 @@ def update_light_round(time):
                     # Start download if not already running
                     vid_match = re.search(r'(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})', yt_url)
                     vid_id = vid_match.group(1) if vid_match else None
-                    if vid_id and vid_id not in _yt_cache_downloads_in_progress:
+                    if vid_id and vid_id not in youtube_control._yt_cache_downloads_in_progress:
                         cache_mb = int(lightning_mode_settings.get("_misc_settings", {}).get("download_cache_mb", 0))
                         effective_mb = cache_mb if cache_mb > 0 else 500
                         threading.Thread(
@@ -15440,8 +13803,7 @@ def get_series_popularity(data):
     pops = [_series_popularity_cache[s] for s in series_list(data, fallback_title=False) if s in _series_popularity_cache]
     return min(pops) if pops else (data.get("popularity") or 10000)
 
-def is_slug_op(slug):
-    return slug.startswith("OP")
+def is_slug_op(slug): return utils.is_slug_op(slug)
 
 lightning_queue = None
 lightning_queue_data = {}
@@ -18631,126 +16993,15 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
     edge_overlay_box = True  # sentinel so external truthiness checks work
     _draw_edge_osd(block_percent)
 
-scoreboard_colors_sent = False
-scoreboard_align_sent = False
-scoreboard_visible_hint = None  # None = unknown, True = visible, False = hidden
-def send_scoreboard_command(cmd):
-    global scoreboard_visible_hint
-    _cmd = str(cmd).strip().lower()
-    if _cmd == "show":
-        scoreboard_visible_hint = True
-    elif _cmd == "hide":
-        scoreboard_visible_hint = False
-    elif _cmd == "quit":
-        scoreboard_visible_hint = False
-    elif _cmd == "toggle":
-        scoreboard_visible_hint = (not scoreboard_visible_hint) if isinstance(scoreboard_visible_hint, bool) else None
-    def send_scoreboard_command_worker():
-        global scoreboard_colors_sent, scoreboard_align_sent
-        try:
-            s = socket.socket()
-            s.connect(("localhost", 5555))
-            s.sendall(cmd.encode())
-            s.close()
-            if not scoreboard_colors_sent:
-                scoreboard_colors_sent = True
-                send_scoreboard_colors()
-            if not scoreboard_align_sent:
-                scoreboard_align_sent = True
-        except ConnectionRefusedError:
-            pass
-    threading.Thread(target=send_scoreboard_command_worker, daemon=True).start()
 
-def is_scoreboard_running():
-    """Check if the scoreboard is currently running (port 5555 open)."""
-    try:
-        s = socket.socket()
-        s.settimeout(0.1)
-        s.connect(("localhost", 5555))
-        s.close()
-        return True
-    except (ConnectionRefusedError, OSError):
-        return False
-
-def open_scoreboard():
-    """Launch the scoreboard if not already running."""
-    global scoreboard_visible_hint
-    if is_scoreboard_running():
-        return
-    if os.path.isfile("universal_scoreboard.exe"):
-        scoreboard_visible_hint = True
-        subprocess.Popen(["universal_scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-    elif os.path.isfile("universal_scoreboard.py"):
-        scoreboard_visible_hint = True
-        subprocess.Popen([sys.executable, "universal_scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-    elif os.path.isfile("scoreboard.exe"):
-        scoreboard_visible_hint = True
-        subprocess.Popen(["scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-    elif os.path.isfile("scoreboard.py"):
-        scoreboard_visible_hint = True
-        subprocess.Popen([sys.executable, "scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-
-def send_scoreboard_colors():
-    send_scoreboard_command(f"[COLORS][BACK]{OVERLAY_BACKGROUND_COLOR}[TEXT]{OVERLAY_TEXT_COLOR}")
-
-def send_scoreboard_score(player_name, delta):
-    """Tell the scoreboard to apply `delta` to `player_name`'s score on the Google Sheet.
-    
-    Pass a positive delta to add points, negative to subtract.
-    The scoreboard will create a new player row if the name isn't found.
-    """
-    send_scoreboard_command(f"[SCORE_WRITE][PLAYER]{player_name}[DELTA]{delta}")
-
-def send_scoreboard_align():
-    if inverted_positions:
-        send_scoreboard_command("align right")
-    else:
-        send_scoreboard_command("align left")
-
-# Score change logging from scoreboard
-def read_all_score_changes():
-    """Read all score changes from scoreboard log file (does not clear file)"""
-    try:
-        _sc_path = os.path.join('scoreboard_data', 'score_changes.json')
-        if not os.path.exists(_sc_path):
-            return []
-        
-        changes = []
-        with open(_sc_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    changes.append(json.loads(line))
-        
-        return changes
-    except Exception as e:
-        print(f"Error reading score changes: {e}")
-        return []
-
-def add_score_changes_to_session():
-    """Read all score changes and add them to session_data for session logging"""
-    global session_data
-    changes = read_all_score_changes()
-    
-    # Keep track of score changes already in session_data to avoid duplicates
-    existing_score_entries = [entry for entry in session_data if entry.get("type") == "scoreboard_score"]
-    existing_timestamps = {entry.get("timestamp") for entry in existing_score_entries}
-    
-    for change in changes:
-        if change['timestamp'] in existing_timestamps:
-            continue
-            
-        score_entry = {
-            "timestamp": change['timestamp'],  # Now using consistent datetime format
-            "type": "scoreboard_score",
-            "player": change['player'],
-            "old_score": change['old_score'], 
-            "new_score": change['new_score'],
-            "delta": change['delta']
-        }
-        
-        # Add to session_data so it appears in the session log
-        session_data.append(score_entry)
+def send_scoreboard_command(cmd): scoreboard_control.send_command(cmd)
+def is_scoreboard_running(): return scoreboard_control.is_running()
+def open_scoreboard(): scoreboard_control.open_scoreboard()
+def send_scoreboard_colors(): scoreboard_control.send_colors(OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR)
+def send_scoreboard_score(player_name, delta): scoreboard_control.send_score(player_name, delta)
+def send_scoreboard_align(): scoreboard_control.send_align(inverted_positions)
+def read_all_score_changes(): return scoreboard_control.read_score_changes()
+def add_score_changes_to_session(): scoreboard_control.add_score_changes_to_session(session_data)
 
 # =========================================
 #          *GROW LIGHTNING ROUND
@@ -21359,244 +19610,13 @@ def set_light_names():
 #          *STREAMING/*CACHE
 # =========================================
 
-_cached_streams = {}
-_yt_cache_downloads_in_progress = set()  # youtube_ids currently being downloaded
-_yt_download_progress = {}              # vid_id -> {downloaded, total, speed, eta}
-
-def _get_yt_cache_path(youtube_url):
-    """Return the local cache file path for a YouTube URL, or None if no video ID found."""
-    match = re.search(r'(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})', youtube_url or '')
-    if not match:
-        return None
-    return os.path.join(YOUTUBE_CACHE_FOLDER, f"{match.group(1)}.mp4")
-
-def _get_yt_meta_path(youtube_url):
-    """Return the sidecar metadata JSON path for a YouTube URL, or None if no video ID found."""
-    match = re.search(r'(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})', youtube_url or '')
-    if not match:
-        return None
-    return os.path.join(YOUTUBE_CACHE_FOLDER, f"{match.group(1)}.json")
-
-def _load_yt_meta(youtube_url):
-    """Load cached metadata dict for a YouTube URL from its sidecar JSON, or None."""
-    meta_path = _get_yt_meta_path(youtube_url)
-    if not meta_path or not os.path.exists(meta_path):
-        return None
-    try:
-        with open(meta_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-def _save_yt_meta(youtube_url, title, channel, duration):
-    """Save title/channel/duration to a sidecar JSON next to the cached mp4."""
-    meta_path = _get_yt_meta_path(youtube_url)
-    if not meta_path:
-        return
-    try:
-        os.makedirs(YOUTUBE_CACHE_FOLDER, exist_ok=True)
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            json.dump({'title': title, 'channel': channel, 'duration': duration, 'url': youtube_url}, f, ensure_ascii=False)
-    except Exception as e:
-        print(f"[YT cache] Failed to save metadata for {youtube_url}: {e}")
-
-def _evict_yt_cache(max_mb):
-    """Delete oldest files from YOUTUBE_CACHE_FOLDER until total size is under max_mb."""
-    if max_mb <= 0:
-        return
-    cache_dir = YOUTUBE_CACHE_FOLDER
-    if not os.path.isdir(cache_dir):
-        return
-    files = []
-    total = 0
-    for fname in os.listdir(cache_dir):
-        if not fname.endswith('.mp4'):
-            continue
-        fpath = os.path.join(cache_dir, fname)
-        try:
-            sz = os.path.getsize(fpath)
-            mtime = os.path.getmtime(fpath)
-            files.append((mtime, sz, fpath))
-            total += sz
-        except OSError:
-            pass
-    files.sort()  # oldest first
-    limit = max_mb * 1024 * 1024
-    for mtime, sz, fpath in files:
-        if total <= limit:
-            break
-        try:
-            os.remove(fpath)
-            total -= sz
-        except OSError:
-            pass
-        # Also remove sidecar metadata if present
-        meta = fpath.replace('.mp4', '.json')
-        if os.path.exists(meta):
-            try:
-                os.remove(meta)
-            except OSError:
-                pass
-
-def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
-    """Background thread: download youtube_url to cache_path via yt-dlp, then evict if over budget."""
-    vid_id = os.path.splitext(os.path.basename(cache_path))[0]
-    if vid_id in _yt_cache_downloads_in_progress:
-        return
-    _yt_cache_downloads_in_progress.add(vid_id)
-    try:
-        os.makedirs(YOUTUBE_CACHE_FOLDER, exist_ok=True)
-        part_path = cache_path + '.part'
-        def _progress_hook(d):
-            if d['status'] == 'downloading':
-                _yt_download_progress[vid_id] = {
-                    'downloaded': d.get('downloaded_bytes') or 0,
-                    'total': d.get('total_bytes') or d.get('total_bytes_estimate') or 0,
-                    'speed': d.get('speed') or 0,
-                    'eta': d.get('eta'),
-                }
-        ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
-            'merge_output_format': 'mp4',
-            'outtmpl': cache_path,
-            'quiet': True,
-            'no_warnings': True,
-            'noprogress': True,
-            'progress_hooks': [_progress_hook],
-        }
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=True)
-        # Remove stale .part file if yt-dlp left one
-        if os.path.exists(part_path):
-            try:
-                os.remove(part_path)
-            except OSError:
-                pass
-        if os.path.exists(cache_path):
-            # Save metadata sidecar so future plays need no yt-dlp call
-            if info:
-                _save_yt_meta(
-                    youtube_url,
-                    title=info.get('title', ''),
-                    channel=info.get('channel') or info.get('uploader', ''),
-                    duration=info.get('duration', 0)
-                )
-            _evict_yt_cache(max_mb)
-    except Exception as e:
-        print(f"[YT cache] Download failed for {youtube_url}: {e}")
-    finally:
-        _yt_cache_downloads_in_progress.discard(vid_id)
-        _yt_download_progress.pop(vid_id, None)
-
-def _yt_cache_wait_popup(youtube_url, timeout=120):
-    """Show a non-blocking wait popup while a YouTube cache download finishes.
-
-    Blocks the calling code (via root.wait_window) while keeping Tkinter responsive.
-    Returns True if the file is ready when the popup closes, False if timed out or
-    the download never started.
-    """
-    match = re.search(r'(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})', youtube_url or '')
-    if not match:
-        return False
-    vid_id = match.group(1)
-    cache_path = os.path.join(YOUTUBE_CACHE_FOLDER, f"{vid_id}.mp4")
-
-    # Already done — no popup needed
-    if vid_id not in _yt_cache_downloads_in_progress:
-        return os.path.exists(cache_path)
-
-    bg_color, fg_color, border_color = "#1e1e1e", "white", "#444"
-
-    popup = tk.Toplevel(root)
-    popup.overrideredirect(True)
-    popup.attributes('-topmost', True)
-    popup.transient(root)
-
-    main_frame = tk.Frame(popup, bg=border_color, padx=2, pady=2)
-    main_frame.pack(fill="both", expand=True)
-    inner_frame = tk.Frame(main_frame, bg=bg_color)
-    inner_frame.pack(fill="both", expand=True)
-
-    tk.Label(inner_frame, text="Downloading clip…", font=("Arial", 12, "bold"),
-             bg=bg_color, fg=fg_color).pack(pady=(15, 5))
-
-    style = ttk.Style()
-    style.theme_use('default')
-    style.configure("YTWait.Horizontal.TProgressbar",
-                    troughcolor='#333', background='#0078d7',
-                    bordercolor=bg_color, lightcolor='#0078d7', darkcolor='#0078d7')
-    pb = ttk.Progressbar(inner_frame, length=380, mode='indeterminate',
-                         style="YTWait.Horizontal.TProgressbar")
-    pb.pack(pady=(0, 6), padx=20, ipady=6)
-    pb.start(12)
-
-    status_var = tk.StringVar(value="Waiting for download to complete…")
-    tk.Label(inner_frame, textvariable=status_var, font=("Arial", 10),
-             bg=bg_color, fg="#aaa").pack(pady=(0, 4))
-
-    result = [False]
-    start_t = time.time()
-
-    def _poll():
-        elapsed = time.time() - start_t
-        if vid_id not in _yt_cache_downloads_in_progress:
-            result[0] = os.path.exists(cache_path)
-            try:
-                popup.destroy()
-            except Exception:
-                pass
-            return
-        if elapsed >= timeout:
-            status_var.set("Timed out — falling back to stream.")
-            popup.after(1000, popup.destroy)
-            return
-        prog = _yt_download_progress.get(vid_id)
-        if prog and prog.get('downloaded'):
-            dl    = prog['downloaded']
-            total = prog['total']
-            speed = prog['speed']
-            eta   = prog.get('eta')
-            mb_dl = dl / 1048576
-            if total:
-                pct      = min(100, dl * 100 / total)
-                mb_total = total / 1048576
-                eta_str  = f"  ETA {eta}s" if eta is not None else ""
-                status_var.set(f"{pct:.0f}%  {mb_dl:.1f}/{mb_total:.1f} MB{eta_str}")
-                pb.stop()
-                pb.configure(mode='determinate')
-                pb['value'] = pct
-            else:
-                status_var.set(f"{mb_dl:.1f} MB downloaded…")
-                if pb['mode'] != 'indeterminate':
-                    pb.configure(mode='indeterminate')
-                    pb.start(12)
-        else:
-            status_var.set(f"Downloading clip… ({int(elapsed)}s)")
-        popup.after(250, _poll)
-
-    def _on_cancel():
-        result[0] = False
-        try:
-            popup.destroy()
-        except Exception:
-            pass
-
-    cancel_btn = tk.Button(inner_frame, text="Skip (stream instead)", font=("Arial", 10),
-                           bg="#333", fg=fg_color, activebackground="#555",
-                           command=_on_cancel, relief=tk.FLAT)
-    cancel_btn.pack(pady=(0, 12))
-
-    popup.update_idletasks()
-    w, h = 430, 165
-    x = (popup.winfo_screenwidth() - w) // 2
-    y = (popup.winfo_screenheight() - h) // 2
-    popup.geometry(f"{w}x{h}+{x}+{y}")
-    popup.deiconify()
-    popup.lift()
-    popup.update()
-    popup.after(250, _poll)
-    root.wait_window(popup)
-    return result[0]
+def _get_yt_cache_path(youtube_url): return youtube_control._get_yt_cache_path(youtube_url)
+def _get_yt_meta_path(youtube_url): return youtube_control._get_yt_meta_path(youtube_url)
+def _load_yt_meta(youtube_url): return youtube_control._load_yt_meta(youtube_url)
+def _save_yt_meta(youtube_url, title, channel, duration): youtube_control._save_yt_meta(youtube_url, title, channel, duration)
+def _evict_yt_cache(max_mb): youtube_control._evict_yt_cache(max_mb)
+def _yt_cache_download_bg(youtube_url, cache_path, max_mb): youtube_control._yt_cache_download_bg(youtube_url, cache_path, max_mb)
+def _yt_cache_wait_popup(youtube_url, timeout=120): return youtube_control._yt_cache_wait_popup(youtube_url, timeout)
 
 
 def is_animethemes_stream_file(filename):
@@ -21611,778 +19631,31 @@ def is_animethemes_stream_file(filename):
 
 animethemes_stream = None
 stream_icon = '📶'
-active_downloads = {}  # {filename: thread_object}
-download_cancel_flags = {}  # {filename: bool} - Set to True to cancel download
-cache_metadata = {}  # {filename: {size, play_count, last_played}}
-downloads_completed = 0  # Track completed downloads for progressive download logic
-download_ui_update_pending = False  # Flag to indicate UI needs update after download
-pending_play_queue = {}  # {filename: {'playlist_entry': ..., 'fullscreen': ..., 'start_time': ...}}
-download_progress = {}  # {filename: {'downloaded_mb': 0, 'total_mb': 0, 'popup': window_obj}}
+active_downloads        = cache_download.active_downloads        # module-owned; alias for legacy refs
+download_cancel_flags   = cache_download.download_cancel_flags   # module-owned
+cache_metadata          = cache_download.cache_metadata          # module-owned
+downloads_completed     = 0  # local alias; see cache_download.downloads_completed
+download_ui_update_pending = False  # local alias; see cache_download.download_ui_update_pending
+pending_play_queue      = cache_download.pending_play_queue      # module-owned
+download_progress       = cache_download.download_progress       # module-owned
 
-def get_animethemes_stream_url(filename):
-    """Get streaming URL for a theme from AnimThemes using the filename as basename."""
-    return f"https://v.animethemes.moe/{filename}"
-
-def load_cache_metadata():
-    """Load cache metadata from JSON file."""
-    global cache_metadata
-    try:
-        if os.path.exists(CACHE_METADATA_FILE):
-            with open(CACHE_METADATA_FILE, 'r', encoding='utf-8') as f:
-                cache_metadata = json.load(f)
-        else:
-            cache_metadata = {}
-    except Exception as e:
-        print(f"Error loading cache metadata: {e}")
-        cache_metadata = {}
-
-def save_cache_metadata():
-    """Save cache metadata to JSON file."""
-    try:
-        os.makedirs(os.path.dirname(CACHE_METADATA_FILE), exist_ok=True)
-        with open(CACHE_METADATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache_metadata, f, indent=2)
-    except Exception as e:
-        print(f"Error saving cache metadata: {e}")
-
-def get_cache_size_mb():
-    """Get current cache size in MB."""
-    total_size = 0
-    for filename, metadata in cache_metadata.items():
-        total_size += metadata.get('size', 0)
-    return total_size / (1024 * 1024)  # Convert to MB
-
-def get_cached_file_path(filename):
-    """Get the path to a cached file if it exists."""
-    # Check if we have it in metadata with the path
-    if filename in cache_metadata:
-        rel_path = cache_metadata[filename].get('path', filename)
-        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
-        if os.path.exists(cache_path):
-            return cache_path
-    
-    # Fallback: check flat structure for legacy cached files
-    cache_path = os.path.join(THEMES_CACHE_FOLDER, filename)
-    if os.path.exists(cache_path):
-        return cache_path
-    
-    return None
-
-def evict_cache_for_size(needed_size_bytes):
-    """Evict least-used files from cache to make room for new download.
-    
-    Args:
-        needed_size_bytes: Size needed in bytes
-        
-    Returns:
-        True if enough space was freed, False otherwise
-    """
-    global cache_metadata
-    
-    # Calculate current cache size in bytes
-    current_size = sum(meta.get('size', 0) for meta in cache_metadata.values())
-    cache_limit_bytes = themes_cache_size * 1024 * 1024
-    
-    if current_size + needed_size_bytes <= cache_limit_bytes:
-        return True  # Already have space
-    
-    # Build list of cached files with their timestamps
-    # Priority: oldest last_played first
-    cached_files = []
-    for filename, meta in cache_metadata.items():
-        cached_files.append({
-            'filename': filename,
-            'size': meta.get('size', 0),
-            'play_count': meta.get('play_count', 0),
-            'last_played': meta.get('last_played', ''),
-        })
-    
-    # Sort by last_played (ascending/oldest first)
-    cached_files.sort(key=lambda x: x['last_played'])
-    
-    # Remove files until we have enough space
-    space_needed = current_size + needed_size_bytes - cache_limit_bytes
-    space_freed = 0
-    
-    for file_info in cached_files:
-        if space_freed >= space_needed:
-            break
-        
-        filename = file_info['filename']
-        # Use stored path from metadata
-        rel_path = cache_metadata.get(filename, {}).get('path', filename)
-        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
-        
-        try:
-            if os.path.exists(cache_path):
-                os.remove(cache_path)
-                
-                # Clean up empty directories
-                cache_dir = os.path.dirname(cache_path)
-                try:
-                    while cache_dir != THEMES_CACHE_FOLDER and os.path.exists(cache_dir):
-                        if not os.listdir(cache_dir):  # Directory is empty
-                            os.rmdir(cache_dir)
-                            cache_dir = os.path.dirname(cache_dir)
-                        else:
-                            break
-                except:
-                    pass  # Ignore cleanup errors
-                
-                # Only count freed space if file actually existed and was deleted
-                space_freed += file_info['size']
-                del cache_metadata[filename]
-            else:
-                # File doesn't exist but is in metadata - clean up metadata only
-                del cache_metadata[filename]
-        except Exception as e:
-            print(f"Error evicting {filename}: {e}")
-    
-    save_cache_metadata()
-    return space_freed >= space_needed
-
-def update_cache_play_count(filename):
-    """Update play count and last played timestamp for a cached file."""
-    if filename in cache_metadata:
-        cache_metadata[filename]['play_count'] = cache_metadata[filename].get('play_count', 0) + 1
-        cache_metadata[filename]['last_played'] = datetime.now().isoformat()
-        save_cache_metadata()
-
-def _download_animethemes_file_to_path(filename, dest_path, progress_callback=None):
-    """Core download logic for AnimThemes files.
-    
-    Args:
-        filename: Name of the file to download
-        dest_path: Full destination path
-        progress_callback: Optional callback(downloaded_mb, total_mb) for progress updates
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        url = get_animethemes_stream_url(filename)
-        headers = {'User-Agent': f'GuessTheAnime/{APP_VERSION} (https://github.com/ualkotob/guess-the-anime-playlist-tool)'}
-        response = requests.get(url, stream=True, timeout=30, headers=headers)
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
-        
-        # Write to file with progress tracking
-        with open(dest_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                # Check for cancellation
-                if filename in download_cancel_flags and download_cancel_flags[filename]:
-                    print(f"Download cancelled: {filename}")
-                    return False
-                
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback and total_size > 0:
-                        mb_downloaded = downloaded / 1024 / 1024
-                        mb_total = total_size / 1024 / 1024
-                        progress_callback(mb_downloaded, mb_total)
-        
-        return True
-    except Exception as e:
-        print(f"Download error for {filename}: {e}")
-        return False
-
-def download_animethemes_file(filename, button=None):
-    """Download an AnimThemes file and save it to directory/year/season/filename structure."""
-    def update_button(text):
-        if button and isinstance(button, tk.Button):
-            try:
-                button.config(text=text)
-            except:
-                pass
-    
-    def do_download():
-        try:
-            update_button("Starting...")
-            
-            # Get metadata to determine season/year
-            data = get_metadata(filename)
-            season_str = data.get("season", "")
-            
-            # Parse season string (format: "Season Year", e.g., "Winter 2024")
-            if season_str and season_str != "N/A":
-                parts = season_str.split()
-                if len(parts) >= 2:
-                    season = parts[0]  # e.g., "Winter"
-                    year = parts[1]    # e.g., "2024"
-                else:
-                    season = "Unknown"
-                    year = "Unknown"
-            else:
-                season = "Unknown"
-                year = "Unknown"
-            
-            # Create directory structure: directory/year/season/
-            if directory:
-                dest_dir = os.path.join(directory, year, season)
-            else:
-                dest_dir = os.path.join(year, season)
-            
-            os.makedirs(dest_dir, exist_ok=True)
-            dest_path = os.path.join(dest_dir, filename)
-            
-            # Download using core function
-            update_button("Downloading...")
-            
-            def progress_callback(mb_downloaded, mb_total):
-                update_button(f"{mb_downloaded:.1f}/{mb_total:.1f} MB")
-            
-            success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
-            
-            if not success:
-                update_button("Error")
-                messagebox.showerror("Download Error", f"Failed to download {filename}")
-                return
-            
-            # Update directory_files to include the new file
-            directory_files[filename] = dest_path
-            
-            # Success message
-            filesize_mb = os.path.getsize(dest_path) / 1024 / 1024
-            update_button(f"✓ {filesize_mb:.1f} MB")
-            print(f"Downloaded {filename} to {dest_path}")
-            
-            # Refresh displays
-            if list_loaded == "playlist":
-                root.after(100, lambda: show_playlist(True))
-            
-            # Refresh file actions display to show local file actions instead of download
-            if currently_playing and currently_playing.get("filename") == filename:
-                root.after(100, lambda: update_extra_metadata())
-            
-        except Exception as e:
-            update_button("Error")
-            print(f"Download error for {filename}: {e}")
-            messagebox.showerror("Download Error", f"Failed to download {filename}:\n\n{str(e)}")
-    
-    # Start download in background thread
-    threading.Thread(target=do_download, daemon=True).start()
-
-def move_cached_file_to_directory(filename, button=None):
-    """Move a cached file to the proper directory/year/season structure.
-    
-    Args:
-        filename: Name of the file to move
-        button: Optional button widget to update with status
-    """
-    def update_button(text):
-        if button and isinstance(button, tk.Button):
-            try:
-                button.config(text=text)
-            except:
-                pass
-    
-    def do_move():
-        try:
-            update_button("Moving...")
-            
-            # Get cached file path
-            cached_path = get_cached_file_path(filename)
-            if not cached_path:
-                update_button("Not Cached")
-                messagebox.showerror("Error", f"File not found in cache: {filename}")
-                return
-            
-            # Get metadata to determine season/year
-            data = get_metadata(filename)
-            season_str = data.get("season", "")
-            
-            # Parse season string (format: "Season Year", e.g., "Winter 2024")
-            if season_str and season_str != "N/A":
-                parts = season_str.split()
-                if len(parts) >= 2:
-                    season = parts[0]  # e.g., "Winter"
-                    year = parts[1]    # e.g., "2024"
-                else:
-                    season = "Unknown"
-                    year = "Unknown"
-            else:
-                season = "Unknown"
-                year = "Unknown"
-            
-            # Create directory structure: directory/year/season/
-            if directory:
-                dest_dir = os.path.join(directory, year, season)
-            else:
-                dest_dir = os.path.join(year, season)
-            
-            os.makedirs(dest_dir, exist_ok=True)
-            dest_path = os.path.join(dest_dir, filename)
-            
-            # Move the file from cache to directory
-            shutil.move(cached_path, dest_path)
-            
-            # Clean up empty cache directories
-            cache_dir = os.path.dirname(cached_path)
-            try:
-                while cache_dir != THEMES_CACHE_FOLDER and os.path.exists(cache_dir):
-                    if not os.listdir(cache_dir):  # Directory is empty
-                        os.rmdir(cache_dir)
-                        cache_dir = os.path.dirname(cache_dir)
-                    else:
-                        break
-            except:
-                pass  # Ignore cleanup errors
-            
-            # Update directory_files
-            directory_files[filename] = dest_path
-            
-            # Remove from cache metadata
-            if filename in cache_metadata:
-                del cache_metadata[filename]
-                save_cache_metadata()
-            
-            # Success
-            filesize_mb = os.path.getsize(dest_path) / 1024 / 1024
-            update_button(f"✓ {filesize_mb:.1f} MB")
-            print(f"Moved {filename} from cache to {dest_path}")
-            
-            # Refresh displays
-            if list_loaded == "playlist":
-                root.after(100, lambda: show_playlist(True))
-            
-            # Refresh file actions display to show local file actions
-            if currently_playing and currently_playing.get("filename") == filename:
-                root.after(100, lambda: update_extra_metadata())
-            
-        except Exception as e:
-            update_button("Error")
-            print(f"Move error for {filename}: {e}")
-            messagebox.showerror("Move Error", f"Failed to move {filename}:\n\n{str(e)}")
-    
-    # Start move in background thread
-    threading.Thread(target=do_move, daemon=True).start()
-
-def create_download_popup(filename):
-    """Create a progress popup window for a downloading file.
-    
-    Args:
-        filename: Name of the file being downloaded
-        
-    Returns:
-        Dictionary with popup and widget references
-    """
-    popup = tk.Toplevel(root)
-    popup.overrideredirect(True)  # Borderless window
-    popup.attributes('-topmost', True)  # Keep on top
-    popup.transient(root)
-    
-    # Configure colors
-    bg_color = "#1e1e1e"  # gray12
-    fg_color = "white"
-    border_color = "#444"
-    button_bg = "#333"
-    button_hover = "#555"
-    
-    # Main frame with border
-    main_frame = tk.Frame(popup, bg=border_color, padx=2, pady=2)
-    main_frame.pack(fill="both", expand=True)
-    
-    inner_frame = tk.Frame(main_frame, bg=bg_color)
-    inner_frame.pack(fill="both", expand=True)
-    
-    # Title label
-    title_label = tk.Label(inner_frame, text="Loading theme...", font=("Arial", 12, "bold"), 
-                          bg=bg_color, fg=fg_color)
-    title_label.pack(pady=(15, 5))
-    
-    # Filename label (truncate if too long)
-    # display_name = filename if len(filename) <= 45 else filename[:42] + "..."
-    # filename_label = tk.Label(inner_frame, text=display_name, font=("Arial", 11), 
-    #                          bg=bg_color, fg="#aaa")
-    # filename_label.pack(pady=(0, 10))
-    
-    # Progress bar with custom style
-    style = ttk.Style()
-    style.theme_use('default')
-    style.configure("Download.Horizontal.TProgressbar", 
-                   troughcolor='#333', 
-                   background='#0078d7',
-                   bordercolor=bg_color,
-                   lightcolor='#0078d7',
-                   darkcolor='#0078d7')
-    
-    progress_bar = ttk.Progressbar(inner_frame, length=450, mode='determinate', 
-                                  style="Download.Horizontal.TProgressbar")
-    progress_bar.pack(pady=(0, 10), padx=20, ipady=8)
-    
-    # Status label (bigger text)
-    status_label = tk.Label(inner_frame, text="Starting download...", font=("Arial", 11), 
-                           bg=bg_color, fg=fg_color)
-    status_label.pack(pady=(0, 5))
-    
-    # Button frame
-    button_frame = tk.Frame(inner_frame, bg=bg_color)
-    button_frame.pack(pady=(0, 10))
-    
-    # Cancel button
-    def on_cancel():
-        cancel_download(filename)
-    
-    cancel_button = tk.Button(button_frame, text="Cancel", font=("Arial", 10), 
-                             bg=button_bg, fg=fg_color, activebackground=button_hover,
-                             command=on_cancel, width=10, relief=tk.FLAT)
-    cancel_button.pack(side=tk.LEFT, padx=5)
-    
-    # Retry button
-    def on_retry():
-        retry_download(filename)
-    
-    retry_button = tk.Button(button_frame, text="Retry", font=("Arial", 10), 
-                            bg=button_bg, fg=fg_color, activebackground=button_hover,
-                            command=on_retry, width=10, relief=tk.FLAT)
-    retry_button.pack(side=tk.LEFT, padx=5)
-    
-    # Center the popup
-    popup.update_idletasks()
-    width = 500
-    height = 170
-    x = (popup.winfo_screenwidth() // 2) - (width // 2)
-    y = (popup.winfo_screenheight() // 2) - (height // 2)
-    popup.geometry(f"{width}x{height}+{x}+{y}")
-    
-    # Force the window to display
-    popup.deiconify()
-    popup.lift()
-    popup.focus_force()
-    popup.update()
-    
-    return {
-        'popup': popup,
-        'progress_bar': progress_bar,
-        'status_label': status_label,
-        'cancel_button': cancel_button,
-        'retry_button': retry_button
-    }
-
-def cancel_download(filename):
-    """Cancel an active download.
-    
-    Args:
-        filename: Name of the file being downloaded
-    """
-    global download_cancel_flags, active_downloads, pending_play_queue
-    
-    if filename in active_downloads:
-        # Set cancel flag
-        download_cancel_flags[filename] = True
-        print(f"Cancelling download: {filename}")
-        
-        # Remove from pending play queue if present
-        if filename in pending_play_queue:
-            pending_play_queue.pop(filename, None)
-        
-        # The download thread will check this flag and exit
-        # The cleanup will happen in the download thread's finally block
-
-def retry_download(filename):
-    """Retry a failed or cancelled download.
-    
-    Args:
-        filename: Name of the file to retry downloading
-    """
-    global download_cancel_flags, download_progress, pending_play_queue
-    
-    # Preserve pending play info if it exists (so file plays after retry completes)
-    pending_play_info = pending_play_queue.get(filename)
-    
-    # If currently downloading, cancel it first
-    if filename in active_downloads:
-        print(f"Stopping current download to retry: {filename}")
-        cancel_download(filename)
-        
-        # Wait a moment for cancellation to complete, then start new download
-        def start_retry():
-            # Clear any cancel flags
-            download_cancel_flags.pop(filename, None)
-            
-            # Restore pending play queue entry if it existed
-            if pending_play_info:
-                pending_play_queue[filename] = pending_play_info
-                # Reset start time so timeout doesn't trigger immediately
-                pending_play_queue[filename]['start_time'] = time.time()
-            
-            # Start new download
-            download_to_cache(filename, silent=False)
-            print(f"Retrying download: {filename}")
-        
-        # Schedule retry after 500ms to allow cancellation to complete
-        root.after(500, start_retry)
-    else:
-        # Not downloading, start immediately
-        # Clear any cancel flags
-        download_cancel_flags.pop(filename, None)
-        
-        # Close existing popup if present
-        if filename in download_progress:
-            popup_ref = download_progress[filename].get('popup')
-            if popup_ref:
-                try:
-                    popup_ref.destroy()
-                except:
-                    pass
-            download_progress.pop(filename, None)
-        
-        # Restore or create pending play queue entry
-        if pending_play_info:
-            pending_play_queue[filename] = pending_play_info
-            # Reset start time so timeout doesn't trigger immediately
-            pending_play_queue[filename]['start_time'] = time.time()
-        else:
-            # Create a new pending play entry if one didn't exist
-            # (This handles retry when download wasn't queued for play)
-            if currently_playing and currently_playing.get('filename') == filename:
-                # File is currently playing (streaming), so queue it to play after download
-                pending_play_queue[filename] = {
-                    'playlist_entry': currently_playing.get('playlist_entry', filename),
-                    'fullscreen': True,
-                    'start_time': time.time(),
-                    'timeout': 60
-                }
-        
-        # Start new download
-        download_to_cache(filename, silent=False)
-        print(f"Retrying download: {filename}")
-
-def download_to_cache(filename, silent=False):
-    """Download an AnimThemes file to cache folder for temporary storage.
-    
-    Args:
-        filename: Name of the file to download
-        silent: If True, don't print status messages
-        
-    Returns:
-        True if download started successfully, False otherwise
-    """
-    global active_downloads, cache_metadata, downloads_completed, download_progress, download_cancel_flags
-    
-    # Check if already downloading
-    if filename in active_downloads:
-        return False
-    
-    # Check if already in cache
-    if get_cached_file_path(filename):
-        return False
-    
-    # Check if file is in local directory
-    if filename in directory_files:
-        return False
-    
-    # Clear any previous cancel flags
-    download_cancel_flags.pop(filename, None)
-    
-    # Create progress popup window
-    if not silent:
-        popup_info = create_download_popup(filename)
-        download_progress[filename] = {
-            'downloaded_mb': 0,
-            'total_mb': 0,
-            'popup': popup_info['popup'],
-            'progress_bar': popup_info['progress_bar'],
-            'status_label': popup_info['status_label']
-        }
-    else:
-        # For silent downloads, just track progress without popup
-        download_progress[filename] = {
-            'downloaded_mb': 0,
-            'total_mb': 0,
-            'popup': None
-        }
-    
-    def do_cache_download():
-        global downloads_completed, cache_metadata, download_ui_update_pending, download_cancel_flags
-        try:
-            # Get metadata to determine season/year
-            data = get_metadata(filename)
-            season_str = data.get("season", "")
-            if season_str and season_str != "N/A":
-                parts = season_str.split()
-                season = parts[0] if len(parts) >= 2 else "Unknown"
-                year   = parts[1] if len(parts) >= 2 else "Unknown"
-            else:
-                season = year = "Unknown"
-
-            # Determine destination: themes directory (auto_download_themes) or cache folder
-            to_directory = auto_download_themes and bool(directory)
-            if to_directory:
-                dest_path = os.path.join(directory, year, season, filename)
-                rel_path  = None
-            else:
-                rel_path  = os.path.join(year, season, filename)
-                dest_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-
-            # Shared progress callback
-            last_percent = [-1]
-            def progress_callback(mb_downloaded, mb_total):
-                if filename in download_progress:
-                    download_progress[filename]['downloaded_mb'] = mb_downloaded
-                    download_progress[filename]['total_mb'] = mb_total
-                if not silent:
-                    percent = int((mb_downloaded / mb_total) * 100)
-                    if percent != last_percent[0] and percent % 5 == 0:
-                        print(f"\r{'Downloading' if to_directory else 'Caching'} {filename}: {percent}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end='', flush=True)
-                        last_percent[0] = percent
-
-            if not silent:
-                print(f"{'Downloading' if to_directory else 'Caching'} {filename}: 0%", end='', flush=True)
-
-            # Check if cancelled while we were resolving metadata / building the path
-            if filename in download_cancel_flags and download_cancel_flags[filename]:
-                return
-
-            success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
-
-            # Handle cancellation
-            if filename in download_cancel_flags and download_cancel_flags[filename]:
-                if os.path.exists(dest_path):
-                    try:
-                        os.remove(dest_path)
-                    except Exception:
-                        pass
-                if not silent:
-                    print(f"\rDownload cancelled: {filename}" + " " * 30)
-                return
-
-            if not success:
-                if not silent:
-                    print(f"\r{'Download' if to_directory else 'Cache download'} failed: {filename}" + " " * 30)
-                return
-
-            actual_size = os.path.getsize(dest_path)
-            downloads_completed += 1
-
-            if to_directory:
-                directory_files[filename] = dest_path
-            else:
-                evict_cache_for_size(actual_size)
-                cache_metadata[filename] = {
-                    'path': rel_path,
-                    'size': actual_size,
-                    'play_count': 0,
-                    'last_played': datetime.now().isoformat()
-                }
-                save_cache_metadata()
-
-            if not silent:
-                filesize_mb = actual_size / 1024 / 1024
-                print(f"\r{'Downloaded' if to_directory else 'Cached'}: {filename} ({filesize_mb:.1f} MB)" + " " * 30)
-                download_ui_update_pending = True
-
-        except Exception as e:
-            if not silent:
-                print(f"Cache download error for {filename}: {e}")
-        finally:
-            # Remove from active downloads
-            if filename in active_downloads:
-                del active_downloads[filename]
-            
-            # Clean up cancel flag
-            download_cancel_flags.pop(filename, None)
-            
-            # Close popup window if it exists (schedule on main thread)
-            if filename in download_progress:
-                popup_ref = download_progress[filename].get('popup')
-                if popup_ref:
-                    try:
-                        root.after(0, popup_ref.destroy)
-                    except:
-                        pass
-                del download_progress[filename]
-    
-    # Start download in background thread
-    thread = threading.Thread(target=do_cache_download, daemon=True)
-    active_downloads[filename] = thread
-    thread.start()
-    return True
-
-def wait_for_download(filename, timeout=30):
-    """Wait for a file download to complete.
-    
-    Args:
-        filename: Name of the file
-        timeout: Maximum seconds to wait
-        
-    Returns:
-        True if download completed, False if timeout or not downloading
-    """
-    if filename not in active_downloads:
-        return True  # Not downloading, so we're done
-    
-    thread = active_downloads[filename]
-    thread.join(timeout=timeout)
-    
-    return filename not in active_downloads  # True if completed
-
-def prefetch_next_themes():
-    """Prefetch upcoming themes with a flat cap of 2 new download starts per call.
-
-    Walks the full lookahead window (real playlist + speculative tail) in order and
-    starts at most MAX_NEW_PREFETCH_DOWNLOADS new downloads per call.  Already-cached
-    or already-in-flight entries are skipped without consuming the cap, so the buffer
-    builds up naturally: call 1 starts tracks 2 & 3, call 2 (when 2 is done) starts
-    4 & 5, etc., without ever hammering the server with many simultaneous requests.
-    """
-    MAX_LOOKAHEAD = 5          # how many real-playlist slots ahead to consider
-    MAX_NEW_DOWNLOADS = 2      # new download starts allowed per call
-
-    if not playlist.get("playlist"):
-        return
-
-    current_idx = playlist.get("current_index", 0)
-    playlist_items = playlist["playlist"]
-
-    # Build ordered list: real playlist lookahead then speculative tail.
-    upcoming = []
-    for i in range(1, MAX_LOOKAHEAD + 1):
-        next_idx = (current_idx + i) % len(playlist_items)
-        upcoming.append(get_clean_filename(playlist_items[next_idx]))
-    for tail_entry in playlist.get("speculative_tail", []):
-        upcoming.append(get_clean_filename(tail_entry))
-
-    # Walk the list and start up to MAX_NEW_DOWNLOADS new downloads.
-    # In-flight and cached entries are free — they don't consume the cap.
-    new_started = 0
-    for filename in upcoming:
-        if new_started >= MAX_NEW_DOWNLOADS:
-            break
-        if not is_animethemes_stream_file(filename):
-            continue
-        if filename in active_downloads:
-            continue  # already in flight, don't double-start
-        if check_file_availability(filename):
-            continue  # already on disk/cache
-        download_to_cache(filename, silent=True)
-        new_started += 1
-    
-    # Also prefetch themes from fixed lightning rounds if active
-    if fixed_lightning_queue or fixed_lightning_round_playlist_data:
-        # Use playlist_data if available, otherwise use queue data
-        source_data = fixed_lightning_round_playlist_data if fixed_lightning_round_playlist_data else fixed_lightning_queue
-        if source_data:
-            next_idx = source_data.get("current_index", 0) + 1 if fixed_lightning_round_playlist_data else 0
-            rounds = source_data.get("data", {}).get("rounds", []) if "data" in source_data else source_data.get("rounds", [])
-            if next_idx < len(rounds):
-                next_round = rounds[next_idx]
-                next_filename = next_round.get("theme")
-                if next_filename and is_animethemes_stream_file(next_filename) and not check_file_availability(next_filename):
-                    download_to_cache(next_filename, silent=True)
-
-def check_file_availability(filename):
-    if filename in directory_files:
-        return True
-    if get_cached_file_path(filename):
-        return True
-    if filename in active_downloads:
-        return False
-    return False
+def get_animethemes_stream_url(filename): return cache_download.get_animethemes_stream_url(filename)
+def load_cache_metadata(): cache_download.load_cache_metadata()
+def save_cache_metadata(): cache_download.save_cache_metadata()
+def get_cache_size_mb(): return cache_download.get_cache_size_mb()
+def get_cached_file_path(filename): return cache_download.get_cached_file_path(filename)
+def evict_cache_for_size(needed_size_bytes): return cache_download.evict_cache_for_size(needed_size_bytes)
+def update_cache_play_count(filename): cache_download.update_cache_play_count(filename)
+def _download_animethemes_file_to_path(filename, dest_path, progress_callback=None): return cache_download._download_animethemes_file_to_path(filename, dest_path, progress_callback)
+def download_animethemes_file(filename, button=None): cache_download.download_animethemes_file(filename, button)
+def move_cached_file_to_directory(filename, button=None): cache_download.move_cached_file_to_directory(filename, button)
+def create_download_popup(filename): return cache_download.create_download_popup(filename)
+def cancel_download(filename): cache_download.cancel_download(filename)
+def retry_download(filename): cache_download.retry_download(filename)
+def download_to_cache(filename, silent=False): return cache_download.download_to_cache(filename, silent)
+def wait_for_download(filename, timeout=30): return cache_download.wait_for_download(filename, timeout)
+def prefetch_next_themes(): cache_download.prefetch_next_themes()
+def check_file_availability(filename): return cache_download.check_file_availability(filename)
 
 
 # =========================================
@@ -22396,85 +19669,9 @@ _stream_theme_path = None   # theme filename to restore into player after stream
 _stream_wall_start = None   # sentinel: True once the seek-to-start_time has been performed
 last_image_source = ["", ""]  # [filename, image_url]
 
-def extract_youtube_id_from_trailer(trailer_data):
-    """Extract YouTube ID from trailer data, handling cases where youtube_id is None.
-    
-    Args:
-        trailer_data: Dictionary with 'youtube_id', 'url', and/or 'embed_url'
-        
-    Returns:
-        YouTube ID string or None if not found
-    """
-    if not trailer_data:
-        return None
-    
-    # Try to get youtube_id directly first
-    youtube_id = trailer_data.get('youtube_id')
-    if youtube_id:
-        return youtube_id
-    
-    # Try to extract from embed_url if youtube_id is None
-    embed_url = trailer_data.get('embed_url')
-    if embed_url:
-        # Pattern: https://www.youtube-nocookie.com/embed/VIDEO_ID?params
-        # or https://www.youtube.com/embed/VIDEO_ID?params
-        match = re.search(r'/embed/([a-zA-Z0-9_-]+)', embed_url)
-        if match:
-            return match.group(1)
-    
-    # Try to extract from url if available
-    url = trailer_data.get('url')
-    if url:
-        # Pattern: https://www.youtube.com/watch?v=VIDEO_ID
-        match = re.search(r'[?&]v=([a-zA-Z0-9_-]+)', url)
-        if match:
-            return match.group(1)
-        # Pattern: https://youtu.be/VIDEO_ID
-        match = re.search(r'youtu\.be/([a-zA-Z0-9_-]+)', url)
-        if match:
-            return match.group(1)
-    
-    return None
+def extract_youtube_id_from_trailer(trailer_data): return youtube_control.extract_youtube_id_from_trailer(trailer_data)
 
-def get_youtube_stream_url(youtube_url, include_other_info=False):
-    try:
-        if youtube_url in _cached_streams:
-            cached_data = _cached_streams[youtube_url]
-            if include_other_info and len(cached_data) > 2:
-                return cached_data
-            elif not include_other_info:
-                return cached_data[:2]
-
-        ydl_opts = {
-            "format": "best[ext=mp4]/best",
-            "quiet": True,
-            "no_warnings": True,
-        }
-
-        with YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(youtube_url, download=False)
-            stream_url = info_dict["url"]
-            duration = info_dict.get("duration", 0)  # Duration in seconds
-            title = info_dict.get("title", "")
-            uploader = info_dict.get("uploader", "")
-            channel = info_dict.get("channel", uploader)  # fallback to uploader if channel not available
-
-            _cached_streams[youtube_url] = (stream_url, duration, title, channel)
-            # Also persist to sidecar so cached files can load metadata offline next session
-            cache_p = _get_yt_cache_path(youtube_url)
-            if cache_p and os.path.exists(cache_p):
-                _save_yt_meta(youtube_url, title=title, channel=channel, duration=duration)
-
-            if include_other_info:
-                return stream_url, duration, title, channel
-            else:
-                return stream_url, duration
-    except:
-        _cached_streams[youtube_url] = (None, 0, "", "")
-        if include_other_info:
-            return None, 0, "", ""
-        else:
-            return None, 0
+def get_youtube_stream_url(youtube_url, include_other_info=False): return youtube_control.get_youtube_stream_url(youtube_url, include_other_info)
 
 def stream_url(url, name=None, channel=None, new_player=True):
     global currently_streaming, last_streamed, preset_media, video_stopped, _stream_theme_path
@@ -22483,7 +19680,7 @@ def stream_url(url, name=None, channel=None, new_player=True):
     if cache_path and os.path.exists(cache_path) and not os.path.exists(cache_path + '.part'):
         direct_stream = cache_path
         # Try to get title/channel from in-memory cache; otherwise use provided args
-        cached = _cached_streams.get(url)
+        cached = youtube_control._cached_streams.get(url)
         if cached and len(cached) >= 4:
             length = cached[1]
             if not name:
@@ -22501,7 +19698,7 @@ def stream_url(url, name=None, channel=None, new_player=True):
                 if not channel:
                     channel = meta.get('channel', '')
                 # Populate in-memory cache so subsequent calls skip even the file read
-                _cached_streams[url] = (cache_path, length, name, channel)
+                youtube_control._cached_streams[url] = (cache_path, length, name, channel)
             else:
                 # No sidecar yet — fetch via yt-dlp and save for next time
                 _, fetched_length, fetched_name, fetched_channel = get_youtube_stream_url(url, include_other_info=True)
@@ -28444,19 +25641,7 @@ def get_series_total(data):
     count = sum(1 for a in anime_metadata.values() if series_set(a) & target)
     return max(count, 1)
 
-def split_array(arr, parts=2):
-    if parts <= 0:
-        raise ValueError("Number of parts must be positive")
-    
-    avg_len = len(arr) / float(parts)
-    output = []
-    last = 0.0
-
-    while last < len(arr):
-        output.append(arr[int(last):int(last + avg_len)])
-        last += avg_len
-
-    return output
+def split_array(arr, parts=2): return utils.split_array(arr, parts)
 
 bonus_overlay_window = None    # True when OSD is showing; None when hidden (sentinel for visibility check)
 bonus_character_labels = []
@@ -28761,86 +25946,13 @@ def destroy_bonus_characters():
 
 
 # =========================================
-#         *RULES
+#         *RULES — see _app_scripts/scoreboard_control.py
 # =========================================
 
-def get_available_rules_files(folder=None):
-    """
-    Get all JSON files in the rules folder.
-
-    Args:
-        folder (str): The folder to search in. Defaults to RULES_FOLDER.
-
-    Returns:
-        list: List of rule filenames.
-    """
-    if folder is None:
-        folder = RULES_FOLDER
-    try:
-        files = [f for f in os.listdir(folder) if f.endswith(".json") and os.path.isfile(os.path.join(folder, f))]
-        return [""] + sorted(files)
-    except FileNotFoundError:
-        return [""]
-
-def load_rules(filename=None, folder=None):
-    """
-    Loads a rules JSON file from the rules folder.
-
-    Args:
-        filename (str): The name of the JSON file. If None, uses selected_rules_file.
-        folder (str): The folder where the file is located. Defaults to RULES_FOLDER.
-
-    Returns:
-        dict: Parsed JSON data as a Python dictionary.
-    """
-    global selected_rules_file
-    if folder is None:
-        folder = RULES_FOLDER
-    if filename is None:
-        filename = selected_rules_file
-    if not filename:
-        return {}
-    file_path = os.path.join(folder, filename)
-    
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        pass
-        return {}
-    except json.JSONDecodeError as e:
-        print(f"Error parsing JSON in '{file_path}': {e}")
-        return {}
-
+def get_available_rules_files(folder=None): return scoreboard_control.get_available_rules_files(folder)
+def load_rules(filename=None, folder=None): return scoreboard_control.load_rules(filename, folder)
 scoreboard_rules = load_rules()
-def set_rules(type=None):
-    if not scoreboard_rules:
-        return
-    
-    rules_txt = f"[RULES]{"\n".join(scoreboard_rules.get("global_title", []))}\n"
-    if type == "anime":
-        rules_txt += "\n".join(scoreboard_rules.get("lightning_anime", []))
-    elif type == "character":
-        rules_txt += "\n".join(scoreboard_rules.get("lightning_character", []))
-    elif type == "trivia":
-        rules_txt += "\n".join(scoreboard_rules.get("lightning_trivia", []))
-    else:
-        rules_txt += "\n".join(scoreboard_rules.get("standard", []))
-    if scoreboard_rules.get("global_end"):
-        rules_txt += "\n" + "\n".join(scoreboard_rules.get("global_end", [])) 
-
-    # Push rules to web clients with header and body separated
-    web_header = "\n".join(scoreboard_rules.get("global_title", []))
-    web_rules = rules_txt.replace("[RULES]", "", 1)
-    if web_header:
-        web_rules = web_rules.replace(web_header, "", 1)
-    web_server.set_rules_text(web_header, web_rules.strip())
-
-    if web_server.is_running():
-        _push_web_toggles()
-        rules_txt += "\n" + "\n".join(scoreboard_rules.get("server_footer", [])).replace("[URL]", web_server.get_url().replace("http://", "").replace("https://", ""))
-
-    send_scoreboard_command(rules_txt)
+def set_rules(type=None): scoreboard_control.set_rules(scoreboard_rules, type, web_server, _push_web_toggles)
 
 # =========================================
 #         *VIDEO PLAYBACK/CONTROLS
@@ -29119,38 +26231,14 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
 
 def play_filename(playlist_entry, fullscreen=True):
     global blind_round_toggle, peek_round_toggle, mute_peek_round_toggle, currently_playing
-    global video_stopped, previous_media, skip_limit, animethemes_stream, pending_play_queue, download_progress
+    global video_stopped, previous_media, skip_limit, animethemes_stream
     filename = get_clean_filename(playlist_entry)
     data = get_metadata(filename, fetch=auto_fetch_missing)
     
     # Check if file is currently downloading - add to pending queue instead of blocking
-    if filename in active_downloads:
+    if cache_download.is_downloading(filename):
         print(f"Download in progress, queuing play: {filename}")
-        
-        # If there's no popup for this download (silent/prefetch), create one now
-        if filename not in download_progress or download_progress[filename].get('popup') is None:
-            popup_info = create_download_popup(filename)
-            if filename in download_progress:
-                # Update existing progress entry with popup
-                download_progress[filename]['popup'] = popup_info['popup']
-                download_progress[filename]['progress_bar'] = popup_info['progress_bar']
-                download_progress[filename]['status_label'] = popup_info['status_label']
-            else:
-                # Create new progress entry
-                download_progress[filename] = {
-                    'downloaded_mb': download_progress.get(filename, {}).get('downloaded_mb', 0),
-                    'total_mb': download_progress.get(filename, {}).get('total_mb', 0),
-                    'popup': popup_info['popup'],
-                    'progress_bar': popup_info['progress_bar'],
-                    'status_label': popup_info['status_label']
-                }
-        
-        pending_play_queue[filename] = {
-            'playlist_entry': playlist_entry,
-            'fullscreen': fullscreen,
-            'start_time': time.time(),
-            'timeout': 30
-        }
+        cache_download.queue_play_when_ready(filename, playlist_entry, fullscreen)
         return False
     
     # Check if filepath is already specified in entry (e.g., for streaming fallback)
@@ -29173,12 +26261,7 @@ def play_filename(playlist_entry, fullscreen=True):
             download_started = download_to_cache(filename, silent=False)
             if download_started:
                 # Add to pending play queue instead of blocking
-                pending_play_queue[filename] = {
-                    'playlist_entry': playlist_entry,
-                    'fullscreen': fullscreen,
-                    'start_time': time.time(),
-                    'timeout': 60  # 60 second timeout before falling back to streaming
-                }
+                cache_download.queue_play_when_ready(filename, playlist_entry, fullscreen)
                 return False
             else:
                 # Cache full or other issue, stream directly
@@ -29337,17 +26420,7 @@ def player_play(override_autoplay=False):
 #         *SESSION LOGS
 # =========================================
 
-def parse_timestamp_flexible(timestamp_str):
-    """Parse timestamp that can be either 'HH:MM:SS' or 'YYYY-MM-DD HH:MM:SS' format"""
-    try:
-        # Try full datetime format first
-        if len(timestamp_str) > 8:  # Full datetime format
-            return datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-        else:  # Time-only format - use today's date
-            time_part = datetime.strptime(timestamp_str, '%H:%M:%S').time()
-            return datetime.combine(datetime.now().date(), time_part)
-    except ValueError:
-        return datetime.now()
+def parse_timestamp_flexible(timestamp_str): return utils.parse_timestamp_flexible(timestamp_str)
 
 session_data = []  # JSON session data
 session_start_time = None
@@ -30318,10 +27391,7 @@ def update_seek_bar():
             pass
     root.after(SEEK_POLLING, update_seek_bar)
 
-def format_seconds(seconds):
-    minutes = seconds // 60
-    remaining_seconds = seconds % 60
-    return f"{minutes:02}:{remaining_seconds:02}"
+def format_seconds(seconds): return utils.format_seconds(seconds)
 
 # =========================================
 #            *COMING UP UI
@@ -30742,13 +27812,7 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True,
 
     root.after(10, _slide_step)
 
-def format_slug(slug):
-    """Converts OP/ED notation to full text format."""
-    if slug.startswith("OP"):
-        return f"Opening {slug[2:]}"
-    elif slug.startswith("ED"):
-        return f"Ending {slug[2:]}"
-    return slug  # Return unchanged if it doesn't match
+def format_slug(slug): return utils.format_slug(slug)
 
 # =========================================
 #            *PROGRESS BAR
@@ -32992,7 +30056,7 @@ def _push_web_toggles():
     censor_nsfw_count = sum(1 for c in _all_censors if c.get('nsfw'))
     mute_state = light_muted if (light_mode or light_round_started) else disable_video_audio
     scoreboard_open = bool(is_scoreboard_running())
-    scoreboard_visible = bool(scoreboard_open and (scoreboard_visible_hint is not False))
+    scoreboard_visible = bool(scoreboard_open and (scoreboard_control.visible_hint is not False))
     web_server.push_toggles({
         "blind":        black_overlay is not None,
         "reveal":         bool(is_peek_active()),
@@ -37254,6 +34318,33 @@ root.title(WINDOW_TITLE)
 root.geometry(f"{scl(1200, "UI")}x{scl(ROOT_MIN_HEIGHT, "UI")}")
 root.minsize(scl(900, "UI"), scl(ROOT_MIN_HEIGHT, "UI"))  # Set minimum window size to prevent controls squishing
 root.configure(bg=BACKGROUND_COLOR)  # Set background color to black
+youtube_control.set_context(root)
+utils.set_context(root)
+auto_update.set_context(root, GITHUB_REPO, APP_VERSION, get_window_position_and_setup)
+cache_download.set_context(
+    root=root,
+    cache_metadata_file=CACHE_METADATA_FILE,
+    themes_cache_folder=THEMES_CACHE_FOLDER,
+    directory_files=directory_files,
+    get_directory=lambda: directory,
+    get_metadata=get_metadata,
+    get_clean_filename=get_clean_filename,
+    is_animethemes_file=is_animethemes_stream_file,
+    get_playlist=lambda: playlist,
+    get_fixed_lightning=lambda: (fixed_lightning_queue, fixed_lightning_round_playlist_data),
+    show_playlist_fn=lambda update=True: show_playlist(update),
+    update_extra_metadata_fn=update_extra_metadata,
+    up_next_text_fn=up_next_text,
+    play_filename_fn=play_filename,
+    play_filename_streaming_fallback_fn=play_filename_streaming_fallback,
+    get_currently_playing=lambda: currently_playing,
+    get_list_loaded=lambda: list_loaded,
+)
+cache_download.update_settings(
+    themes_cache_size=themes_cache_size,
+    auto_download_themes=auto_download_themes,
+    app_version=APP_VERSION,
+)
 try:
     import base64 as _b64, io as _io
     _icon_img = ImageTk.PhotoImage(Image.open(_io.BytesIO(_b64.b64decode(_APP_ICON_B64))))
@@ -37892,7 +34983,7 @@ def _get_menu_registry():
         },
         {"id": "open_scoreboard",  "icon": "▶", "label": "Open Scoreboard",
         "command": open_scoreboard,
-        "condition": lambda: SCOREBOARD_AVAILABLE and not is_scoreboard_running(),
+        "condition": lambda: scoreboard_control.AVAILABLE and not is_scoreboard_running(),
         "tooltip": "Launch the scoreboard."},
         {"id": "close_scoreboard", "icon": "✕", "label": "Close Scoreboard",
         "command": lambda: send_scoreboard_command("quit"),
@@ -37900,11 +34991,11 @@ def _get_menu_registry():
         "tooltip": "Send a quit command to the running scoreboard."},
         {"id": "download_scoreboard", "icon": "⬇", "label": "Download Scoreboard",
         "command": download_scoreboard,
-        "condition": lambda: not SCOREBOARD_AVAILABLE,
+        "condition": lambda: not scoreboard_control.AVAILABLE,
         "tooltip": "Download the Universal Scoreboard — a companion overlay for tracking scores during sessions."},
         {"id": "update_scoreboard", "icon": "🔄", "label": "Update Scoreboard",
         "command": lambda: check_for_scoreboard_update(silent_if_current=False),
-        "condition": lambda: SCOREBOARD_AVAILABLE and _scoreboard_update_available is not False,
+        "condition": lambda: scoreboard_control.AVAILABLE and scoreboard_control._update_available is not False,
         "tooltip": "Check for and install a newer version of the Universal Scoreboard."},
         {"label": "Scoreboard Actions", "icon": "⚙️",
         "condition": lambda: is_scoreboard_running(),
@@ -39412,7 +36503,7 @@ def reroll_next():
     # Cancel any active download of the about-to-be-removed next track
     if playlist["playlist"]:
         old_next = get_clean_filename(playlist["playlist"][-1])
-        if old_next in active_downloads:
+        if cache_download.is_downloading(old_next):
             cancel_download(old_next)
 
     # Cancel any pending download timer from a previous re-roll
@@ -39430,7 +36521,7 @@ def reroll_next():
     # already started a download — cancel that too so we only download after the timer.
     if playlist["playlist"]:
         new_next = get_clean_filename(playlist["playlist"][-1])
-        if new_next in active_downloads:
+        if cache_download.is_downloading(new_next):
             cancel_download(new_next)
 
     # Schedule download 5 s from now (reset on every re-roll)
@@ -40249,7 +37340,7 @@ def get_all_anime_titles():
     return sorted(titles)
 
 _start_web_server()
-if LAUNCH_SCOREBOARD_ON_STARTUP and SCOREBOARD_AVAILABLE and not is_scoreboard_running():
+if LAUNCH_SCOREBOARD_ON_STARTUP and scoreboard_control.AVAILABLE and not is_scoreboard_running():
     if os.path.isfile("scoreboard.exe"):
         subprocess.Popen(["scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
     elif os.path.isfile("universal_scoreboard.exe"):
@@ -41690,66 +38781,7 @@ def refresh_list_on_resize():
 # Bind resize event to root window
 root.bind("<Configure>", on_window_resize)
 
-def check_download_ui_updates():
-    """Periodically check if downloads have completed and update UI accordingly"""
-    global download_ui_update_pending, pending_play_queue, download_progress
-    
-    if download_ui_update_pending:
-        download_ui_update_pending = False
-        try:
-            up_next_text()
-        except:
-            pass
-    
-    # Update download progress popups
-    for filename, progress_info in list(download_progress.items()):
-        popup = progress_info.get('popup')
-        if popup:
-            try:
-                downloaded = progress_info.get('downloaded_mb', 0)
-                total = progress_info.get('total_mb', 0)
-                
-                if total > 0:
-                    percent = int((downloaded / total) * 100)
-                    progress_bar = progress_info.get('progress_bar')
-                    status_label = progress_info.get('status_label')
-                    
-                    if progress_bar:
-                        progress_bar['value'] = percent
-                    if status_label:
-                        status_label.config(text=f"{downloaded:.1f} / {total:.1f} MB ({percent}%)")
-            except:
-                pass
-    
-    # Check pending plays
-    completed_plays = []
-    for filename, play_info in list(pending_play_queue.items()):
-        current_time = time.time()
-        elapsed = current_time - play_info['start_time']
-        
-        # Check if download completed
-        if filename not in active_downloads:
-            # Download finished, play the file
-            completed_plays.append(filename)
-            # Give a small delay for cache metadata to sync
-            root.after(100, lambda pe=play_info['playlist_entry'], fs=play_info['fullscreen']: play_filename(pe, fs))
-        # Check for timeout
-        elif elapsed > play_info['timeout']:
-            print(f"Download timeout ({play_info['timeout']}s), falling back to streaming: {filename}")
-            completed_plays.append(filename)
-            # Fall back to streaming by modifying the playlist entry to use streaming URL
-            stream_url = get_animethemes_stream_url(filename)
-            # We need to create a special playlist entry for streaming
-            streaming_entry = play_info['playlist_entry'].copy() if isinstance(play_info['playlist_entry'], dict) else {'filename': filename}
-            streaming_entry['_stream_url'] = stream_url
-            root.after(100, lambda pe=streaming_entry, fs=play_info['fullscreen']: play_filename_streaming_fallback(pe, fs))
-    
-    # Remove completed plays from queue
-    for filename in completed_plays:
-        pending_play_queue.pop(filename, None)
-    
-    # Check again in 500ms
-    root.after(500, check_download_ui_updates)
+def check_download_ui_updates(): cache_download.check_download_ui_updates()
 
 root.after(1000, create_new_session)
 
