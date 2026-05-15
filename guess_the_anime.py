@@ -1,9 +1,9 @@
-﻿# =========================================
+# =========================================
 #      GUESS THE ANIME - PLAYLIST TOOL
 #             by Ramun Flame
 # =========================================
 
-APP_VERSION = "19.2"  # Update this when making releases
+APP_VERSION = "19.3"  # Update this when making releases
 GITHUB_REPO = "ualkotob/guess-the-anime-playlist-tool"
 
 import os
@@ -50,7 +50,7 @@ import gzip
 import zipfile
 import tempfile
 import unicodedata
-import web_server
+import _app_scripts.web_server as web_server
 
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
 
@@ -673,6 +673,20 @@ try:
         except Exception:
             pass
 
+    def _on_eof_reached(name, value):
+        """Observed property: fires when eof-reached changes.
+        Only True on natural playback end (keep_open=yes pauses at last frame).
+        Does NOT fire for stop(), player.stop(), or window close."""
+        try:
+            if not value:
+                return
+            _root = globals().get('root')
+            if _root:
+                _root.after(0, _handle_video_end)
+        except Exception:
+            pass
+    player._p.observe_property('eof-reached', _on_eof_reached)
+
 except Exception as _e:
     try:
         messagebox.showerror("mpv error", f"Failed to create mpv player:\n{_e}")
@@ -1115,7 +1129,7 @@ special_round_warning = True
 special_round_playlist = True
 skip_play_seconds = 0
 skip_jump_seconds = 5
-selected_rules_file = "rules.json"
+selected_rules_file = ""
 YOUTUBE_API_KEY = ""
 OPENAI_API_KEY = ""
 SERPAPI_KEY = ""
@@ -1192,7 +1206,7 @@ SETTINGS_SCHEMA = [
     {"key": "special_round_warning", "config_key": "special_round_warning", "label": "Special Round Warning:",   "type": "bool", "default": True,  "tooltip": "Shows a warning before special rounds begin."},
     {"key": "special_round_playlist","config_key": "special_round_playlist","label": "Special Round Playlist:",  "type": "bool", "default": True,  "tooltip": "Auto-queue special rounds based on system playlist marks."},
     # Rules file — special rendering: folder-scanned dropdown
-    {"key": "selected_rules_file", "config_key": "selected_rules_file", "label": "Rules File:",              "type": "rules_file", "default": "rules.json", "tooltip": "Select which rules file to use for the scoreboard. Files must end with 'rules.json'."},
+    {"key": "selected_rules_file", "config_key": "selected_rules_file", "label": "Rules File:",              "type": "rules_file", "default": "", "tooltip": "Select which rules file to use for the scoreboard. Files must end with 'rules.json'."},
     # API keys — password type (masked entry)
     {"key": "YOUTUBE_API_KEY", "config_key": "youtube_api_key", "label": "YouTube API Key:", "type": "password", "default": "", "width": 30, "tooltip": "API key for YouTube integration features. Required for Clip and Ost lightning rounds."},
     {"key": "OPENAI_API_KEY",  "config_key": "openai_api_key",  "label": "OpenAI API Key:",  "type": "password", "default": "", "width": 30, "tooltip": "API key for OpenAI/ChatGPT integration features. Required for Trivia and Emoji lightning rounds."},
@@ -8859,6 +8873,23 @@ def _migrate_old_file_structure():
     except Exception as e:
         print(f"Warning: preset migration error: {e}")
 
+def _migrate_playlist_names():
+    """Rename legacy system playlist files: 'Peek Themes' → 'Reveal Themes',
+    'Mute Peek Themes' → 'Mute Reveal Themes'."""
+    renames = [
+        ("Peek Themes.json",      "Reveal Themes.json"),
+        ("Mute Peek Themes.json", "Mute Reveal Themes.json"),
+    ]
+    for old_name, new_name in renames:
+        old_path = os.path.join(PLAYLISTS_FOLDER, old_name)
+        new_path = os.path.join(PLAYLISTS_FOLDER, new_name)
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            try:
+                os.replace(old_path, new_path)
+                print(f"Migrated playlist '{old_name}' \u2192 '{new_name}'")
+            except Exception as e:
+                print(f"Warning: could not rename playlist '{old_name}': {e}")
+
 def _load_settings_presets(folder):
     """Load all preset JSON files from a folder, returning {name: diff_dict}."""
     presets = {}
@@ -10477,618 +10508,24 @@ def merge_songs_by_slug(base_songs, override_songs):
 
 def show_tutorial_popup():
     """Opens the Help & Tutorial window with a sidebar-driven layout."""
-    global tutorial_window
-    if tutorial_window and tutorial_window.winfo_exists():
-        try:
-            tutorial_window.lift()
-            tutorial_window.focus_force()
-        except Exception:
-            pass
-        return
+    import _app_scripts.tutorial as _tutorial_mod
 
-    # ── Content definition ────────────────────────────────────────────────────
-    # Structure: list of sections, each with optional subsections.
-    # content items are (tag, value) tuples:
-    #   ("h1",  "Title text")          – large bold underlined heading
-    #   ("h2",  "Subtitle text")       – medium bold underlined subheading
-    #   ("p",   "Body text")           – normal paragraph
-    #   ("b",   "Bold text")           – bold inline line
-    #   ("ul",  ["item", ...])         – bulleted list
-    #   ("tip", "Tip text")            – highlighted callout box
-    #   ("sep",)                       – vertical whitespace separator
-    TUTORIAL_CONTENT = [
-        {
-            "title": "Welcome", "icon": "👋",
-            "content": [
-                ("h1", "Welcome"),
-                ("p",  "Overview text for this section goes here."),
-            ],
-            "subs": [
-                {
-                    "title": "Forward",
-                    "content": [
-                        ("h1",  "Welcome to the Guess The Anime Playlist Tool!"),
-                        ("p",   "This tool lets you run and create anime opening/ending theme guessing games/quizzes. "
-                                "It has lots of functionality, and is honestly quite bloated with features. "
-                                "I'll try my best to explain them all in this tutorial."),
-                        ("tip", "All menu options have tooltips explaining their function."),
-                        ("tip", "This tutorial is a work in progress(10% I'd say so far), and will be expanded over time to cover all features."
-                                "If you stumble across this program and have questions, you can reach out on GitHub or Discord (Ramun_Flame)."),
-                    ],
-                },
-                {
-                    "title": "Requirements",
-                    "content": [
-                        ("h1",  "Requirements"),
-                        ("p",   "This tool is designed to run on Windows 10 or later. "
-                                "It may work on other platforms but I haven't tested it."),
-                        ("ul",  [
-                            "(Optional) FFMPEG installed and added to PATH for youtube video downloading and file editing.",
-                            "(Optional) Cloudflare or ngrok for using the Web Server (Players join online)."
-                        ]),
-                    ],
-                }
-            ],
-        },
-        {
-            "title": "Getting Started", "icon": "🚀",
-            "content": [
-                ("h1", "Getting Started"),
-                ("p",  "Overview text for this section goes here."),
-            ],
-            "subs": [
-                {
-                    "title": "First Steps",
-                    "content": [
-                        ("h1",  "First Steps"),
-                        ("p",   "This program supports playing local downloaded themes, and streaming/downloading themes from animethemes.moe. "
-                                "If you do not have local files, you can ignore the steps for local files and metadata fetching. Skip directly to playlist creation."),
-                        ("h2",  "Overview to get started quick"),
-                        ("ul",  [
-                            "(If Local Files)Select the folder you keep your themes in from FILE → Choose Theme Directory. Subfolders are searched as well.",
-                            "If you didn't import metadata on start up, go to FILE → Import → Import Data (from GitHub) to get the latest metadata.",
-                            "Create an Infinite playlist using PLAYLIST → Create Playlist → Infinite. Include streaming themes if you do not have local files.",
-                            "You can now play themes freely. Use INFORMATION → Info Popup to show the detail for the current theme.",
-                            "If you want to trigger special rounds, you can use the QUEUE ROUND menu.",
-                            "If you have two screens, and want bigger, more customizable controls, use the POPOUT menu to open/configure the Popout controls.",
-                            "If you prefer keyboard shortcuts, use the TOGGLES → Enable Shortcuts / Edit/View Shortcuts to enable and configure/view them.",
-                            "Feel free to explore menu options, and discover functionality."
-                        ]),
-                        ("tip", "The above steps are just a quick way to get started. The rest of the tutorial will go in depth on all features, and how to use them effectively.")
-                    ],
-                },
-                {
-                    "title": "Metadata & Import",
-                    "content": [
-                        ("h1",  "Metadata & Import"),
-                        ("p",   "Metadata provides full informaiton for each theme, like full titles, song names, etc. "
-                                "Without metadata, the app can only show file names, and some features are unavailable."),
-                        ("h2",  "Importing Metadata"),
-                        ("ul",  [
-                            "Upon first launch and when it's updated, you should be prompted to import metadata from GitHub on startup.",
-                            "If you want to trigger this manually you can use FILE → Import → Import Data (from GitHub).",  
-                            "This data provides animethemes files with their data, and is also required to be able to stream/download themes."
-                        ]),
-                        ("h2",  "Metadata Sources"),
-                        ("ul",  [
-                            "Metadata is from animethemes, myanimelist, anilist, and anidb.",
-                            "animethemes: Song Name and Artist information.",
-                            "myanimelist: Basic anime information, cover, trailer, members, and score.",
-                            "anilist: Members, score, ranks, character, and tag information.",
-                            "anidb: Episodes, characters, and tags."
-                        ]),
-                    ],
-                },
-                {
-                    "title": "Fetching Metadata",
-                    "content": [
-                        ("h1",  "Fetching Metadata"),
-                        ("p",   "If you do not import metadata from GitHub, or have files not included in the imported "
-                                "data you can fetch it in the program as long as the file is named properly. When playing a file, "
-                                "you can use THEME → Fetch Theme Data to grab metadata for that theme. It must follow the rules below to succeed."),
-                        ("h2",  "Files from animethemes.moe"),
-                        ("ul",  [
-                            "These files are compatible without any further changes, as long as you do not change the filename from how it was when downloaded."
-                        ]),
-                        ("h2",  "Files not from animethemes.moe, but have entries on myanimelist",),
-                        ("ul",  [
-                            "Name these following the following format:",
-                            "AnimeTitle-OP1-[MAL]123[ART]Artist Name[SNG]Song Name.webm",
-                            "The AnimeTitle can be anything, and doesn't matter.",
-                            "The slug after bust be OP or ED, and a number.",
-                            "If it's a special theme, you can use an udnerscore after the number(OP1_EN).",
-                            "You can also add version numbers, like OP1v2.",
-                            "The [MAL] tag is required, and is the ID from the url on the anime's myanimelist page.",
-                            "For example, for https://myanimelist.net/anime/12345/Example_Anime, the MAL ID is 12345.",
-                            "The [ART] and [SNG] tags are for the theme's artist and song name. These are optional, but recommended to add."
-                            "Anidb and Anilist data is fetched based on the MAL ID, but [ADB] and [ALT] tags can be added if it's not fetching the correct data.",
-                        ]),
-                        ("h2",  "Game Themes"),
-                        ("ul",  [
-                            "Game themes that are on igdb.com can be added using the same format above.",
-                            "Just replace the [MAL] tag with [IGDB], and put the game's IGDB ID there instead.",
-                            "GameTitle-OP1-[IGDB]123[ART]Artist Name[SNG]Song Name.webm",
-                            "This Id is not in the url of the igdb page, but on the right side of the page."
-                        ]),
-                        ("h2",  "Other Themes"),
-                        ("ul",  [
-                            "Anything that doesn't meet the above requirements can only get metadata if manually provided.",
-                            "You need to create a manual_metadata.json file in the metadata folder, and add entries for each file there.",
-                            "This would follow the same format as the anime_metadata file, so you can just copy paste an entry from there and fill it out.",
-                            "The entry's ID(top level label, uaually the MAL id, with a unique ID of your choosing, that should use letters to avoid duplicating MAL ids.)",
-                            "The name the file with the ID tagged, like the following.",
-                            "ThemeTitle-OP1-[ID]UniqueID.webm",
-                            "This Id is not in the url of the source page, but on the right side of the page."
-                        ]),
-                        ("sep",),
-                        ("tip", "Although all the examples use .webm, that is not required and other formats can be used."),
-                    ],
-                },
-            ],
-        },
-        {
-            "title": "Playlists", "icon": "🎵",
-            "content": [
-                ("h1", "Playlists"),
-                ("p",  "Overview text for this section goes here."),
-            ],
-            "subs": [
-                {
-                    "title": "Playlist Overview",
-                    "content": [
-                        ("h1",  "Playlist Overview"),
-                        ("p",   "Playlists hold themes, and are required to use the functions of this program. "
-                         "When you create a playlist it is stored in the config file. The currently loaded playlist is always "
-                         "saved in the config file until another playlist is loaded. When you save a playlist, it creates a "
-                         "playlist file in the playlists folder. This will only contain the playlist in the state it was saved in, "
-                         "and will not be updated as you make changes to the currently loaded playlist. It must be saved to reflect "
-                         "those changes. There are a few playlist types, but the metadata, and file distribution is designed to be used "
-                         "in an Infinite Playlist so I recommend to start there."),
-                    ],
-                },
-                {
-                    "title": "Infinite Playlist",
-                    "content": [
-                        ("h1",  "Infinite Playlist"),
-                        ("p",   "The Infinite playlist starts with one theme, and as you play it, it adds themes to the end infinitely. "
-                                "While it does this, it takes into account popularity and release dates of anime to make sure the playlist has an "
-                                "even balance."),
-                        ("ul",  [
-                            "Click PLAYLIST → Create Playlist → Infinite",
-                            "Choose Local Files Only or Include Streaming Themes",
-                            "Set the Difficulty Mode in the PLAYLIST menu.",
-                            "By default, new infinite playlists have recommended filters enabled. See the Filters section for more info."
-                        ]),
-                        ("h2",  "Difficulty Modes"),
-                        ("p",   "Difficulty modes are an easy way to switch between showing popular or more obscure themes. "
-                                "Different modes toggle which popularity groups are included. The default for each group is as follows:\n"
-                                "Easy: Popularity 1-250\n"
-                                "Medium: Popularity 251-1000\n"
-                                "Hard: Popularity 1001 and above\n"
-                                "These can be customized in the configuration settings. These are the mode options."), 
-                        ("ul",  [
-                            "Mode: Very Easy — Includes only Easy themes.",
-                            "Mode: Easy — Includes Easy and Medium themes.",
-                            "Mode: Normal — Includes Easy, Medium, and Hard themes.",
-                            "Mode: Hard — Includes Medium and Hard themes.",
-                            "Mode: Very Hard — Includes only Hard themes.",
-                            "Mode: Random — Includes themes from all difficulty levels, and disables release and popularity balancing for a more chaotic order..",
-                        ]),
-                        ("h2",  "Infinite Playlist Settings"),
-                        ("p",   "Under PLAYLIST → Infinite Settings you can edit specific infinite settings, and save and load templates. Here are the options:"),
-                        ("ul",  [
-                            "max_history_check: This is how far back in the playlist it will check to boost less played themes. Setting this higher can cause it to run slower.",
-                            "difficulty_groups: You can edit the parameters of each difficulty group.",
-                            "difficulty_groups > range: Set the minimum and max popularity of the group. Use 'inf' for the max value.",
-                            "difficulty_groups > cooldown: Set modifiers for how often themes from this group can show up. It's basedon number of themes in the group, additionally multiplied by this modifier. The first value is how often a series can appear, and the second is how often an individual theme can appear.",
-                            "difficulty_groups > file_boost_limit: How much a file can be boosted by being unplayed for awhile.",
-                            "ending_limit_ratio: Limits the ratio of ending themes to opening themes. 0.5 will not let it exceed 50 percent ending themes. Set to 1 to disable.",
-                            "recent_boost_multiplier: This boosts themes from the last 3 seasons, making them more likely to appear and reducing cooldowns. [0] is the most recent season, [1] is the second most recent, and so on.",
-                            "favorites_boost_multiplier: This boosts themes from anime marked as favorites more likely to appear and reducing cooldowns. Set to 1 to disable.",
-                            "score_boost: This boosts themes based on their score, making higher scored themes more likely to appear. The boost is based on how much higher the score is from the min_score. Set multiplier to 0 to disable.",
-                            "group_series: This causes themes from the same series(Like Dr. Stone Season 4, and Season 1), to appear in the same difficulty groups. This causes themes from lower popularities to appear in easier difficulties if they are from the same series as a popular theme. When disabled, themes from later seasons play less if not the same popularity.",
-                            "tag_cooldown: This adds a cooldown to themes with the same tag. For example, if you set it to 3, after playing a theme with the 'mecha' tag, it won't play another theme with the 'mecha' tag for at least 3 more themes. Set to 0 to disable.",
-                            "include_non_local_files: This setting allows you to include themes that are not downloaded on your computer, but are available to stream from AnimeThemes.moe. These themes will be marked with a streaming tag in the playlist.",
-                            "deduplicate_files: This setting deduplicates files with multiple formats, so you don't play the 480p version of a theme if a 720p version exists.",
-                            "deduplicate_versions: This will deduplicate different versions for themes, picking the one with the best format, or just the first one if they are the same. Versions are on the same cooldown as each other, so even when it's disabled a different version of a theme won't appear until its file cooldown is up.",
-                            "preload_track_count: This controls how many tracks are preloaded ahead. This is mostly useful if you are streaming themes, and should probably not be edited. The preloaded themes don't appear in the playlist, and are fetched in the background."
-                        ]),
-                        ("sep",),
-                        ("h2",  "Detailed Explanation of Infinite Logic"),
-                        ("p",   "If you're curious, here's a detailed explanation of the balance/logic of infinite playlists. Basically, it first splits the themes into "
-                                "different difficulty groups as listed above. then each group is split into 3 even groups by release date. On Normal mode, this results in "
-                                "9 groups of themes(Easy Old, Easy Mid, Easy New, Medium Old, Medium Mid, Medium New, Hard Old, Hard Mid, Hard New). A pattern is randomly created "
-                                "that ensures every three themes in a pattern will include an Easy, Medium, and Hard theme, as well as an Old, Mid, and New theme. An example would be "
-                                "(Hard New, Medium Mid, Easy Old, Easy Mid, Medium New, Hard Old, Medium Old, Easy New, Hard Mid)"
-                                "This ensures a balance of themes so you don't have to wait too long to get a theme from every category. The in the above section details other boosts/filter that affect the themes played."),
-                    ],
-                },
-                {
-                    "title": "Standard Playlist",
-                    "content": [
-                        ("h1",  "Standard Playlist"),
-                        ("p",   "Creates a flat playlist from all files in your directory/metadata. "
-                                "This is just a standard playlistas you'd expect, and doesn't need extra explanations "
-                                "like the infinite playlist. Themes are in the order they are found in the directory/metadata."),
-                        ("ul",  [
-                            "Click PLAYLIST → Create Playlist → Standard",
-                            "Choose Local Files Only or Include Streaming Themes",
-                            "Supports shuffle, filtering, and manual reordering",
-                        ]),
-                        ("h2",  "Sort"),
-                        ("p",   "You can sort the playlist by various criteria such as title, season, etc."),
-                        ("ul",  [
-                            "Click PLAYLIST → Sort → Criteria → Ascending or Descending",
-                        ]),
-                        ("h2",  "Shuffle"),
-                        ("p",   "Shuffling randomizes the order of themes in the playlist. The two types are Random and Weighted."),
-                        ("ul",  [
-                            "Click PLAYLIST → Shuffle → Type",
-                            "Random Shuffle — Completely random order.",
-                            "Weighted Shuffle — Balances popularity, season, and series to create a balanced playlist."
-                            "Similar to the logic of Infinite playlist,but is limited based on the distribution of the files.",
-                        ]),
-                        ("sep",),
-                        ("tip", "Even a streamable theme is added to a playlist, it will stream regardless of the option picked at playlist creation. "
-                                "The option only determines if streamable themes are included initially on creation."),
-                    ],
-                },
-                {
-                    "title": "From AniList",
-                    "content": [
-                        ("h1",  "AniList & AnimeThemes Playlists"),
-                        ("p",   "Generate a playlist directly from an AniList user's anime list. "
-                                "Has the same options as a Standard playlist."),
-                        ("ul",  [
-                            "PLAYLIST → Create Playlist → From AniList ID",
-                            "Choose Local Files Only or Include Streaming Themes",
-                            "You will need to provide the AniList username.",
-                            "You can choose to include only complete anime, or all in their list.",
-                            "You also can decide if you want this playlist to auto update on startup. "
-                            "If enabled, it will fetch their list on startup and update the playlist with any new anime or changes to their list. "
-                            "This will overwrite any changes you've made to the playlist, including shuffling or reordering.",
-                        ]),
-                    ],
-                },
-                {
-                    "title": "From AnimeThemes Playlists",
-                    "content": [
-                        ("h1",  "AnimeThemes Playlists"),
-                        ("p",   "Generate a playlist directly from an AnimeThemes playlist. "
-                                "Has the same options as a Standard playlist."),
-                        ("ul",  [
-                            "PLAYLIST → Create Playlist → From AnimeThemes Playlist",
-                            "Choose Local Files Only or Include Streaming Themes",
-                            "You will need to provide the AnimeThemes playlist ID.",
-                            "You also can decide if you want this playlist to auto update on startup. "
-                            "If enabled, it will fetch their list on startup and update the playlist with any new anime or changes to their list. "
-                            "This will overwrite any changes you've made to the playlist, including shuffling or reordering.",
-                        ]),
-                    ],
-                },
-                {
-                    "title": "Empty Playlist",
-                    "content": [
-                        ("h1",  "Empty Playlist"),
-                        ("p",   "Creates an empty playlist that you can add themes to manually. "
-                                "This is useful if you want to create a custom playlist with specific themes."),
-                        ("ul",  [
-                            "Click PLAYLIST → Create Playlist → Empty",
-                        ]),
-                    ],
-                }
-            ],
-        },
-        {
-            "title": "More To Come", "icon": "🔜",
-            "subs": [
-                {
-                    "title": "Coming Soon",
-                    "content": [
-                        ("h1",  "More To Come Soon!"),
-                        ("p",   "There's way too much to go over, and I have pending updates, so I'll be updating this over time. "
-                                "Hopefully I can remove this message soon enough!"),
-                        ],
-                }
-            ]
-        }
-    ]
-
-    # ── Window setup ─────────────────────────────────────────────────────────
-    tutorial_window = tk.Toplevel(bg=BACKGROUND_COLOR)
-    tutorial_window.title("Help & Tutorial")
-    tutorial_window.resizable(True, True)
-    tutorial_window.geometry(f"{scl(950, 'UI')}x{scl(600, 'UI')}")
-    tutorial_window.minsize(scl(680, 'UI'), scl(420, 'UI'))
-
-    try:
-        tutorial_window.transient(root)
-        get_window_position_and_setup(tutorial_window, offset_x=40, offset_y=40)
-    except Exception:
-        pass
-
-    # ── Style constants ───────────────────────────────────────────────────────
-    _SIDEBAR_BG = "gray18"
-    _SEL_BG     = HIGHLIGHT_COLOR
-    _HOVER_BG   = "gray30"
-    _TIP_BG     = "gray22"
-    _TIP_FG     = "#d0eaff"
-    _H1_FONT    = (ROOT_FONT[0], ROOT_FONT[1] + 7, "bold")
-    _H2_FONT    = (ROOT_FONT[0], ROOT_FONT[1] + 3, "bold")
-    _SUB_FONT   = (ROOT_FONT[0], ROOT_FONT[1] + 1)
-
-    # ── State: "show on startup" checkbox ────────────────────────────────────
-    _show_on_startup = tk.BooleanVar(value=not globals().get("tutorial_shown", False))
-
-    def _on_close():
-        global tutorial_window, tutorial_shown
-        tutorial_shown = not _show_on_startup.get()
+    def _on_close(show_on_startup):
+        global tutorial_shown
+        tutorial_shown = not show_on_startup
         save_config()
-        try:
-            tutorial_window.destroy()
-        except Exception:
-            pass
-        tutorial_window = None
 
-    tutorial_window.protocol("WM_DELETE_WINDOW", _on_close)
-
-    # ── Layout: sidebar (left) + content (right) ──────────────────────────────
-    outer = tk.Frame(tutorial_window, bg=BACKGROUND_COLOR)
-    outer.pack(fill="both", expand=True)
-
-    # Sidebar frame (fixed width)
-    sidebar_frame = tk.Frame(outer, bg=_SIDEBAR_BG, width=scl(230, 'UI'))
-    sidebar_frame.pack(side="left", fill="y")
-    sidebar_frame.pack_propagate(False)
-
-    sidebar_canvas = tk.Canvas(sidebar_frame, bg=_SIDEBAR_BG, highlightthickness=0)
-    sidebar_scroll = tk.Scrollbar(sidebar_frame, orient="vertical", command=sidebar_canvas.yview)
-    sidebar_canvas.configure(yscrollcommand=sidebar_scroll.set)
-    sidebar_inner = tk.Frame(sidebar_canvas, bg=_SIDEBAR_BG)
-    _sid_win = sidebar_canvas.create_window((0, 0), window=sidebar_inner, anchor="nw")
-    sidebar_scroll.pack(side="right", fill="y")
-    sidebar_canvas.pack(side="left", fill="both", expand=True)
-
-    def _on_sidebar_resize(e):
-        sidebar_canvas.configure(scrollregion=sidebar_canvas.bbox("all"))
-        sidebar_canvas.itemconfig(_sid_win, width=sidebar_canvas.winfo_width())
-    sidebar_inner.bind("<Configure>", _on_sidebar_resize)
-
-    def _sidebar_mousewheel(e):
-        sidebar_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-    sidebar_canvas.bind("<MouseWheel>", _sidebar_mousewheel)
-    sidebar_inner.bind("<MouseWheel>", _sidebar_mousewheel)
-
-    # Content area (fills right side)
-    content_frame = tk.Frame(outer, bg=BACKGROUND_COLOR)
-    content_frame.pack(side="left", fill="both", expand=True)
-
-    content_text = tk.Text(
-        content_frame, bg=BACKGROUND_COLOR, fg="white",
-        font=(ROOT_FONT[0], ROOT_FONT[1] + 2), wrap="word", relief="flat",
-        padx=scl(20, 'UI'), pady=scl(14, 'UI'),
-        cursor="arrow", state=tk.DISABLED,
+    _tutorial_mod.show_tutorial_popup(
+        root,
+        bg_color=BACKGROUND_COLOR,
+        hl_color=HIGHLIGHT_COLOR,
+        root_font=ROOT_FONT,
+        scl=scl,
+        get_window_pos=get_window_position_and_setup,
+        is_shown=globals().get("tutorial_shown", False),
+        on_close=_on_close,
     )
-    content_scroll = tk.Scrollbar(content_frame, orient="vertical", command=content_text.yview)
-    content_text.configure(yscrollcommand=content_scroll.set)
-    content_scroll.pack(side="right", fill="y")
-    content_text.pack(fill="both", expand=True)
 
-    # ── Text tags ─────────────────────────────────────────────────────────────
-    content_text.tag_configure("h1",
-        font=_H1_FONT, foreground="white", spacing1=4, spacing3=8)
-    content_text.tag_configure("h1_ul", underline=True)
-    content_text.tag_configure("h2",
-        font=_H2_FONT, foreground="#cccccc", spacing1=12, spacing3=4)
-    content_text.tag_configure("h2_ul", underline=True)
-    content_text.tag_configure("p",
-        font=(ROOT_FONT[0], ROOT_FONT[1] + 2), foreground="#dddddd",
-        spacing1=2, spacing3=6, lmargin1=4, lmargin2=4)
-    content_text.tag_configure("b",
-        font=(ROOT_FONT[0], ROOT_FONT[1] + 2, "bold"), foreground="white")
-    content_text.tag_configure("bullet",
-        font=(ROOT_FONT[0], ROOT_FONT[1] + 2), foreground="#dddddd",
-        spacing1=1, spacing3=1,
-        lmargin1=scl(14, 'UI'), lmargin2=scl(28, 'UI'))
-    content_text.tag_configure("tip_label",
-        background=_TIP_BG, foreground="#7bc4f0",
-        font=(ROOT_FONT[0], ROOT_FONT[1] + 2, "bold"),
-        spacing1=8, spacing3=0, lmargin1=scl(10, 'UI'))
-    content_text.tag_configure("tip_body",
-        background=_TIP_BG, foreground=_TIP_FG,
-        font=(ROOT_FONT[0], ROOT_FONT[1] + 2),
-        spacing1=2, spacing3=8,
-        lmargin1=scl(10, 'UI'), lmargin2=scl(10, 'UI'), rmargin=scl(10, 'UI'))
-    content_text.tag_configure("sep_space",
-        font=(ROOT_FONT[0], 5), spacing1=2, spacing3=2)
-
-    # ── Content renderer ──────────────────────────────────────────────────────
-    def _render_content(content_list):
-        content_text.config(state=tk.NORMAL)
-        content_text.delete("1.0", tk.END)
-        for item in content_list:
-            tag = item[0]
-            if tag == "h1":
-                content_text.insert(tk.END, item[1] + "\n", ("h1", "h1_ul"))
-            elif tag == "h2":
-                content_text.insert(tk.END, item[1] + "\n", ("h2", "h2_ul"))
-            elif tag == "p":
-                content_text.insert(tk.END, item[1] + "\n", "p")
-            elif tag == "b":
-                content_text.insert(tk.END, item[1] + "\n", "b")
-            elif tag == "ul":
-                for bullet in item[1]:
-                    content_text.insert(tk.END, f"\u2022  {bullet}\n", "bullet")
-            elif tag == "tip":
-                content_text.insert(tk.END, "  \U0001f4a1 Note\n", "tip_label")
-                content_text.insert(tk.END, f"  {item[1]}\n", "tip_body")
-            elif tag == "sep":
-                content_text.insert(tk.END, "\n", "sep_space")
-        content_text.config(state=tk.DISABLED)
-        content_text.yview_moveto(0)
-
-    # ── Sidebar button tracking ────────────────────────────────────────────────
-    _all_btns = []  # list of (button, is_section_level)
-
-    def _deselect_all():
-        for btn, is_sec in _all_btns:
-            btn.config(bg=_SIDEBAR_BG,
-                       fg="white" if is_sec else "#aaaaaa",
-                       relief="flat")
-
-    def _make_section_btn(title, icon):
-        label = f"  {icon}  {title}" if icon else f"  {title}"
-        btn = tk.Button(
-            sidebar_inner, text=label, anchor="w",
-            bg=_SIDEBAR_BG, fg="white",
-            font=(ROOT_FONT[0], ROOT_FONT[1], "bold"),
-            relief="flat", bd=0,
-            padx=scl(6, 'UI'), pady=scl(6, 'UI'),
-            activebackground=_HOVER_BG, activeforeground="white",
-            cursor="hand2",
-        )
-        btn.pack(fill="x", pady=(scl(4, 'UI'), 0))
-        _all_btns.append((btn, True))
-        # command is set after sub-buttons are created so it can reference the first one
-        btn.bind("<Enter>",
-                 lambda e, b=btn: b.config(bg=_HOVER_BG) if b.cget("bg") != _SEL_BG else None)
-        btn.bind("<Leave>",
-                 lambda e, b=btn: b.config(bg=_SIDEBAR_BG) if b.cget("bg") == _HOVER_BG else None)
-        btn.bind("<MouseWheel>", _sidebar_mousewheel)
-        return btn
-
-    def _make_sub_btn(title, content):
-        btn = tk.Button(
-            sidebar_inner, text=f"       {title}", anchor="w",
-            bg=_SIDEBAR_BG, fg="#aaaaaa",
-            font=_SUB_FONT,
-            relief="flat", bd=0,
-            padx=scl(6, 'UI'), pady=scl(3, 'UI'),
-            activebackground=_HOVER_BG, activeforeground="white",
-            cursor="hand2",
-        )
-        btn.pack(fill="x")
-        _all_btns.append((btn, False))
-
-        def _click(b=btn, c=content):
-            _deselect_all()
-            b.config(bg=_SEL_BG, fg="white")
-            _render_content(c)
-
-        btn.config(command=_click)
-        btn.bind("<Enter>",
-                 lambda e, b=btn: b.config(bg=_HOVER_BG, fg="white") if b.cget("bg") != _SEL_BG else None)
-        btn.bind("<Leave>",
-                 lambda e, b=btn: b.config(bg=_SIDEBAR_BG, fg="#aaaaaa") if b.cget("bg") == _HOVER_BG else None)
-        btn.bind("<MouseWheel>", _sidebar_mousewheel)
-        return btn
-
-    # ── Build sidebar from content structure ──────────────────────────────────
-    # Flat ordered list of (sec_btn, sub_btn, content) for prev/next nav
-    _nav_pages = []
-    _nav_index = [0]
-
-    first_sec_btn = None
-    first_content = None
-    for section in TUTORIAL_CONTENT:
-        subs = section.get("subs", [])
-        sec_btn = _make_section_btn(section["title"], section.get("icon", ""))
-        sub_btns = []
-        for sub in subs:
-            sb = _make_sub_btn(sub["title"], sub["content"])
-            sub_btns.append((sb, sub["content"]))
-            _nav_pages.append((sec_btn, sb, sub["content"]))
-        # Wire section button to jump to its first sub and highlight both
-        if sub_btns:
-            first_sb, first_sb_content = sub_btns[0]
-            sec_idx = len(_nav_pages) - len(sub_btns)  # index of this section's first page
-
-            def _sec_click(b=sec_btn, fsb=first_sb, c=first_sb_content, si=sec_idx):
-                _deselect_all()
-                b.config(bg=_SEL_BG)
-                fsb.config(bg=_SEL_BG, fg="white")
-                _render_content(c)
-                _nav_index[0] = si
-
-            sec_btn.config(command=_sec_click)
-        if first_sec_btn is None and sub_btns:
-            first_sec_btn = sec_btn
-            first_sub_btn = sub_btns[0][0]
-            first_content = sub_btns[0][1]
-
-    # ── Bottom bar ────────────────────────────────────────────────────────────
-    bottom_bar = tk.Frame(tutorial_window, bg="gray18", pady=scl(7, 'UI'))
-    bottom_bar.pack(side="bottom", fill="x")
-
-    tk.Checkbutton(
-        bottom_bar, text="Show this on startup",
-        variable=_show_on_startup,
-        bg="gray18", fg="#aaaaaa",
-        selectcolor="gray18",
-        activebackground="gray18", activeforeground="white",
-        font=_SUB_FONT,
-    ).pack(side="left", padx=scl(16, 'UI'))
-
-    tk.Button(
-        bottom_bar, text="Close", command=_on_close,
-        bg="black", fg="white", font=ROOT_FONT,
-        relief="flat", padx=scl(12, 'UI'), pady=scl(4, 'UI'),
-        activebackground=HIGHLIGHT_COLOR, activeforeground="white",
-    ).pack(side="right", padx=scl(16, 'UI'))
-
-    # Centered nav buttons — placed in their own frame that fills remaining space
-    _nav_center = tk.Frame(bottom_bar, bg="gray18")
-    _nav_center.pack(side="left", fill="x", expand=True)
-
-    def _go_to_page(idx):
-        idx = max(0, min(idx, len(_nav_pages) - 1))
-        _nav_index[0] = idx
-        sec_btn, sub_btn, content = _nav_pages[idx]
-        _deselect_all()
-        sec_btn.config(bg=_SEL_BG)
-        sub_btn.config(bg=_SEL_BG, fg="white")
-        _render_content(content)
-        # Scroll sidebar to keep button visible
-        sidebar_inner.update_idletasks()
-        try:
-            target_btn = sub_btn if sub_btn is not None else sec_btn
-            btn_y = target_btn.winfo_y()
-            btn_h = target_btn.winfo_height()
-            canvas_h = sidebar_canvas.winfo_height()
-            total_h = sidebar_inner.winfo_reqheight()
-            if total_h > canvas_h:
-                frac = max(0.0, min(1.0, (btn_y - canvas_h // 2 + btn_h // 2) / total_h))
-                sidebar_canvas.yview_moveto(frac)
-        except Exception:
-            pass
-        prev_btn.config(state=tk.NORMAL if idx > 0 else tk.DISABLED)
-        next_btn.config(state=tk.NORMAL if idx < len(_nav_pages) - 1 else tk.DISABLED)
-
-    prev_btn = tk.Button(
-        _nav_center, text="◀  Previous Page", command=lambda: _go_to_page(_nav_index[0] - 1),
-        bg="black", fg="white", font=ROOT_FONT,
-        relief="flat", padx=scl(12, 'UI'), pady=scl(4, 'UI'),
-        activebackground=HIGHLIGHT_COLOR, activeforeground="white",
-        state=tk.DISABLED,
-    )
-    prev_btn.pack(side="left", expand=True)
-
-    next_btn = tk.Button(
-        _nav_center, text="Next Page  ▶", command=lambda: _go_to_page(_nav_index[0] + 1),
-        bg="black", fg="white", font=ROOT_FONT,
-        relief="flat", padx=scl(12, 'UI'), pady=scl(4, 'UI'),
-        activebackground=HIGHLIGHT_COLOR, activeforeground="white",
-    )
-    next_btn.pack(side="left", expand=True)
-
-    # ── Load first section by default ─────────────────────────────────────────
-    if first_sec_btn and first_content is not None:
-        first_sec_btn.config(bg=_SEL_BG)
-        first_sub_btn.config(bg=_SEL_BG, fg="white")
-        _render_content(first_content)
-        if _nav_pages:
-            _nav_index[0] = 0
-            next_btn.config(state=tk.NORMAL if len(_nav_pages) > 1 else tk.DISABLED)
 
 # =========================================
 #           *SAVE/*LOAD PLAYLISTS
@@ -13637,8 +13074,27 @@ def search_playlist(search_term):
             if song_string and search_term in song_string:
                 artist_results.append(filename)
     
-    # Deduplicate versions using shared helper function
-    results.sort(key=lambda file: get_title(file, file).lower())
+    # Sort key: (title, slug_type [OP=0, ED=1, other=2], slug_number)
+    # This puts OPs before EDs for the same series and sorts numerically (OP2 before OP11).
+    def _slug_sort_key(file):
+        meta = get_metadata(file)
+        slug = (meta.get("slug") or "").upper()
+        title_key = (meta.get("eng_title") or meta.get("title") or file).lower()
+        if slug.startswith("OP"):
+            slug_type = 0
+            num_str = slug[2:]
+        elif slug.startswith("ED"):
+            slug_type = 1
+            num_str = slug[2:]
+        else:
+            slug_type = 2
+            num_str = slug
+        slug_num = int(num_str) if num_str.isdigit() else 0
+        return (title_key, slug_type, slug_num)
+
+    priority_results.sort(key=_slug_sort_key)
+    results.sort(key=_slug_sort_key)
+    artist_results.sort(key=_slug_sort_key)
     all_results = priority_results + results + artist_results
     return deduplicate_theme_versions(all_results)
 
@@ -13835,11 +13291,14 @@ lightning_mode_settings_default = {
     "_misc_settings": {
         "answer_length": 8,
         "image_width_percent": 70,
-        "download_cache_mb": 0,
+        "download_cache_mb": 100,
+        "always_download_clip": True,
+        "framed_video": False,
+        "framed_video_clip": True,
         "background_music": {
             "rounds_per_track": 3,
             "random_start": False,
-            "hide_display_during_peek": False
+            "hide_display_during_reveal": False
         }
     },
     "blind": {
@@ -14149,9 +13608,19 @@ lightning_mode_settings_default = {
         }
     },
     "reveal": {
-        "length": 12,
+        "length": 20,
         "muted": True,
         "variants": {
+            "blur": True,
+            "edge": True,
+            "grow": True,
+            "outline": False,
+            "pixelize": True,
+            "slice": True,
+            "wave": False,
+            "zoom": True
+        },
+        "show_in_menu": {
             "blur": True,
             "edge": True,
             "grow": True,
@@ -14632,6 +14101,7 @@ def open_settings_editor():
     def on_apply(new_settings, selected_name):
         global selected_light_mode_settings
         selected_light_mode_settings = selected_name
+        _push_web_toggles()
     
     open_generic_settings_editor(
         title="Lightning Mode Settings Editor",
@@ -14690,6 +14160,7 @@ def open_bonus_settings_editor():
         global selected_bonus_settings, bonus_settings
         selected_bonus_settings = selected_name
         bonus_settings = sync_with_default(copy.deepcopy(new_settings), BONUS_SETTINGS_DEFAULT)
+        _push_web_toggles()
 
     open_generic_settings_editor(
         title="Bonus Round Settings Editor",
@@ -14844,17 +14315,16 @@ def get_light_round_time():
         return 1  # If the video is too short, start from 1
     start_time = None
     try_count = 0
+    file_censors = get_file_censors(currently_playing.get('filename')) if (need_censors or need_mute_censors) else None
     while start_time is None:
         start_time = random.randrange(buffer, int(length - (light_round_length+light_round_answer_length+buffer)))
-        try_count = try_count + 1
-        if try_count < 20 and (need_censors or need_mute_censors):
-            file_censors = censor_list.get(currently_playing.get('filename'))
-            if file_censors != None:
-                end_time = start_time+light_round_length
-                for censor in file_censors:
-                    if (((censor.get("mute") or censor.get("skip")) and need_mute_censors) or (not (censor.get("mute") or censor.get("skip")) and need_censors)) and (not (censor['end'] < start_time or censor['start'] > end_time)):
-                        start_time = None
-                        break
+        try_count += 1
+        if try_count <= 20 and file_censors:
+            end_time = start_time + light_round_length
+            for censor in file_censors:
+                if (((censor.get("mute") or censor.get("skip")) and need_mute_censors) or (not (censor.get("mute") or censor.get("skip")) and need_censors)) and (not (censor['end'] < start_time or censor['start'] > end_time)):
+                    start_time = None
+                    break
     return start_time
 
 light_speed_modifier = 1
@@ -14863,17 +14333,22 @@ stream_start_time = 0
 current_light_mode = None
 current_light_variant = None
 _light_answer_wall_start = None  # wall-clock time when the answer phase began (set on first tick)
+_light_answer_last_tick  = None  # wall-clock time of last update_light_round call in answer phase (pause compensation)
 _wall_time = __import__('time').time  # alias so the 'time' parameter inside update_light_round doesn't shadow it
 _showed_lightning_answer = False
 def update_light_round(time):
     global light_round_started, light_round_start_time, censors_enabled, light_round_length, light_speed_modifier, light_name_overlay
     global stream_start_time, character_round_answer, character_round_characters, light_blind_one_second_count, current_light_mode
     global _light_answer_wall_start, filter_vf_active, _filter_vf_variant, _showed_lightning_answer
-    # During clip/OST rounds the stream runs in player on its own timeline.
-    # Synthesise a fake player-time so all threshold logic keeps working unchanged.
-    # Activate as soon as currently_streaming is set (use 0 elapsed until _stream_wall_start is seeded).
+    global _light_answer_last_tick
+    # During clip/OST rounds use actual player position relative to stream_start_time.
+    # _stream_wall_start is used purely as a sentinel — True once the initial seek has fired.
+    # Using player position means the timer naturally pauses when the player is paused.
     if currently_streaming and light_round_start_time is not None:
-        elapsed = (_wall_time() - _stream_wall_start) if _stream_wall_start is not None else 0
+        if _stream_wall_start is not None:
+            elapsed = max(0, player.get_time() / 1000.0 - stream_start_time)
+        else:
+            elapsed = 0
         time = light_round_start_time + elapsed
     if not light_round_start_time and (light_mode == 'frame' or frame_light_round_started):
         if time < 1 and not frame_light_round_started:
@@ -14886,7 +14361,17 @@ def update_light_round(time):
         _in_answer_phase = _light_answer_wall_start is not None or time >= light_round_start_time + light_round_length
         if _in_answer_phase and _light_answer_wall_start is None:
             _light_answer_wall_start = _wall_time()
-        _answer_elapsed = (_wall_time() - _light_answer_wall_start) if _light_answer_wall_start is not None else 0
+            _light_answer_last_tick  = _wall_time()
+        # Compensate for time spent paused: if the gap since the last tick is
+        # larger than two normal poll intervals (~100 ms), the player was paused;
+        # advance the wall-start by the excess so elapsed freezes while paused.
+        _now = _wall_time()
+        if _light_answer_wall_start is not None and _light_answer_last_tick is not None:
+            _gap = _now - _light_answer_last_tick
+            if _gap > (SEEK_POLLING / 1000.0) * 2:
+                _light_answer_wall_start += _gap - (SEEK_POLLING / 1000.0)
+        _light_answer_last_tick = _now
+        _answer_elapsed = (_now - _light_answer_wall_start) if _light_answer_wall_start is not None else 0
         if _in_answer_phase and _answer_elapsed >= light_round_answer_length:
             light_round_transition()
         elif _in_answer_phase:
@@ -14903,7 +14388,7 @@ def update_light_round(time):
                         if not light_blind_one_second_count:
                             return
                         if (light_blind_one_second_count + 1) % BLIND_ONE_SECOND_TIME == 0:
-                            player.set_time(int(float(light_round_start_time)) * 1000)
+                            player.set_time(round(float(light_round_start_time) * 1000))
                             player.play()
                         light_blind_one_second_count += 1
                         set_countdown(round(blind_length - light_blind_one_second_count))
@@ -14986,14 +14471,20 @@ def update_light_round(time):
                             top_info(_ans_display, width_max=max_width_size)
                     if image_answer_source:
                         top_info(image_answer_source, width_max=max_width_size)
-                    # For clip_for_answer rounds the stream keeps playing; seek it forward
-                    # to where the answer portion begins (stream_start_time + round_length),
-                    # but only if the player isn't already there (avoids stutter on natural end).
+                    # For clip_for_answer rounds the stream keeps playing during the answer phase.
+                    # If clip_replay_for_answer is set, seek back to clip_start_time (or 0) to
+                    # replay the clip from the beginning. Otherwise seek forward to where the
+                    # answer portion starts (stream_start_time + round_length).
                     if (fixed_current_round and fixed_current_round.get("clip_for_answer")
                             and stream_start_time is not None):
-                        _clip_answer_target_ms = int((stream_start_time + light_round_length) * 1000)
-                        if abs(player.get_time() - _clip_answer_target_ms) > 2000:
-                            player.set_time(_clip_answer_target_ms)
+                        if fixed_current_round.get("clip_replay_for_answer"):
+                            _replay_target_sec = fixed_current_round.get("clip_start_time") or 0
+                            player.set_time(round(_replay_target_sec * 1000))
+                            player.play()
+                        else:
+                            _clip_answer_target_ms = int((stream_start_time + light_round_length) * 1000)
+                            if abs(player.get_time() - _clip_answer_target_ms) > 2000:
+                                player.set_time(_clip_answer_target_ms)
                     # For fixed rounds where start_time means the theme's answer entry point
                     # (i.e. non-regular/peek/blind/song types), seek the theme to start_time and unmute
                     # so the theme plays during the answer phase regardless of where Player currently is.
@@ -15001,7 +14492,7 @@ def update_light_round(time):
                     if (fixed_current_round and fixed_current_round.get("start_time") is not None
                             and fixed_current_round.get("type") not in _seek_types
                             and not fixed_current_round.get("clip_for_answer")):
-                        player.set_time(int(fixed_current_round["start_time"] * 1000))
+                        player.set_time(round(fixed_current_round["start_time"] * 1000))
                         player.play()
                         toggle_mute(False, True)
                 if not light_mode or (fixed_lightning_round_playlist_data and fixed_lightning_round_playlist_data.get("current_index") == fixed_lightning_round_playlist_data.get("round_count") - 1):
@@ -15151,7 +14642,7 @@ def update_light_round(time):
                 progress = (light_round_length - time_left) / light_round_length
                 progress = min(max(progress, 0.0), 1.0)
                 toggle_filter_vf(_filter_vf_variant, progress)
-                bottom_info(_filter_intensity_label(_filter_vf_variant, progress), size=40, inverse=character_round_answer)
+                _update_filter_intensity_bottom_label(_filter_vf_variant, progress)
                 now_playing_background_music(music_files[current_music_index])
             elif character_overlay_boxes:
                 reveal_num = min(4, (int(light_round_length - (time_left)) // (light_round_length // 4)) + 1)
@@ -15262,6 +14753,8 @@ def update_light_round(time):
             light_round_started = True
             _showed_lightning_answer = False
             current_light_mode = light_mode
+            if lightning_mode_settings.get("_misc_settings", {}).get("framed_video"):
+                root.after(300, set_video_frame, True)
             if light_mode in ['regular', 'reveal']:
                 root.after(500, set_black_screen, False)
             def set_double_speed():
@@ -15325,7 +14818,7 @@ def update_light_round(time):
                             player._p.command('video-add', theme_path, 'select')
                             # Seek to round start while still paused — no audio disruption
                             try:
-                                player._p.seek(int(float(light_round_start_time)), 'absolute')
+                                player._p.seek(float(light_round_start_time), 'absolute')
                             except Exception:
                                 pass
                             # Find the newly added external video track ID
@@ -15496,8 +14989,29 @@ def update_light_round(time):
                 toggle_episode_overlay(1)
                 top_info("CHARACTER NAMES")
             elif light_mode in ['clip', 'ost']:
+                _always_dl_clip = ffmpeg_available and lightning_mode_settings.get("_misc_settings", {}).get("always_download_clip", False)
+                def _ensure_clip_downloaded(yt_url):
+                    """If always_download_clip is on and the file isn't cached, start the download then show the wait popup."""
+                    if not (yt_url and _always_dl_clip):
+                        return
+                    cache_path = _get_yt_cache_path(yt_url)
+                    if not cache_path or (os.path.exists(cache_path) and not os.path.exists(cache_path + '.part')):
+                        return  # already cached (or no video ID) — nothing to do
+                    # Start download if not already running
+                    vid_match = re.search(r'(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})', yt_url)
+                    vid_id = vid_match.group(1) if vid_match else None
+                    if vid_id and vid_id not in _yt_cache_downloads_in_progress:
+                        cache_mb = int(lightning_mode_settings.get("_misc_settings", {}).get("download_cache_mb", 0))
+                        effective_mb = cache_mb if cache_mb > 0 else 500
+                        threading.Thread(
+                            target=_yt_cache_download_bg,
+                            args=(yt_url, cache_path, effective_mb),
+                            daemon=True
+                        ).start()
+                    _yt_cache_wait_popup(yt_url)
                 if fixed_current_round:
-                    url, name, channel = fixed_current_round.get("clip_url"), fixed_current_round.get("clip_title"), fixed_current_round.get("clip_author") 
+                    url, name, channel = fixed_current_round.get("clip_url"), fixed_current_round.get("clip_title"), fixed_current_round.get("clip_author")
+                    _ensure_clip_downloaded(url)
                     length = stream_url(url, name, channel)
                 else:
                     clip_variants = lightning_mode_settings.get("clip", {}).get("variants", {})
@@ -15516,6 +15030,7 @@ def update_light_round(time):
                     elif trailer_enabled and url[1] == 'trailer':
                         length = play_trailer()
                     else:
+                        _ensure_clip_downloaded(url[0])
                         length = stream_url(url[0], url[1], url[2])
                 if currently_streaming:
                     # Compute start time now if we have a known length; otherwise defer until player is ready
@@ -15548,23 +15063,37 @@ def update_light_round(time):
                                 if _light_answer_wall_start is not None or not light_round_started:
                                     return  # answer phase already started — don't re-apply overlays
                                 if light_mode == 'ost':
+                                    # Per-round framed_video override (fixed rounds only)
+                                    _framed_ost = (fixed_current_round.get("framed_video")
+                                                   if fixed_current_round and fixed_current_round.get("framed_video") is not None
+                                                   else False)
+                                    if _framed_ost and not _video_frame_active:
+                                        set_video_frame(True)
                                     if not black_overlay:  # already up — skip re-application
                                         set_black_screen(True)  # OST is audio-only; hide video with blind overlay
+                                    _top_font_size_ost = 80
                                     if fixed_current_round and fixed_current_round.get("ost_header"):
-                                        top_info(fixed_current_round.get("ost_header").upper())
+                                        top_info(fixed_current_round.get("ost_header").upper(), _top_font_size_ost)
                                     else:
-                                        top_info("SOUNDTRACK / OST")
+                                        top_info("SOUNDTRACK / OST", _top_font_size_ost)
                                 else:
                                     # Clear the blind that play_filename raised before the clip loaded
+                                    # Per-round framed_video override (fixed rounds); falls back to global framed_video_clip
+                                    _framed_clip = (fixed_current_round.get("framed_video")
+                                                    if fixed_current_round and fixed_current_round.get("framed_video") is not None
+                                                    else lightning_mode_settings.get("_misc_settings", {}).get("framed_video_clip"))
+                                    if _framed_clip and not _video_frame_active:
+                                        set_video_frame(True)
                                     set_black_screen(False)
+                                    _top_font_size = 80 if _framed_clip else 40
                                     if (fixed_current_round and fixed_current_round.get("censor_bottom")) or (not fixed_current_round and last_streamed[3] and "Crunchyroll" in last_streamed[3]):
                                         toggle_outer_edge_overlay()
                                     if fixed_current_round and fixed_current_round.get("clip_header"):
-                                        top_info(fixed_current_round.get("clip_header").upper(), 40)
+                                        top_info(fixed_current_round.get("clip_header").upper(), _top_font_size)
                                     elif last_streamed[1] == "Trailer":
-                                        top_info("TRAILER", 40)
+                                        top_info("TRAILER", _top_font_size)
                                     else:
-                                        top_info("RANDOM CLIP", 40)
+                                        top_info("RANDOM CLIP", _top_font_size)
                                 update_light_round_number()
                             def set_stream_start():
                                 global _stream_wall_start, black_overlay
@@ -15572,10 +15101,9 @@ def update_light_round(time):
                                 # never visible; stream_overlay will confirm it later.
                                 if light_mode == 'ost' and not black_overlay:
                                     set_black_screen(True)
-                                player.set_time(int(float(stream_start_time))*1000)
-                                # Wall clock anchored at the moment we seek to stream_start_time;
-                                # update_light_round synthesizes fake player-time from this.
-                                _stream_wall_start = _wall_time()
+                                player.set_time(round(float(stream_start_time) * 1000))
+                                # Mark seek as done — update_light_round uses this as a sentinel.
+                                _stream_wall_start = True
                                 # Unmute now so the stream is audible immediately on seek.
                                 toggle_mute(False, True)
                                 # Initialise the OST progress bar exactly once right here so it
@@ -15590,7 +15118,7 @@ def update_light_round(time):
                                     return
                                 if _light_answer_wall_start is not None or not light_round_started:
                                     return  # answer phase already started — don't interfere
-                                target_ms = int(float(stream_start_time)) * 1000
+                                target_ms = round(float(stream_start_time) * 1000)
                                 current_ms = player.get_time()
                                 test_print(f"start_player check: current={current_ms} target={target_ms}")
                                 # If the player is more than 2.5 s behind the target the seek
@@ -15629,8 +15157,8 @@ def update_light_round(time):
             update_light_round_number(inverse=character_round_answer)
         if not currently_streaming and light_round_started and _light_answer_wall_start is None:
             #only if not already at time (skip during answer phase — answer seek may target an earlier position)
-            if light_round_start_time is not None and projected_player_time < int(float(light_round_start_time))*1000:
-                player.set_time(int(float(light_round_start_time))*1000)
+            if light_round_start_time is not None and projected_player_time < round(float(light_round_start_time) * 1000):
+                player.set_time(round(float(light_round_start_time) * 1000))
 
 def apply_reveal_mode(reveal_mode, image_source=None, slide_direction=None, slice_vertical=None, slice_count=None, tile_grid_size=None):
     """
@@ -15739,10 +15267,11 @@ def get_char_types_by_popularity(data=None, mode=""):
 def clean_up_light_round(new_round=False):
     global mismatch_visuals, character_round_characters, tag_cloud_tags, light_speed_modifier, light_episode_names, light_name_overlay
     global frame_light_round_started, light_muted, character_round_answer, light_cover_image, light_trivia_answer, light_blind_one_second_count
-    global _light_answer_wall_start, _mismatch_active, _mismatch_vid_track_id, _mismatch_orig_vid
+    global _light_answer_wall_start, _light_answer_last_tick, _mismatch_active, _mismatch_vid_track_id, _mismatch_orig_vid
     global _mismatch_hwnd, _main_hwnd, _note_hwnd
     if new_round:
         _light_answer_wall_start = None
+        _light_answer_last_tick  = None
     _uninstall_mismatch_hook()
     _mismatch_hwnd = 0
     _main_hwnd = 0
@@ -15776,25 +15305,44 @@ def clean_up_light_round(new_round=False):
     light_speed_modifier = 1
     light_blind_one_second_count = None
     player.set_rate(light_speed_modifier)
-    for overlay in [set_progress_overlay, toggle_clues_overlay, toggle_song_overlay, toggle_title_overlay, toggle_scramble_overlay, toggle_swap_overlay, 
-                    toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay, toggle_character_overlay, toggle_tag_cloud_overlay, toggle_episode_overlay, toggle_tile_overlay,
-                    toggle_character_pixel_overlay, toggle_character_reveal_overlay, toggle_character_profile_overlay, spawn_pulsating_music_note, toggle_outer_edge_overlay,
-                    toggle_emoji_overlay, toggle_character_image_overlay, toggle_character_blur_reveal_overlay, toggle_character_zoom_reveal_overlay, toggle_slice_overlay]:
+    for overlay in [set_progress_overlay, toggle_title_overlay, toggle_scramble_overlay, toggle_swap_overlay, 
+                    toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay, toggle_tile_overlay,
+                    toggle_character_pixel_overlay, toggle_character_reveal_overlay, spawn_pulsating_music_note,
+                    toggle_outer_edge_overlay, toggle_character_image_overlay, toggle_character_blur_reveal_overlay, 
+                    toggle_character_zoom_reveal_overlay, toggle_slice_overlay]:
         overlay(destroy=True)
+    if True: #pending change to not remove for answer
+        for overlay in [toggle_clues_overlay, toggle_song_overlay, toggle_character_overlay, toggle_tag_cloud_overlay,
+                        toggle_episode_overlay, toggle_emoji_overlay, toggle_character_profile_overlay]:
+            overlay(destroy=True)
     toggle_filter_vf(destroy=True)
+    if new_round:
+        set_video_frame(False)
+    elif _video_frame_active:
+        # Clip/OST answer phases play the main theme, not the clip — use framed_video
+        # (not framed_video_clip) to decide whether the frame carries over.
+        _clip_for_answer = fixed_current_round and fixed_current_round.get("clip_for_answer")
+        if light_mode in ('clip', 'ost') and not _clip_for_answer:
+            if lightning_mode_settings.get("_misc_settings", {}).get("framed_video"):
+                set_video_frame(True, answer_phase=True)
+            else:
+                set_video_frame(False)
+        else:
+            set_video_frame(True, answer_phase=True)
     if not new_round and fixed_current_round and fixed_current_round.get("overlay_during_answer") and _mc_last_choices:
         toggle_mc_choices_overlay(highlight=True)
     else:
         toggle_mc_choices_overlay(destroy=True)
-    if new_round or not (fixed_current_round and fixed_current_round.get("overlay_during_answer")):
+    if new_round or (not (fixed_current_round and fixed_current_round.get("overlay_during_answer"))):
         toggle_synopsis_overlay(destroy=True)
     for info in [bottom_info, top_info]:
         info()
     send_scoreboard_command("show")
 
 def light_round_transition():
-    global video_stopped, light_round_started, _light_answer_wall_start, _showed_lightning_answer
+    global video_stopped, light_round_started, _light_answer_wall_start, _light_answer_last_tick, _showed_lightning_answer
     _light_answer_wall_start = None
+    _light_answer_last_tick  = None
     light_round_started = False
     _showed_lightning_answer = False
     if autoplay_toggle == 2:
@@ -15807,6 +15355,8 @@ def light_round_transition():
         web_server.clear_timer()
     toggle_title_popup(False, instant=True)
     set_black_screen(True)
+    if _video_frame_active:
+        set_video_frame(False)
     root.after(500, play_next)
 
 def get_light_bg_color():
@@ -15961,12 +15511,15 @@ def queue_next_lightning_mode():
                 # Pre-download to local cache if the setting is enabled and ffmpeg is available
                 if yt_source_url and ffmpeg_available:
                     cache_mb = int(lightning_mode_settings.get("_misc_settings", {}).get("download_cache_mb", 0))
-                    if cache_mb > 0:
+                    always_dl = lightning_mode_settings.get("_misc_settings", {}).get("always_download_clip", False)
+                    # When always_download_clip is on and no cache size is configured, use 500 MB as headroom
+                    effective_cache_mb = cache_mb if cache_mb > 0 else (500 if always_dl else 0)
+                    if effective_cache_mb > 0:
                         cache_path = _get_yt_cache_path(yt_source_url)
                         if cache_path and not os.path.exists(cache_path) and not os.path.exists(cache_path + '.part'):
                             threading.Thread(
                                 target=_yt_cache_download_bg,
-                                args=(yt_source_url, cache_path, cache_mb),
+                                args=(yt_source_url, cache_path, effective_cache_mb),
                                 daemon=True
                             ).start()
             elif "c. " in next_mode:
@@ -16312,6 +15865,8 @@ def setup_frame_light_round():
     frame_light_round_pause = False
     play_background_music(True)
     update_light_round_number()
+    if lightning_mode_settings.get("_misc_settings", {}).get("framed_video"):
+        root.after(300, set_video_frame, True)
     # Increased delay to give video more time to load before attempting first frame
     root.after(1000, update_frame_light_round, currently_playing.get('filename'))
     root.after(1300, set_black_screen, False)
@@ -16633,7 +16188,7 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
                 return candidate, bb
         return "\u2026", draw.textbbox((0, 0), "\u2026", font=font)
 
-    def draw_box(header, body, y_top, hdr_fs_pt, body_fs_pt, body_fs_min_pt):
+    def draw_box(header, body, y_top, hdr_fs_pt, body_fs_pt, body_fs_min_pt, measure_only=False):
         hdr_font = _get_ass_font(fs(hdr_fs_pt), bold=True)
         if not hdr_font:
             return
@@ -16649,7 +16204,7 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
             bfs     = fs(body_fs_pt)
             bfs_min = fs(body_fs_min_pt)
             while bfs >= bfs_min:
-                bf = _get_ass_font(bfs, bold=False)
+                bf = _get_ass_font(bfs, bold=True)
                 if bf:
                     b = draw.textbbox((0, 0), body, font=bf)
                     if b[2] - b[0] <= max_inner_w:
@@ -16659,7 +16214,7 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
                         break
                 bfs = max(bfs_min, bfs - 2)
             if body_font is None:
-                body_font = _get_ass_font(bfs_min, bold=False)
+                body_font = _get_ass_font(bfs_min, bold=True)
                 if body_font:
                     body, bb = truncate_fit(body, body_font, max_inner_w)
                     bw, bh = bb[2] - bb[0], bb[3] - bb[1]
@@ -16669,13 +16224,15 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
                 bw, bh = bb[2] - bb[0], bb[3] - bb[1]
         # Underline bar
         ul_gap = max(2, round(3  * modifier))
-        ul_h   = max(1, round(3  * modifier))
+        ul_h   = max(2, round(5  * modifier))
         # Box geometry
         content_h = hh + ul_gap + ul_h + (pad + bh if body_font and body else 0)
         box_h     = content_h + pad * 2
         box_w     = min(max(hw, bw) + pad * 2 + border * 2, round(osd_w * 0.80))
         bx        = cx - box_w // 2
         by        = round(y_top)
+        if measure_only:
+            return bx, by, box_w, box_h
         # Background + border
         draw.rectangle([bx, by, bx + box_w, by + box_h], fill=bg)
         draw.rectangle([bx, by, bx + box_w, by + box_h], outline=bdr_color, width=border)
@@ -16683,10 +16240,11 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
         hx = cx - hw // 2 - hb[0]
         hy = by + pad - hb[1]
         draw.text((hx, hy), header, font=hdr_font, fill=fg)
-        # Underline: use hb[3] (not hh) so it sits below the glyphs, not through them
-        ul_y = hy + hb[3] + ul_gap
-        draw.rectangle([bx + border + pad // 2, ul_y,
-                        bx + box_w - border - pad // 2, ul_y + ul_h], fill=fg)
+        # Underline: only under the text, not the full box width
+        ul_y  = hy + hb[3] + ul_gap
+        ul_x0 = hx + hb[0]
+        ul_x1 = hx + hb[2]
+        draw.rectangle([ul_x0, ul_y, ul_x1, ul_y + ul_h], fill=fg)
         # Body — compensate bbox[0]/[1] so text is visually centred inside the box
         if body_font and body:
             bx2 = cx - bw // 2 - bb[0]
@@ -16695,18 +16253,33 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
         return bx, by, box_w, box_h
 
     note_gap    = max(8, round(20 * modifier))
+    box_gap     = max(6, round(18 * modifier))   # gap between stacked boxes
     theme_right = round(osd_w * 0.72)   # fallback if theme box not shown
     theme_cy    = round(osd_h * 0.32)   # fallback
 
+    # Measure each visible box so we can calculate positions before drawing
+    title_m  = draw_box("SONG TITLE",  song_title, 0, 72, 200, 24, measure_only=True) if show_title  else None
+    theme_m  = draw_box(theme_label,   None,        0, 72, 72,  20, measure_only=True) if show_theme  else None
+    artist_m = draw_box("SONG ARTIST", artist_str,  0, 72, 130, 24, measure_only=True) if show_artist else None
+
+    # Center song title vertically; stack theme above and artist below it
+    title_h  = title_m[3]  if title_m  else 0
+    theme_h  = theme_m[3]  if theme_m  else 0
+    artist_h = artist_m[3] if artist_m else 0
+
+    title_y  = (osd_h - title_h) // 2
+    theme_y  = title_y - box_gap - theme_h
+    artist_y = title_y + title_h + box_gap
+
     if show_theme:
-        rect = draw_box(theme_label, None, osd_h * 0.25, 72, 72, 20)
+        rect = draw_box(theme_label, None, theme_y, 72, 72, 20)
         if rect:
             theme_right = rect[0] + rect[2] + note_gap
             theme_cy    = rect[1] + rect[3] // 2
     if show_title:
-        draw_box("SONG TITLE", song_title, osd_h * 0.38, 72, 140, 24)
+        draw_box("SONG TITLE", song_title, title_y, 72, 200, 24)
     if show_artist:
-        draw_box("SONG ARTIST", artist_str, osd_h * 0.62, 72, 100, 24)
+        draw_box("SONG ARTIST", artist_str, artist_y, 72, 130, 24)
 
     return canvas, theme_right, theme_cy
 
@@ -16813,7 +16386,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
                 nw         = bbox[2] - bbox[0]
                 note_gap   = max(8, round(30 * modifier))
                 nx         = _song_base_cache[2] + note_gap - bbox[0]
-                ny         = _song_base_cache[3] - nh // 2 - bbox[1]
+                ny         = _song_base_cache[3] - nh // 2 - bbox[1] - nh // 3
                 bdr        = max(2, px // 22)
                 nc         = _song_note_color[0]
                 for dx, dy in ((-bdr, 0), (bdr, 0), (0, -bdr), (0, bdr),
@@ -18594,9 +18167,9 @@ gap_modifier = 0
 
 _PEEK_VARIANT_LABELS = {
     "blur":      ("🌫", "Blur",     "Gaussian blur — strong at the start, fades as the round progresses."),
-    "edge":      ("◼",  "Edge",     "Edge-detect silhouette — shows outlines of shapes and characters."),
+    "edge":      ("◼",  "Edge",     "Blocks the middle of the screen, showing only the edges. Shrinks the blocked area over time."),
     "grow":      ("⬛", "Grow",     "Small window that slowly expands to reveal more of the video."),
-    "outline":   ("✏️",  "Outline",  "Inverted edge-detect — white lines on black, density increases over time."),
+    "outline":   ("✏️",  "Outline",  "Only shows black outlines on white background. Line density increases over time."),
     "pixelize":  ("🟦", "Pixelize", "Heavy pixelation — block size shrinks as the round progresses."),
     "slice":     ("◧",  "Slice",    "Two black panels slide apart to reveal a growing strip of video."),
     "wave":      ("🌊", "Wave",     "Sine-wave spatial warp — distortion amplitude decreases over time."),
@@ -18625,7 +18198,7 @@ def _activate_peek_variant(peek_mode):
             _filter_zoom_offset[0] = random.uniform(-0.35, 0.35)
             _filter_zoom_offset[1] = random.uniform(-0.35, 0.35)
         toggle_filter_vf(peek_mode, 0)
-        bottom_info(_filter_intensity_label(peek_mode, 0), size=40)
+        _update_filter_intensity_bottom_label(peek_mode, 0)
     # Now remove the old variant (new one is already visible)
     if _had_existing:
         if peek_mode != 'slice':
@@ -18640,16 +18213,23 @@ def _activate_peek_variant(peek_mode):
         root.after(100, blind)
     _refresh_popout_toggles()
 
-def toggle_peek():
+def is_peek_active():
+    return bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)
+
+def toggle_peek(toggle=None):
     global peek_modifier, gap_modifier, filter_vf_active, _filter_vf_variant
-    if not (peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active):
+    if toggle is None:
+        toggle = not is_peek_active()
+    destroy_peek()
+    if toggle:
         _activate_peek_variant(get_next_peek_mode())
-    else:
-        send_scoreboard_command("show")
-        for overlay in [toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay]:
-            overlay(destroy=True)
-        toggle_filter_vf(destroy=True)
-        toggle_mute(False)
+
+def destroy_peek():
+    send_scoreboard_command("show")
+    for overlay in [toggle_peek_overlay, toggle_edge_overlay, toggle_grow_overlay]:
+        overlay(destroy=True)
+    toggle_filter_vf(destroy=True)
+    toggle_mute(False)
 
 peek_round_toggle = False
 def toggle_peek_round():
@@ -18727,7 +18307,7 @@ def narrow_peek():
         progress = max(0.0, round(_filter_vf_last_progress[0] - 0.05, 3))
         _filter_vf_last_progress[0] = progress
         toggle_filter_vf(_filter_vf_variant, progress)
-        bottom_info(_filter_intensity_label(_filter_vf_variant, progress), size=40)
+        _update_filter_intensity_bottom_label(_filter_vf_variant, progress)
 
 def widen_peek():
     global gap_modifier
@@ -18740,7 +18320,7 @@ def widen_peek():
         progress = min(1.0, round(_filter_vf_last_progress[0] + 0.05, 3))
         _filter_vf_last_progress[0] = progress
         toggle_filter_vf(_filter_vf_variant, progress)
-        bottom_info(_filter_intensity_label(_filter_vf_variant, progress), size=40)
+        _update_filter_intensity_bottom_label(_filter_vf_variant, progress)
 
 filter_vf_active = False   # True while a vf filter peek variant is running
 _filter_vf_variant = None  # which filter variant is active ('blur', 'pixelize', 'zoom')
@@ -18762,6 +18342,10 @@ def _filter_intensity_label(variant, progress):
     elif variant == 'zoom':
         return f"ZOOM: {intensity}%"
     return variant.upper()
+
+def _update_filter_intensity_bottom_label(variant, progress):
+    _bottom_font_size = 80 if lightning_mode_settings.get("_misc_settings", {}).get("framed_video") else 40
+    bottom_info(_filter_intensity_label(variant, progress), size=_bottom_font_size, inverse=character_round_answer)
 
 def toggle_filter_vf(variant=None, progress=0, destroy=False):
     """Apply or remove the vf filter for filter-peek variants.
@@ -18829,9 +18413,9 @@ def toggle_filter_vf(variant=None, progress=0, destroy=False):
 
 def get_peek_gap(data):
     if light_mode == 'reveal' or light_round_started:
-        gap = (0 + min(9, (data.get('popularity') or 3000)/100))
+        gap = (1 + min(9, (data.get('popularity') or 3000)/100))
     else:
-        gap = 0
+        gap = 1
     return gap
 
 peek_light_direction = None
@@ -18856,8 +18440,10 @@ _TAG_CLOUD_ASS_OSD_ID = 56  # unique ID for osd-overlay (ASS-based) tag cloud
 _OST_COVER_ASS_OSD_ID = 57  # unique ID for osd-overlay (ASS-based) OST answer transition cover
 _SYNOPSIS_ASS_OSD_ID   = 58  # unique ID for osd-overlay (ASS-based) synopsis / trivia box
 _INFO_POPUP_ASS_OSD_ID = 59  # unique ID for osd-overlay (ASS-based) anime info popup
+_FRAME_BORDER_ASS_OSD_ID = 80  # unique ID for osd-overlay (ASS-based) framed-video black fill
+_FRAME_OUTLINE_ASS_OSD_ID = 81  # unique ID for osd-overlay (ASS-based) framed-video white outline
 
-def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
+def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
     """Toggles two black panels that reveal the video in a chosen direction by percentage.
     Uses mpv's osd-overlay with ass-events type.  The text argument passed to mpv contains
     only the ASS text-field payload (starting with '{'), NOT the full 'Dialogue: ...' header
@@ -18892,11 +18478,11 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=0):
     if peek_overlay2 is None:
         peek_overlay2 = True
 
-    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_effective_video_rect()
     if not osd_w or not vid_w:
         return
 
-    gap_pixels = int(((1 + gap_modifier) / 100) * vid_w)
+    gap_pixels = int(((gap + gap_modifier) / 100) * vid_w)
 
     # Compute the two panel rectangles in OSD pixel space
     if direction == "left":
@@ -19025,7 +18611,7 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
 
     block_percent = max(0, min(100, block_percent))
 
-    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_effective_video_rect()
     if not osd_w or not vid_w:
         if edge_overlay_after_id:
             try:
@@ -19242,7 +18828,11 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
         cx, cy = position
         grow_position = (cx, cy)
     else:
-        cx, cy = osd_w // 2, osd_h // 2
+        if _video_frame_active:
+            _, _, fv_x, fv_y, fv_w, fv_h = _get_effective_video_rect()
+            cx, cy = fv_x + fv_w // 2, fv_y + fv_h // 2
+        else:
+            cx, cy = osd_w // 2, osd_h // 2
         grow_position = (cx, cy)
 
     _draw_grow_osd(block_percent, cx, cy)
@@ -21380,6 +20970,73 @@ def _compute_tag_font_sizes(osd_h):
         sizes.append(max(10, int(min_fs + fs_range * amplified)))
     _tag_cloud_font_sizes = sizes
 
+def _plan_tag_cloud_layout(osd_w, osd_h):
+    """Pre-compute positions for ALL tags at once, strictly within screen bounds.
+    Falls back to smaller font sizes when a tag can't fit at its assigned size.
+    Populates tag_cloud_positions and updates _tag_cloud_font_sizes in-place."""
+    global tag_cloud_positions, _tag_cloud_font_sizes
+
+    cx, cy = osd_w // 2, osd_h // 2
+    top_margin    = round(osd_h * 0.12)
+    bottom_margin = round(osd_h * 0.12)
+    left_margin   = round(osd_w * 0.03)
+    right_margin  = round(osd_w * 0.03)
+    x_min, x_max = left_margin, osd_w - right_margin
+    y_min, y_max = top_margin, osd_h - bottom_margin
+
+    def est_dims(fs, text):
+        w = round(len(text) * fs * 0.55)
+        h = round(fs * 1.3)
+        return w, h
+
+    def overlaps_any(pos, placed):
+        ax, ay, aw, ah = pos
+        for bx, by, bw, bh in placed:
+            if not (ax + aw < bx or ax > bx + bw or ay + ah < by or ay > by + bh):
+                return True
+        return False
+
+    font_sizes = list(_tag_cloud_font_sizes)
+    placed = []
+
+    for i, tag in enumerate(tag_cloud_tags):
+        text = tag["name"]
+        placed_this = False
+        # Try progressively smaller font sizes until the tag fits on-screen
+        for fs_try in range(font_sizes[i], 9, -3):
+            w, h = est_dims(fs_try, text)
+            if w > (x_max - x_min) or h > (y_max - y_min):
+                continue
+            # Spiral outward from center; cap radius so tags stay on-screen
+            angle, radius = 0.0, 0.0
+            max_radius = max(osd_w, osd_h) * 0.7
+            best_x = best_y = None
+            while radius <= max_radius:
+                x = max(x_min, min(int(cx + radius * math.cos(angle)) - w // 2, x_max - w))
+                y = max(y_min, min(int(cy + radius * math.sin(angle)) - h // 2, y_max - h))
+                if not overlaps_any((x, y, w, h), placed):
+                    best_x, best_y = x, y
+                    break
+                angle += 0.5
+                radius += 4
+            if best_x is not None:
+                font_sizes[i] = fs_try
+                placed.append((best_x, best_y, w, h))
+                placed_this = True
+                break
+        if not placed_this:
+            # Absolute fallback: minimum size, clamped, ignoring overlaps
+            w, h = est_dims(10, text)
+            w = min(w, x_max - x_min)
+            h = min(h, y_max - y_min)
+            px = max(x_min, min(cx - w // 2, x_max - w))
+            py = max(y_min, min(cy - h // 2, y_max - h))
+            font_sizes[i] = 10
+            placed.append((px, py, w, h))
+
+    tag_cloud_positions = placed
+    _tag_cloud_font_sizes = font_sizes
+
 def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
     global tag_cloud_tags, tag_cloud_positions, _tag_cloud_last_osd_h, _tag_cloud_font_sizes
 
@@ -21410,42 +21067,9 @@ def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
         _compute_tag_font_sizes(osd_h)
         tag_cloud_positions.clear()
 
-    cx, cy = osd_w // 2, osd_h // 2
-    top_margin    = round(osd_h * 0.12)
-    bottom_margin = round(osd_h * 0.12)
-
-    def est_dims(fs, text):
-        w = round(len(text) * fs * 0.55)
-        h = round(fs * 1.3)
-        return w, h
-
-    def boxes_overlap(a, b):
-        ax, ay, aw, ah = a
-        bx, by, bw, bh = b
-        return not (ax + aw < bx or ax > bx + bw or ay + ah < by or ay > by + bh)
-
-    # Compute positions incrementally for any newly needed tags
-    while len(tag_cloud_positions) < num_tags:
-        i = len(tag_cloud_positions)
-        fs = _tag_cloud_font_sizes[i]
-        w, h = est_dims(fs, tag_cloud_tags[i]["name"])
-        angle, radius = 0.0, 0
-        px, py = cx - w // 2, cy - h // 2
-        while radius < max(osd_w, osd_h) * 2:
-            x = int(cx + radius * math.cos(angle)) - w // 2
-            y = int(cy + radius * math.sin(angle)) - h // 2
-            clamped_y = max(top_margin, min(y, osd_h - bottom_margin - h))
-            if clamped_y != y:
-                y = clamped_y
-                horizontal_direction = 1 if math.cos(angle) >= 0 else -1
-                x = int(cx + (radius + 20) * horizontal_direction) - w // 2
-            pos = (x, y, w, h)
-            if all(not boxes_overlap(pos, p) for p in tag_cloud_positions):
-                px, py = x, y
-                break
-            angle += 0.5
-            radius += 4
-        tag_cloud_positions.append((px, py, w, h))
+    # Plan ALL positions up front on first call, guaranteeing on-screen placement
+    if not tag_cloud_positions:
+        _plan_tag_cloud_layout(osd_w, osd_h)
 
     # Build ASS payload for all visible tags
     text_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
@@ -21737,6 +21361,7 @@ def set_light_names():
 
 _cached_streams = {}
 _yt_cache_downloads_in_progress = set()  # youtube_ids currently being downloaded
+_yt_download_progress = {}              # vid_id -> {downloaded, total, speed, eta}
 
 def _get_yt_cache_path(youtube_url):
     """Return the local cache file path for a YouTube URL, or None if no video ID found."""
@@ -21822,6 +21447,14 @@ def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
     try:
         os.makedirs(YOUTUBE_CACHE_FOLDER, exist_ok=True)
         part_path = cache_path + '.part'
+        def _progress_hook(d):
+            if d['status'] == 'downloading':
+                _yt_download_progress[vid_id] = {
+                    'downloaded': d.get('downloaded_bytes') or 0,
+                    'total': d.get('total_bytes') or d.get('total_bytes_estimate') or 0,
+                    'speed': d.get('speed') or 0,
+                    'eta': d.get('eta'),
+                }
         ydl_opts = {
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
             'merge_output_format': 'mp4',
@@ -21829,6 +21462,7 @@ def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
             'quiet': True,
             'no_warnings': True,
             'noprogress': True,
+            'progress_hooks': [_progress_hook],
         }
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=True)
@@ -21852,8 +21486,124 @@ def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
         print(f"[YT cache] Download failed for {youtube_url}: {e}")
     finally:
         _yt_cache_downloads_in_progress.discard(vid_id)
+        _yt_download_progress.pop(vid_id, None)
+
+def _yt_cache_wait_popup(youtube_url, timeout=120):
+    """Show a non-blocking wait popup while a YouTube cache download finishes.
+
+    Blocks the calling code (via root.wait_window) while keeping Tkinter responsive.
+    Returns True if the file is ready when the popup closes, False if timed out or
+    the download never started.
+    """
+    match = re.search(r'(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})', youtube_url or '')
+    if not match:
+        return False
+    vid_id = match.group(1)
+    cache_path = os.path.join(YOUTUBE_CACHE_FOLDER, f"{vid_id}.mp4")
+
+    # Already done — no popup needed
+    if vid_id not in _yt_cache_downloads_in_progress:
+        return os.path.exists(cache_path)
+
+    bg_color, fg_color, border_color = "#1e1e1e", "white", "#444"
+
+    popup = tk.Toplevel(root)
+    popup.overrideredirect(True)
+    popup.attributes('-topmost', True)
+    popup.transient(root)
+
+    main_frame = tk.Frame(popup, bg=border_color, padx=2, pady=2)
+    main_frame.pack(fill="both", expand=True)
+    inner_frame = tk.Frame(main_frame, bg=bg_color)
+    inner_frame.pack(fill="both", expand=True)
+
+    tk.Label(inner_frame, text="Downloading clip…", font=("Arial", 12, "bold"),
+             bg=bg_color, fg=fg_color).pack(pady=(15, 5))
+
+    style = ttk.Style()
+    style.theme_use('default')
+    style.configure("YTWait.Horizontal.TProgressbar",
+                    troughcolor='#333', background='#0078d7',
+                    bordercolor=bg_color, lightcolor='#0078d7', darkcolor='#0078d7')
+    pb = ttk.Progressbar(inner_frame, length=380, mode='indeterminate',
+                         style="YTWait.Horizontal.TProgressbar")
+    pb.pack(pady=(0, 6), padx=20, ipady=6)
+    pb.start(12)
+
+    status_var = tk.StringVar(value="Waiting for download to complete…")
+    tk.Label(inner_frame, textvariable=status_var, font=("Arial", 10),
+             bg=bg_color, fg="#aaa").pack(pady=(0, 4))
+
+    result = [False]
+    start_t = time.time()
+
+    def _poll():
+        elapsed = time.time() - start_t
+        if vid_id not in _yt_cache_downloads_in_progress:
+            result[0] = os.path.exists(cache_path)
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+            return
+        if elapsed >= timeout:
+            status_var.set("Timed out — falling back to stream.")
+            popup.after(1000, popup.destroy)
+            return
+        prog = _yt_download_progress.get(vid_id)
+        if prog and prog.get('downloaded'):
+            dl    = prog['downloaded']
+            total = prog['total']
+            speed = prog['speed']
+            eta   = prog.get('eta')
+            mb_dl = dl / 1048576
+            if total:
+                pct      = min(100, dl * 100 / total)
+                mb_total = total / 1048576
+                eta_str  = f"  ETA {eta}s" if eta is not None else ""
+                status_var.set(f"{pct:.0f}%  {mb_dl:.1f}/{mb_total:.1f} MB{eta_str}")
+                pb.stop()
+                pb.configure(mode='determinate')
+                pb['value'] = pct
+            else:
+                status_var.set(f"{mb_dl:.1f} MB downloaded…")
+                if pb['mode'] != 'indeterminate':
+                    pb.configure(mode='indeterminate')
+                    pb.start(12)
+        else:
+            status_var.set(f"Downloading clip… ({int(elapsed)}s)")
+        popup.after(250, _poll)
+
+    def _on_cancel():
+        result[0] = False
+        try:
+            popup.destroy()
+        except Exception:
+            pass
+
+    cancel_btn = tk.Button(inner_frame, text="Skip (stream instead)", font=("Arial", 10),
+                           bg="#333", fg=fg_color, activebackground="#555",
+                           command=_on_cancel, relief=tk.FLAT)
+    cancel_btn.pack(pady=(0, 12))
+
+    popup.update_idletasks()
+    w, h = 430, 165
+    x = (popup.winfo_screenwidth() - w) // 2
+    y = (popup.winfo_screenheight() - h) // 2
+    popup.geometry(f"{w}x{h}+{x}+{y}")
+    popup.deiconify()
+    popup.lift()
+    popup.update()
+    popup.after(250, _poll)
+    root.wait_window(popup)
+    return result[0]
+
 
 def is_animethemes_stream_file(filename):
+    not_animethemes_strings = ["[ID]", "[MAL]", "[IGDB]"]
+    if any(s in filename for s in not_animethemes_strings) or ".webm" not in filename.lower():
+        return False
+    return True
     not_animethemes_strings = ["[ID]", "[MAL]", "[IGDB]"]
     if any(s in filename for s in not_animethemes_strings) or ".webm" not in filename.lower():
         return False
@@ -22484,6 +22234,10 @@ def download_to_cache(filename, silent=False):
             if not silent:
                 print(f"{'Downloading' if to_directory else 'Caching'} {filename}: 0%", end='', flush=True)
 
+            # Check if cancelled while we were resolving metadata / building the path
+            if filename in download_cancel_flags and download_cancel_flags[filename]:
+                return
+
             success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
 
             # Handle cancellation
@@ -22639,7 +22393,7 @@ ost_stream_instance = None  # unused after Phase 2 migration to mpv
 currently_streaming = None
 last_streamed = ["","","",""]
 _stream_theme_path = None   # theme filename to restore into player after stream ends
-_stream_wall_start = None   # wall-clock time when stream began playing (used for fake timing in update_light_round)
+_stream_wall_start = None   # sentinel: True once the seek-to-start_time has been performed
 last_image_source = ["", ""]  # [filename, image_url]
 
 def extract_youtube_id_from_trailer(trailer_data):
@@ -23392,15 +23146,24 @@ def toggle_outer_edge_overlay(destroy=False, pixels=65, color="black"):
     if not osd_w or not osd_h:
         return
 
-    # Scale bar height from reference 1080p screen pixels to OSD pixels.
-    bar_h = max(1, round(pixels * osd_h / 1080))
-    bar_y = osd_h - bar_h
+    # When framed_video is active, anchor bar to the bottom of the framed video rect.
+    if _video_frame_active:
+        _, _, fv_x, fv_y, fv_w, fv_h = _get_effective_video_rect()
+        # Scale bar height relative to the framed video height instead of the full OSD height.
+        bar_h = max(1, round(pixels * fv_h / 1080))
+        bar_x = fv_x
+        bar_y = fv_y + fv_h - bar_h
+        bar_w = fv_w
+    else:
+        # Scale bar height from reference 1080p screen pixels to OSD pixels.
+        bar_h = max(1, round(pixels * osd_h / 1080))
+        bar_x, bar_y, bar_w = 0, osd_h - bar_h, osd_w
     color_bgr = _color_str_to_ass_bgr(color)
 
     ass_payload = (
         f"{{\\an7\\pos(0,{bar_y})"
         f"\\1c&H{color_bgr}&\\1a&H00&\\bord0\\shad0\\p1}}"
-        f"m 0 0 l {osd_w} 0 {osd_w} {bar_h} 0 {bar_h}{{\\p0}}"
+        f"m {bar_x} 0 l {bar_x+bar_w} 0 {bar_x+bar_w} {bar_h} {bar_x} {bar_h}{{\\p0}}"
     )
     try:
         _osd_command('osd-overlay', _OUTER_EDGE_ASS_OSD_ID, 'ass-events',
@@ -24454,7 +24217,9 @@ FIXED_LIGHTNING_ROUNDS = {
         "clip_author",
         "clip_source_as_song",
         "censor_bottom",
+        "framed_video",
         "clip_for_answer",
+        "clip_replay_for_answer",
         "volume_adjustment"
     ],
     "clues": [
@@ -24512,7 +24277,9 @@ FIXED_LIGHTNING_ROUNDS = {
         "clip_title",
         "clip_author",
         "clip_source_as_song",
+        "framed_video",
         "clip_for_answer",
+        "clip_replay_for_answer",
         "reveal_title_halfway",
         "music_icon",
         "volume_adjustment"
@@ -24585,8 +24352,10 @@ FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
     "clip_title": {"type": "text", "required": False, "tooltip": "Display title for the clip source."},
     "clip_author": {"type": "text", "required": False, "tooltip": "Display channel/author for the clip source."},
     "censor_bottom": {"type": "toggle", "required": False, "default": False, "tooltip": "Apply bottom censor behavior during clip playback."},
+    "framed_video": {"type": "toggle", "required": False, "default": None, "tooltip": "Show clip/OST inside the framed video border. Overrides the global framed_video_clip setting for clip rounds. Defaults to off for OST rounds."},
     "clip_source_as_song": {"type": "toggle", "required": False, "default": False, "tooltip": "Show clip title and author as song name and artist in the info popup instead of the stored song metadata."},
-    "clip_for_answer": {"type": "toggle", "required": False, "default": False, "tooltip": "Reuse the clip media during answer phase instead of the normal answer flow."},
+    "clip_for_answer": {"type": "toggle", "required": False, "default": False, "tooltip": "Reuse the clip media during answer phase instead of the normal answer flow. Enable Replay to seek back to clip_start_time when the answer phase begins."},
+    "clip_replay_for_answer": {"type": "toggle", "required": False, "default": False, "group_with_previous": True, "show_if": {"clip_for_answer": [True]}, "tooltip": "When clip_for_answer is active, seek back to clip_start_time (or the beginning) when the answer phase starts, replaying the clip from the top."},
     "reveal_title_halfway": {"type": "toggle", "required": False, "default": True, "tooltip": "Reveal the title halfway through the OST round."},
     "blind_header": {"type": "text", "required": False, "default": "", "tooltip": "Header text for blind rounds."},
     "music_icon": {"type": "text", "required": False, "tooltip": "Custom icon/text shown on music progress overlays."},
@@ -24750,6 +24519,73 @@ def load_fixed_lightning_rounds(filter_missing_themes=False):
     
     return fixed_lightning_rounds_list
 
+def _fl_set_queue_and_notify(round_info):
+    """Set fixed_lightning_queue and show the coming-up popup + prefetch. Does NOT play."""
+    global fixed_lightning_queue
+    fixed_lightning_queue = round_info
+    name = round_info.get('name', 'Unnamed Round')
+    desc = round_info.get('description', '')
+    creator = round_info.get('creator', '')
+    date_created = round_info.get("data", {}).get('date_created', 'N/A').split(" ")[0]
+    date_modified = round_info.get("data", {}).get('date_modified', 'N/A').split(" ")[0]
+    rounds_count = round_info.get('round_count', 0)
+    total_duration = round_info.get('total_duration', 0)
+    created_string = f"Created: {date_created}"
+    if date_created != date_modified:
+        created_string += f" (Modified: {date_modified})"
+    minutes = int(total_duration // 60)
+    seconds = int(total_duration % 60)
+    duration_str = f"{minutes}:{seconds:02d}"
+    details_text = f"Created by: {creator}\n{created_string}\nRounds: {rounds_count} | Duration: {duration_str} mins\n\n{desc}"
+    toggle_coming_up_popup(True, name, details_text, queue=True)
+    prefetch_next_themes()
+
+def _fixed_lightning_context_menu(index):
+    """Show right-click context menu for a fixed lightning list item."""
+    if index < 0 or index >= len(fixed_lightning_rounds_list):
+        return
+
+    round_info = fixed_lightning_rounds_list[index]
+
+    def _do_queue_next(randomize=False):
+        global fixed_lightning_queue
+        if randomize:
+            ri = copy.deepcopy(round_info)
+            random.shuffle(ri.get("rounds", []))
+            _fl_set_queue_and_notify(ri)
+            queue_next_lightning_mode()
+        else:
+            # Mirror left-click toggle behaviour for non-randomized queue
+            if fixed_lightning_queue and fixed_lightning_queue.get("name") == round_info.get("name"):
+                fixed_lightning_queue = None
+                toggle_coming_up_popup(False, round_info.get('name', 'Unnamed Round'))
+            else:
+                _fl_set_queue_and_notify(round_info)
+                queue_next_lightning_mode()
+        show_fixed_lightning_list(update=True)
+        up_next_text()
+
+    def _do_play_now(randomize=False):
+        ri = copy.deepcopy(round_info)
+        if randomize:
+            random.shuffle(ri.get("rounds", []))
+        _fl_set_queue_and_notify(ri)
+        show_fixed_lightning_list(update=True)
+        up_next_text()
+        play_video()
+
+    menu = tk.Menu(root, tearoff=0)
+    menu.add_command(label="Play Now", command=lambda: _do_play_now(False))
+    menu.add_command(label="Play Now (Randomized)", command=lambda: _do_play_now(True))
+    menu.add_separator()
+    menu.add_command(label="Queue Next", command=lambda: _do_queue_next(False))
+    menu.add_command(label="Queue Next (Randomized)", command=lambda: _do_queue_next(True))
+
+    try:
+        menu.tk_popup(root.winfo_pointerx(), root.winfo_pointery())
+    finally:
+        menu.grab_release()
+
 def show_fixed_lightning_list(update=False):
     """Show fixed lightning round playlists list in right column"""
     load_fixed_lightning_rounds(filter_missing_themes=True)
@@ -24771,7 +24607,7 @@ def show_fixed_lightning_list(update=False):
                 selected = i
                 break
     
-    show_list("fixed_lightning", right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update, title="FIXED LIGHTNING ROUND PLAYLISTS")
+    show_list("fixed_lightning", right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update, right_click_func=_fixed_lightning_context_menu, title="FIXED LIGHTNING ROUND PLAYLISTS")
 
 def queue_fixed_lightning_round(index):
     """Queue a selected fixed lightning round playlist"""
@@ -25712,42 +25548,81 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         # Use a view of round_data with type reflecting the current dropdown selection
         round_data_with_type = dict(round_data, type=selected_type)
         
+        last_field_frame = [None]
+
         for field_name in all_fields:
-            # Check if field should be shown based on conditions
-            if not should_show_field(field_name, round_data_with_type):
-                continue
             field_info = FIXED_LIGHTNING_ROUND_FIELD_INDEX.get(field_name, {"type": "file", "required": True})
+            group_with_previous = field_info.get("group_with_previous", False)
+            # group_with_previous fields manage their own visibility inline; skip normal check
+            if not group_with_previous and not should_show_field(field_name, round_data_with_type):
+                continue
             field_type = field_info.get("type", "file")
             is_required = field_info.get("required", False)
-            
-            # Create field frame
-            field_frame = tk.Frame(scrollable_frame, bg=BACKGROUND_COLOR)
-            field_frame.pack(fill="x", pady=5)
-            
-            # Label
-            label_text = field_name.replace("_", " ").title()
-            # Custom labels for zoom area fields
-            if field_name == "image_selected_area":
-                label_text = "Starting Zoom Area"
-            elif field_name == "image_ending_area":
-                label_text = "Ending Zoom Area"
-            if is_required:
-                label_text += " *"
-            label_widget = tk.Label(field_frame, text=label_text, font=font_label, bg=BACKGROUND_COLOR,
-                                   fg=fg_color, width=20, anchor="w")
-            label_widget.pack(side="left", padx=(0, 10))
 
-            # Show field-specific tooltip from config, with a useful fallback for unlabeled fields.
-            tooltip_text = field_info.get("tooltip", "")
-            if not tooltip_text:
-                type_label = field_type.replace("_", " ")
-                tooltip_parts = [f"{label_text.replace(' *', '')}", f"Type: {type_label}"]
+            # Create field frame (or reuse previous one for inline companions)
+            if group_with_previous and last_field_frame[0] is not None:
+                # All companion widgets go into a subframe so we can pack/forget it atomically
+                companion_frame = tk.Frame(last_field_frame[0], bg=BACKGROUND_COLOR)
+                companion_frame.pack(side="left")
+                tk.Label(companion_frame, text=" | ", font=font_label, bg=BACKGROUND_COLOR, fg="#555").pack(side="left")
+                label_text = field_name.replace("_", " ").title()
+                label_widget = tk.Label(companion_frame, text=label_text + ":", font=font_label, bg=BACKGROUND_COLOR, fg="#aaa")
+                label_widget.pack(side="left", padx=(0, 4))
+                tooltip_text = field_info.get("tooltip", "")
+                if tooltip_text:
+                    ToolTip(label_widget, tooltip_text)
+                # Dynamic show/hide: watch the parent toggle specified in show_if
+                _show_if = field_info.get("show_if", {})
+                _parent_var = None
+                if _show_if:
+                    _parent_fn = next(iter(_show_if))
+                    _parent_widget = field_widgets.get(_parent_fn)
+                    if _parent_widget and _parent_widget[0] == "toggle":
+                        _parent_var = _parent_widget[1]
+                # Set initial visibility
+                if not should_show_field(field_name, round_data_with_type):
+                    companion_frame.pack_forget()
+                # Bind to parent var for live toggling
+                if _parent_var is not None:
+                    def _bind_companion(cf=companion_frame, pv=_parent_var):
+                        def _toggle(*_):
+                            if pv.get():
+                                cf.pack(side="left")
+                            else:
+                                cf.pack_forget()
+                        pv.trace_add("write", _toggle)
+                    _bind_companion()
+                # Subsequent widget packing targets the companion subframe
+                field_frame = companion_frame
+            else:
+                field_frame = tk.Frame(scrollable_frame, bg=BACKGROUND_COLOR)
+                field_frame.pack(fill="x", pady=5)
+                last_field_frame[0] = field_frame
+
+                # Label
+                label_text = field_name.replace("_", " ").title()
+                # Custom labels for zoom area fields
+                if field_name == "image_selected_area":
+                    label_text = "Starting Zoom Area"
+                elif field_name == "image_ending_area":
+                    label_text = "Ending Zoom Area"
                 if is_required:
-                    tooltip_parts.append("Required")
-                if "default" in field_info and field_info.get("default") not in (None, ""):
-                    tooltip_parts.append(f"Default: {field_info.get('default')}")
-                tooltip_text = "\n".join(tooltip_parts)
-            ToolTip(label_widget, tooltip_text)
+                    label_text += " *"
+                label_widget = tk.Label(field_frame, text=label_text, font=font_label, bg=BACKGROUND_COLOR,
+                                       fg=fg_color, width=20, anchor="w")
+                label_widget.pack(side="left", padx=(0, 10))
+
+                # Show field-specific tooltip from config, with a useful fallback for unlabeled fields.
+                tooltip_text = field_info.get("tooltip", "")
+                if not tooltip_text:
+                    type_label = field_type.replace("_", " ")
+                    tooltip_parts = [f"{label_text.replace(' *', '')}", f"Type: {type_label}"]
+                    if is_required:
+                        tooltip_parts.append("Required")
+                    if "default" in field_info and field_info.get("default") not in (None, ""):
+                        tooltip_parts.append(f"Default: {field_info.get('default')}")
+                    tooltip_text = "\n".join(tooltip_parts)
+                ToolTip(label_widget, tooltip_text)
             
             # Input widget based on field type
             if field_type == "file":
@@ -25839,14 +25714,25 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     e.delete(0, tk.END)
                     e.insert(0, str(d))
 
-                def calc_from_now(e=entry):
+                def calc_from_now(e=entry, fn=field_name):
                     try:
                         now = player.get_time() / 1000.0
-                        start_widget = field_widgets.get("start_time")
-                        if start_widget:
-                            start = float(start_widget[1].get() or 0)
+                        # For clip/ost rounds use clip_start_time as the reference:
+                        #   duration       — always (clip/ost question counts from clip start)
+                        #   answer_duration — only when clip_for_answer is toggled on
+                        clip_start_widget = field_widgets.get("clip_start_time")
+                        use_clip_start = False
+                        if clip_start_widget:
+                            if fn == "duration":
+                                use_clip_start = True
+                            elif fn == "answer_duration":
+                                cfa = field_widgets.get("clip_for_answer")
+                                use_clip_start = bool(cfa and cfa[1].get())
+                        if use_clip_start:
+                            start = float(clip_start_widget[1].get() or 0)
                         else:
-                            start = 0.0
+                            start_widget = field_widgets.get("start_time")
+                            start = float(start_widget[1].get() or 0) if start_widget else 0.0
                         duration = max(0, round(now - start))
                         e.delete(0, tk.END)
                         e.insert(0, str(duration))
@@ -25959,7 +25845,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 def set_to_time(e=entry):
                     try:
                         time_val = float(e.get() or 0)
-                        player.set_time(int(time_val * 1000))  # Convert seconds to ms
+                        player.set_time(round(time_val * 1000))  # Convert seconds to ms
                     except:
                         pass
                 
@@ -26425,7 +26311,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     url = e.get().strip()
                     if url:
                         # Stream YouTube URL using stream_url (same as YOUTUBE CLIP LIST)
-                        stream_url(url, "Clip", "", new_player=False)
+                        stream_url(url, None, None, new_player=False)
                 
                 open_btn = tk.Button(url_frame, text="GO TO URL", font=font_entry, 
                                     bg="black", fg="white", command=open_url_in_browser)
@@ -26781,9 +26667,9 @@ def record_background_track_usage(track_path):
         playlist["background_track_history"] = playlist["background_track_history"][-max_history:]
 
 def now_playing_background_music(track = None):
-    hide_during_peek = lightning_mode_settings.get("_misc_settings", {}).get("background_music", {}).get("hide_display_during_peek", False)
-    is_peek_mode = (light_mode == 'reveal' or not light_muted or peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)
-    if not frame_light_round_started and (hide_during_peek and is_peek_mode):
+    hide_during_reveal = lightning_mode_settings.get("_misc_settings", {}).get("background_music", {}).get("hide_display_during_reveal", False)
+    is_reveal_mode = ((light_mode == 'reveal' and light_round_started) or not light_muted or is_peek_active())
+    if not frame_light_round_started and (hide_during_reveal and is_reveal_mode):
         track = None
     if track:
         # Try to extract metadata using tinytag
@@ -26809,7 +26695,11 @@ def now_playing_background_music(track = None):
             basename = os.path.basename(track)
             for ext in valid_music_ext:
                 basename = basename.replace(ext, "")
-            display_text = basename
+            if " [OST] - " in basename:
+                _ost_name, _track_name = basename.split(" [OST] - ", 1)
+                display_text = f"{_track_name}\n{_ost_name.strip()} [OST]"
+            else:
+                display_text = basename
         
         track = "NOW PLAYING:\n" + display_text
     set_floating_text("Now Playing Background Music", track, position="bottom left", size=14, inverse=character_round_answer, align="left")
@@ -27356,6 +27246,22 @@ def _get_osd_video_rect():
         vid_x, vid_y, disp_w, disp_h = 0, 0, osd_w, osd_h
     return osd_w, osd_h, vid_x, vid_y, disp_w, disp_h
 
+def _get_effective_video_rect():
+    """Like _get_osd_video_rect but adjusts for active framed-video zoom/pan.
+    Returns (osd_w, osd_h, vid_x, vid_y, vid_w, vid_h) where vid_* is the
+    actual visible video area in OSD pixels (smaller when framed_video is on).
+    """
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    if not _video_frame_active or not vid_w:
+        return osd_w, osd_h, vid_x, vid_y, vid_w, vid_h
+    scale = 2 ** _video_frame_zoom
+    new_w = round(vid_w * scale)
+    new_h = round(vid_h * scale)
+    y_shift = round(new_h * abs(_FRAME_PAN_Y))
+    new_x = round((osd_w - new_w) / 2)
+    new_y = round((osd_h - new_h) / 2) - y_shift
+    return osd_w, osd_h, new_x, new_y, new_w, new_h
+
 def _hide_title_popup_osd():
     """Remove the anime info ASS overlay from the mpv canvas and stop any slide animation."""
     global _title_popup_anim_state
@@ -27638,9 +27544,8 @@ def toggle_title_popup(show, info_type=None, instant=False):
 
     if black_overlay:
         blind()
-
-    if (peek_overlay1 or edge_overlay_box or grow_overlay_boxes):
-        toggle_peek()
+    if is_peek_active():
+        toggle_peek(False)
 
     top_row = ""
     title_row = ""
@@ -27975,18 +27880,18 @@ def prompt_title_top_info_text(event=None):
 # =========================================
 
 BONUS_SETTINGS_DEFAULT = {
-    "year":       {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
-    "members":    {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.10, "included_in_random": True},
-    "popularity": {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.05, "included_in_random": True},
-    "score":      {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True},
-    "multiple":   {"points": 2.0, "lightning_points": 1.0, "included_in_random": True},
-    "studio":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
-    "artist":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
-    "song":       {"points": 1.0, "lightning_points": 1.0, "included_in_random": True},
-    "tags":       {"points_per_tag": 1.0, "lightning_points_per_tag": 1.0, "included_in_random": True},
-    "characters": {"num_correct": 1, "points_per_correct": 1.0, "lightning_points_per_correct": 1.0, "scale": 1.0, "included_in_random": False},
-    "freeform":   {"points": 1.0, "lightning_points": 1.0, "included_in_random": False},
-    "buzzer":     {"popup": False, "player_buzz_popup": True, "sound": True, "sound_volume": 1.0, "included_in_random": False,
+    "year":       {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True, "show_in_menu": True},
+    "members":    {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.10, "included_in_random": True, "show_in_menu": True},
+    "popularity": {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.05, "included_in_random": True, "show_in_menu": True},
+    "score":      {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True, "show_in_menu": True},
+    "multiple":   {"points": 2.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "studio":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "artist":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "song":       {"points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "tags":       {"points_per_tag": 1.0, "lightning_points_per_tag": 1.0, "included_in_random": True, "show_in_menu": True},
+    "characters": {"num_correct": 1, "points_per_correct": 1.0, "lightning_points_per_correct": 1.0, "scale": 1.0, "included_in_random": False, "show_in_menu": True},
+    "freeform":   {"points": 1.0, "lightning_points": 1.0, "included_in_random": False, "show_in_menu": True},
+    "buzzer":     {"popup": False, "player_buzz_popup": True, "sound": True, "sound_volume": 1.0, "included_in_random": False, "show_in_menu": True,
                    "player_buzz_popup_properties": {
                        "max_alpha": 0.9,
                        "fade_in_ms": 220,
@@ -28873,9 +28778,9 @@ def get_available_rules_files(folder=None):
         folder = RULES_FOLDER
     try:
         files = [f for f in os.listdir(folder) if f.endswith(".json") and os.path.isfile(os.path.join(folder, f))]
-        return sorted(files) if files else ["rules.json"]
+        return [""] + sorted(files)
     except FileNotFoundError:
-        return ["rules.json"]
+        return [""]
 
 def load_rules(filename=None, folder=None):
     """
@@ -28893,6 +28798,8 @@ def load_rules(filename=None, folder=None):
         folder = RULES_FOLDER
     if filename is None:
         filename = selected_rules_file
+    if not filename:
+        return {}
     file_path = os.path.join(folder, filename)
     
     try:
@@ -28931,7 +28838,7 @@ def set_rules(type=None):
 
     if web_server.is_running():
         _push_web_toggles()
-        rules_txt += "\n" + "\n".join(scoreboard_rules.get("server_footer", []))
+        rules_txt += "\n" + "\n".join(scoreboard_rules.get("server_footer", [])).replace("[URL]", web_server.get_url().replace("http://", "").replace("https://", ""))
 
     send_scoreboard_command(rules_txt)
 
@@ -29929,27 +29836,45 @@ def play_video_retry(retries, filename=None):
     video_stopped = False
 
 previous_media = None
-def check_video_end():
-    """Function to check if the current video has ended"""
+
+def _handle_video_end():
+    """Called on the main thread when a video reaches its natural end.
+    Contains the advance-or-loop logic previously polled by check_video_end."""
     global video_stopped
-    _is_seeking = False
-    try:
-        _is_seeking = bool(player._p.seeking)
-    except Exception:
-        pass
-    if player.is_playing() or video_stopped or autoplay_toggle == 2 or last_seek_time or _is_seeking:
-        # If the video is still playing (or seeking), check again in 1/2 second
-        root.after(500, check_video_end)
+    if video_stopped or autoplay_toggle == 2:
+        return
+    # During the lightning question phase the player has paused at EOF (keep-open=yes).
+    # Calling play_next() here risks falling through to the next-track path if any
+    # state variable is momentarily inconsistent.  Instead, seek past the round
+    # boundary directly and call player.play() so that update_light_round (which only
+    # runs when the player IS playing) detects elapsed >= light_round_length and
+    # triggers the answer phase normally.
+    if light_round_started and light_round_start_time is not None and _light_answer_wall_start is None:
+        try:
+            if currently_streaming:
+                seek_target_ms = round((stream_start_time + light_round_length + 0.1) * 1000)
+                player.set_time(seek_target_ms)
+            else:
+                answer_ms = int((light_round_start_time + light_round_length + 0.05) * 1000)
+                seek_to(answer_ms)
+            was_playing = player.is_playing()
+            if not was_playing:
+                player.play()
+        except Exception as e:
+            print(f"[DBG _handle_video_end] exception in lightning branch: {e}")
+        video_stopped = True  # guard against re-entry if eof-reached fires again
+        return
+    if autoplay_toggle == 0:
+        play_next()
+        video_stopped = True
     else:
-        # If the video has ended, play the next video
-        if autoplay_toggle == 0:
-            play_next()
-            video_stopped = True
-        else:
-            player.pause()
-            player.set_media(previous_media)
-            player.play()
-        root.after(10000, check_video_end)
+        player.pause()
+        player.set_media(previous_media)
+        player.play()
+
+def check_video_end():
+    """Legacy no-op kept so any external callers don't break."""
+    pass
 
 def update_current_index(value = None, save = True):
     """Function to update the playlist button counter label"""
@@ -30129,20 +30054,18 @@ def skip_to_lightning_answer():
                 return False
 
             if currently_streaming:
-                # Player holds the stream, not the theme — player time is meaningless as
-                # a theme position.  Force the wall-clock so that update_light_round
-                # synthesises a time past the round end on its very next tick.
-                global _stream_wall_start
-                _stream_wall_start = _wall_time() - light_round_length - 0.1
+                # Seek the stream player to stream_start_time + light_round_length so
+                # update_light_round's elapsed calculation crosses the round-end threshold.
+                seek_target_ms = round((stream_start_time + light_round_length + 0.1) * 1000)
+                player.set_time(seek_target_ms)
                 return True
 
-            current_time = player.get_time() / 1000
             answer_time = light_round_start_time + light_round_length
-            if current_time < answer_time:
-                seek_to(int((answer_time + 0.05) * 1000))
-                return True
-        except Exception:
-            pass
+            target_ms = int((answer_time + 0.05) * 1000)
+            seek_to(target_ms)
+            return True
+        except Exception as e:
+            print(f"[DBG skip_to_lightning_answer] exception: {e}")
     return False
 
 def play_next():
@@ -30232,8 +30155,7 @@ def update_seek_bar():
     """Function to update the seek bar"""
     global last_player_time, projected_player_time, last_error, last_error_count, coming_up_queue, playing_next_error, can_seek, last_skip_anchor_ms, skip_fade_in_elapsed_ms
     global _yt_bonus_current_question, _yt_bonus_pts, _yt_bonus_template_triggered, _yt_bonus_template_scored
-    # try:
-    if True:
+    try:
         if not player.is_playing():
             player_time = player.get_time()
             if player_time != last_player_time or last_player_time != projected_player_time:
@@ -30323,7 +30245,7 @@ def update_seek_bar():
                         end = currently_playing.get("data").get("end")
                         yt_end_time = end if end != 0 else length
                         if time < start:
-                            player.set_time(int(start*1000)+100)
+                            player.set_time(round(start*1000)+100)
                         elif end != 0 and time >= end:
                             player.pause()
                             play_next()
@@ -30362,19 +30284,19 @@ def update_seek_bar():
                         update_light_round(time)
                         apply_censors(time, length)
                 update_progress_bar(projected_player_time, player.get_length(), currently_playing.get("filename"))
-    # except Exception as e:
-    #     error_str = str(e)
-    #     if not playing_next_error:
-    #         if error_str == last_error:
-    #             last_error_count += 1
-    #             print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
-    #         else:
-    #             last_error = error_str
-    #             last_error_count = 1
-    #             if last_error_count > 20:
-    #                 playing_next_error = True
-    #                 play_next()
-    #             print(f"\nError: {error_str} x 1", flush=True)
+    except Exception as e:
+        error_str = str(e)
+        if not playing_next_error:
+            if error_str == last_error:
+                last_error_count += 1
+                print(f"\rError: {error_str} x {last_error_count}", end='', flush=True)
+            else:
+                last_error = error_str
+                last_error_count = 1
+                if last_error_count > 20:
+                    playing_next_error = True
+                    play_next()
+                print(f"\nError: {error_str} x 1", flush=True)
     # Push playback state to web host clients ~every 1 second
     global _web_playback_counter
     _web_playback_counter += 1
@@ -30913,7 +30835,7 @@ def _push_peek_img(img):
 
 def _draw_edge_osd(block_percent):
     """Draw a solid center box covering the video interior; edges remain visible."""
-    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_effective_video_rect()
     if not osd_w or not vid_w:
         return
     visible_pct = 100 - block_percent
@@ -30942,27 +30864,29 @@ def _draw_grow_osd(block_percent, cx_osd, cy_osd):
     if (now - _grow_osd_last_ms) < 0.016:  # ~60fps cap
         return
     try:
-        osd_w, osd_h, _, _, _, _ = _get_osd_video_rect()
+        osd_w, osd_h, fv_x, fv_y, fv_w, fv_h = _get_effective_video_rect()
         if not osd_w:
             return
-        visible_w = int(osd_w * (1.0 - block_percent / 100.0))
-        visible_h = int(osd_h * (1.0 - block_percent / 100.0))
-        hole_l = max(0, cx_osd - visible_w // 2)
-        hole_t = max(0, cy_osd - visible_h // 2)
-        hole_r = min(osd_w, cx_osd + visible_w // 2)
-        hole_b = min(osd_h, cy_osd + visible_h // 2)
+        visible_w = int(fv_w * (1.0 - block_percent / 100.0))
+        visible_h = int(fv_h * (1.0 - block_percent / 100.0))
+        hole_l = max(fv_x, cx_osd - visible_w // 2)
+        hole_t = max(fv_y, cy_osd - visible_h // 2)
+        hole_r = min(fv_x + fv_w, cx_osd + visible_w // 2)
+        hole_b = min(fv_y + fv_h, cy_osd + visible_h // 2)
 
         # Build the four surrounding panels as ASS vector paths.
         # All paths share one \p1 drawing block; multiple 'm' subpaths = multiple filled regions.
+        # When framed video is active, panels are clipped to the framed rect (not the full OSD).
+        out_l, out_t, out_r, out_b = fv_x, fv_y, fv_x + fv_w, fv_y + fv_h
         paths = []
-        if hole_t > 0:                        # top strip
-            paths.append(f"m 0 0 l {osd_w} 0 {osd_w} {hole_t} 0 {hole_t}")
-        if hole_b < osd_h:                    # bottom strip
-            paths.append(f"m 0 {hole_b} l {osd_w} {hole_b} {osd_w} {osd_h} 0 {osd_h}")
-        if hole_l > 0:                        # left strip (between top/bottom strips)
-            paths.append(f"m 0 {hole_t} l {hole_l} {hole_t} {hole_l} {hole_b} 0 {hole_b}")
-        if hole_r < osd_w:                    # right strip
-            paths.append(f"m {hole_r} {hole_t} l {osd_w} {hole_t} {osd_w} {hole_b} {hole_r} {hole_b}")
+        if hole_t > out_t:                    # top strip (inside framed rect)
+            paths.append(f"m {out_l} {out_t} l {out_r} {out_t} {out_r} {hole_t} {out_l} {hole_t}")
+        if hole_b < out_b:                    # bottom strip
+            paths.append(f"m {out_l} {hole_b} l {out_r} {hole_b} {out_r} {out_b} {out_l} {out_b}")
+        if hole_l > out_l:                    # left strip (between top/bottom strips)
+            paths.append(f"m {out_l} {hole_t} l {hole_l} {hole_t} {hole_l} {hole_b} {out_l} {hole_b}")
+        if hole_r < out_r:                    # right strip
+            paths.append(f"m {hole_r} {hole_t} l {out_r} {hole_t} {out_r} {hole_b} {hole_r} {hole_b}")
 
         if not paths:
             # Fully uncovered — nothing to draw
@@ -31064,6 +30988,110 @@ _blind_osd_color_cache = "#000000"  # last color used; needed for hide path
 blind_enabled = False
 manual_blind = False
 
+_video_frame_active = False
+_FRAME_VIDEO_ZOOM         = -0.45   # 2^(-0.45) ≈ 73.3% — question phase
+_FRAME_VIDEO_ZOOM_ANSWER  = -0.45   # 2^(-0.45) ≈ 73.3% — answer phase
+_FRAME_PAN_Y              = -0.03   # shift video upward (fraction of display height)
+_video_frame_zoom  = _FRAME_VIDEO_ZOOM   # currently applied zoom level
+_video_frame_color = "#000000"          # sampled at activation; avoids re-reading during draw
+
+def _draw_frame_border_osd():
+    """Draw the framed-video effect: image-color fill in margins + white outline ring around the video."""
+    try:
+        osd_w = int(player._p.osd_width or 0)
+        osd_h = int(player._p.osd_height or 0)
+    except Exception:
+        return
+    if not (osd_w and osd_h):
+        return
+    scale = 2 ** _video_frame_zoom
+    _, _, vid_x, vid_y, vid_w, vid_h = _get_osd_video_rect()
+    if not vid_w:
+        vid_x, vid_y, vid_w, vid_h = 0, 0, osd_w, osd_h
+    # Video rect after zoom + vertical pan applied from OSD centre
+    new_w = round(vid_w * scale)
+    new_h = round(vid_h * scale)
+    y_shift = round(new_h * abs(_FRAME_PAN_Y))  # upward shift in OSD pixels
+    new_x = round((osd_w - new_w) / 2)
+    new_y = round((osd_h - new_h) / 2) - y_shift
+    # Outline ring thickness (scales with OSD size)
+    ring_px = max(3, round(min(osd_w, osd_h) * 0.006))
+    ox, oy = new_x - ring_px, new_y - ring_px
+    ow, oh = new_w + ring_px * 2, new_h + ring_px * 2
+    # Fill color sampled at activation time (stored in _video_frame_color)
+    color_str = _video_frame_color
+    try:
+        r16, g16, b16 = root.winfo_rgb(color_str)
+        r, g, b = r16 >> 8, g16 >> 8, b16 >> 8
+    except Exception:
+        r, g, b = 0, 0, 0
+    color_hex = f"{b:02X}{g:02X}{r:02X}"
+    # ── OSD 60: image-color fill, clipped to leave the outline+video area transparent ──
+    canvas_path = f"m 0 0 l {osd_w} 0 {osd_w} {osd_h} 0 {osd_h}"
+    ass_bg = (
+        f"{{\\an7\\pos(0,0)\\1c&H{color_hex}&\\1a&H00&\\bord0\\shad0"
+        f"\\iclip({ox},{oy},{ox+ow},{oy+oh})\\p1}}"
+        + canvas_path + "{\\p0}"
+    )
+    # ── OSD 61: white donut outline ring (clockwise outer, CCW inner → hollow) ──
+    # Clockwise outer: TL→TR→BR→BL
+    outer = f"m {ox} {oy} l {ox+ow} {oy} {ox+ow} {oy+oh} {ox} {oy+oh}"
+    # Counter-clockwise inner: TL→BL→BR→TR
+    inner = f"m {new_x} {new_y} l {new_x} {new_y+new_h} {new_x+new_w} {new_y+new_h} {new_x+new_w} {new_y}"
+    ass_ring = (
+        f"{{\\an7\\pos(0,0)\\1c&HFFFFFF&\\1a&H00&\\bord0\\shad0\\p1}}"
+        + outer + " " + inner + "{\\p0}"
+    )
+    try:
+        _osd_command('osd-overlay', _FRAME_BORDER_ASS_OSD_ID, 'ass-events',
+                     ass_bg, osd_w, osd_h, 0, 'no')  # z=0: behind blind (z=1)
+    except Exception as e:
+        print(f"[frame_border] bg OSD error: {e}")
+    try:
+        _osd_command('osd-overlay', _FRAME_OUTLINE_ASS_OSD_ID, 'ass-events',
+                     ass_ring, osd_w, osd_h, 0, 'no')  # z=0: behind blind (z=1)
+    except Exception as e:
+        print(f"[frame_border] ring OSD error: {e}")
+
+def set_video_frame(enabled, answer_phase=False):
+    """Enable, update, or disable the framed-video lightning round effect."""
+    global _video_frame_active, _video_frame_zoom, _video_frame_color
+    _video_frame_active = bool(enabled)
+    if not enabled:
+        _video_frame_zoom = _FRAME_VIDEO_ZOOM
+        _video_frame_color = "#000000"
+        try:
+            player._p.video_zoom = 0
+        except Exception:
+            pass
+        try:
+            player._p.video_pan_y = 0
+        except Exception:
+            pass
+        for _oid in (_FRAME_BORDER_ASS_OSD_ID, _FRAME_OUTLINE_ASS_OSD_ID):
+            try:
+                _osd_command('osd-overlay', _oid, 'none', '', 0, 0, 0, 'no')
+            except Exception:
+                pass
+        _unregister_mpv_tracked_window("frame_border")
+        return
+    _video_frame_zoom = _FRAME_VIDEO_ZOOM_ANSWER if answer_phase else _FRAME_VIDEO_ZOOM
+    # Use the same color the blind was rendered with; fall back to sampling if not set
+    _video_frame_color = _blind_osd_color_cache if _blind_osd_color_cache and _blind_osd_color_cache != "#000000" else (get_image_color() or get_random_blind_color())
+    try:
+        player._p.video_zoom = _video_frame_zoom
+    except Exception:
+        pass
+    try:
+        player._p.video_pan_y = _FRAME_PAN_Y
+    except Exception:
+        pass
+    def _on_mpv_rect(mx, my, mw, mh):
+        if _video_frame_active:
+            _draw_frame_border_osd()
+    _register_mpv_tracked_window("frame_border", None, _on_mpv_rect)
+    _draw_frame_border_osd()
+
 def _color_to_premul_rgba(color_str, alpha):
     """Convert any Tkinter color name or hex string to a premultiplied RGBA tuple."""
     try:
@@ -31134,6 +31162,16 @@ def set_black_screen(toggle, smooth=True, color=None):
     global black_overlay, _blind_osd_color_cache
     if toggle:
         _color = color if color else get_image_color()
+        # If no explicit color was requested and the sampled color is near-black
+        # (first frame not yet decoded or video fades in from black), use a
+        # random color so the blind doesn't appear solid black.
+        if not color and _color:
+            try:
+                _h = _color.lstrip('#')
+                if len(_h) == 6 and (int(_h[0:2], 16) + int(_h[2:4], 16) + int(_h[4:6], 16)) < 60:
+                    _color = get_random_blind_color()
+            except Exception:
+                pass
         _blind_osd_color_cache = _color
         black_overlay = True
         _set_blind_osd_alpha(_color, 255)
@@ -31255,29 +31293,32 @@ def _commit_censor_osd():
         osd_w = root.winfo_screenwidth()
         osd_h = root.winfo_screenheight()
 
-    # Compute video rect within OSD space (letterbox/pillarbox aware)
-    try:
-        vw, vh = player.video_get_size(0)
-    except Exception:
-        vw, vh = 0, 0
-    if vw and vh:
-        if (vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478):
-            ar = 16 / 9
-        else:
-            ar = vw / vh
-        osd_ar = osd_w / osd_h
-        if ar >= osd_ar:
-            video_w = osd_w
-            video_h = int(osd_w / ar)
-            video_x = 0
-            video_y = (osd_h - video_h) // 2
-        else:
-            video_h = osd_h
-            video_w = int(osd_h * ar)
-            video_x = (osd_w - video_w) // 2
-            video_y = 0
+    # Compute video rect within OSD space (letterbox/pillarbox aware, framed-video aware)
+    if _video_frame_active:
+        _, _, video_x, video_y, video_w, video_h = _get_effective_video_rect()
     else:
-        video_x, video_y, video_w, video_h = 0, 0, osd_w, osd_h
+        try:
+            vw, vh = player.video_get_size(0)
+        except Exception:
+            vw, vh = 0, 0
+        if vw and vh:
+            if (vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478):
+                ar = 16 / 9
+            else:
+                ar = vw / vh
+            osd_ar = osd_w / osd_h
+            if ar >= osd_ar:
+                video_w = osd_w
+                video_h = int(osd_w / ar)
+                video_x = 0
+                video_y = (osd_h - video_h) // 2
+            else:
+                video_h = osd_h
+                video_w = int(osd_h * ar)
+                video_x = (osd_w - video_w) // 2
+                video_y = 0
+        else:
+            video_x, video_y, video_w, video_h = 0, 0, osd_w, osd_h
 
     # Each active censor box gets its own osd-overlay slot (IDs 40–49).
     # One box → one slot → one positioned ASS event with its own color. No tag interaction.
@@ -31292,12 +31333,12 @@ def _commit_censor_osd():
     for censor, color_str in active:
         if used_slots >= len(_CENSOR_ASS_OSD_IDS):
             break
-        cw = int(video_w * censor['size_w'] / 100)
-        ch = int(video_h * censor['size_h'] / 100)
+        cw = int(video_w * censor.get('size_w', 0.0) / 100)
+        ch = int(video_h * censor.get('size_h', 0.0) / 100)
         if cw <= 0 or ch <= 0:
             continue
-        cx = video_x + int((video_w - cw) * censor['pos_x'] / 100)
-        cy = video_y + int((video_h - ch) * censor['pos_y'] / 100)
+        cx = video_x + int((video_w - cw) * censor.get('pos_x', 0.0) / 100)
+        cy = video_y + int((video_h - ch) * censor.get('pos_y', 0.0) / 100)
         ass_color = _to_ass_color(color_str)
         slot_id = _CENSOR_ASS_OSD_IDS[used_slots]
         rotation = censor.get('rotation') or 0.0
@@ -31360,7 +31401,7 @@ def _commit_censor_osd():
     _censor_osd_last_size = (osd_w, osd_h)
 
 def toggle_censor_box(filename, censor, enabled, time=None):
-    censor_id = f"{filename}:{censor['pos_x']}x{censor['pos_y']}--{censor['size_w']}x{censor['size_h']}-{censor['start']}-{censor['end']}"
+    censor_id = f"{filename}:{censor.get('pos_x', 0.0)}x{censor.get('pos_y', 0.0)}--{censor.get('size_w', 0.0)}x{censor.get('size_h', 0.0)}-{censor.get('start', 0)}-{censor.get('end', 0)}"
     if censor_id in censor_boxes:
         if not enabled and not censor_boxes[censor_id].get("destroying"):
             if time is None:
@@ -31370,7 +31411,8 @@ def toggle_censor_box(filename, censor, enabled, time=None):
                 if cid not in censor_boxes:
                     return
                 pj_time = projected_player_time / 1000
-                if show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
+                _type_enabled = (censors_nsfw_enabled if cen.get('nsfw') else censors_enabled)
+                if _type_enabled and show_censor(cen, check_title=True) and pj_time <= cen.get("end") and pj_time >= cen.get("start"):
                     censor_boxes[cid]["destroying"] = False
                 elif censor_boxes[cid].get("destroying"):
                     del censor_boxes[cid]
@@ -31514,12 +31556,12 @@ def check_file_censors(filename, time, check_title=True):
             if not censor.get('nsfw') and not censors_enabled:
                 toggle_censor_box(filename, censor, False)
                 continue
-            if show_censor(censor, check_title) and (time >= censor['start'] and time <= censor['end']):
+            if show_censor(censor, check_title) and (time >= censor.get('start', 0) and time <= censor.get('end', 0)):
                 if censor.get("skip"):
-                    skip_length = censor['end'] - censor['start']
-                    if not light_round_started and time < censor['start']+(skip_length / 4):
-                        if censor['end'] < player.get_length()/1000:
-                            player.set_time(int(censor['end'] * 1000))
+                    skip_length = censor.get('end', 0) - censor.get('start', 0)
+                    if not light_round_started and time < censor.get('start', 0)+(skip_length / 4):
+                        if censor.get('end', 0) < player.get_length()/1000:
+                            player.set_time(round(censor.get('end', 0) * 1000))
                         else:
                             play_next()
                     censor_found = True
@@ -31598,8 +31640,9 @@ def get_random_blind_color():
 def get_image_color():
     """Return the average colour of the current mpv video frame as a hex string.
     Areas covered by active censor boxes are excluded from the average.
+    Falls back to a random color if no video frame is available.
     """
-    fallback_color = "#000000"
+    fallback_color = get_random_blind_color()
     try:
         try:
             img = player._p.screenshot_raw()
@@ -31607,29 +31650,29 @@ def get_image_color():
             # mpv error -12 (MPV_ERROR_COMMAND) = no video frame available
             return fallback_color
         if img is None:
-            return fallback_color
+            return get_random_blind_color()
         arr = np.array(img.convert('RGB'))
         ih, iw = arr.shape[0], arr.shape[1]
         # Build a boolean mask: True = include pixel in average
         mask = np.ones((ih, iw), dtype=bool)
         active_censors = [d["censor"] for d in censor_boxes.values() if not d.get("destroying")]
         for censor in active_censors:
-            cw = int(iw * censor['size_w'] / 100)
-            ch = int(ih * censor['size_h'] / 100)
+            cw = int(iw * censor.get('size_w', 0.0) / 100)
+            ch = int(ih * censor.get('size_h', 0.0) / 100)
             if cw <= 0 or ch <= 0:
                 continue
-            cx = int((iw - cw) * censor['pos_x'] / 100)
-            cy = int((ih - ch) * censor['pos_y'] / 100)
+            cx = int((iw - cw) * censor.get('pos_x', 0.0) / 100)
+            cy = int((ih - ch) * censor.get('pos_y', 0.0) / 100)
             mask[cy:cy + ch, cx:cx + cw] = False
         pixels = arr[mask]  # shape: (N, 3)
         l = len(pixels)
         if l == 0:
-            return fallback_color
+            return get_random_blind_color()
         r, g, b = (int(pixels[:, i].sum() / l) for i in range(3))
         return rgbtohex(r, g, b)
     except Exception as e:
         print(f"get_image_color error: {e}")
-        return fallback_color
+        return get_random_blind_color()
 
 def rgbtohex(r,g,b):
     return f'#{r:02x}{g:02x}{b:02x}'
@@ -31739,6 +31782,33 @@ class RectangleDrawerOverlay:
             except Exception as _e:
                 print("RectangleDrawerOverlay: bad initial values:", _e)
 
+    # ------------------------------------------------------------------ snapping helpers
+
+    def _should_snap(self):
+        """True when the selection is an unrotated rectangle — safe to clamp to video bounds."""
+        rot = self.sel_rot % 360
+        return self.sel_shape == 'rect' and (rot < 0.5 or rot > 359.5)
+
+    def _clamp_to_video(self):
+        """Clamp sel_cx/cy (and shrink w/h if needed) so the box stays inside the video rect."""
+        if not self._should_snap():
+            return
+        if self.video_w <= 0 or self.video_h <= 0:
+            return
+        if self.sel_w > self.video_w:
+            self.sel_w = float(self.video_w)
+        if self.sel_h > self.video_h:
+            self.sel_h = float(self.video_h)
+        hw, hh = self.sel_w / 2, self.sel_h / 2
+        self.sel_cx = max(self.video_x + hw, min(self.video_x + self.video_w  - hw, self.sel_cx))
+        self.sel_cy = max(self.video_y + hh, min(self.video_y + self.video_h - hh, self.sel_cy))
+
+    def _clamp_xy_to_video(self, x, y):
+        """Clamp a canvas point to the video rect (for draw mode)."""
+        x = max(self.video_x, min(self.video_x + self.video_w, x))
+        y = max(self.video_y, min(self.video_y + self.video_h, y))
+        return x, y
+
     # ------------------------------------------------------------------ math
 
     def _to_screen(self, lx, ly):
@@ -31783,24 +31853,26 @@ class RectangleDrawerOverlay:
     # ------------------------------------------------------------------ draw mode
 
     def _draw_press(self, event):
-        self.start_x, self.start_y = event.x, event.y
+        self.start_x, self.start_y = self._clamp_xy_to_video(event.x, event.y)
         self._draw_rect = self.canvas.create_rectangle(
-            event.x, event.y, event.x, event.y,
+            self.start_x, self.start_y, self.start_x, self.start_y,
             outline="#FF3333", width=3, fill="")
 
     def _draw_drag(self, event):
         sx, sy = self.start_x, self.start_y
+        ex, ey = self._clamp_xy_to_video(event.x, event.y)
         self.canvas.coords(self._draw_rect,
-                           min(sx, event.x), min(sy, event.y),
-                           max(sx, event.x), max(sy, event.y))
+                           min(sx, ex), min(sy, ey),
+                           max(sx, ex), max(sy, ey))
 
     def _draw_release(self, event):
-        w = abs(event.x - self.start_x)
-        h = abs(event.y - self.start_y)
+        ex, ey = self._clamp_xy_to_video(event.x, event.y)
+        w = abs(ex - self.start_x)
+        h = abs(ey - self.start_y)
         if w < 4 or h < 4:
             return
-        self.sel_cx = (self.start_x + event.x) / 2
-        self.sel_cy = (self.start_y + event.y) / 2
+        self.sel_cx = (self.start_x + ex) / 2
+        self.sel_cy = (self.start_y + ey) / 2
         self.sel_w, self.sel_h, self.sel_rot = w, h, 0.0
         self.canvas.delete(self._draw_rect)
         self._draw_rect = None
@@ -32012,6 +32084,7 @@ class RectangleDrawerOverlay:
             ref = self._drag_ref
             self.sel_cx = ref["cx0"] + (mx - ref["mx0"])
             self.sel_cy = ref["cy0"] + (my - ref["my0"])
+            self._clamp_to_video()
             self._redraw_selection()
 
         elif mode.startswith("resize_"):
@@ -32045,6 +32118,7 @@ class RectangleDrawerOverlay:
             c, s = m.cos(r), m.sin(r)
             self.sel_cx = old_cx + dcx*c - dcy*s
             self.sel_cy = old_cy + dcx*s + dcy*c
+            self._clamp_to_video()
             self._redraw_selection()
 
     def _edit_release(self, event):
@@ -32105,11 +32179,48 @@ class ColorPickerOverlay:
         self.root.attributes("-alpha", 0.3)
         self.root.configure(cursor="cross", bg="black")
 
+        # Live preview tooltip that follows the mouse
+        self._preview = tk.Toplevel(self.root)
+        self._preview.wm_overrideredirect(True)
+        self._preview.attributes("-topmost", True)
+        self._preview.attributes("-alpha", 0.92)
+        self._swatch = tk.Label(self._preview, width=8, height=2, relief="solid", bd=1)
+        self._swatch.pack()
+        self._hex_label = tk.Label(self._preview, font=("Consolas", 11, "bold"),
+                                   width=9, relief="solid", bd=0, padx=4, pady=2)
+        self._hex_label.pack()
+        self._after_id = None
+        self.root.bind("<Motion>", self._on_motion)
+
         self.root.bind("<Button-1>", self.on_click)
         self.root.bind("<Escape>", lambda e: self.root.destroy())
         self.root.bind("<ButtonRelease-2>", lambda e: self.root.destroy())
 
+    def _on_motion(self, event):
+        # Throttle to ~30fps
+        if self._after_id:
+            return
+        self._after_id = self.root.after(33, lambda: self._update_preview(event.x_root, event.y_root))
+
+    def _update_preview(self, x, y):
+        self._after_id = None
+        try:
+            color = pyautogui.screenshot(region=(x, y, 1, 1)).getpixel((0, 0))
+            hex_color = '#{:02X}{:02X}{:02X}'.format(*color[:3])
+            # Determine contrasting text color
+            brightness = 0.299 * color[0] + 0.587 * color[1] + 0.114 * color[2]
+            fg = "black" if brightness > 128 else "white"
+            self._swatch.config(bg=hex_color)
+            self._hex_label.config(text=hex_color, bg=hex_color, fg=fg)
+            # Position preview 20px right and below cursor
+            self._preview.wm_geometry(f"+{x+20}+{y+20}")
+        except Exception:
+            pass
+
     def on_click(self, event):
+        if self._after_id:
+            self.root.after_cancel(self._after_id)
+        self._preview.destroy()
         self.root.attributes("-alpha", 0.0)
         self.root.update()
 
@@ -32214,7 +32325,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
     if 'censor_page_offset' not in globals():
         censor_page_offset = 0
     
-    CENSORS_PER_PAGE = 15
+    CENSORS_PER_PAGE = 10
     
     def censor_editor_close():
         global censor_editor, censor_entry_widgets, censor_page_offset
@@ -32233,6 +32344,8 @@ def open_censor_editor(refresh=False, refresh_only=False):
     bg_color = "black"
     row_pady = 0        # vertical padding between censor rows
     entry_ipady = 4     # internal vertical padding for Entry widgets (matches button height)
+    # Cache similar-theme lookup — iterating all censor lists is slow; only needed once.
+    _similar_censors_cache = find_similar_theme_censors(filename) if filename else {}
 
     if censor_editor:
         # If refresh_only is True, just update the content without closing the window
@@ -32347,6 +32460,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
 
     def pick_color_func(label):
         def set_color(hex_color):
+            label.hex_color = hex_color
             label.config(bg=hex_color, text="")
         ColorPickerOverlay(set_color)
         save_to_current()
@@ -32414,6 +32528,38 @@ def open_censor_editor(refresh=False, refresh_only=False):
         total_pages = (total_censors + CENSORS_PER_PAGE - 1) // CENSORS_PER_PAGE if total_censors > 0 else 1
         censor_start_row = 2 if total_pages > 1 else 1
 
+        def build_time_frame(var, row, col, back_color, is_start=True):
+            frame = tk.Frame(censor_editor, bg=back_color)
+            tk.Button(frame, text="➖", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() - 0.1, 1))).pack(side="left")
+            tk.Entry(frame, textvariable=var, width=5, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left", ipady=entry_ipady)
+            tk.Button(frame, text="➕", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() + 0.1, 1))).pack(side="left")
+            now_button = tk.Button(frame, text="NOW", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(current_time_func(), 1)))
+            now_button.pack(side="left")
+            # Right-click binding: start sets to 0, end sets to video length + 0.1 seconds
+            if is_start:
+                now_button.bind("<Button-3>", lambda e, v=var: v.set(0.0))
+            else:
+                now_button.bind("<Button-3>", lambda e, v=var: v.set(round((player.get_length() / 1000) + 0.1, 1)))
+            frame.grid(row=row, column=col, padx=6, pady=row_pady)
+            return frame
+
+        def _make_nsfw_btn(c):
+            _initial_nsfw = bool(c.get("nsfw", False))
+            _nsfw_btn = tk.Button(censor_editor,
+                                  text="✗ NSFW" if _initial_nsfw else "✓ SFW",
+                                  bg="#880000" if _initial_nsfw else "#444444",
+                                  font=font_big, width=8, height=1,
+                                  fg="white", activeforeground="white", activebackground="#333",
+                                  bd=0, relief="flat")
+            _nsfw_btn.var = _initial_nsfw
+            def _update(b=_nsfw_btn):
+                b.config(text="✗ NSFW" if b.var else "✓ SFW",
+                         bg="#880000" if b.var else "#444444")
+            def _toggle(b=_nsfw_btn, u=_update):
+                b.var = not b.var; u()
+            _nsfw_btn.config(command=_toggle)
+            return _nsfw_btn
+
         for display_idx, censor in enumerate(page_censors):
             actual_idx = start_idx + display_idx
             
@@ -32451,21 +32597,6 @@ def open_censor_editor(refresh=False, refresh_only=False):
                 tk.Entry(pos_frame, textvariable=pos_rot_var, width=14, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left", ipady=entry_ipady)
             pos_frame.grid(row=display_idx+censor_start_row, column=1, padx=(0, 6), pady=row_pady)
 
-            def build_time_frame(var, row, col, back_color, is_start=True):
-                frame = tk.Frame(censor_editor, bg=back_color)
-                tk.Button(frame, text="➖", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() - 0.1, 1))).pack(side="left")
-                tk.Entry(frame, textvariable=var, width=5, font=font_big, justify="center", bg=bg_color, fg=fg_color, insertbackground=fg_color).pack(side="left", ipady=entry_ipady)
-                tk.Button(frame, text="➕", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(v.get() + 0.1, 1))).pack(side="left")
-                now_button = tk.Button(frame, text="NOW", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda v=var: v.set(round(current_time_func(), 1)))
-                now_button.pack(side="left")
-                # Right-click binding: start sets to 0, end sets to video length + 5 seconds
-                if is_start:
-                    now_button.bind("<Button-3>", lambda e, v=var: v.set(0.0))
-                else:
-                    now_button.bind("<Button-3>", lambda e, v=var: v.set(round((player.get_length() / 1000) + 0.1, 1)))
-                frame.grid(row=row, column=col, padx=6, pady=row_pady)
-                return frame
-
             start_var = tk.DoubleVar(value=censor['start'])
             end_var = tk.DoubleVar(value=censor['end'])
             start_frame = build_time_frame(start_var, display_idx+censor_start_row, 2, BACKGROUND_COLOR, is_start=True)
@@ -32476,6 +32607,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
             end_frame = build_time_frame(end_var, display_idx+censor_start_row, 3, row_color, is_start=False)
 
             def remove_color(label):
+                label.hex_color = None
                 label.config(bg="#333", text="AUTO")
                 save_to_current()
 
@@ -32489,26 +32621,14 @@ def open_censor_editor(refresh=False, refresh_only=False):
             else:
                 color = censor.get("color")
                 color_box = tk.Label(color_frame, text="AUTO" if not color else "", width=6, font=font_big, bg=color if color else "#333", fg=fg_color, relief="groove")
+                color_box.hex_color = color  # store exact hex to avoid tkinter color normalization
                 color_box.pack(side="left", ipady=entry_ipady)
                 tk.Button(color_frame, text="PICK", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda b=color_box: pick_color_func(b)).pack(side="left", padx=2)
                 tk.Button(color_frame, text="⟳", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda c=color_box: remove_color(c)).pack(side="left")
             color_frame.grid(row=display_idx+censor_start_row, column=4, padx=6, pady=row_pady)
 
             # Per-row NSFW toggle button (column 5) — stored as .var, read by save_to_current
-            def _make_nsfw_btn(c=censor):
-                _nsfw_btn = tk.Button(censor_editor, text="", font=font_big, width=8, height=1,
-                                      fg="white", activeforeground="white", activebackground="#333",
-                                      bd=0, relief="flat")
-                _nsfw_btn.var = bool(c.get("nsfw", False))
-                def _update(b=_nsfw_btn):
-                    b.config(text="✗ NSFW" if b.var else "✓ SFW",
-                             bg="#880000" if b.var else "#444444")
-                def _toggle(b=_nsfw_btn, u=_update):
-                    b.var = not b.var; u()
-                _nsfw_btn.config(command=_toggle)
-                _update()
-                return _nsfw_btn
-            nsfw_button = _make_nsfw_btn()
+            nsfw_button = _make_nsfw_btn(censor)
             nsfw_button.grid(row=display_idx+censor_start_row, column=5, padx=6, pady=row_pady)
 
             # Test + Delete buttons together in ACTIONS column
@@ -32551,7 +32671,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
                 start = float(current_censors[censor].get("start", 0))
                 test_time = max(0, (start - 1) * 1000)  # Go back 1 second, minimum 0
             
-            player.set_time(int(test_time))
+            player.set_time(round(test_time))
             player.play()
         except Exception as e:
             print(f"Error playing censor preview: {e}")
@@ -32712,7 +32832,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
                         "shape": _shape_val if _shape_val != 'rect' else None,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
-                        "color": widgets[4].winfo_children()[0].cget("bg") if widgets[4].winfo_children()[0].cget("text") != "AUTO" else None,
+                        "color": getattr(widgets[4].winfo_children()[0], 'hex_color', None) if widgets[4].winfo_children()[0].cget("text") != "AUTO" else None,
                         "nsfw": widgets[5].var
                     }
             except Exception as e:
@@ -32729,7 +32849,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
 
     def import_previous_censors():
         """Import censors from previous versions of the same theme."""
-        similar_censors = find_similar_theme_censors(filename)
+        similar_censors = _similar_censors_cache
         if not similar_censors:
             messagebox.showinfo("No Similar Censors", "No censors found from previous versions of this theme.")
             return
@@ -32822,7 +32942,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
         bottom_button_widgets.append(save_censors_button)
         
         current_has_censors = len(current_censors) > 0
-        similar_censors = find_similar_theme_censors(filename) if filename else {}
+        similar_censors = _similar_censors_cache
         show_import_button = not current_has_censors and len(similar_censors) > 0
         
         if show_import_button:
@@ -32830,14 +32950,12 @@ def open_censor_editor(refresh=False, refresh_only=False):
             import_button.grid(row=1000, column=0, columnspan=6, pady=12)
             bottom_button_widgets.append(import_button)
     
-    create_bottom_buttons()
-
     refresh_ui()
 
 # =========================================
 #            *TAG/*FAVORITE FILES
 # =========================================
-SYSTEM_PLAYLISTS = ['Tagged Themes', 'Favorite Themes', 'New Themes', 'Missing Artists', 'Blind Themes', 'Peek Themes', 'Mute Peek Themes']
+SYSTEM_PLAYLISTS = ['Tagged Themes', 'Favorite Themes', 'New Themes', 'Missing Artists', 'Blind Themes', 'Reveal Themes', 'Mute Reveal Themes']
 
 def get_playlist(playlist_name):
     playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
@@ -32858,8 +32976,8 @@ def _push_web_marks(filename=None):
         "tagged":    bool(check_theme(fn, "Tagged Themes")),
         "favorited": bool(check_theme(fn, "Favorite Themes")),
         "blind":     bool(check_theme(fn, "Blind Themes")),
-        "peek":      bool(check_theme(fn, "Peek Themes")),
-        "mute_peek": bool(check_theme(fn, "Mute Peek Themes")),
+        "peek":      bool(check_theme(fn, "Reveal Themes")),
+        "mute_peek": bool(check_theme(fn, "Mute Reveal Themes")),
     })
 
 def _push_web_toggles():
@@ -32877,7 +32995,7 @@ def _push_web_toggles():
     scoreboard_visible = bool(scoreboard_open and (scoreboard_visible_hint is not False))
     web_server.push_toggles({
         "blind":        black_overlay is not None,
-        "reveal":         bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes),
+        "reveal":         bool(is_peek_active()),
         "mute":         bool(mute_state),
         "censors":      censors_enabled,
         "censors_nsfw": censors_nsfw_enabled,
@@ -32921,6 +33039,14 @@ def _push_web_toggles():
         "selected_rules_file": selected_rules_file,
         "selected_light_mode_settings": selected_light_mode_settings,
         "autoplay_fullscreen": bool(autoplay_fullscreen),
+        "bonus_menu_visibility": {
+            t: bonus_settings.get(t, {}).get("show_in_menu", True)
+            for t in ("freeform", "buzzer", "multiple", "year", "score", "members",
+                      "popularity", "tags", "studio", "artist", "song", "characters")
+        },
+        "reveal_variant_menu_visibility": dict(
+            lightning_mode_settings.get("reveal", {}).get("show_in_menu", {})
+        ),
     })
 
 def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
@@ -33038,32 +33164,32 @@ def check_blind_mark(filename):
     return check_theme(filename, "Blind Themes")
 
 def peek_mark(remove=False):
-    """Toggles the current theme in the 'Peek Themes' playlist."""
+    """Toggles the current theme in the 'Reveal Themes' playlist."""
     if not remove:
         filename = currently_playing.get("filename")
         if check_blind_mark(filename):
             blind_mark(True)
         if check_mute_peek_mark(filename):
             mute_peek_mark(True)
-    toggle_theme("Peek Themes")
+    toggle_theme("Reveal Themes")
 
 def check_peek_mark(filename):
-    """Checks if a filename is in the 'Peek Themes' playlist."""
-    return check_theme(filename, "Peek Themes")
+    """Checks if a filename is in the 'Reveal Themes' playlist."""
+    return check_theme(filename, "Reveal Themes")
 
 def mute_peek_mark(remove=False):
-    """Toggles the current theme in the 'Mute Peek Themes' playlist."""
+    """Toggles the current theme in the 'Mute Reveal Themes' playlist."""
     if not remove:
         filename = currently_playing.get("filename")
         if check_blind_mark(filename):
             blind_mark(True)
         if check_peek_mark(filename):
             peek_mark(True)
-    toggle_theme("Mute Peek Themes")
+    toggle_theme("Mute Reveal Themes")
 
 def check_mute_peek_mark(filename):
-    """Checks if a filename is in the 'Mute Peek Themes' playlist."""
-    return check_theme(filename, "Mute Peek Themes")
+    """Checks if a filename is in the 'Mute Reveal Themes' playlist."""
+    return check_theme(filename, "Mute Reveal Themes")
 
 def add_to_saved_playlist(filename=None):
     """Show a popup submenu to add the current theme to a non-system, non-infinite playlist."""
@@ -33147,30 +33273,30 @@ def bulk_favorite_playlist(event=None):
 
 def bulk_blind_mark_playlist(event=None):
     """Middle click handler for blind mark button - bulk mark/unmark entire playlist."""
-    # Blind marks are mutually exclusive with peek and mute peek marks
+    # Blind marks are mutually exclusive with reveal and mute reveal marks
     mutually_exclusive = [
-        ("Peek Themes", check_peek_mark),
-        ("Mute Peek Themes", check_mute_peek_mark)
+        ("Reveal Themes", check_peek_mark),
+        ("Mute Reveal Themes", check_mute_peek_mark)
     ]
     handle_bulk_marking("Blind Themes", check_blind_mark, mutually_exclusive)
 
 def bulk_peek_mark_playlist(event=None):
-    """Middle click handler for peek mark button - bulk mark/unmark entire playlist."""
-    # Peek marks are mutually exclusive with blind and mute peek marks
+    """Middle click handler for reveal mark button - bulk mark/unmark entire playlist."""
+    # Reveal marks are mutually exclusive with blind and mute reveal marks
     mutually_exclusive = [
         ("Blind Themes", check_blind_mark),
-        ("Mute Peek Themes", check_mute_peek_mark)
+        ("Mute Reveal Themes", check_mute_peek_mark)
     ]
-    handle_bulk_marking("Peek Themes", check_peek_mark, mutually_exclusive)
+    handle_bulk_marking("Reveal Themes", check_peek_mark, mutually_exclusive)
 
 def bulk_mute_peek_mark_playlist(event=None):
-    """Middle click handler for mute peek mark button - bulk mark/unmark entire playlist."""
-    # Mute peek marks are mutually exclusive with blind and peek marks
+    """Middle click handler for mute reveal mark button - bulk mark/unmark entire playlist."""
+    # Mute reveal marks are mutually exclusive with blind and reveal marks
     mutually_exclusive = [
         ("Blind Themes", check_blind_mark),
-        ("Peek Themes", check_peek_mark)
+        ("Reveal Themes", check_peek_mark)
     ]
-    handle_bulk_marking("Mute Peek Themes", check_mute_peek_mark, mutually_exclusive)
+    handle_bulk_marking("Mute Reveal Themes", check_mute_peek_mark, mutually_exclusive)
 
 def check_missing_artists():
     playlist["name"] = "Missing Artists"
@@ -33422,9 +33548,9 @@ def _theme_context_menu(filename, refresh_func, play_func=None, remove_func=None
     marks = [
         ("Tagged",    "Tagged Themes",    None),
         ("Favorite",  "Favorite Themes",  None),
-        ("Blind",     "Blind Themes",     ["Peek Themes", "Mute Peek Themes"]),
-        ("Reveal",    "Peek Themes",      ["Blind Themes", "Mute Peek Themes"]),
-        ("Mute Reveal", "Mute Peek Themes", ["Blind Themes", "Peek Themes"]),
+        ("Blind",     "Blind Themes",       ["Reveal Themes", "Mute Reveal Themes"]),
+        ("Reveal",    "Reveal Themes",      ["Blind Themes", "Mute Reveal Themes"]),
+        ("Mute Reveal", "Mute Reveal Themes", ["Blind Themes", "Reveal Themes"]),
     ]
     for label, pname, exclusive in marks:
         is_marked = check_theme(filename, pname, recache=True)
@@ -35400,7 +35526,7 @@ def _end_msg_build_canvas(y_top):
         size = _fs(pt)
         total_h += (size + gap) if kind == "sep" else (size + gap)
 
-    box_x = osd_w - box_w - max(4, round(10 * modifier))
+    box_x = max(4, round(10 * modifier)) if inverted_positions else osd_w - box_w - max(4, round(10 * modifier))
 
     # Colours
     try:
@@ -37063,11 +37189,52 @@ def open_popout_layout_editor():
 
 # Load saved configuration on startup
 _migrate_old_file_structure()
+_migrate_playlist_names()
 load_config()
 
 # Initialize themes cache
 os.makedirs(THEMES_CACHE_FOLDER, exist_ok=True)
 os.makedirs(RULES_FOLDER, exist_ok=True)
+_example_rules_path = os.path.join(RULES_FOLDER, "Example Rules.json")
+if not os.path.exists(_example_rules_path):
+    _example_rules = {
+        "global_title": [
+            "# **__RULES FOR GUESSING:__**"
+        ],
+        "standard": [
+            "**2 PTs** Anime *(priority for full title)*",
+            "> **+1 PT** OP/ED # *(e.g., Ending 2)*",
+            "####### ",
+            "**1 PT** Song Title / **1 PT** Artist/Band",
+            "####### ",
+            "*Copy and Edit this file to customize your rules.*"
+        ],
+        "lightning_anime": [
+            "**1 PT** Anime *(full title not needed)*",
+            "####### ",
+            "Series accepted if title not said."
+        ],
+        "lightning_character": [
+            "**2 PTs** Character *(full name priority)*",
+            "**1 PT** Anime *(full title not needed)*",
+            "####### ",
+            "Series accepted if title not said."
+        ],
+        "lightning_trivia": [
+            "**1 PT** Trivia Answer",
+            "####### ",
+            "Generated by AI, may be wrong."
+        ],
+        "global_end": [],
+        "server_footer": [
+            "# PLAY: **[URL]**"
+        ]
+    }
+    try:
+        with open(_example_rules_path, "w", encoding="utf-8") as _f:
+            json.dump(_example_rules, _f, indent=4, ensure_ascii=False)
+    except OSError as _e:
+        print(f"[Rules] Could not create example rules file: {_e}")
 if not os.path.isabs(directory) and not os.path.exists(directory):
     os.makedirs(directory, exist_ok=True)
 load_cache_metadata()
@@ -38085,22 +38252,22 @@ def _get_menu_registry():
              "---",
              {"icon": "🎲", "label": "Random",          "command": lambda: set_auto_bonus_start("random"),     "toggle": lambda: auto_bonus_start == "random",     "tooltip": "Pick a random bonus type each time."},
              "---",
-             {"icon": "💬", "label": "Free Form",        "command": lambda: set_auto_bonus_start("freeform"),   "toggle": lambda: auto_bonus_start == "freeform",   "tooltip": "Open a free-answer prompt."},
-             {"icon": "🔔", "label": "Buzzer",        "command": lambda: set_auto_bonus_start("buzzer"),   "toggle": lambda: auto_bonus_start == "buzzer",   "tooltip": "Open a buzzer prompt."},
+             {"icon": "💬", "label": "Free Form",        "command": lambda: set_auto_bonus_start("freeform"),   "toggle": lambda: auto_bonus_start == "freeform",   "condition": lambda: bonus_settings.get("freeform", {}).get("show_in_menu", True), "tooltip": "Open a free-answer prompt."},
+             {"icon": "🔔", "label": "Buzzer",        "command": lambda: set_auto_bonus_start("buzzer"),   "toggle": lambda: auto_bonus_start == "buzzer",   "condition": lambda: bonus_settings.get("buzzer", {}).get("show_in_menu", True), "tooltip": "Open a buzzer prompt."},
              "---",
-             {"icon": "４", "label": "Multiple Choice",  "command": lambda: set_auto_bonus_start("multiple"),   "toggle": lambda: auto_bonus_start == "multiple",   "tooltip": "Multiple-choice: guess the anime from 4 options."},
-             {"icon": "📅", "label": "Year",             "command": lambda: set_auto_bonus_start("year"),       "toggle": lambda: auto_bonus_start == "year",       "tooltip": "Guess the year this anime first aired."},
-             {"icon": "🏆", "label": "Score",            "command": lambda: set_auto_bonus_start("score"),      "toggle": lambda: auto_bonus_start == "score",      "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
-             {"icon": "👥", "label": "Members",          "command": lambda: set_auto_bonus_start("members"),    "toggle": lambda: auto_bonus_start == "members",    "tooltip": "Guess the number of MyAnimeList members."},
-             {"icon": "🥇", "label": "Popularity Rank",  "command": lambda: set_auto_bonus_start("popularity"), "toggle": lambda: auto_bonus_start == "popularity", "tooltip": "Guess the popularity rank on MyAnimeList."},
-             {"icon": "🔖", "label": "Tags",             "command": lambda: set_auto_bonus_start("tags"),       "toggle": lambda: auto_bonus_start == "tags",       "tooltip": "Guess the genres/themes/demographics tags."},
-             {"icon": "🏢", "label": "Studio",           "command": lambda: set_auto_bonus_start("studio"),     "toggle": lambda: auto_bonus_start == "studio",     "tooltip": "Guess the studio that made this anime."},
-             {"icon": "🎤", "label": "Artist",           "command": lambda: set_auto_bonus_start("artist"),     "toggle": lambda: auto_bonus_start == "artist",     "tooltip": "Guess the artist who performed the theme."},
-             {"icon": "🎵", "label": "Song Title",       "command": lambda: set_auto_bonus_start("song"),       "toggle": lambda: auto_bonus_start == "song",       "tooltip": "Guess the name of the song."},
+             {"icon": "４", "label": "Multiple Choice",  "command": lambda: set_auto_bonus_start("multiple"),   "toggle": lambda: auto_bonus_start == "multiple",   "condition": lambda: bonus_settings.get("multiple", {}).get("show_in_menu", True), "tooltip": "Multiple-choice: guess the anime from 4 options."},
+             {"icon": "📅", "label": "Year",             "command": lambda: set_auto_bonus_start("year"),       "toggle": lambda: auto_bonus_start == "year",       "condition": lambda: bonus_settings.get("year", {}).get("show_in_menu", True), "tooltip": "Guess the year this anime first aired."},
+             {"icon": "🏆", "label": "Score",            "command": lambda: set_auto_bonus_start("score"),      "toggle": lambda: auto_bonus_start == "score",      "condition": lambda: bonus_settings.get("score", {}).get("show_in_menu", True), "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
+             {"icon": "👥", "label": "Members",          "command": lambda: set_auto_bonus_start("members"),    "toggle": lambda: auto_bonus_start == "members",    "condition": lambda: bonus_settings.get("members", {}).get("show_in_menu", True), "tooltip": "Guess the number of MyAnimeList members."},
+             {"icon": "🥇", "label": "Popularity Rank",  "command": lambda: set_auto_bonus_start("popularity"), "toggle": lambda: auto_bonus_start == "popularity", "condition": lambda: bonus_settings.get("popularity", {}).get("show_in_menu", True), "tooltip": "Guess the popularity rank on MyAnimeList."},
+             {"icon": "🔖", "label": "Tags",             "command": lambda: set_auto_bonus_start("tags"),       "toggle": lambda: auto_bonus_start == "tags",       "condition": lambda: bonus_settings.get("tags", {}).get("show_in_menu", True), "tooltip": "Guess the genres/themes/demographics tags."},
+             {"icon": "🏢", "label": "Studio",           "command": lambda: set_auto_bonus_start("studio"),     "toggle": lambda: auto_bonus_start == "studio",     "condition": lambda: bonus_settings.get("studio", {}).get("show_in_menu", True), "tooltip": "Guess the studio that made this anime."},
+             {"icon": "🎤", "label": "Artist",           "command": lambda: set_auto_bonus_start("artist"),     "toggle": lambda: auto_bonus_start == "artist",     "condition": lambda: bonus_settings.get("artist", {}).get("show_in_menu", True), "tooltip": "Guess the artist who performed the theme."},
+             {"icon": "🎵", "label": "Song Title",       "command": lambda: set_auto_bonus_start("song"),       "toggle": lambda: auto_bonus_start == "song",       "condition": lambda: bonus_settings.get("song", {}).get("show_in_menu", True), "tooltip": "Guess the name of the song."},
          ]},
         "---",
-        {"id": "bonus_freeform",  "icon": "💬", "label": "Free Form",          "button_label": "FREE FORM",  "shortcut": True, "command": lambda: guess_extra("freeform"),   "toggle": lambda: guessing_extra == "freeform",   "cycle_pos": ("cycle_guess_other", 1), "tooltip": "Open a free-answer prompt."},
-        {"id": "bonus_buzzer",    "icon": "🔔", "label": "Buzzer",             "button_label": "BUZZER",     "shortcut": True, "command": lambda: guess_extra("buzzer"),     "toggle": lambda: guessing_extra == "buzzer",     "condition": lambda: web_server.is_running(), "tooltip": "Open a buzzer-only web bonus round."},
+        {"id": "bonus_freeform",  "icon": "💬", "label": "Free Form",          "button_label": "FREE FORM",  "shortcut": True, "command": lambda: guess_extra("freeform"),   "toggle": lambda: guessing_extra == "freeform",   "cycle_pos": ("cycle_guess_other", 1), "condition": lambda: bonus_settings.get("freeform", {}).get("show_in_menu", True), "tooltip": "Open a free-answer prompt."},
+        {"id": "bonus_buzzer",    "icon": "🔔", "label": "Buzzer",             "button_label": "BUZZER",     "shortcut": True, "command": lambda: guess_extra("buzzer"),     "toggle": lambda: guessing_extra == "buzzer",     "condition": lambda: web_server.is_running() and bonus_settings.get("buzzer", {}).get("show_in_menu", True), "tooltip": "Open a buzzer-only web bonus round."},
         {"id": "buzzer_lock", "icon": "🔒", "label": "Lock", "button_label": "BUZZ LOCK",
         "command": _web_buzzer_lock,
         "toggle": lambda: web_server.buzzer_is_locked(),
@@ -38111,16 +38278,16 @@ def _get_menu_registry():
         "condition": lambda: web_server.is_running() and guessing_extra == "buzzer",
         "tooltip": "Clear submitted buzzes without changing lock state."},
         "---",
-        {"id": "bonus_multiple", "icon": "４", "label": "Multiple Choice",  "button_label": "MULTIPLE",  "shortcut": True, "command": lambda: guess_extra("multiple"),  "toggle": lambda: guessing_extra == "multiple",  "tooltip": "Multiple-choice: guess the anime from 4 options."},
-        {"id": "bonus_year",     "icon": "📅", "label": "Year",              "button_label": "YEAR",       "shortcut": True, "command": lambda: guess_extra("year"),       "toggle": lambda: guessing_extra == "year",       "cycle_pos": ("cycle_guess_stats", 1), "tooltip": "Guess the year this anime first aired."},
-        {"id": "bonus_score",    "icon": "🏆", "label": "Score",             "button_label": "SCORE",      "shortcut": True, "command": lambda: guess_extra("score"),      "toggle": lambda: guessing_extra == "score",      "cycle_pos": ("cycle_guess_stats", 2), "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
-        {"id": "bonus_members",  "icon": "👥", "label": "Members",           "button_label": "MEMBERS",    "shortcut": True, "command": lambda: guess_extra("members"),    "toggle": lambda: guessing_extra == "members",    "cycle_pos": ("cycle_guess_stats", 4), "tooltip": "Guess the number of MyAnimeList members."},
-        {"id": "bonus_rank",     "icon": "🥇", "label": "Popularity Rank",   "button_label": "RANK",       "shortcut": True, "command": lambda: guess_extra("popularity"), "toggle": lambda: guessing_extra == "popularity", "cycle_pos": ("cycle_guess_stats", 3), "tooltip": "Guess the popularity rank on MyAnimeList."},
-        {"id": "bonus_tags",     "icon": "🔖", "label": "Tags",              "button_label": "TAGS",       "shortcut": True, "command": lambda: guess_extra("tags"),       "toggle": lambda: guessing_extra == "tags",       "tooltip": "Guess the genres/themes/demographics tags."},
-        {"id": "bonus_studio",   "icon": "🏢", "label": "Studio",            "button_label": "STUDIO",     "shortcut": True, "command": lambda: guess_extra("studio"),     "toggle": lambda: guessing_extra == "studio",     "cycle_pos": ("cycle_guess_other", 2), "tooltip": "Guess the studio that made this anime."},
-        {"id": "bonus_artist",   "icon": "🎤", "label": "Artist",            "button_label": "ARTIST",     "shortcut": True, "command": lambda: guess_extra("artist"),     "toggle": lambda: guessing_extra == "artist",     "cycle_pos": ("cycle_guess_other", 4), "tooltip": "Guess the artist who performed the theme."},
-        {"id": "bonus_song",     "icon": "🎵", "label": "Song Title",        "button_label": "SONG",       "shortcut": True, "command": lambda: guess_extra("song"),       "toggle": lambda: guessing_extra == "song",       "cycle_pos": ("cycle_guess_other", 3), "tooltip": "Guess the name of the song."},
-        {"id": "bonus_chars",    "icon": "👤", "label": "Characters",        "button_label": "CHARACTERS", "shortcut": True, "command": lambda: guess_extra("characters"), "toggle": lambda: guessing_extra == "characters", "tooltip": "Identify 2 characters from this anime out of 6 shown."},
+        {"id": "bonus_multiple", "icon": "４", "label": "Multiple Choice",  "button_label": "MULTIPLE",  "shortcut": True, "command": lambda: guess_extra("multiple"),  "toggle": lambda: guessing_extra == "multiple",  "condition": lambda: bonus_settings.get("multiple", {}).get("show_in_menu", True), "tooltip": "Multiple-choice: guess the anime from 4 options."},
+        {"id": "bonus_year",     "icon": "📅", "label": "Year",              "button_label": "YEAR",       "shortcut": True, "command": lambda: guess_extra("year"),       "toggle": lambda: guessing_extra == "year",       "cycle_pos": ("cycle_guess_stats", 1), "condition": lambda: bonus_settings.get("year", {}).get("show_in_menu", True), "tooltip": "Guess the year this anime first aired."},
+        {"id": "bonus_score",    "icon": "🏆", "label": "Score",             "button_label": "SCORE",      "shortcut": True, "command": lambda: guess_extra("score"),      "toggle": lambda: guessing_extra == "score",      "cycle_pos": ("cycle_guess_stats", 2), "condition": lambda: bonus_settings.get("score", {}).get("show_in_menu", True), "tooltip": "Guess the MyAnimeList score (0.0–10.0)."},
+        {"id": "bonus_members",  "icon": "👥", "label": "Members",           "button_label": "MEMBERS",    "shortcut": True, "command": lambda: guess_extra("members"),    "toggle": lambda: guessing_extra == "members",    "cycle_pos": ("cycle_guess_stats", 4), "condition": lambda: bonus_settings.get("members", {}).get("show_in_menu", True), "tooltip": "Guess the number of MyAnimeList members."},
+        {"id": "bonus_rank",     "icon": "🥇", "label": "Popularity Rank",   "button_label": "RANK",       "shortcut": True, "command": lambda: guess_extra("popularity"), "toggle": lambda: guessing_extra == "popularity", "cycle_pos": ("cycle_guess_stats", 3), "condition": lambda: bonus_settings.get("popularity", {}).get("show_in_menu", True), "tooltip": "Guess the popularity rank on MyAnimeList."},
+        {"id": "bonus_tags",     "icon": "🔖", "label": "Tags",              "button_label": "TAGS",       "shortcut": True, "command": lambda: guess_extra("tags"),       "toggle": lambda: guessing_extra == "tags",       "condition": lambda: bonus_settings.get("tags", {}).get("show_in_menu", True), "tooltip": "Guess the genres/themes/demographics tags."},
+        {"id": "bonus_studio",   "icon": "🏢", "label": "Studio",            "button_label": "STUDIO",     "shortcut": True, "command": lambda: guess_extra("studio"),     "toggle": lambda: guessing_extra == "studio",     "cycle_pos": ("cycle_guess_other", 2), "condition": lambda: bonus_settings.get("studio", {}).get("show_in_menu", True), "tooltip": "Guess the studio that made this anime."},
+        {"id": "bonus_artist",   "icon": "🎤", "label": "Artist",            "button_label": "ARTIST",     "shortcut": True, "command": lambda: guess_extra("artist"),     "toggle": lambda: guessing_extra == "artist",     "cycle_pos": ("cycle_guess_other", 4), "condition": lambda: bonus_settings.get("artist", {}).get("show_in_menu", True), "tooltip": "Guess the artist who performed the theme."},
+        {"id": "bonus_song",     "icon": "🎵", "label": "Song Title",        "button_label": "SONG",       "shortcut": True, "command": lambda: guess_extra("song"),       "toggle": lambda: guessing_extra == "song",       "cycle_pos": ("cycle_guess_other", 3), "condition": lambda: bonus_settings.get("song", {}).get("show_in_menu", True), "tooltip": "Guess the name of the song."},
+        {"id": "bonus_chars",    "icon": "👤", "label": "Characters",        "button_label": "CHARACTERS", "shortcut": True, "command": lambda: guess_extra("characters"), "toggle": lambda: guessing_extra == "characters", "condition": lambda: bonus_settings.get("characters", {}).get("show_in_menu", True), "tooltip": "Identify 2 characters from this anime out of 6 shown."},
         "---",
         {"label": "Bonus Settings", "icon": "⚙️", "button_label": "BONUS SETTINGS", "command": open_bonus_settings_editor, "tooltip": "Configure points, lightning points, and random eligibility for each bonus type."},
     ],
@@ -38185,29 +38352,36 @@ def _get_menu_registry():
              {"type": "separator", "condition": lambda: not bool(peek_overlay1 or edge_overlay_box or grow_overlay_boxes or filter_vf_active)},
              {"id": "peek_blur",     "label": "Blur",     "icon": "🌫", "shortcut": True,
               "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'blur') else _activate_peek_variant('blur'),
-              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'blur')},
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'blur'),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("blur", True)},
              {"id": "peek_edge",     "label": "Edge",     "icon": "◼",  "shortcut": True,
               "command": lambda: toggle_peek() if edge_overlay_box else _activate_peek_variant('edge'),
-              "toggle": lambda: bool(edge_overlay_box)},
+              "toggle": lambda: bool(edge_overlay_box),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("edge", True)},
              {"id": "peek_grow",     "label": "Grow",     "icon": "⬛", "shortcut": True,
               "command": lambda: toggle_peek() if grow_overlay_boxes else _activate_peek_variant('grow'),
-              "toggle": lambda: bool(grow_overlay_boxes)},
+              "toggle": lambda: bool(grow_overlay_boxes),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("grow", True)},
              {"id": "peek_outline",   "label": "Outline",   "icon": "✏️",  "shortcut": True,
               "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'outline') else _activate_peek_variant('outline'),
-              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'outline')},
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'outline'),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("outline", True)},
              {"id": "peek_pixelize", "label": "Pixelize", "icon": "🟦", "shortcut": True,
               "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'pixelize') else _activate_peek_variant('pixelize'),
-              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'pixelize')},
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'pixelize'),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("pixelize", True)},
              {"id": "peek_slice",    "label": "Slice",    "icon": "◧",  "shortcut": True,
               "command": lambda: toggle_peek() if peek_overlay1 else _activate_peek_variant('slice'),
-              "toggle": lambda: bool(peek_overlay1)},
+              "toggle": lambda: bool(peek_overlay1),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("slice", True)},
              {"id": "peek_wave",     "label": "Wave",     "icon": "🌊", "shortcut": True,
               "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'wave') else _activate_peek_variant('wave'),
               "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'wave'),
-              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("variants",{}).get("wave", True)},
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("wave", True)},
              {"id": "peek_zoom",     "label": "Zoom",     "icon": "🔍", "shortcut": True,
               "command": lambda: toggle_peek() if (filter_vf_active and _filter_vf_variant == 'zoom') else _activate_peek_variant('zoom'),
-              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'zoom')},
+              "toggle": lambda: bool(filter_vf_active and _filter_vf_variant == 'zoom'),
+              "condition": lambda: lightning_mode_settings.get("reveal",{}).get("show_in_menu",{}).get("zoom", True)},
          ],
          "tooltip": "When off: opens a submenu to pick a variant (or random). When on: turns off."},
         {"id": "narrow_peek", "icon": "◀", "label": "Reveal Less",
@@ -39730,6 +39904,27 @@ def _evaluate_and_submit_bonus_answers():
     answers  = _pending_bonus_answers[:]
     correct  = _bonus_correct_answer
     q_type   = guessing_extra          # still set at this point (cleared after we return)
+
+    # Compute scores first so we can derive score_hints without duplicating logic.
+    scores = _score_bonus_answers(answers, q_type, correct) if (answers and correct is not None) else {}
+
+    # Derive score_hints for numeric types from the already-computed scores:
+    # Compare each score to pts_exact for this type — exact tier = green, close = yellow, 0 = red.
+    score_hints: dict = {}
+    if q_type in ("year", "score", "members", "popularity") and scores:
+        _s   = bonus_settings.get(q_type, {})
+        _def = BONUS_SETTINGS_DEFAULT[q_type]
+        _is_light = light_round_started
+        _pts_exact = float(_s.get("lightning_points_exact" if _is_light else "points_exact",
+                                  _def["lightning_points_exact" if _is_light else "points_exact"]))
+        for name, pts in scores.items():
+            if pts == 0.0:
+                score_hints[name] = "none"
+            elif pts >= _pts_exact:
+                score_hints[name] = "exact"
+            else:
+                score_hints[name] = "close"
+
     if correct is not None and q_type:
         if isinstance(correct, list):
             correct_display = ", ".join(str(t) for t in correct)
@@ -39739,13 +39934,11 @@ def _evaluate_and_submit_bonus_answers():
             correct_display,
             q_type=q_type,
             correct_tags=list(correct) if isinstance(correct, (list, set)) else None,
+            score_hints=score_hints or None,
+            player_scores=scores or None,
         )
     _pending_bonus_answers = []
     _bonus_correct_answer  = None
-
-    # Pre-compute scores (empty dict if not scoreable)
-    can_score = bool(answers and correct is not None and web_server.is_running())
-    scores = _score_bonus_answers(answers, q_type, correct) if (answers and correct is not None) else {}
 
     # Log to session whenever answers were submitted
     if answers and q_type:
@@ -39765,7 +39958,7 @@ def _evaluate_and_submit_bonus_answers():
         })
         save_session_history(create_text_file=False)
 
-    if not can_score:
+    if not (answers and correct is not None and web_server.is_running()):
         return
 
     for name, pts in scores.items():
@@ -39854,7 +40047,19 @@ def _refresh_bonus_answer_list():
 
 _scoreboard_colors_mtime = 0.0
 _scoreboard_scores_mtime = 0.0
+_scoreboard_teams_mtime = 0.0
 _last_pushed_scores_snapshot: dict = {}
+
+def _push_web_teams():
+    """Read team names from shared file and push to web clients."""
+    try:
+        path = os.path.join('scoreboard_data', 'scoreboard_teams.json')
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                names = json.load(f)
+            web_server.push_teams(names)
+    except Exception as e:
+        print(f"Error pushing teams: {e}")
 
 def _push_web_scores():
     """Read current scores from shared file and push to web host clients."""
@@ -39885,49 +40090,48 @@ def _push_web_scores():
                             added.remove(new)
                     # Apply renames to web server internals so connected/ghost players follow scoreboard
                     if pairs:
-                        import web_server as _ws
                         for old_name, new_name in pairs:
                             # Migrate connected players (skip hosts)
                             changed = False
                             renamed_sids = []
-                            for sid, pname in list(_ws._connected_players.items()):
-                                if sid in _ws._host_sids:
+                            for sid, pname in list(web_server._connected_players.items()):
+                                if sid in web_server._host_sids:
                                     continue
                                 if pname == old_name:
-                                    _ws._connected_players[sid] = new_name
+                                    web_server._connected_players[sid] = new_name
                                     changed = True
                                     renamed_sids.append(sid)
                             # Also allow renaming of ghost/shadow players entries
-                            if old_name in _ws._shadow_kicked_players and new_name not in _ws._shadow_kicked_players:
-                                _ws._shadow_kicked_players[new_name] = _ws._shadow_kicked_players.pop(old_name)
+                            if old_name in web_server._shadow_kicked_players and new_name not in web_server._shadow_kicked_players:
+                                web_server._shadow_kicked_players[new_name] = web_server._shadow_kicked_players.pop(old_name)
                             # Migrate pending selection
-                            if old_name in _ws._pending_selections:
-                                old_pending = _ws._pending_selections.pop(old_name)
-                                if new_name not in _ws._pending_selections:
-                                    _ws._pending_selections[new_name] = old_pending
+                            if old_name in web_server._pending_selections:
+                                old_pending = web_server._pending_selections.pop(old_name)
+                                if new_name not in web_server._pending_selections:
+                                    web_server._pending_selections[new_name] = old_pending
                             # Migrate submitted answers
-                            for a in _ws._submitted_answers:
+                            for a in web_server._submitted_answers:
                                 if a.get('name') == old_name:
                                     a['name'] = new_name
                             # Migrate player colors
-                            if old_name in _ws._player_colors and new_name not in _ws._player_colors:
-                                _ws._player_colors[new_name] = _ws._player_colors.pop(old_name)
+                            if old_name in web_server._player_colors and new_name not in web_server._player_colors:
+                                web_server._player_colors[new_name] = web_server._player_colors.pop(old_name)
                                 try:
-                                    clr = _ws._player_colors.get(new_name) or {}
-                                    _ws._write_color_command(new_name, str(clr.get('bg', '') or ''), str(clr.get('text', '') or ''))
+                                    clr = web_server._player_colors.get(new_name) or {}
+                                    web_server._write_color_command(new_name, str(clr.get('bg', '') or ''), str(clr.get('text', '') or ''))
                                 except Exception:
                                     pass
                             if changed:
-                                _ws._broadcast_players_update()
-                                _ws._emit_peer_answers_update()
+                                web_server._broadcast_players_update()
+                                web_server._emit_peer_answers_update()
                                 for sid in renamed_sids:
                                     try:
-                                        _ws._socketio.emit('name_forced', {'name': new_name}, to=sid)
+                                        web_server._socketio.emit('name_forced', {'name': new_name}, to=sid)
                                     except Exception:
                                         pass
-                                for sid in list(_ws._host_sids):
+                                for sid in list(web_server._host_sids):
                                     try:
-                                        _ws._socketio.emit('answer_update', {'answers': list(_ws._submitted_answers)}, to=sid)
+                                        web_server._socketio.emit('answer_update', {'answers': list(web_server._submitted_answers)}, to=sid)
                                     except Exception:
                                         pass
             except Exception:
@@ -39995,6 +40199,16 @@ def _poll_web_answers():
             if mtime != _scoreboard_scores_mtime:
                 _scoreboard_scores_mtime = mtime
                 _push_web_scores()
+    except Exception:
+        pass
+    # Broadcast updated team names when scoreboard_teams.json changes
+    try:
+        _sc_teams_path = os.path.join('scoreboard_data', 'scoreboard_teams.json')
+        if os.path.exists(_sc_teams_path):
+            mtime = os.path.getmtime(_sc_teams_path)
+            if mtime != _scoreboard_teams_mtime:
+                _scoreboard_teams_mtime = mtime
+                _push_web_teams()
     except Exception:
         pass
     root.after(1000, _poll_web_answers)
@@ -40323,12 +40537,44 @@ def _handle_host_action(action: str, data: dict):
             if idx is not None:
                 queue_fixed_lightning_round(int(idx))
                 up_next_text()
+        elif action == 'queue_fixed_lightning_randomized':
+            idx = data.get('index')
+            if idx is not None:
+                idx = int(idx)
+                if 0 <= idx < len(fixed_lightning_rounds_list):
+                    ri = copy.deepcopy(fixed_lightning_rounds_list[idx])
+                    random.shuffle(ri.get("rounds", []))
+                    _fl_set_queue_and_notify(ri)
+                    queue_next_lightning_mode()
+                    show_fixed_lightning_list(update=True)
+                    up_next_text()
+        elif action == 'play_fixed_lightning_now':
+            idx = data.get('index')
+            if idx is not None:
+                idx = int(idx)
+                if 0 <= idx < len(fixed_lightning_rounds_list):
+                    ri = copy.deepcopy(fixed_lightning_rounds_list[idx])
+                    _fl_set_queue_and_notify(ri)
+                    show_fixed_lightning_list(update=True)
+                    up_next_text()
+                    root.after(0, play_video)
+        elif action == 'play_fixed_lightning_now_randomized':
+            idx = data.get('index')
+            if idx is not None:
+                idx = int(idx)
+                if 0 <= idx < len(fixed_lightning_rounds_list):
+                    ri = copy.deepcopy(fixed_lightning_rounds_list[idx])
+                    random.shuffle(ri.get("rounds", []))
+                    _fl_set_queue_and_notify(ri)
+                    show_fixed_lightning_list(update=True)
+                    up_next_text()
+                    root.after(0, play_video)
         elif action == 'get_rules_list':
             files = get_available_rules_files()
             web_server.push_rules_list(files, selected_rules_file)
         elif action == 'select_rules_file':
             new_file = str(data.get('file', '')).strip()
-            if new_file and new_file in get_available_rules_files():
+            if new_file in get_available_rules_files():
                 selected_rules_file = new_file
                 scoreboard_rules = load_rules(selected_rules_file)
                 save_config()
@@ -40336,10 +40582,11 @@ def _handle_host_action(action: str, data: dict):
                 _push_web_toggles()
         elif action == 'get_playlist_list':
             names = list(get_playlists_dict(exclude_system=True).values())
-            web_server.push_playlist_list(names, playlist.get('name'), changed=_playlist_has_unsaved_changes())
+            system_names = list(get_playlists_dict(system_only=True).values())
+            web_server.push_playlist_list(names, system_names, playlist.get('name'), changed=_playlist_has_unsaved_changes())
         elif action == 'select_playlist':
             target = str(data.get('name', '')).strip()
-            all_pl = get_playlists_dict(exclude_system=True)
+            all_pl = get_playlists_dict()
             if target and target in all_pl.values():
                 filename = os.path.join(PLAYLISTS_FOLDER, f"{target}.json")
                 if os.path.exists(filename):
@@ -41137,18 +41384,17 @@ _buzz_toast_wins = []   # list of dicts: {win, base_y, cx, h}
 def _show_buzz_toast(rank, name):
     """Show a rising, fading toast on-screen when a player buzzes in. Multiple stack upward smoothly."""
     try:
-        import web_server as _ws_mod
         # Mirror push_player_colors: file is authoritative, in-memory overrides
         merged_colors = {}
         try:
             import json as _json
-            _sc_path = os.path.join(_ws_mod._SCOREBOARD_DATA, 'scoreboard_colors.json')
+            _sc_path = os.path.join(web_server._SCOREBOARD_DATA, 'scoreboard_colors.json')
             if os.path.exists(_sc_path):
                 with open(_sc_path, 'r', encoding='utf-8') as _f:
                     merged_colors.update(_json.load(_f))
         except Exception:
             pass
-        merged_colors.update(_ws_mod._player_colors)
+        merged_colors.update(web_server._player_colors)
         clr = merged_colors.get(name) or {}
         bg       = clr.get('bg',   OVERLAY_BACKGROUND_COLOR)
         fg       = clr.get('text', OVERLAY_TEXT_COLOR)
@@ -41509,7 +41755,7 @@ root.after(1000, create_new_session)
 
 # Start updating the seek bar
 root.after(1000, update_seek_bar)
-root.after(1000, check_video_end)
+# root.after(1000, check_video_end)  # replaced by mpv end-file event callback (_on_end_file)
 # Set initial volume
 root.after(1000, set_volume, volume_level)
 root.after(1000, cleanup_old_update_exes)

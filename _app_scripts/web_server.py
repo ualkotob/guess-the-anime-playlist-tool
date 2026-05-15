@@ -156,6 +156,33 @@ _pending_selections: dict = {}  # name → answer; silently tracks current selec
 _skip_grant_player: str = ''  # name of the player currently granted a skip (empty = none)
 
 public_url = None          # Readable from main app after start()
+_server_port = 8080        # Port the server is listening on; set in start()
+
+
+def get_url():
+    """Return the best available URL for this server.
+
+    Priority:
+    1. public_url — set when ngrok or a Cloudflare tunnel is active.
+    2. Local LAN URL — http://<machine-ip>:<port> when only running locally.
+    3. Empty string — if the server has not been started.
+    """
+    if public_url:
+        return public_url
+    if not _server_started:
+        return ""
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0)
+        try:
+            s.connect(("8.8.8.8", 80))  # doesn't send data; just determines the outgoing interface
+            ip = s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        ip = "localhost"
+    return f"http://{ip}:{_server_port}"
 
 
 def _get_emoji_status(name: str) -> dict:
@@ -461,10 +488,19 @@ _HTML = r"""<!DOCTYPE html>
       padding: 14px 18px; text-align: left; font-size: 0.88em; line-height: 1.6;
     }
     #prev-question-label {
-      text-align: center; font-size: 0.82em; font-weight: bold;
+      display: flex; align-items: center; justify-content: center;
+      position: relative;
+      font-size: 0.82em; font-weight: bold;
       color: #445; letter-spacing: 0.07em; margin-bottom: 10px;
       border-bottom: 1px solid #223; padding-bottom: 6px;
     }
+    #prev-question-dismiss {
+      position: absolute; right: -4px; top: -2px;
+      background: #3a1a1a; border: 1px solid #6a2a2a; color: #b06060;
+      font-size: 0.75em; font-weight: bold; letter-spacing: 0.05em;
+      cursor: pointer; line-height: 1; padding: 2px 8px; border-radius: 4px;
+    }
+    #prev-question-dismiss:hover { background: #4a2020; border-color: #8a3535; color: #cc8080; }
     #prev-question-title { color: #888; margin-bottom: 8px; }
     #prev-question-correct { color: #556; margin-bottom: 4px; }
     #prev-question-mine { color: #aaa; }
@@ -1457,6 +1493,17 @@ _HTML = r"""<!DOCTYPE html>
       gap: 2px;
       scrollbar-width: thin; scrollbar-color: #334 transparent;
     }
+    .ctrl-playlist-tabs {
+      display: flex; gap: 4px; margin-bottom: 4px; flex-shrink: 0;
+    }
+    .ctrl-playlist-tab {
+      flex: 1; padding: 5px 8px; border-radius: 6px; cursor: pointer;
+      font-size: 0.78em; font-weight: 600; text-align: center;
+      border: 1px solid #334; color: #778; background: #0d0d1a;
+      text-transform: uppercase; letter-spacing: .05em; transition: all .15s;
+    }
+    .ctrl-playlist-tab:hover { color: #aab; background: #12121f; }
+    .ctrl-playlist-tab.active { background: #1a1a30; border-color: #557; color: #aac; }
     .ctrl-popup-item {
       padding: 8px 10px; cursor: pointer; border-radius: 6px;
       color: #ccd; font-size: 0.88em; line-height: 1.4;
@@ -2405,6 +2452,13 @@ _HTML = r"""<!DOCTYPE html>
       padding: 14px;
     }
     #theme-action-overlay.active { display: flex; }
+    #fl-action-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 862;
+      align-items: center; justify-content: center;
+      padding: 14px;
+    }
+    #fl-action-overlay.active { display: flex; }
     #pl-entry-overlay {
       display: none; position: fixed; inset: 0;
       background: rgba(0,0,0,0.75); z-index: 861;
@@ -2810,7 +2864,7 @@ _HTML = r"""<!DOCTYPE html>
       <div id="waiting-msg">&#9203; Waiting for next question&hellip;</div>
       <div id="waiting-rules" style="display:none"><div id="waiting-rules-inner"><div id="waiting-rules-header"></div><div id="waiting-rules-body"></div></div></div>
       <div id="prev-question" style="display:none">
-        <div id="prev-question-label">PREVIOUS QUESTION</div>
+        <div id="prev-question-label">PREVIOUS QUESTION<button id="prev-question-dismiss" onclick="_dismissPrevQuestion()">CLOSE</button></div>
         <div id="prev-question-title"></div>
         <div id="prev-question-body"></div>
       </div>
@@ -3053,6 +3107,17 @@ _HTML = r"""<!DOCTYPE html>
       <button class="theme-action-btn play" onclick="_plEntryRun('play')">&#9654; Play now</button>
       <button class="theme-action-btn" style="border-color:#a33;color:#f99" onclick="_plEntryRun('delete')">&#x1F5D1; Delete</button>
       <button id="theme-action-cancel" onclick="_closePlEntryPopup()">Cancel</button>
+    </div>
+  </div>
+
+  <div id="fl-action-overlay" onclick="if(event.target===this)_closeFlActionPrompt()">
+    <div id="theme-action-box">
+      <div id="fl-action-title">Fixed Lightning Round</div>
+      <button class="theme-action-btn play" onclick="_flActionRun('play_fixed_lightning_now')">&#9654; Play now</button>
+      <button class="theme-action-btn play" onclick="_flActionRun('play_fixed_lightning_now_randomized')">&#9654; Play now (randomized)</button>
+      <button class="theme-action-btn queue" onclick="_flActionRun('queue_fixed_lightning')">&#9203; Queue next</button>
+      <button class="theme-action-btn queue" onclick="_flActionRun('queue_fixed_lightning_randomized')">&#9203; Queue next (randomized)</button>
+      <button id="theme-action-cancel" onclick="_closeFlActionPrompt()">Cancel</button>
     </div>
   </div>
 
@@ -3436,6 +3501,8 @@ _HTML = r"""<!DOCTYPE html>
     let _prevQCorrectTags = [];      // correct tag list for 'tags' type questions
     let _prevQData = null;           // question_data payload from answer_reveal (choices/tags/rank_slider)
     let _prevQAllAnswers = [];       // all submitted answers from answer_reveal (for rank peer marks)
+    let _prevQScoreHints = {};       // {playerName: 'exact'|'close'|'none'} for numeric types
+    let _prevQPlayerScores = {};     // {playerName: pts} — actual points earned
     let _answersRevealed = false;    // whether answers have been revealed for the previous question
     let _toggleBtnRef = null;     // reference to active toggle button (year/score)
     let _isHost = false;
@@ -4759,7 +4826,9 @@ _HTML = r"""<!DOCTYPE html>
       _prevQType         = data.q_type        || '';
       _prevQCorrectTags  = data.correct_tags  || [];
       _prevQData         = data.question_data || null;
-      _prevQAllAnswers   = data.all_answers   || [];
+      _prevQAllAnswers   = data.all_answers    || [];
+      _prevQScoreHints   = data.score_hints    || {};
+      _prevQPlayerScores = data.player_scores  || {};
       _answersRevealed = true;
       // When answers are revealed, remove the ability to remove answers
       // from the host view (the 'x' button no longer does anything).
@@ -4874,6 +4943,28 @@ _HTML = r"""<!DOCTYPE html>
     });
 
     /* ── Previous question display ── */
+    function _pqPointsBadge(body) {
+      // Append a points badge if we have score data for the current player.
+      const myPts = (playerName && playerName in _prevQPlayerScores) ? _prevQPlayerScores[playerName] : null;
+      if (myPts === null) return;
+      const hint = _prevQScoreHints[playerName] || null;
+      const badgeColor = hint === 'exact' ? '#5c5' : hint === 'close' ? '#ffe500' : '#f66';
+      const ptsAbs = Math.abs(myPts);
+      const ptsLabel = ptsAbs === 1 ? '1 PT' : ptsAbs + ' PTs';
+      const ptsStr = myPts > 0 ? '+' + ptsLabel : myPts === 0 ? '0 PTs' : '\u2212' + ptsLabel;
+      const badge = document.createElement('div');
+      badge.style.cssText = 'font-size:0.8em; font-weight:bold; letter-spacing:0.05em;'
+        + 'text-align:center; margin-top:8px;'
+        + 'color:' + (myPts > 0 ? badgeColor : '#666') + ';';
+      badge.textContent = ptsStr;
+      body.appendChild(badge);
+    }
+
+    function _dismissPrevQuestion() {
+      const box = document.getElementById('prev-question');
+      if (box) box.style.display = 'none';
+    }
+
     function _showPrevQuestion() {
       const box = document.getElementById('prev-question');
       if (!_prevQCorrect) { box.style.display = 'none'; return; }
@@ -4906,6 +4997,7 @@ _HTML = r"""<!DOCTYPE html>
           }
           body.appendChild(btn);
         });
+        _pqPointsBadge(body);
 
       } else if (qd.tags && qd.tags.length) {
         /* ── Tags: reuse tag-chip with pq-tag-correct / pq-tag-wrong colouring ── */
@@ -4941,6 +5033,7 @@ _HTML = r"""<!DOCTYPE html>
           noAns.textContent = 'Your answer: No answer submitted';
           body.appendChild(noAns);
         }
+        _pqPointsBadge(body);
 
       } else if (qd.character_choices && qd.character_choices.length) {
         /* ── Character image grid: colour-code correct / wrong / missed ── */
@@ -4970,6 +5063,7 @@ _HTML = r"""<!DOCTYPE html>
           grid.appendChild(card);
         });
         body.appendChild(grid);
+        _pqPointsBadge(body);
 
       } else if (qd.rank_slider) {
         /* ── Rank slider: read-only track reusing rank-* CSS, with correct + mine + peer marks ── */
@@ -5041,6 +5135,7 @@ _HTML = r"""<!DOCTYPE html>
         wrap.appendChild(track);
         row.appendChild(lbl1); row.appendChild(wrap); row.appendChild(lbl2);
         body.appendChild(row);
+        _pqPointsBadge(body);
 
       } else {
         /* ── Numeric / free text: prominent answer display ── */
@@ -5055,25 +5150,47 @@ _HTML = r"""<!DOCTYPE html>
           + 'border-radius:8px; margin-bottom:12px; text-align:center;';
         correctVal.textContent = _prevQCorrect.replace(/,/g, ', ');
         body.appendChild(correctVal);
-        const isCorrect = myAnswer && myAnswer.trim().toLowerCase() === _prevQCorrect.trim().toLowerCase();
+        // Determine colour tier from score_hints (for numeric types: year/score/members/popularity).
+        // 'exact' → green (full points / within threshold)
+        // 'close' → yellow (closest guess bonus)
+        // 'none'  → red (not closest)
+        // Fallback: plain text comparison (free text, studio, artist, etc.)
+        const hint = myAnswer ? (_prevQScoreHints[playerName] || null) : null;
+        let answerColor, answerBg, answerBorder, labelColor;
+        if (!myAnswer) {
+          labelColor = '#666'; answerColor = null; answerBg = null; answerBorder = null;
+        } else if (hint === 'exact') {
+          labelColor = '#5c5'; answerColor = '#5c5'; answerBg = '#1a3a1a'; answerBorder = '#2a6a2a';
+        } else if (hint === 'close') {
+          labelColor = '#ffe500'; answerColor = '#4a3d00'; answerBg = '#ccb800'; answerBorder = '#ffe500';
+        } else if (hint === 'none') {
+          labelColor = '#f66'; answerColor = '#f66'; answerBg = '#3a1a1a'; answerBorder = '#6a2a2a';
+        } else {
+          // No hint — fall back to exact text match (free text / non-numeric types)
+          const isCorrect = myAnswer.trim().toLowerCase() === _prevQCorrect.trim().toLowerCase();
+          labelColor = isCorrect ? '#5c5' : '#f66';
+          answerColor = isCorrect ? '#5c5' : '#f66';
+          answerBg    = isCorrect ? '#1a3a1a' : '#3a1a1a';
+          answerBorder = isCorrect ? '#2a6a2a' : '#6a2a2a';
+        }
         const mineLbl = document.createElement('div');
         mineLbl.style.cssText = 'font-size:0.72em; font-weight:bold; letter-spacing:0.07em;'
-          + 'color:' + (myAnswer ? (isCorrect ? '#5c5' : '#f66') : '#666') + '; margin-bottom:4px; text-transform:uppercase;';
-        mineLbl.textContent = 'Your Answer';
+          + 'color:' + labelColor + '; margin-bottom:4px; text-transform:uppercase;';
+        mineLbl.textContent = hint === 'close' ? 'Your Answer  ★ Closest' : 'Your Answer';
         body.appendChild(mineLbl);
         const mineVal = document.createElement('div');
         if (myAnswer) {
           mineVal.style.cssText = 'font-size:1.2em; font-weight:bold;'
             + 'padding:8px 14px; border-radius:8px; text-align:center;'
-            + (isCorrect
-              ? 'color:#5c5; background:#1a3a1a; border:1px solid #2a6a2a;'
-              : 'color:#f66; background:#3a1a1a; border:1px solid #6a2a2a;');
+            + 'color:' + answerColor + '; background:' + answerBg + '; border:1px solid ' + answerBorder + ';';
           mineVal.textContent = myAnswer.replace(/,/g, ', ');
+          body.appendChild(mineVal);
+          _pqPointsBadge(body);
         } else {
           mineVal.style.cssText = 'font-size:0.95em; color:#555; font-style:italic;';
           mineVal.textContent = 'No answer submitted';
+          body.appendChild(mineVal);
         }
-        body.appendChild(mineVal);
       }
 
       box.style.display = 'block';
@@ -6180,6 +6297,8 @@ _HTML = r"""<!DOCTYPE html>
           panel.appendChild(sep);
           return;
         }
+        // Hide variant if show_in_menu is explicitly false (Random always shown)
+        if (v.variant && _ctrlPeekVariantMenuVisibility[v.variant] === false) return;
         const row = document.createElement('div');
         row.className = 'ctrl-peek-var-item' + (v.variant === active ? ' ctrl-peek-var-active' : '');
         row.setAttribute('data-pv-variant', v.variant);
@@ -6187,9 +6306,10 @@ _HTML = r"""<!DOCTYPE html>
         row.innerHTML = '<span>' + v.icon + '</span><span>' + v.label + '</span>';
         row.addEventListener('click', () => {
           if (isTgl) {
-            // Live toggle: just set the variant then invoke peek directly
-            socket.emit('host_action', {action:'set_peek_variant', variant:v.variant});
-            socket.emit('host_action', {action:'invoke', id:'peek'});
+            // Live toggle: invoke the specific variant id so switching works correctly
+            // (peek_{variant} commands turn off if already active, or switch if a different one is)
+            const variantId = v.variant ? ('peek_' + v.variant) : 'peek_random';
+            socket.emit('host_action', {action:'invoke', id:variantId});
           } else {
             socket.emit('host_action', {action:'queue_peek_variant', variant:v.variant, mute:mute});
           }
@@ -7659,10 +7779,7 @@ _HTML = r"""<!DOCTYPE html>
         el.className = 'ctrl-popup-item' + (r.name === _ctrlFlCurrentName ? ' ctrl-yt-active' : '');
         el.title = r.description || '';
         el.innerHTML = '<span class="ctrl-popup-item-dur">[' + r.duration + ']</span><span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(r.name) + '</span>';
-        el.onclick = () => {
-          socket.emit('host_action', {action: 'queue_fixed_lightning', index: r.index});
-          _ctrlListPopupClose();
-        };
+        el.onclick = () => _openFlActionPrompt(r.index, r.name);
         list.appendChild(el);
       });
     });
@@ -8179,6 +8296,7 @@ _HTML = r"""<!DOCTYPE html>
       _ctrlCloseAllLists();
       if (opening) {
         _ctrlPlaylistListOpen = true;
+        _ctrlPlaylistTab = 'regular';
         _ctrlListPopupOpen('Load Playlist', 'load_playlist');
         const list = document.getElementById('ctrl-list-popup-list');
         if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading\u2026</div>';
@@ -8186,15 +8304,38 @@ _HTML = r"""<!DOCTYPE html>
       }
     }
 
-    function _ctrlRenderPlaylistList(names, current) {
+    let _ctrlPlaylistTab = 'regular'; // 'regular' | 'system'
+    let _ctrlPlaylistData = {names: [], system_names: [], current: null};
+
+    function _ctrlRenderPlaylistList(names, system_names, current) {
       const list = document.getElementById('ctrl-list-popup-list');
       if (!list) return;
       list.innerHTML = '';
-      if (!names || !names.length) {
-        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">No saved playlists found</div>';
+
+      // Tab bar
+      const tabs = document.createElement('div');
+      tabs.className = 'ctrl-playlist-tabs';
+      ['regular', 'system'].forEach(tab => {
+        const btn = document.createElement('div');
+        btn.className = 'ctrl-playlist-tab' + (_ctrlPlaylistTab === tab ? ' active' : '');
+        btn.textContent = tab === 'regular' ? 'User Playlists' : 'System Playlists';
+        btn.onclick = () => {
+          _ctrlPlaylistTab = tab;
+          _ctrlRenderPlaylistList(_ctrlPlaylistData.names, _ctrlPlaylistData.system_names, _ctrlPlaylistData.current);
+        };
+        tabs.appendChild(btn);
+      });
+      list.appendChild(tabs);
+
+      const activeNames = _ctrlPlaylistTab === 'system' ? system_names : names;
+      if (!activeNames || !activeNames.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:8px;color:#556;font-size:0.85em';
+        empty.textContent = _ctrlPlaylistTab === 'system' ? 'No system playlists found' : 'No saved playlists found';
+        list.appendChild(empty);
         return;
       }
-      names.forEach(name => {
+      activeNames.forEach(name => {
         const el = document.createElement('div');
         el.className = 'ctrl-popup-item';
         const isCurrent = name === current;
@@ -8228,7 +8369,8 @@ _HTML = r"""<!DOCTYPE html>
     socket.on('playlist_list', data => {
       if (!_ctrlPlaylistListOpen) return;
       _ctrlPlaylistHasUnsaved = data.changed || false;
-      _ctrlRenderPlaylistList(data.names || [], data.current || null);
+      _ctrlPlaylistData = {names: data.names || [], system_names: data.system_names || [], current: data.current || null};
+      _ctrlRenderPlaylistList(_ctrlPlaylistData.names, _ctrlPlaylistData.system_names, _ctrlPlaylistData.current);
     });
     // ── End playlist list ──────────────────────────────────────────────────
 
@@ -8306,6 +8448,9 @@ _HTML = r"""<!DOCTYPE html>
       });
     }
 
+    let _ctrlBonusMenuVisibility = {};
+    let _ctrlPeekVariantMenuVisibility = {};
+
     const _ctrlAutoBonusOptions = [
       {label: 'Random',          value: 'random'},
       {divider: true},
@@ -8356,6 +8501,7 @@ _HTML = r"""<!DOCTYPE html>
           list.appendChild(div);
           return;
         }
+        if (opt.value && opt.value !== 'random' && _ctrlBonusMenuVisibility[opt.value] === false) return;
         const el = document.createElement('div');
         el.className = 'ctrl-popup-item' + (opt.value === _ctrlAutoBonusCurrent ? ' ctrl-yt-active' : '');
         el.textContent = opt.label;
@@ -8485,6 +8631,34 @@ _HTML = r"""<!DOCTYPE html>
           el.classList.toggle('ctrl-toggle-active', _ctrlAutoBonusCurrent != null));
         document.querySelectorAll('[data-extra-id="auto_bonus"]').forEach(el =>
           el.classList.toggle('ctrl-toggle-active', _ctrlAutoBonusCurrent != null));
+      }
+      if (data.bonus_menu_visibility && typeof data.bonus_menu_visibility === 'object') {
+        _ctrlBonusMenuVisibility = data.bonus_menu_visibility;
+        const _visMap = {
+          'freeform':   'b_free',
+          'buzzer':     'bonus_buzzer',
+          'multiple':   'b_multiple',
+          'year':       'b_year',
+          'score':      'b_score',
+          'members':    'b_members',
+          'popularity': 'b_rank',
+          'tags':       'b_tags',
+          'studio':     'bonus_studio',
+          'artist':     'bonus_artist',
+          'song':       'bonus_song',
+          'characters': 'bonus_chars',
+        };
+        for (const [bonusKey, extraId] of Object.entries(_visMap)) {
+          const visible = _ctrlBonusMenuVisibility[bonusKey] !== false;
+          document.querySelectorAll(`[data-extra-id="${extraId}"],[data-proxy-extra="${extraId}"]`).forEach(el => {
+            el.style.display = visible ? '' : 'none';
+          });
+        }
+        if (_ctrlAutoBonusListOpen) _ctrlRenderAutoBonusList();
+      }
+      if (data.reveal_variant_menu_visibility && typeof data.reveal_variant_menu_visibility === 'object') {
+        _ctrlPeekVariantMenuVisibility = data.reveal_variant_menu_visibility;
+        if (_ctrlPeekVarOpen) _ctrlBuildPeekVarPanel(_ctrlPeekVarOpen);
       }
       if ('selected_rules_file' in data) {
         _ctrlRulesCurrentFile = data.selected_rules_file || null;
@@ -9898,6 +10072,27 @@ _HTML = r"""<!DOCTYPE html>
       if (overlay) overlay.classList.remove('active');
     }
 
+    let _flActionIndex = null;
+    function _openFlActionPrompt(index, name) {
+      if (!_isHost) return;
+      _flActionIndex = index;
+      const title = document.getElementById('fl-action-title');
+      if (title) title.textContent = name || 'Fixed Lightning Round';
+      const overlay = document.getElementById('fl-action-overlay');
+      if (overlay) overlay.classList.add('active');
+    }
+    function _closeFlActionPrompt() {
+      _flActionIndex = null;
+      const overlay = document.getElementById('fl-action-overlay');
+      if (overlay) overlay.classList.remove('active');
+    }
+    function _flActionRun(action) {
+      if (!_isHost || _flActionIndex === null) return;
+      socket.emit('host_action', {action: action, index: _flActionIndex});
+      _closeFlActionPrompt();
+      _ctrlListPopupClose();
+    }
+
     function _themeActionRun(mode) {
       if (!_isHost || !_themeActionTarget || !_themeActionTarget.filename) return;
       const fn = _themeActionTarget.filename;
@@ -10389,8 +10584,13 @@ def remove_answer_by_name(name: str):
         _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
 
 
-def reveal_answer(correct_display: str, q_type: str = '', correct_tags: list = None):
-    """Broadcast the correct answer for the just-completed question to all clients."""
+def reveal_answer(correct_display: str, q_type: str = '', correct_tags: list = None,
+                  score_hints: dict = None, player_scores: dict = None):
+    """Broadcast the correct answer for the just-completed question to all clients.
+
+    score_hints:   optional {player_name: 'exact'|'close'|'none'} for colour-coding.
+    player_scores: optional {player_name: float} — points each player earned.
+    """
     if not FLASK_AVAILABLE or _socketio is None:
         return
     q = _current_question or {}
@@ -10415,6 +10615,8 @@ def reveal_answer(correct_display: str, q_type: str = '', correct_tags: list = N
         'correct_tags': correct_tags or [],
         'question_data': question_data,
         'all_answers': list(_submitted_answers),
+        'score_hints': score_hints or {},
+        'player_scores': player_scores or {},
     })
 
 
@@ -10625,10 +10827,10 @@ def push_rules_list(files: list, selected_file: str = None):
             _socketio.emit('rules_list', payload, to=sid)
 
 
-def push_playlist_list(names: list, current: str = None, changed: bool = False):
+def push_playlist_list(names: list, system_names: list = None, current: str = None, changed: bool = False):
     """Push available saved playlist names to all host clients."""
     if FLASK_AVAILABLE and _socketio and _host_sids:
-        payload = {'names': names, 'current': current, 'changed': changed}
+        payload = {'names': names, 'system_names': system_names or [], 'current': current, 'changed': changed}
         for sid in list(_host_sids):
             _socketio.emit('playlist_list', payload, to=sid)
 
@@ -10773,7 +10975,8 @@ def start(port=8080, ngrok_domain=None, cloudflare_token=None, cloudflare_url=No
     instance to avoid the "address already in use" crash that would cause all
     server-to-client emits to silently fail.
     """
-    global _server_started, _server_thread
+    global _server_started, _server_thread, _server_port
+    _server_port = port
     if not FLASK_AVAILABLE:
         return False
     # Only build and launch the server thread if it isn't already alive.
