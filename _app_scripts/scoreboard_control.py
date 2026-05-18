@@ -46,8 +46,6 @@ _RELEASES_PAGE = f"https://github.com/{_GITHUB_REPO}/releases"
 visible_hint      = None   # None = unknown, True = visible, False = hidden
 _colors_sent      = False
 _align_sent       = False
-version_seen      = ""     # latest release tag the user has been notified about
-_update_available = None   # None = unchecked, True = update found, False = current
 
 # ── Dependency callbacks (set by main app) ────────────────────────────────────
 
@@ -323,10 +321,8 @@ def download_scoreboard(root, highlight_color, window_pos_fn, save_config_fn, on
                                 root.after(0, lambda p=pct: _sb_dl_progress(p))
             os.replace(dest + ".tmp", dest)
 
-            global AVAILABLE, version_seen, _update_available
+            global AVAILABLE
             AVAILABLE         = True
-            version_seen      = tag
-            _update_available = False
             save_config_fn()
 
             root.after(0, lambda: messagebox.showinfo(
@@ -378,126 +374,3 @@ def download_scoreboard(root, highlight_color, window_pos_fn, save_config_fn, on
             pass
 
     threading.Thread(target=_do_download, daemon=True).start()
-
-
-def check_for_update(root, save_config_fn, silent_if_current=True):
-    """Check GitHub for a newer scoreboard release and prompt to update if found."""
-    import webbrowser
-    from tkinter import messagebox
-
-    global version_seen, _update_available
-    if not AVAILABLE:
-        return
-    try:
-        tag, url, body = _fetch_latest_release()
-        if not tag:
-            return
-
-        if tag == version_seen:
-            _update_available = False
-            if not silent_if_current:
-                messagebox.showinfo(
-                    "Scoreboard Up to Date",
-                    f"You already have the latest scoreboard (version {tag}).",
-                )
-            return
-
-        local_exists = os.path.isfile("universal_scoreboard.exe") or os.path.isfile("scoreboard.exe")
-        if local_exists and not version_seen and silent_if_current:
-            # Existing exe with unknown local version — avoid false startup prompts.
-            return
-        if not local_exists and silent_if_current:
-            return
-
-        _update_available = True
-        result = messagebox.askyesno(
-            "Scoreboard Update Available",
-            f"A new version of Universal Scoreboard is available!\n\n"
-            f"Version: {tag}\n\n"
-            f"Release notes:\n{body[:300]}{'…' if len(body) > 300 else ''}\n\n"
-            "Download and install it now? (~45 MB)",
-        )
-        if result:
-            if url:
-                _install_update(tag, url, root, save_config_fn)
-            else:
-                webbrowser.open(_RELEASES_PAGE)
-    except Exception as e:
-        if not silent_if_current:
-            messagebox.showerror("Update Check Failed", f"Could not check scoreboard updates:\n{e}")
-        else:
-            print(f"[Scoreboard] Update check failed: {e}")
-
-
-def _install_update(tag, url, root, save_config_fn):
-    """Download and atomically replace the scoreboard exe in a background thread."""
-    from tkinter import messagebox
-
-    dest = next(
-        (f for f in ("universal_scoreboard.exe", "scoreboard.exe") if os.path.isfile(f)),
-        "universal_scoreboard.exe",
-    )
-
-    def _close_running(timeout=4.0):
-        try:
-            if not is_running():
-                return True
-            send_command("quit")
-            deadline = time.time() + timeout
-            while time.time() < deadline:
-                if not is_running():
-                    return True
-                time.sleep(0.1)
-            return not is_running()
-        except Exception:
-            return False
-
-    def _do_install():
-        global version_seen, _update_available
-        try:
-            if not _close_running():
-                root.after(0, lambda: messagebox.showerror(
-                    "Update Failed",
-                    "Could not close the running scoreboard automatically.\n\n"
-                    "Please close the scoreboard and try updating again.",
-                ))
-                return
-
-            with requests.get(url, stream=True, timeout=60) as r:
-                r.raise_for_status()
-                with open(dest + ".tmp", "wb") as f:
-                    for chunk in r.iter_content(chunk_size=65536):
-                        if chunk:
-                            f.write(chunk)
-            os.replace(dest + ".tmp", dest)
-
-            version_seen      = tag
-            _update_available = False
-            save_config_fn()
-
-            root.after(0, lambda: messagebox.showinfo(
-                "Scoreboard Updated",
-                f"Universal Scoreboard updated to version {tag}.",
-            ))
-        except Exception as e:
-            try:
-                os.remove(dest + ".tmp")
-            except OSError:
-                pass
-            root.after(0, lambda: messagebox.showerror(
-                "Update Failed",
-                f"Could not install update:\n{e}\n\n"
-                f"Download manually:\n{_RELEASES_PAGE}",
-            ))
-
-    threading.Thread(target=_do_install, daemon=True).start()
-
-
-def check_for_update_on_startup(root, save_config_fn):
-    """Run a silent update check in the background at startup."""
-    def _bg():
-        try:
-            check_for_update(root, save_config_fn, silent_if_current=True)
-        except Exception as e:
-            print(f"[Scoreboard] Startup update check failed: {e}")
-    threading.Thread(target=_bg, daemon=True).start()

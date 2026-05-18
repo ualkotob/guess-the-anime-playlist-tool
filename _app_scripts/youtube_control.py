@@ -334,6 +334,7 @@ def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
             "quiet":              True,
             "no_warnings":        True,
             "noprogress":         True,
+            "no_cache_dir":       True,
             "progress_hooks":     [_progress_hook],
         }
         with YoutubeDL(ydl_opts) as ydl:
@@ -499,7 +500,7 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
         if YoutubeDL is None:
             return (None, 0, "", "") if include_other_info else (None, 0)
 
-        ydl_opts = {"format": "best[ext=mp4]/best", "quiet": True, "no_warnings": True}
+        ydl_opts = {"format": "best[ext=mp4]/best", "quiet": True, "no_warnings": True, "no_cache_dir": True}
         with YoutubeDL(ydl_opts) as ydl:
             info     = ydl.extract_info(youtube_url, download=False)
             stream   = info["url"]
@@ -565,6 +566,7 @@ def download_youtube_video(video_id, button, refresh_ui_callback):
                 "format":             "bestvideo+bestaudio/best",
                 "outtmpl":            filename,
                 "quiet":              True,
+                "no_cache_dir":       True,
                 "progress_hooks":     [on_progress],
                 "merge_output_format":"mp4",
             }

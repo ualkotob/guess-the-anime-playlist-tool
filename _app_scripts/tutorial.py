@@ -135,7 +135,7 @@ TUTORIAL_CONTENT = [
                         "Anything that doesn't meet the above requirements can only get metadata if manually provided.",
                         "You need to create a manual_metadata.json file in the metadata folder, and add entries for each file there.",
                         "This would follow the same format as the anime_metadata file, so you can just copy paste an entry from there and fill it out.",
-                        "The entry's ID(top level label, uaually the MAL id, with a unique ID of your choosing, that should use letters to avoid duplicating MAL ids.)",
+                        "The entry's ID(top level label, usually the MAL id, with a unique ID of your choosing, that should use letters to avoid duplicating MAL ids.)",
                         "The name the file with the ID tagged, like the following.",
                         "ThemeTitle-OP1-[ID]UniqueID.webm",
                         "This Id is not in the url of the source page, but on the right side of the page."
@@ -154,21 +154,25 @@ TUTORIAL_CONTENT = [
         ],
         "subs": [
             {
-                "title": "Choose Theme Directory [🛠]",
+                "title": "Choose Theme Directory",
                 "content": [
-                    ("h1", "Choose Theme Directory [🛠]"),
-                    ("p", "[WORK IN PROGRESS] Choose the folder where your anime themes are stored.\n\n"
-                          "The app expects files from AnimeThemes (torrent or downloaded). "
-                          "It searches subfolders, so pick the top-level folder.\n\n"
-                          "Custom files must be labeled as:\n"
-                          "AnimeName-OP1-[MAL]49618[ART]Minami[SNG]Rude Lose Dance.webm"),
+                    ("h1", "Choose Theme Directory"),
+                    ("p", "Choose the folder where your anime themes are stored. By default, the folder is set to a "
+                          "themes folder in the same directory as the app, but you can change it to any folder. "
+                          "The program will search subfolders in the chosen directory, so pick the top-level folder. "
+                          "The app expects files from AnimeThemes (torrent or downloaded), but you can use any files as long as they are named properly. "
+                          "Check the Fetching Metadata section above to see how to name files, if you want them to be able to fetch metadata. "
+                          "You can play them without fetching metadata though, just the filename will be visible when playing.")
                 ],
             },
             {
                 "title": "Import [🛠]",
                 "content": [
-                    ("h1", "Import [🛠]"),
-                    ("p", "[WORK IN PROGRESS] Import metadata or censors from GitHub."),
+                    ("h1", "Import"),
+                    ("p", "Import metadata or censors from GitHub. This is automatically checked on start up, "
+                          "but if you decline you will not be asked again until the next update. Use this button to trigger it manually. "
+                          "I manually upload my metadata to GitHub for user convenience, but you can also get metadata on your own for local files. "
+                          "Check the Metadata & Import section above for more information."),
                 ],
                 "subs": [
                     {

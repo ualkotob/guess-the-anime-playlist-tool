@@ -36,7 +36,7 @@ download_progress       = {}   # {filename: {downloaded_mb, total_mb, popup, pro
 _root                             = None
 _cache_metadata_file              = None
 _themes_cache_folder              = None
-_directory_files                  = None   # mutable dict reference
+_get_directory_files            = None   # callable() -> dict
 _get_directory                    = None   # callable() -> str
 _get_metadata                     = None   # callable(filename) -> dict
 _get_clean_filename               = None   # callable(entry) -> str
@@ -50,6 +50,7 @@ _play_filename                    = None   # callable(playlist_entry, fullscreen
 _play_filename_streaming_fallback = None   # callable(playlist_entry, fullscreen)
 _get_currently_playing            = None   # callable() -> dict
 _get_list_loaded                  = None   # callable() -> str
+_get_search_queue                 = None   # callable() -> str | None
 
 _themes_cache_size    = 500    # MB — updated by update_settings()
 _auto_download_themes = False  # updated by update_settings()
@@ -60,7 +61,7 @@ def set_context(
     root,
     cache_metadata_file,
     themes_cache_folder,
-    directory_files,
+    get_directory_files,
     get_directory,
     get_metadata,
     get_clean_filename,
@@ -74,16 +75,17 @@ def set_context(
     play_filename_streaming_fallback_fn,
     get_currently_playing,
     get_list_loaded,
+    get_search_queue=None,
 ):
-    global _root, _cache_metadata_file, _themes_cache_folder, _directory_files
+    global _root, _cache_metadata_file, _themes_cache_folder, _get_directory_files
     global _get_directory, _get_metadata, _get_clean_filename, _is_animethemes_file
     global _get_playlist, _get_fixed_lightning, _show_playlist, _update_extra_metadata
     global _up_next_text, _play_filename, _play_filename_streaming_fallback
-    global _get_currently_playing, _get_list_loaded
+    global _get_currently_playing, _get_list_loaded, _get_search_queue
     _root                             = root
     _cache_metadata_file              = cache_metadata_file
     _themes_cache_folder              = themes_cache_folder
-    _directory_files                  = directory_files
+    _get_directory_files               = get_directory_files
     _get_directory                    = get_directory
     _get_metadata                     = get_metadata
     _get_clean_filename               = get_clean_filename
@@ -97,6 +99,7 @@ def set_context(
     _play_filename_streaming_fallback = play_filename_streaming_fallback_fn
     _get_currently_playing            = get_currently_playing
     _get_list_loaded                  = get_list_loaded
+    _get_search_queue                 = get_search_queue
 
 
 def update_settings(themes_cache_size=500, auto_download_themes=False, app_version="1.0"):
@@ -465,7 +468,7 @@ def download_to_cache(filename, silent=False):
         return False
     if get_cached_file_path(filename):
         return False
-    if filename in _directory_files:
+    if filename in _get_directory_files():
         return False
 
     download_cancel_flags.pop(filename, None)
@@ -550,7 +553,8 @@ def download_to_cache(filename, silent=False):
             downloads_completed += 1
 
             if to_directory:
-                _directory_files[filename] = dest_path
+                _get_directory_files()[filename] = dest_path
+                _root.after(100, lambda: _show_playlist(True))
             else:
                 evict_cache_for_size(actual_size)
                 cache_metadata[filename] = {
@@ -642,7 +646,7 @@ def download_animethemes_file(filename, button=None):
                 messagebox.showerror("Download Error", f"Failed to download {filename}")
                 return
 
-            _directory_files[filename] = dest_path
+            _get_directory_files()[filename] = dest_path
             mb = os.path.getsize(dest_path) / 1024 / 1024
             update_button(f"✓ {mb:.1f} MB")
             print(f"Downloaded {filename} to {dest_path}")
@@ -710,7 +714,7 @@ def move_cached_file_to_directory(filename, button=None):
             except Exception:
                 pass
 
-            _directory_files[filename] = dest_path
+            _get_directory_files()[filename] = dest_path
 
             if filename in cache_metadata:
                 del cache_metadata[filename]
@@ -741,7 +745,7 @@ def move_cached_file_to_directory(filename, button=None):
 
 def check_file_availability(filename):
     """Return True if *filename* is already on disk (directory or cache)."""
-    if filename in _directory_files:
+    if filename in _get_directory_files():
         return True
     if get_cached_file_path(filename):
         return True
@@ -765,6 +769,11 @@ def prefetch_next_themes():
     playlist_items = playlist["playlist"]
 
     upcoming = []
+    # search_queue plays before the playlist next, so prefetch it first
+    if _get_search_queue:
+        sq = _get_search_queue()
+        if sq:
+            upcoming.append(_get_clean_filename(sq))
     for i in range(1, MAX_LOOKAHEAD + 1):
         next_idx = (current_idx + i) % len(playlist_items)
         upcoming.append(_get_clean_filename(playlist_items[next_idx]))

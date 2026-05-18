@@ -3497,6 +3497,7 @@ _HTML = r"""<!DOCTYPE html>
     let _myLastAnswer = null;        // player's answer for the current question
     let _prevQTitle = '';            // previous question's title
     let _prevQCorrect = null;        // previous question's correct answer (display string)
+    let _prevQDismissed = false;     // true when user manually closes the prev-question card
     let _prevQType = '';             // question type of previous question
     let _prevQCorrectTags = [];      // correct tag list for 'tags' type questions
     let _prevQData = null;           // question_data payload from answer_reveal (choices/tags/rank_slider)
@@ -4571,7 +4572,7 @@ _HTML = r"""<!DOCTYPE html>
       const freeInputShow = document.getElementById('free-input'); if (freeInputShow) { freeInputShow.style.display = 'none'; freeInputShow.value = ''; }
       const submitBtnShow = document.getElementById('submit-btn'); if (submitBtnShow) { submitBtnShow.style.display = ''; submitBtnShow.disabled = false; }
       document.getElementById('prev-question').style.display = 'none';
-      // Reset host toggle label to Submitted Answers for the new question
+      _prevQDismissed = false;
       try { const ht = document.getElementById('host-toggle'); if (ht && ht.style.display !== 'none') ht.textContent = '\uD83D\uDC41 Submitted Answers (0)'; } catch(e) {}
       document.getElementById('q-title').textContent = data.title;
       document.getElementById('q-info').textContent = data.info || '';
@@ -4963,11 +4964,12 @@ _HTML = r"""<!DOCTYPE html>
     function _dismissPrevQuestion() {
       const box = document.getElementById('prev-question');
       if (box) box.style.display = 'none';
+      _prevQDismissed = true;
     }
 
     function _showPrevQuestion() {
       const box = document.getElementById('prev-question');
-      if (!_prevQCorrect) { box.style.display = 'none'; return; }
+      if (!_prevQCorrect || _prevQDismissed) { box.style.display = 'none'; return; }
       document.getElementById('prev-question-title').textContent = _prevQTitle;
       const body = document.getElementById('prev-question-body');
       body.innerHTML = '';
