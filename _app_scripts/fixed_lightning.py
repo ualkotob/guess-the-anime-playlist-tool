@@ -22,6 +22,8 @@ except ImportError:
     ImageTk = None
     _requests = None
 
+from core.game_state import state
+
 # ---------------------------------------------------------------------------
 # Context (injected by set_context at startup)
 # ---------------------------------------------------------------------------
@@ -38,21 +40,17 @@ _get_base_title = None
 _play_video_from_filename = None
 _player = None
 _lightning_mode_settings_default = {}   # direct dict reference, set in set_context
-_get_lightning_mode_settings = None     # lambda: lightning_mode_settings
-_get_directory_files = None             # lambda: directory_files
-_get_currently_playing = None           # lambda: currently_playing
-_get_playlist = None                    # lambda: playlist
+# directory_files / playlist are read directly from state.metadata.*
+# currently_playing, fl_rounds_list, lightning_mode_settings are read directly from state.playback.*
 _play_video = None
 _set_fl_queue = None                    # fn(v): sets main-file fixed_lightning_queue
 _set_fl_round_playlist_data = None      # fn(v): sets main-file fixed_lightning_round_playlist_data
 _show_fixed_lightning_list = None       # fn ref (stays in main)
 _load_fixed_lightning_rounds = None     # fn ref (stays in main)
-_get_fl_rounds_list = None              # lambda: fixed_lightning_rounds_list
-_get_fl_queue = None                    # lambda: fixed_lightning_queue
 _open_image_popup = None
 _stream_url = None
 _load_music_files = None
-_get_music_files = None                 # lambda: music_files
+# music_files is read directly from state.playback.music_files
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -211,33 +209,25 @@ def set_context(
     play_video_from_filename,
     player,
     lightning_mode_settings_default,
-    get_lightning_mode_settings,
-    get_directory_files,
-    get_currently_playing,
-    get_playlist,
     play_video,
     set_fl_queue,
     set_fl_round_playlist_data,
     show_fixed_lightning_list,
     load_fixed_lightning_rounds,
-    get_fl_rounds_list,
-    get_fl_queue,
     open_image_popup,
     stream_url,
     load_music_files,
-    get_music_files,
 ):
     global _BACKGROUND_COLOR, _HIGHLIGHT_COLOR
     global _get_window_position_and_setup, _ToolTip
     global _get_clean_filename, _is_animethemes_stream_file
     global _get_title, _get_metadata, _get_display_title, _get_base_title
     global _play_video_from_filename, _player
-    global _lightning_mode_settings_default, _get_lightning_mode_settings
-    global _get_directory_files, _get_currently_playing, _get_playlist, _play_video
+    global _lightning_mode_settings_default
+    global _play_video
     global _set_fl_queue, _set_fl_round_playlist_data
     global _show_fixed_lightning_list, _load_fixed_lightning_rounds
-    global _get_fl_rounds_list, _get_fl_queue
-    global _open_image_popup, _stream_url, _load_music_files, _get_music_files
+    global _open_image_popup, _stream_url, _load_music_files
     global FIXED_LIGHTNING_ROUND_FIELD_INDEX
 
     os.makedirs(FIXED_LIGHTNING_FOLDER, exist_ok=True)
@@ -255,21 +245,14 @@ def set_context(
     _play_video_from_filename = play_video_from_filename
     _player = player
     _lightning_mode_settings_default = lightning_mode_settings_default
-    _get_lightning_mode_settings = get_lightning_mode_settings
-    _get_directory_files = get_directory_files
-    _get_currently_playing = get_currently_playing
-    _get_playlist = get_playlist
     _play_video = play_video
     _set_fl_queue = set_fl_queue
     _set_fl_round_playlist_data = set_fl_round_playlist_data
     _show_fixed_lightning_list = show_fixed_lightning_list
     _load_fixed_lightning_rounds = load_fixed_lightning_rounds
-    _get_fl_rounds_list = get_fl_rounds_list
-    _get_fl_queue = get_fl_queue
     _open_image_popup = open_image_popup
     _stream_url = stream_url
     _load_music_files = load_music_files
-    _get_music_files = get_music_files
 
     lmd = lightning_mode_settings_default
     FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
@@ -414,7 +397,7 @@ def should_show_field(field_name, round_data):
     _NO_BG_TRACK_TYPES = {"ost", "clip"}
     if field_config.get("show_if_muted"):
         round_type = round_data.get("type", "")
-        if not _get_lightning_mode_settings().get(round_type, {}).get("muted"):
+        if not state.playback.lightning_mode_settings.get(round_type, {}).get("muted"):
             return False
         if round_type in _NO_BG_TRACK_TYPES:
             return False
@@ -497,13 +480,13 @@ def open_fixed_lightning_manager():
         rounds_listbox.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=rounds_listbox.yview)
 
-        for round_info in _get_fl_rounds_list():
+        for round_info in state.playback.fl_rounds_list:
             rounds_listbox.insert(tk.END, round_info['name'])
             has_missing = False
             for rnd in round_info['data'].get('rounds', []):
                 theme = rnd.get('theme', '')
                 clean_theme = _get_clean_filename(theme)
-                if theme and clean_theme not in _get_directory_files() and not _is_animethemes_stream_file(theme):
+                if theme and clean_theme not in state.metadata.directory_files and not _is_animethemes_stream_file(theme):
                     has_missing = True
                     break
             if has_missing:
@@ -525,7 +508,7 @@ def open_fixed_lightning_manager():
             if selection:
                 idx = selection[0]
                 selected_round[0] = idx
-                round_info = _get_fl_rounds_list()[idx]
+                round_info = state.playback.fl_rounds_list[idx]
 
                 # Update details
                 data = round_info['data']
@@ -637,7 +620,7 @@ def open_fixed_lightning_manager():
                 messagebox.showwarning("Invalid Name", "Round name cannot be empty.")
                 return
 
-            if any(r['name'].lower() == name.lower() for r in _get_fl_rounds_list()):
+            if any(r['name'].lower() == name.lower() for r in state.playback.fl_rounds_list):
                 messagebox.showwarning("Duplicate Name", "A round with this name already exists.")
                 return
 
@@ -684,7 +667,7 @@ def open_fixed_lightning_manager():
                 messagebox.showwarning("No Selection", "Please select a round to edit.")
                 return
 
-            round_info = _get_fl_rounds_list()[selected_round[0]]
+            round_info = state.playback.fl_rounds_list[selected_round[0]]
 
             # Show metadata dialog with existing data
             metadata = show_metadata_dialog("Edit Metadata", round_info['data'])
@@ -698,7 +681,7 @@ def open_fixed_lightning_manager():
                 return
 
             if any(r['name'].lower() == name.lower() and r['filepath'] != round_info['filepath']
-                   for r in _get_fl_rounds_list()):
+                   for r in state.playback.fl_rounds_list):
                 messagebox.showwarning("Duplicate Name", "A round with this name already exists.")
                 return
 
@@ -753,7 +736,7 @@ def open_fixed_lightning_manager():
 
             # Hide manager and open editor at same position
             _manager_window.withdraw()
-            round_info = _get_fl_rounds_list()[selected_round[0]]
+            round_info = state.playback.fl_rounds_list[selected_round[0]]
             open_round_editor(round_info, _manager_window, (x, y))
 
         def delete_round():
@@ -762,7 +745,7 @@ def open_fixed_lightning_manager():
                 messagebox.showwarning("No Selection", "Please select a round to delete.")
                 return
 
-            round_info = _get_fl_rounds_list()[selected_round[0]]
+            round_info = state.playback.fl_rounds_list[selected_round[0]]
 
             # Confirm deletion
             result = messagebox.askyesno("Confirm Delete",
@@ -882,7 +865,7 @@ def open_round_editor(round_info, manager_window=None, position=None):
                 display_name = display_name[:47] + "..."
             rounds_listbox.insert(tk.END, f"{i+1}. [{rnd_type}] {display_name}")
             clean_theme = _get_clean_filename(rnd_theme)
-            if rnd_theme and clean_theme not in _get_directory_files() and not _is_animethemes_stream_file(rnd_theme):
+            if rnd_theme and clean_theme not in state.metadata.directory_files and not _is_animethemes_stream_file(rnd_theme):
                 rounds_listbox.itemconfig(i, fg='red')
 
         # Details panel
@@ -1417,7 +1400,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 actual_filename = [initial_value]
 
                 def set_currently_playing():
-                    filename = _get_currently_playing().get("filename", "")
+                    filename = state.playback.currently_playing.get("filename", "")
                     if filename:
                         actual_filename[0] = filename
                         display_name = _get_title(filename, filename)
@@ -1935,10 +1918,10 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 # Typable dropdown populated with detected music files (alphabetical, autocomplete)
                 mt_frame = tk.Frame(field_frame, bg=_BACKGROUND_COLOR)
                 mt_frame.pack(side="left")
-                music_files = _get_music_files()
+                music_files = state.playback.music_files
                 if not music_files:
                     _load_music_files()
-                    music_files = _get_music_files()
+                    music_files = state.playback.music_files
                 track_basenames = sorted([os.path.basename(f) for f in music_files], key=str.lower)
                 current_value = round_data.get(field_name, "")
                 var = tk.StringVar(value=current_value)
@@ -2280,7 +2263,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
         temp_round_info['is_test'] = True
         _set_fl_queue(temp_round_info)
         _set_fl_round_playlist_data(None)  # Reset any existing data
-        _play_video(_get_playlist()["current_index"])
+        _play_video(state.metadata.playlist["current_index"])
 
     save_button = tk.Button(button_frame, text="SAVE", font=("Arial", 10, "bold"),
                            bg="black", fg="white", command=save_round, width=15, pady=8)

@@ -15,7 +15,6 @@ import copy
 import gzip
 import json
 import os
-import re
 import tempfile
 import tkinter as tk
 from datetime import datetime

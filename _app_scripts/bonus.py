@@ -20,6 +20,7 @@ from datetime import datetime
 
 from . import web_server
 from . import utils
+from core.game_state import state
 
 try:
     from PIL import Image, ImageDraw
@@ -71,7 +72,6 @@ _yt_bonus_pts = 1.0
 used_multiple_titles = {}
 
 bonus_overlay_window = None
-bonus_character_labels = []
 bonus_chars = []
 bonus_correct_indices = []
 _bonus_chars_img_overlay = None
@@ -87,15 +87,12 @@ _bonus_correct_answer = None
 
 _root = None
 _player = None
-_get_currently_playing = None
 _get_light_mode = None
 _get_light_round_started = None
-_get_bonus_settings = None
 _get_fixed_current_round = None
-_get_directory_files = None
 _get_coming_up_osd_box_h = None
 _get_overlay_background_color = None
-_get_cached_images = None
+# cached_images is read directly from state.playback.cached_images
 
 _toggle_coming_up_popup = None
 _toggle_mc_choices_overlay = None
@@ -123,24 +120,18 @@ _get_highest_parameter = None
 _load_pil_image_from_url = None
 _get_ass_font = None
 
-_get_anime_metadata = None
-_get_file_metadata = None
-_get_anilist_metadata = None
-_get_anidb_metadata = None
+# Metadata-cluster dicts (anime_metadata, file_metadata, anilist_metadata,
+# anidb_metadata, directory_files) are read directly from `state.metadata.*`.
 
 
 def set_context(
     root,
     player,
-    get_currently_playing,
     get_light_mode,
     get_light_round_started,
-    get_bonus_settings,
     get_fixed_current_round,
-    get_directory_files,
     get_coming_up_osd_box_h,
     get_overlay_background_color,
-    get_cached_images,
     toggle_coming_up_popup,
     toggle_mc_choices_overlay,
     send_scoreboard_command,
@@ -165,15 +156,11 @@ def set_context(
     get_highest_parameter,
     load_pil_image_from_url,
     get_ass_font,
-    anime_metadata,
-    file_metadata,
-    anilist_metadata,
-    anidb_metadata,
 ):
     global _root, _player
-    global _get_currently_playing, _get_light_mode, _get_light_round_started
-    global _get_bonus_settings, _get_fixed_current_round, _get_directory_files
-    global _get_coming_up_osd_box_h, _get_overlay_background_color, _get_cached_images
+    global _get_light_mode, _get_light_round_started
+    global _get_fixed_current_round
+    global _get_coming_up_osd_box_h, _get_overlay_background_color
     global _toggle_coming_up_popup, _toggle_mc_choices_overlay, _send_scoreboard_command
     global _evaluate_and_submit_fn, _push_web_toggles_fn, _refresh_popout_toggles_fn
     global _register_mpv_tracked_window, _unregister_mpv_tracked_window
@@ -181,19 +168,14 @@ def set_context(
     global _series_list, _series_set, _series_overlap, _series_primary, _get_series_popularity
     global _is_game, _aired_to_season_year, _get_lowest_parameter, _get_highest_parameter
     global _load_pil_image_from_url, _get_ass_font
-    global _get_anime_metadata, _get_file_metadata, _get_anilist_metadata, _get_anidb_metadata
 
     _root = root
     _player = player
-    _get_currently_playing = get_currently_playing
     _get_light_mode = get_light_mode
     _get_light_round_started = get_light_round_started
-    _get_bonus_settings = get_bonus_settings
     _get_fixed_current_round = get_fixed_current_round
-    _get_directory_files = get_directory_files
     _get_coming_up_osd_box_h = get_coming_up_osd_box_h
     _get_overlay_background_color = get_overlay_background_color
-    _get_cached_images = get_cached_images
     _toggle_coming_up_popup = toggle_coming_up_popup
     _toggle_mc_choices_overlay = toggle_mc_choices_overlay
     _send_scoreboard_command = send_scoreboard_command
@@ -218,10 +200,6 @@ def set_context(
     _get_highest_parameter = get_highest_parameter
     _load_pil_image_from_url = load_pil_image_from_url
     _get_ass_font = get_ass_font
-    _get_anime_metadata = anime_metadata
-    _get_file_metadata = file_metadata
-    _get_anilist_metadata = anilist_metadata
-    _get_anidb_metadata = anidb_metadata
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +210,20 @@ def _fmt_pt(v):
     """Format a point value as a display string, e.g. 1.0 → '1 PT', 2.0 → '2 PTs'."""
     n = int(v) if v == int(v) else v
     return f"{n} PT" if v <= 1 else f"{n} PTs"
+
+
+def setup_for_youtube(questions):
+    """Reset YouTube bonus template state for a new video or after saving.
+
+    *questions* is the resolved list from youtube_control.load_bonus_template().
+    Call before playback starts so time-triggered questions fire from a clean slate.
+    """
+    global _yt_bonus_template_questions, _yt_bonus_template_triggered
+    global _yt_bonus_template_scored, _yt_bonus_current_question
+    _yt_bonus_template_questions = questions
+    _yt_bonus_template_triggered = set()
+    _yt_bonus_template_scored = set()
+    _yt_bonus_current_question = None
 
 
 # ---------------------------------------------------------------------------
@@ -281,8 +273,8 @@ def guess_extra(extra=None):
             guessing_extra = extra
             _pending_bonus_answers.clear()
         _is_light_mode = _get_light_mode() or _get_light_round_started()
-        bonus_settings = _get_bonus_settings()
-        currently_playing = _get_currently_playing()
+        bonus_settings = state.playback.bonus_settings
+        currently_playing = state.playback.currently_playing
         if guessing_extra == "year":
             _bs_year = bonus_settings.get("year", BONUS_SETTINGS_DEFAULT["year"])
             _bs_pt_close = _bs_year["lightning_points_close" if _is_light_mode else "points_close"]
@@ -351,7 +343,7 @@ def guess_extra(extra=None):
                                 f"+{_fmt_pt(_bs_pt_exact)} if your guess is within ±{_exact_pct}% of correct."),
                                 up_next=False)
             web_server.push_question("Guess The Popularity Rank",
-                                     f"Only 1 guess per person, no repeats.",
+                                     "Only 1 guess per person, no repeats.",
                                      rank_slider={"initial": 1000,
                                               "min": 1, "max": _get_highest_parameter('popularity') or 9999})
             _bonus_correct_answer = (currently_playing.get("data") or {}).get("popularity")
@@ -415,8 +407,8 @@ def guess_extra(extra=None):
             _char_word = "character" if _bs_num_correct == 1 else "characters"
             _char_verb = "is" if _bs_num_correct == 1 else "are"
             _toggle_coming_up_popup(True,
-                                ROUND_PREFIX + f"Guess The {_bs_num_correct} {_char_word.title()} From This Anime",
-                                f"{_bs_num_correct} out of 6 {_char_word} {_char_verb} from this anime.\n" +
+                                ROUND_PREFIX + f"Guess The {_char_word.title()}",
+                                f"{_bs_num_correct} out of 6 characters {_char_verb} from this anime.\n" +
                                 (f"+{_fmt_pt(_bs_pt_char)} if correct." if _bs_num_correct == 1 else f"+{_fmt_pt(_bs_pt_char)} per correct character."),
                                 up_next=False)
             bonus_chars, bonus_correct_indices = pick_bonus_characters()
@@ -431,7 +423,7 @@ def guess_extra(extra=None):
             _correct_labels = [chr(65 + i) for i in bonus_correct_indices]
             _bonus_correct_answer = _correct_labels  # list of correct letter(s)
             web_server.push_question(
-                f"Guess The {_char_word.title()} From This Anime",
+                f"Guess The {_char_word.title()}",
                 f"Pick {_bs_num_correct} out of {len(bonus_chars)}. " +
                 (f"+{_fmt_pt(_bs_pt_char)} if correct." if _bs_num_correct == 1 else f"+{_fmt_pt(_bs_pt_char)} per correct."),
                 character_choices=_char_choices,
@@ -447,7 +439,7 @@ def guess_extra(extra=None):
             correct_studio = studios[0] if studios else "Unknown"
 
             # Weighted list: studios can repeat, so big studios are more likely
-            weighted_studios = [s for s in _get_all_studios(_get_directory_files(), False, True) if s != correct_studio]
+            weighted_studios = [s for s in _get_all_studios(state.metadata.directory_files, False, True) if s != correct_studio]
 
             # Build unique distractors, weighted by frequency
             distractors = []
@@ -490,7 +482,7 @@ def guess_extra(extra=None):
             # Build weighted list of distractor artists from other anime
             weighted_artists = []
             data_tags = set(_get_tags(data))
-            for anime in _get_anime_metadata().values():
+            for anime in state.metadata.anime_metadata.values():
                 if anime.get("title") == data.get("title"):
                     continue
                 anime_tags = set(_get_tags(anime))
@@ -543,7 +535,7 @@ def guess_extra(extra=None):
 
             # 1. Gather all songs by the same artist (excluding the correct song)
             same_artist_titles = []
-            for anime in _get_anime_metadata().values():
+            for anime in state.metadata.anime_metadata.values():
                 if anime.get("title") == data.get("title"):
                     continue
                 for song in anime.get("songs", []):
@@ -553,7 +545,7 @@ def guess_extra(extra=None):
             # 2. Gather weighted titles by tag overlap (excluding correct title and same artist titles)
             weighted_titles = []
             data_tags = set(_get_tags(data))
-            for anime in _get_anime_metadata().values():
+            for anime in state.metadata.anime_metadata.values():
                 if anime.get("title") == data.get("title"):
                     continue
                 anime_tags = set(_get_tags(anime))
@@ -626,7 +618,7 @@ def guess_extra(extra=None):
                 up_next=False)
             web_server.push_question("Free Form", "Answer according to the prompt.", autocomplete="anime")
         elif guessing_extra == "buzzer":
-            if _get_bonus_settings().get("buzzer", BONUS_SETTINGS_DEFAULT["buzzer"]).get("popup", False):
+            if state.playback.bonus_settings.get("buzzer", BONUS_SETTINGS_DEFAULT["buzzer"]).get("popup", False):
                 _toggle_coming_up_popup(True,
                     ROUND_PREFIX + "Buzzer Enabled", "Buzz in to answer.",
                     up_next=False)
@@ -649,7 +641,7 @@ def guess_extra(extra=None):
 # ---------------------------------------------------------------------------
 
 def get_random_tags():
-    currently_playing = _get_currently_playing()
+    currently_playing = state.playback.currently_playing
     data = currently_playing.get("data")
     if data:
         tags = _get_tags(data)
@@ -665,13 +657,12 @@ def get_random_tags():
 
 
 def get_random_titles(amount=4):
-    currently_playing = _get_currently_playing()
+    currently_playing = state.playback.currently_playing
     data = currently_playing.get("data")
     if not data:
         return ["", "", "", ""]
 
     correct_title = _get_display_title(data)
-    correct_base_title = _get_base_title(data)
     correct_series = _series_list(data)
     titles = [correct_title]
     used_series = set(correct_series)
@@ -683,23 +674,21 @@ def get_random_titles(amount=4):
     def get_words(title):
         return set(w.lower() for w in re.findall(r'\w+', title) if w.lower() not in GENERIC_WORDS)
 
-    correct_words = get_words(correct_base_title)
-
     def get_series_key(anime):
         return _series_primary(anime) or ""
 
     # Build series title-count lookup once (O(n)) to avoid O(n²) in scoring
     series_title_count = {}
-    for a in _get_anime_metadata().values():
+    for a in state.metadata.anime_metadata.values():
         key = get_series_key(a)
         series_title_count[key] = series_title_count.get(key, 0) + 1
 
     # Build MAL ID -> AniList tag {name: rank} dict from file_metadata
     mal_to_anilist_tags = {}
-    for mal_id, fm_entry in _get_file_metadata().items():
+    for mal_id, fm_entry in state.metadata.file_metadata.items():
         anilist_id = fm_entry.get("anilist")
         if anilist_id:
-            al = _get_anilist_metadata().get(str(anilist_id))
+            al = state.metadata.anilist_metadata.get(str(anilist_id))
             if al:
                 mal_to_anilist_tags[mal_id] = {t["name"]: t.get("rank", 0) for t in al.get("tags", []) if t.get("name")}
 
@@ -724,7 +713,7 @@ def get_random_titles(amount=4):
 
     # Filter and score
     similar_anime = [
-        (mal_id, a) for mal_id, a in _get_anime_metadata().items()
+        (mal_id, a) for mal_id, a in state.metadata.anime_metadata.items()
         if _get_display_title(a) != correct_title
     ]
 
@@ -777,10 +766,6 @@ def get_random_titles(amount=4):
     return titles[:amount]
 
 
-def get_series_total(data):
-    target = _series_set(data)
-    count = sum(1 for a in _get_anime_metadata().values() if _series_set(a) & target)
-    return max(count, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -799,8 +784,8 @@ def pick_bonus_characters():
     Prioritizes distractors from shows with shared studios or tags.
     Returns: list of 6 character tuples, and indices of the correct ones.
     """
-    currently_playing = _get_currently_playing()
-    bonus_settings = _get_bonus_settings()
+    currently_playing = state.playback.currently_playing
+    bonus_settings = state.playback.bonus_settings
     data = currently_playing.get("data", {})
     if not data or not data.get("characters"):
         return [], []
@@ -837,10 +822,10 @@ def pick_bonus_characters():
 
     # Build mal_id -> {tag_name: rank} from anilist_metadata
     mal_to_anilist_tags = {}
-    for _mid, fm_entry in _get_file_metadata().items():
+    for _mid, fm_entry in state.metadata.file_metadata.items():
         _al_id = fm_entry.get("anilist")
         if _al_id:
-            _al = _get_anilist_metadata().get(str(_al_id))
+            _al = state.metadata.anilist_metadata.get(str(_al_id))
             if _al:
                 mal_to_anilist_tags[_mid] = {t["name"]: t.get("rank", 0) for t in _al.get("tags", []) if t.get("name")}
 
@@ -850,7 +835,7 @@ def pick_bonus_characters():
 
     distractors = []
 
-    for mal_id, anime in _get_anime_metadata().items():
+    for mal_id, anime in state.metadata.anime_metadata.items():
         if not mal_id.isdigit() or _series_overlap(anime, data):
             continue
 
@@ -913,7 +898,7 @@ def pick_bonus_characters():
 
 
 def get_anidb_metadata_from_anime(mal):
-    for anidb_id, anidb_data in _get_anidb_metadata().items():
+    for anidb_id, anidb_data in state.metadata.anidb_metadata.items():
         mal_id = anidb_data.get("mal_id")
         if mal_id and str(mal_id) == str(mal):
             return anidb_data
@@ -936,7 +921,7 @@ def _draw_bonus_characters_osd(characters, reveal_correct=False):
 
     modifier = min(osd_w / 2560, osd_h / 1440)
 
-    bonus_settings = _get_bonus_settings()
+    bonus_settings = state.playback.bonus_settings
     _bs_chars = bonus_settings.get("characters", BONUS_SETTINGS_DEFAULT["characters"])
     modifier *= float(_bs_chars.get("scale", BONUS_SETTINGS_DEFAULT["characters"]["scale"]))
     img_w    = max(80,  round(210 * modifier))
@@ -961,7 +946,6 @@ def _draw_bonus_characters_osd(characters, reveal_correct=False):
                  if _coming_up_osd_box_h > 0 else round(osd_h * 0.15))
 
     try:
-        import tkinter as tk
         r16, g16, b16 = _root.winfo_rgb(_get_overlay_background_color())
         bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
     except Exception:
@@ -971,7 +955,7 @@ def _draw_bonus_characters_osd(characters, reveal_correct=False):
     draw   = ImageDraw.Draw(canvas)
     fnt    = _get_ass_font(label_fs)
 
-    cached_images = _get_cached_images()
+    cached_images = state.playback.cached_images
     for i, char in enumerate(characters):
         cx = pos_x + i * (cell_w + gap)
         cy = pos_y

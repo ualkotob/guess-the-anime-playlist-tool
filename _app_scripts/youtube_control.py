@@ -36,9 +36,11 @@ else:
 
 # ── Path constants ────────────────────────────────────────────────────────────
 
-YOUTUBE_METADATA_FILE = os.path.join(_ROOT_DIR, "metadata", "youtube_metadata.json")
-YOUTUBE_FOLDER        = os.path.join(_ROOT_DIR, "youtube")
-YOUTUBE_CACHE_FOLDER  = os.path.join(_ROOT_DIR, "youtube", "cache")
+YOUTUBE_METADATA_FILE        = os.path.join(_ROOT_DIR, "metadata", "youtube_metadata.json")
+YOUTUBE_FOLDER               = os.path.join(_ROOT_DIR, "youtube")
+YOUTUBE_CACHE_FOLDER         = os.path.join(_ROOT_DIR, "youtube", "cache")
+YOUTUBE_BONUS_TEMPLATES_FOLDER = os.path.join(_ROOT_DIR, "youtube", "bonus_templates")
+YOUTUBE_CENSORS_FOLDER       = os.path.join(_ROOT_DIR, "youtube", "censors")
 
 # ── Module state ──────────────────────────────────────────────────────────────
 
@@ -109,6 +111,19 @@ def extract_youtube_id_from_trailer(trailer_data):
         if match:
             return match.group(1)
     return None
+
+
+def extract_youtube_id_from_url(url):
+    """Extract an 11-char YouTube video ID from a URL.
+
+    Handles: watch?v=, youtu.be/, /embed/, /shorts/, /live/, /v/.
+    Returns the ID or None.
+    """
+    match = re.search(
+        r"(?:v=|youtu\.be/|/embed/|/shorts/|/live/|/v/)([0-9A-Za-z_-]{11})",
+        url or "",
+    )
+    return match.group(1) if match else None
 
 
 # ── Metadata helpers ──────────────────────────────────────────────────────────
@@ -203,6 +218,40 @@ def get_bonus_template_path(video_id):
     return os.path.join(YOUTUBE_FOLDER, "bonus_templates", f"{video_id}.json")
 
 
+def get_youtube_censor_path(video_id):
+    return os.path.join(YOUTUBE_CENSORS_FOLDER, f"{video_id}.json")
+
+
+def get_video_id_from_youtube_filename(filename):
+    """Return the video ID (metadata dict key) for a given filename, by looking
+    it up in youtube_metadata. Falls back to stripping the filename stem if not found."""
+    if not filename:
+        return None
+    for vid_id, video in youtube_metadata.get("videos", {}).items():
+        if video.get("filename") == filename:
+            return vid_id
+    # Fallback: strip path/extension (e.g. for files not yet in metadata)
+    return os.path.splitext(os.path.basename(filename))[0]
+
+
+def load_youtube_censors(video_id):
+    path = get_youtube_censor_path(video_id)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+
+def save_youtube_censors(video_id, censors_list):
+    os.makedirs(YOUTUBE_CENSORS_FOLDER, exist_ok=True)
+    path = get_youtube_censor_path(video_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(censors_list, f, indent=2, ensure_ascii=False)
+
+
 def load_bonus_template(video_id):
     path = get_bonus_template_path(video_id)
     if os.path.exists(path):
@@ -225,18 +274,18 @@ def save_bonus_template(video_id, questions):
 
 def _get_yt_cache_path(youtube_url):
     """Return the local cache .mp4 path for a YouTube URL, or None."""
-    match = re.search(r"(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})", youtube_url or "")
-    if not match:
+    vid_id = extract_youtube_id_from_url(youtube_url)
+    if not vid_id:
         return None
-    return os.path.join(YOUTUBE_CACHE_FOLDER, f"{match.group(1)}.mp4")
+    return os.path.join(YOUTUBE_CACHE_FOLDER, f"{vid_id}.mp4")
 
 
 def _get_yt_meta_path(youtube_url):
     """Return the sidecar metadata .json path for a YouTube URL, or None."""
-    match = re.search(r"(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})", youtube_url or "")
-    if not match:
+    vid_id = extract_youtube_id_from_url(youtube_url)
+    if not vid_id:
         return None
-    return os.path.join(YOUTUBE_CACHE_FOLDER, f"{match.group(1)}.json")
+    return os.path.join(YOUTUBE_CACHE_FOLDER, f"{vid_id}.json")
 
 
 def _load_yt_meta(youtube_url):
@@ -369,10 +418,9 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
     """
     if _root is None:
         return False
-    match = re.search(r"(?:v=|youtu\.be/|/embed/)([a-zA-Z0-9_-]{11})", youtube_url or "")
-    if not match:
+    vid_id = extract_youtube_id_from_url(youtube_url)
+    if not vid_id:
         return False
-    vid_id     = match.group(1)
     cache_path = os.path.join(YOUTUBE_CACHE_FOLDER, f"{vid_id}.mp4")
 
     # Already done — no popup needed

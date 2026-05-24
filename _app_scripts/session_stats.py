@@ -19,48 +19,32 @@ session_start_time = None
 # ---------------------------------------------------------------------------
 # Context (injected at startup)
 # ---------------------------------------------------------------------------
-_root = None
 _get_metadata = None
 _get_song_string = None
 _get_display_title = None
 _get_youtube_display_title = None
 _get_file_metadata_by_name = None
 _update_playlist_name = None
-_get_currently_playing = None
-_get_playlist = None
-_get_light_mode = None
-_system_playlists = ()
 
 
 def set_context(
-    root,
     get_metadata,
     get_song_string,
     get_display_title,
     get_youtube_display_title,
     get_file_metadata_by_name,
     update_playlist_name,
-    get_currently_playing,
-    get_playlist,
-    get_light_mode,
-    system_playlists,
 ):
-    global _root, _get_metadata, _get_song_string, _get_display_title
+    global _get_metadata, _get_song_string, _get_display_title
     global _get_youtube_display_title, _get_file_metadata_by_name
-    global _update_playlist_name, _get_currently_playing
-    global _get_playlist, _get_light_mode, _system_playlists
+    global _update_playlist_name
 
-    _root = root
     _get_metadata = get_metadata
     _get_song_string = get_song_string
     _get_display_title = get_display_title
     _get_youtube_display_title = get_youtube_display_title
     _get_file_metadata_by_name = get_file_metadata_by_name
     _update_playlist_name = update_playlist_name
-    _get_currently_playing = get_currently_playing
-    _get_playlist = get_playlist
-    _get_light_mode = get_light_mode
-    _system_playlists = system_playlists
 
 
 # ---------------------------------------------------------------------------
@@ -448,14 +432,12 @@ def load_recent_session():
     return False
 
 
-def add_session_history():
+def add_session_history(currently_playing, light_mode, playlist, system_playlists, is_fixed_lightning=False):
     """Add currently-playing entry to session log and auto-save."""
     global session_start_time
 
-    currently_playing = _get_currently_playing()
     data = currently_playing.get("data")
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    light_mode = _get_light_mode()
 
     if len(session_data) == 0:
         session_start_time = datetime.now().strftime('%Y-%m-%d_%H-%M')
@@ -466,6 +448,8 @@ def add_session_history():
         "filename": currently_playing.get("filename", ""),
         "lightning_mode": light_mode if light_mode else None,
     }
+    if is_fixed_lightning:
+        session_entry["fixed_playlist"] = True
 
     if data:
         session_entry.update({
@@ -481,8 +465,7 @@ def add_session_history():
 
     session_data.append(session_entry)
 
-    playlist = _get_playlist()
-    if len(session_data) % 100 == 0 and playlist.get("name") not in _system_playlists:
+    if len(session_data) % 100 == 0 and playlist.get("name") not in system_playlists:
         save_session_history(create_text_file=True)
     else:
         save_session_history(create_text_file=False)

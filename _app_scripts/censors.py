@@ -6,7 +6,6 @@ Extracted from guess_the_anime.py.
 import os
 import json
 import copy
-import math as _math_mod
 import random as _random
 import tkinter as tk
 from tkinter import messagebox, simpledialog
@@ -14,6 +13,8 @@ from PIL import ImageColor
 import numpy as np
 import pyperclip
 import pyautogui
+
+from core.game_state import state
 
 # ---------------------------------------------------------------------------
 # Context (injected by set_context at startup)
@@ -28,7 +29,6 @@ _get_zoom_state = None             # lambda: (z, ox, oy) or None
 _get_projected_player_time = None  # lambda: projected_player_time
 _get_mismatch_visuals = None       # lambda: mismatch_visuals
 _get_currently_streaming = None    # lambda: streaming.currently_streaming
-_get_currently_playing = None      # lambda: currently_playing (returns dict)
 _get_light_round_started = None    # lambda: light_round_started
 _get_light_muted = None            # lambda: light_muted
 _get_disable_video_audio = None    # lambda: disable_video_audio
@@ -41,6 +41,8 @@ _get_window_position_and_setup = None  # get_window_position_and_setup function 
 _toggle_censor_bar = None          # toggle_censor_bar function ref
 _toggle_censor_nsfw_bar = None     # toggle_censor_nsfw_bar function ref
 _ToolTip = None                    # ToolTip class ref
+_get_filter_state = None           # lambda: (variant, progress) or None when no filter active
+_get_censor_filter_thresholds = None  # lambda: (blur_pct, pixelize_pct)
 
 # Settings (injected by update_settings)
 _CENSOR_JSON_FILE = "censors/censors.json"
@@ -59,7 +61,6 @@ def set_context(
     get_projected_player_time,
     get_mismatch_visuals,
     get_currently_streaming,
-    get_currently_playing,
     get_light_round_started,
     get_light_muted,
     get_disable_video_audio,
@@ -73,15 +74,17 @@ def set_context(
     toggle_censor_nsfw_bar,
     ToolTip_class,
     get_zoom_state=None,
+    get_filter_state=None,
+    get_censor_filter_thresholds=None,
 ):
     global _root, _player, _get_black_overlay, _get_video_frame_active
     global _get_effective_video_rect, _osd_command_fn, _get_projected_player_time
-    global _get_mismatch_visuals, _get_currently_streaming, _get_currently_playing
+    global _get_mismatch_visuals, _get_currently_streaming
     global _get_light_round_started, _get_light_muted, _get_disable_video_audio
     global _play_next_fn, _is_title_window_up, _get_mpv_client_rect_logical
     global _get_file_metadata_by_name, _atomic_json_write_fn
     global _get_window_position_and_setup, _toggle_censor_bar, _toggle_censor_nsfw_bar
-    global _ToolTip, _get_zoom_state
+    global _ToolTip, _get_zoom_state, _get_filter_state, _get_censor_filter_thresholds
     _root = root
     _player = player
     _get_black_overlay = get_black_overlay
@@ -91,7 +94,6 @@ def set_context(
     _get_projected_player_time = get_projected_player_time
     _get_mismatch_visuals = get_mismatch_visuals
     _get_currently_streaming = get_currently_streaming
-    _get_currently_playing = get_currently_playing
     _get_light_round_started = get_light_round_started
     _get_light_muted = get_light_muted
     _get_disable_video_audio = get_disable_video_audio
@@ -106,6 +108,10 @@ def set_context(
     _ToolTip = ToolTip_class
     if get_zoom_state is not None:
         _get_zoom_state = get_zoom_state
+    if get_filter_state is not None:
+        _get_filter_state = get_filter_state
+    if get_censor_filter_thresholds is not None:
+        _get_censor_filter_thresholds = get_censor_filter_thresholds
 
 
 def update_settings(censor_json_file=None, censors_folder=None,
@@ -126,6 +132,10 @@ def update_settings(censor_json_file=None, censors_folder=None,
 # ---------------------------------------------------------------------------
 censor_list = {}
 other_censor_lists = []
+_youtube_censor_list    = {}   # {filename: [censor, ...]} — populated at YouTube play time
+_save_youtube_censors_fn = None
+_get_yt_video_id_fn      = None
+_is_youtube_file_fn      = None
 censors_enabled = True
 censors_nsfw_enabled = True
 
@@ -134,7 +144,6 @@ _censor_osd = None       # unused; kept so any stale references don't NameError
 _censor_osd_img = None   # unused; kept so any stale references don't NameError
 _censor_osd_last_size = (0, 0)  # (osd_w, osd_h) at last commit — redraw on resize
 
-censor_used = False
 mute_censor_used = False
 
 current_censors = {}
@@ -349,8 +358,6 @@ def toggle_censor_box(filename, censor, enabled, time=None):
     return censor_boxes.get(censor_id)
 
 
-def lift_peek():
-    pass  # peek overlays are now OSD-based; nothing to lift
 
 
 def remove_all_censor_boxes(filename=None):
@@ -426,7 +433,7 @@ def apply_censors(time, length):
     """Apply Censors"""
     global censor_used, mute_censor_used
     if (censors_enabled or censors_nsfw_enabled) and not _get_mismatch_visuals() and not _get_currently_streaming():
-        check_file_censors(_get_currently_playing().get('filename'), time, True)
+        check_file_censors(state.playback.currently_playing.get('filename'), time, True)
     else:
         remove_all_censor_boxes()
         if mute_censor_used:
@@ -435,9 +442,25 @@ def apply_censors(time, length):
             mute_censor_used = False
 
 
+def set_youtube_context(save_youtube_censors_fn, get_video_id_from_filename_fn, is_youtube_file_fn):
+    """Inject YouTube-specific censor save/load helpers. Call once at startup."""
+    global _save_youtube_censors_fn, _get_yt_video_id_fn, _is_youtube_file_fn
+    _save_youtube_censors_fn = save_youtube_censors_fn
+    _get_yt_video_id_fn      = get_video_id_from_filename_fn
+    _is_youtube_file_fn      = is_youtube_file_fn
+
+
+def set_youtube_censors_for_file(filename, censors_list):
+    """Populate the YouTube censor cache for *filename*. Call when a YouTube video starts."""
+    if filename is not None:
+        _youtube_censor_list[filename] = censors_list or []
+
+
 def get_file_censors(filename):
     if not filename:
         return None
+    if filename in _youtube_censor_list:
+        return _youtube_censor_list[filename]
     filenames = [filename, filename.replace(".mp4", ".webm")]
     for f in filenames:
         file_censors = censor_list.get(f)
@@ -453,6 +476,23 @@ def get_file_censors(filename):
 
 def show_censor(censor, check_title=True):
     return (not check_title or not _is_title_window_up() or censor.get("nsfw") or censor.get("skip"))
+
+
+def _is_filter_suppressing_censors():
+    """Return True when a blur/pixelize filter is active and its intensity exceeds the configured threshold."""
+    if _get_filter_state is None:
+        return False
+    fs = _get_filter_state()
+    if fs is None:
+        return False
+    variant, progress = fs
+    if variant not in ('blur', 'pixelize'):
+        return False
+    thresholds = _get_censor_filter_thresholds() if _get_censor_filter_thresholds else (40, 40)
+    blur_pct, pix_pct = thresholds
+    intensity = (1.0 - progress) * 100.0
+    threshold = blur_pct if variant == 'blur' else pix_pct
+    return intensity >= threshold
 
 
 def check_file_censors(filename, time, check_title=True):
@@ -481,6 +521,9 @@ def check_file_censors(filename, time, check_title=True):
                             _play_next_fn()
                     censor_found = True
                 elif not censor.get("mute"):
+                    if _is_filter_suppressing_censors():
+                        toggle_censor_box(filename, censor, False)
+                        continue
                     censor_entry = toggle_censor_box(filename, censor, True)
                     if censor_entry is not None:
                         _censor_color = censor.get("color") or _image_color
@@ -568,11 +611,25 @@ def rgbtohex(r, g, b):
 
 
 def update_censor_button_count():
-    currently_playing = _get_currently_playing()
+    currently_playing = state.playback.currently_playing
     if currently_playing.get("filename"):
-        censors_num = len(get_file_censors(currently_playing.get("filename", "")))
+        pass
         # if popout_buttons_by_name.get("censors"):
         #     popout_buttons_by_name["censors"].configure(text=f"CENSORS({censors_num})")
+
+
+def on_play_starting():
+    """Refresh censor state when a new track begins. Call before player.set_media()."""
+    update_censor_button_count()
+    if censor_editor:
+        update_censor_editor_for_new_play()
+
+
+def reset_for_new_file(filename):
+    """Clear censor overlays and prime start-censors for *filename*. Call after player.set_media()."""
+    remove_all_censor_boxes()
+    if filename:
+        _prime_start_censors(filename)
 
 
 # ---------------------------------------------------------------------------
@@ -1167,7 +1224,7 @@ def update_censor_editor_for_new_play():
     if not censor_editor:
         return
 
-    filename = _get_currently_playing().get("filename")
+    filename = state.playback.currently_playing.get("filename")
     if filename:
         current_censors = copy.deepcopy(get_file_censors(filename))
 
@@ -1183,7 +1240,7 @@ def update_censor_editor_for_new_play():
     open_censor_editor(refresh_only=True)
 
 
-def open_censor_editor(refresh=False, refresh_only=False):
+def open_censor_editor(refresh=False, refresh_only=False, filename=None):
     global current_censors, censor_editor, censor_entry_widgets
     global censor_page_offset
     global save_censors_button
@@ -1197,7 +1254,8 @@ def open_censor_editor(refresh=False, refresh_only=False):
         censor_editor.destroy()
         censor_editor = None
 
-    filename = _get_currently_playing().get("filename")
+    if filename is None:
+        filename = state.playback.currently_playing.get("filename")
     if filename:
         current_censors = copy.deepcopy(get_file_censors(filename))
 
@@ -1345,6 +1403,13 @@ def open_censor_editor(refresh=False, refresh_only=False):
 
     def save_censor_func():
         global censor_list
+        if _is_youtube_file_fn and _save_youtube_censors_fn and _get_yt_video_id_fn and _is_youtube_file_fn(filename):
+            video_id = _get_yt_video_id_fn(filename)
+            if video_id:
+                _youtube_censor_list[filename] = current_censors
+                _save_youtube_censors_fn(video_id, current_censors)
+                update_censor_button_count()
+                return
         censor_list[filename] = current_censors
         _atomic_json_write_fn(_CENSOR_JSON_FILE, censor_list, indent=4)
         update_censor_button_count()
@@ -1690,7 +1755,7 @@ def open_censor_editor(refresh=False, refresh_only=False):
                 options = list(similar_censors.keys())
                 choice = simpledialog.askstring(
                     "Choose Source",
-                    f"Multiple versions found. Enter the number of the file to import from:\n" +
+                    "Multiple versions found. Enter the number of the file to import from:\n" +
                     "\n".join([f"{i+1}. {fname}" for i, fname in enumerate(options)]) +
                     f"\n\nEnter 1-{len(options)}:"
                 )

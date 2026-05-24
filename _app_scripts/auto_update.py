@@ -241,34 +241,6 @@ def _show_update_dialog(update_info):
             open_github_releases()
 
 
-def check_for_updates_button():
-    """Button handler to check for updates."""
-    try:
-        check_window = tk.Toplevel()
-        check_window.title("Checking for Updates...")
-        check_window.geometry("300x80")
-        check_window.configure(bg="black")
-        check_window.resizable(False, False)
-        _setup_window(check_window, offset_x=100, offset_y=100)
-        check_window.transient(_root)
-        check_window.grab_set()
-        tk.Label(check_window, text="Checking for updates...",
-                 bg="black", fg="white", font=("Arial", 12)).pack(pady=20)
-        check_window.update()
-
-        update_info = check_for_updates()
-        check_window.destroy()
-
-        if update_info.get("error"):
-            messagebox.showerror("Update Check Failed", update_info["error"])
-        elif update_info.get("update_available"):
-            _show_update_dialog(update_info)
-        else:
-            messagebox.showinfo("No Updates",
-                                f"You have the latest version ({update_info['current_version']})")
-
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to check for updates: {str(e)}")
 
 
 def open_github_releases():
@@ -276,7 +248,7 @@ def open_github_releases():
     try:
         releases_url = f"https://github.com/{_github_repo}/releases"
         webbrowser.open(releases_url)
-    except Exception as e:
+    except Exception:
         releases_url = f"https://github.com/{_github_repo}/releases"
         messagebox.showerror("Browser Error",
                              f"Could not open browser automatically.\n\n"

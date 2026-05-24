@@ -17,6 +17,8 @@ from tkinter import ttk
 
 import requests
 
+from core.game_state import state
+
 # ---------------------------------------------------------------------------
 # Module-level state (moved from main globals)
 # ---------------------------------------------------------------------------
@@ -24,7 +26,7 @@ import requests
 active_downloads        = {}   # {filename: thread_object}
 download_cancel_flags   = {}   # {filename: bool} — set True to abort
 cache_metadata          = {}   # {filename: {size, path, play_count, last_played}}
-downloads_completed     = 0
+downloads_completed     = 0    # mutated by do_cache_download via AugAssign
 download_ui_update_pending = False
 pending_play_queue      = {}   # {filename: {playlist_entry, fullscreen, start_time, timeout}}
 download_progress       = {}   # {filename: {downloaded_mb, total_mb, popup, progress_bar, status_label}}
@@ -36,19 +38,17 @@ download_progress       = {}   # {filename: {downloaded_mb, total_mb, popup, pro
 _root                             = None
 _cache_metadata_file              = None
 _themes_cache_folder              = None
-_get_directory_files            = None   # callable() -> dict
+# directory_files / playlist are read directly from state.metadata.*
 _get_directory                    = None   # callable() -> str
 _get_metadata                     = None   # callable(filename) -> dict
 _get_clean_filename               = None   # callable(entry) -> str
 _is_animethemes_file              = None   # callable(filename) -> bool
-_get_playlist                     = None   # callable() -> dict
 _get_fixed_lightning              = None   # callable() -> (queue, playlist_data)
 _show_playlist                    = None   # callable(update=True)
 _update_extra_metadata            = None   # callable()
 _up_next_text                     = None   # callable()
 _play_filename                    = None   # callable(playlist_entry, fullscreen)
 _play_filename_streaming_fallback = None   # callable(playlist_entry, fullscreen)
-_get_currently_playing            = None   # callable() -> dict
 _get_list_loaded                  = None   # callable() -> str
 _get_search_queue                 = None   # callable() -> str | None
 
@@ -61,43 +61,37 @@ def set_context(
     root,
     cache_metadata_file,
     themes_cache_folder,
-    get_directory_files,
     get_directory,
     get_metadata,
     get_clean_filename,
     is_animethemes_file,
-    get_playlist,
     get_fixed_lightning,
     show_playlist_fn,
     update_extra_metadata_fn,
     up_next_text_fn,
     play_filename_fn,
     play_filename_streaming_fallback_fn,
-    get_currently_playing,
     get_list_loaded,
     get_search_queue=None,
 ):
-    global _root, _cache_metadata_file, _themes_cache_folder, _get_directory_files
+    global _root, _cache_metadata_file, _themes_cache_folder
     global _get_directory, _get_metadata, _get_clean_filename, _is_animethemes_file
-    global _get_playlist, _get_fixed_lightning, _show_playlist, _update_extra_metadata
+    global _get_fixed_lightning, _show_playlist, _update_extra_metadata
     global _up_next_text, _play_filename, _play_filename_streaming_fallback
-    global _get_currently_playing, _get_list_loaded, _get_search_queue
+    global _get_list_loaded, _get_search_queue
     _root                             = root
     _cache_metadata_file              = cache_metadata_file
     _themes_cache_folder              = themes_cache_folder
-    _get_directory_files               = get_directory_files
     _get_directory                    = get_directory
     _get_metadata                     = get_metadata
     _get_clean_filename               = get_clean_filename
     _is_animethemes_file              = is_animethemes_file
-    _get_playlist                     = get_playlist
     _get_fixed_lightning              = get_fixed_lightning
     _show_playlist                    = show_playlist_fn
     _update_extra_metadata            = update_extra_metadata_fn
     _up_next_text                     = up_next_text_fn
     _play_filename                    = play_filename_fn
     _play_filename_streaming_fallback = play_filename_streaming_fallback_fn
-    _get_currently_playing            = get_currently_playing
     _get_list_loaded                  = get_list_loaded
     _get_search_queue                 = get_search_queue
 
@@ -153,9 +147,6 @@ def save_cache_metadata():
         print(f"Error saving cache metadata: {e}")
 
 
-def get_cache_size_mb():
-    total = sum(m.get("size", 0) for m in cache_metadata.values())
-    return total / (1024 * 1024)
 
 
 def get_cached_file_path(filename):
@@ -468,7 +459,7 @@ def download_to_cache(filename, silent=False):
         return False
     if get_cached_file_path(filename):
         return False
-    if filename in _get_directory_files():
+    if filename in state.metadata.directory_files:
         return False
 
     download_cancel_flags.pop(filename, None)
@@ -553,7 +544,7 @@ def download_to_cache(filename, silent=False):
             downloads_completed += 1
 
             if to_directory:
-                _get_directory_files()[filename] = dest_path
+                state.metadata.directory_files[filename] = dest_path
                 _root.after(100, lambda: _show_playlist(True))
             else:
                 evict_cache_for_size(actual_size)
@@ -592,15 +583,6 @@ def download_to_cache(filename, silent=False):
     return True
 
 
-def wait_for_download(filename, timeout=30):
-    """Block until *filename*'s download finishes (or times out).
-
-    Returns True if download completed, False on timeout / not downloading.
-    """
-    if filename not in active_downloads:
-        return True
-    active_downloads[filename].join(timeout=timeout)
-    return filename not in active_downloads
 
 
 # ---------------------------------------------------------------------------
@@ -646,14 +628,14 @@ def download_animethemes_file(filename, button=None):
                 messagebox.showerror("Download Error", f"Failed to download {filename}")
                 return
 
-            _get_directory_files()[filename] = dest_path
+            state.metadata.directory_files[filename] = dest_path
             mb = os.path.getsize(dest_path) / 1024 / 1024
             update_button(f"✓ {mb:.1f} MB")
             print(f"Downloaded {filename} to {dest_path}")
 
             if _get_list_loaded() == "playlist":
                 _root.after(100, lambda: _show_playlist(True))
-            cp = _get_currently_playing()
+            cp = state.playback.currently_playing
             if cp and cp.get("filename") == filename:
                 _root.after(100, _update_extra_metadata)
 
@@ -714,7 +696,7 @@ def move_cached_file_to_directory(filename, button=None):
             except Exception:
                 pass
 
-            _get_directory_files()[filename] = dest_path
+            state.metadata.directory_files[filename] = dest_path
 
             if filename in cache_metadata:
                 del cache_metadata[filename]
@@ -726,7 +708,7 @@ def move_cached_file_to_directory(filename, button=None):
 
             if _get_list_loaded() == "playlist":
                 _root.after(100, lambda: _show_playlist(True))
-            cp = _get_currently_playing()
+            cp = state.playback.currently_playing
             if cp and cp.get("filename") == filename:
                 _root.after(100, _update_extra_metadata)
 
@@ -740,16 +722,92 @@ def move_cached_file_to_directory(filename, button=None):
 
 
 # ---------------------------------------------------------------------------
+# Playback path resolution
+# ---------------------------------------------------------------------------
+
+def is_animethemes_stream_file(filename):
+    """Return True if *filename* is an AnimThemes .webm theme (not a local ID/MAL/IGDB file)."""
+    not_animethemes_strings = ["[ID]", "[MAL]", "[IGDB]"]
+    if any(s in filename for s in not_animethemes_strings) or ".webm" not in filename.lower():
+        return False
+    return True
+
+
+def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
+    """Resolve a playable file path for *filename*.
+
+    Implements the full resolution chain:
+        pre-specified path → local file → cache → background download → direct stream.
+
+    Returns ``(filepath, is_animethemes_stream)`` on success, or ``None`` if
+    playback has been queued for later (caller should abort with ``return False``).
+    """
+    # Already downloading — queue instead of blocking
+    if is_downloading(filename):
+        print(f"Download in progress, queuing play: {filename}")
+        queue_play_when_ready(filename, playlist_entry, fullscreen)
+        return None
+
+    # Explicit filepath already embedded in the playlist entry (e.g. streaming fallback)
+    if isinstance(playlist_entry, dict) and 'filepath' in playlist_entry:
+        filepath = playlist_entry['filepath']
+        is_stream = bool(filepath and filepath.startswith('https://v.animethemes.moe/'))
+        return (filepath, is_stream)
+
+    # Use the pre-resolved local filepath supplied by the caller
+    filepath = local_filepath
+    is_stream = False
+
+    # Fallback chain for animethemes files not found locally
+    if not filepath and is_animethemes_stream_file(filename):
+        cached_path = get_cached_file_path(filename)
+        if cached_path:
+            filepath = cached_path
+        else:
+            download_started = download_to_cache(filename, silent=False)
+            if download_started:
+                queue_play_when_ready(filename, playlist_entry, fullscreen)
+                return None
+            else:
+                # Cache full or other issue — stream directly
+                filepath = get_animethemes_stream_url(filename)
+                is_stream = True
+
+    # Update play count for cached files
+    if filepath and not is_stream:
+        cached_path = get_cached_file_path(filename)
+        if cached_path and filepath == cached_path:
+            update_cache_play_count(filename)
+
+    return (filepath, is_stream)
+
+
+# ---------------------------------------------------------------------------
 # File availability check
 # ---------------------------------------------------------------------------
 
 def check_file_availability(filename):
     """Return True if *filename* is already on disk (directory or cache)."""
-    if filename in _get_directory_files():
+    if filename in state.metadata.directory_files:
         return True
     if get_cached_file_path(filename):
         return True
     return False
+
+
+def get_file_status(filename):
+    """Return file availability status for *filename* as a dict.
+
+    Keys:
+      is_cached — file exists in the local download cache
+      is_local  — file is in the user's directory (not just cache)
+      is_stream — file is an AnimThemes stream (and not in the local directory)
+    """
+    directory_files = state.metadata.directory_files
+    is_cached = get_cached_file_path(filename) is not None
+    is_local = filename in directory_files and os.path.exists(directory_files[filename])
+    is_stream = is_animethemes_stream_file(filename) and not is_local if filename else False
+    return {"is_cached": is_cached, "is_local": is_local, "is_stream": is_stream}
 
 
 # ---------------------------------------------------------------------------
@@ -761,7 +819,7 @@ def prefetch_next_themes():
     MAX_LOOKAHEAD    = 5
     MAX_NEW_DOWNLOADS = 2
 
-    playlist = _get_playlist()
+    playlist = state.metadata.playlist
     if not playlist.get("playlist"):
         return
 

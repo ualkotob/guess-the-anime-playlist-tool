@@ -14,6 +14,7 @@ import random
 import re
 
 from . import youtube_control
+from core.game_state import state
 
 try:
     from googleapiclient.discovery import build as _yt_build
@@ -31,6 +32,8 @@ youtube_api_limited = False
 youtube_api_limited_count = 0
 _cached_clips = {}
 _cached_ost_clips = {}
+_cached_clips_links = []      # resolved for currently-displayed data; set by resolve_clips_for_data()
+_cached_ost_clips_links = []  # same for OST clips
 test_printing = False
 
 # ---------------------------------------------------------------------------
@@ -38,17 +41,13 @@ test_printing = False
 # ---------------------------------------------------------------------------
 _root = None
 _player = None
-_get_currently_playing = None
 _get_previous_media = None
 _get_projected_player_time = None
 _get_light_round_start_time = None
 _get_light_round_length = None
 _get_fixed_current_round = None
-_get_video_stopped = None
 _set_video_stopped = None
 _get_light_mode = None
-_get_light_round_started = None
-_get_light_answer_wall_start = None
 _get_display_title = None
 _is_game = None
 _get_base_title = None
@@ -62,17 +61,13 @@ _youtube_api_key = ""
 def set_context(
     root,
     player,
-    get_currently_playing,
     get_previous_media,
     get_projected_player_time,
     get_light_round_start_time,
     get_light_round_length,
     get_fixed_current_round,
-    get_video_stopped,
     set_video_stopped,
     get_light_mode,
-    get_light_round_started,
-    get_light_answer_wall_start,
     get_display_title,
     is_game,
     get_base_title,
@@ -82,26 +77,21 @@ def set_context(
     update_extra_metadata_fn,
 ):
     global _root, _player
-    global _get_currently_playing, _get_previous_media, _get_projected_player_time
+    global _get_previous_media, _get_projected_player_time
     global _get_light_round_start_time, _get_light_round_length, _get_fixed_current_round
-    global _get_video_stopped, _set_video_stopped, _get_light_mode
-    global _get_light_round_started, _get_light_answer_wall_start
+    global _set_video_stopped, _get_light_mode
     global _get_display_title, _is_game, _get_base_title, _get_format
     global _get_selected_extra_metadata, _hide_ost_cover_fn, _update_extra_metadata_fn
 
     _root = root
     _player = player
-    _get_currently_playing = get_currently_playing
     _get_previous_media = get_previous_media
     _get_projected_player_time = get_projected_player_time
     _get_light_round_start_time = get_light_round_start_time
     _get_light_round_length = get_light_round_length
     _get_fixed_current_round = get_fixed_current_round
-    _get_video_stopped = get_video_stopped
     _set_video_stopped = set_video_stopped
     _get_light_mode = get_light_mode
-    _get_light_round_started = get_light_round_started
-    _get_light_answer_wall_start = get_light_answer_wall_start
     _get_display_title = get_display_title
     _is_game = is_game
     _get_base_title = get_base_title
@@ -134,7 +124,7 @@ def set_stream_wall_start(value):
 def stream_url(url, name=None, channel=None, new_player=True):
     global currently_streaming, last_streamed, _stream_theme_path
 
-    currently_playing = _get_currently_playing()
+    currently_playing = state.playback.currently_playing
 
     # Check for a locally cached file first (avoids live yt-dlp URL resolution)
     cache_path = youtube_control._get_yt_cache_path(url)
@@ -245,7 +235,7 @@ def stop_stream(restore=True):
 
 
 def play_trailer(url=None):
-    currently_playing = _get_currently_playing()
+    currently_playing = state.playback.currently_playing
     url = url or currently_playing.get("data", {}).get("trailer")
     if url:
         url = f"https://www.youtube.com/watch?v={url}"
@@ -276,7 +266,7 @@ def get_stream_start_time(length):
 
 
 def play_random_clip(data=None, queue=False, ost=False):
-    currently_playing = _get_currently_playing()
+    currently_playing = state.playback.currently_playing
     if currently_streaming and not data:
         stop_stream()
         return
@@ -294,7 +284,7 @@ def play_random_clip(data=None, queue=False, ost=False):
 
 
 def load_random_clips(data=None, limit_channels=False, ost=False):
-    currently_playing = _get_currently_playing()
+    currently_playing = state.playback.currently_playing
     if not data:
         data = currently_playing.get("data")
     title = _get_display_title(data)
@@ -320,6 +310,20 @@ def stream_clip(video_id, name, channel):
         stop_stream()
     else:
         stream_url(url, name, channel, False)
+
+
+def resolve_clips_for_data(data):
+    """Populate _cached_clips_links and _cached_ost_clips_links for *data*.
+
+    Call this before building the clips link list so the lists reflect the
+    current track. Encapsulates the cache-key computation that previously
+    lived in the main module.
+    """
+    global _cached_clips_links, _cached_ost_clips_links
+    cached_id = f"{_get_display_title(data)}-{data.get('season', '9999')[-4:]}"
+    cached_id_base = f"{_get_base_title(title=_get_display_title(data))}-{data.get('season', '9999')[-4:]}"
+    _cached_clips_links = _cached_clips.get(cached_id) or _cached_clips.get(cached_id_base) or []
+    _cached_ost_clips_links = _cached_ost_clips.get(cached_id) or _cached_ost_clips.get(cached_id_base) or []
 
 
 # ---------------------------------------------------------------------------
@@ -422,10 +426,10 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "#animeexplain", "top 3", "top 5", "top 10", "top 11", "top 12", "top 13",
                     "anime mix", "english dub greeting video", "best of 20", "reacts to", "anime boston",
                     "best anime fights compilation", "best anime fight compilation", "best anime battles compilation",
-                    "best anime battle compilation", "#animeindo", "first impressions", ") hype reel",
+                    "best anime battle compilation", "#animeindo", "first impressions", ") hype reel", "my recommended "
                 ]
                 ost_bad_keywords = [
-                    "insert song", "anime songs", "cd single", "theme song", "full album", "extended",
+                    "insert song", "anime songs", "cd single", "theme song", "full album", "extended", "toda la música"
                 ]
                 game_bad_keywords = [
                     "gameplay", "let's play", "walkthrough", "opening cinematic", "game trailer", "action rpg",

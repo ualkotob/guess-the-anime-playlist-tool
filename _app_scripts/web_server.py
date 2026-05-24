@@ -344,10 +344,6 @@ def control_buzzer(cmd: str) -> bool:
   return True
 
 
-def buzzer_is_open() -> bool:
-  return bool(_buzzer_open)
-
-
 def buzzer_is_locked() -> bool:
   return bool(_buzzer_locked)
 
@@ -525,7 +521,7 @@ _HTML = r"""<!DOCTYPE html>
       transition: border-color .15s, background .15s;
     }
     .char-card img {
-      width: 80px; height: 110px; object-fit: cover; border-radius: 5px;
+      width: 80px; height: 110px; object-fit: contain; background: #000; border-radius: 5px;
       display: block;
     }
     .char-card .char-lbl {
@@ -4320,6 +4316,36 @@ _HTML = r"""<!DOCTYPE html>
       area.appendChild(grid);
       updateCounter();
 
+      // Scale cards to fit available space (mirrors mpv overlay: min(w/refW, h/refH))
+      requestAnimationFrame(() => {
+        const gridNatW = grid.scrollWidth;
+        const gridNatH = grid.scrollHeight;
+        const availW = area.clientWidth || window.innerWidth;
+        const gridRect = grid.getBoundingClientRect();
+        const submitBtn = document.getElementById('submit-btn');
+        const btnRect = submitBtn ? submitBtn.getBoundingClientRect() : null;
+        const availBottom = btnRect && btnRect.top > gridRect.top ? btnRect.top - 8 : window.innerHeight - 20;
+        const availH = availBottom - gridRect.top;
+
+        const scaleW = gridNatW > 0 ? availW / gridNatW : 1;
+        const scaleH = gridNatH > 0 && availH > 50 ? availH / gridNatH : 1;
+        const scale = Math.min(scaleW, scaleH);
+
+        if (scale < 0.98) {
+          const s = scale;
+          grid.querySelectorAll('.char-card').forEach(c => {
+            c.style.width = Math.round(90 * s) + 'px';
+            c.style.padding = Math.max(2, Math.round(5 * s)) + 'px';
+            const img = c.querySelector('img');
+            if (img) {
+              img.style.width  = Math.round(80 * s) + 'px';
+              img.style.height = Math.round(110 * s) + 'px';
+            }
+          });
+          grid.style.gap = Math.max(2, Math.round(8 * s)) + 'px';
+        }
+      });
+
       return {
         getValue: () => Array.from(selectedLabels).sort().join(','),
         restoreSelected: (csv) => {
@@ -7991,9 +8017,12 @@ _HTML = r"""<!DOCTYPE html>
       {key:'studio',             label:'Themes by Studio',        header: true},
       {key:'studio_alpha',       label:'  ↳ Alphabetical',        baseLabel:'Themes by Studio'},
       {key:'studio',             label:'  ↳ Theme Total',         baseLabel:'Themes by Studio'},
-      {key:'tag',                label:'Themes by Tag',           header: true},
-      {key:'tag_alpha',          label:'  ↳ Alphabetical',        baseLabel:'Themes by Tag'},
-      {key:'tag',                label:'  ↳ Theme Total',         baseLabel:'Themes by Tag'},
+      {key:'tag',                label:'Themes by Tag (MAL)',     header: true},
+      {key:'tag_alpha',          label:'  ↳ Alphabetical',        baseLabel:'Themes by Tag (MAL)'},
+      {key:'tag',                label:'  ↳ Theme Total',         baseLabel:'Themes by Tag (MAL)'},
+      {key:'anilist_tag',        label:'Themes by Tag (AniList)', header: true},
+      {key:'anilist_tag_alpha',  label:'  ↳ Alphabetical',        baseLabel:'Themes by Tag (AniList)'},
+      {key:'anilist_tag',        label:'  ↳ Theme Total',         baseLabel:'Themes by Tag (AniList)'},
       {key:'type',               label:'Themes by Type'},
       {key:'slug',               label:'Themes by Slug',          header: true},
       {key:'slug_alpha',         label:'  ↳ Alphabetical',        baseLabel:'Themes by Slug'},
@@ -8468,6 +8497,7 @@ _HTML = r"""<!DOCTYPE html>
       {label: 'Studio',          value: 'studio'},
       {label: 'Artist',          value: 'artist'},
       {label: 'Song Title',      value: 'song'},
+      {label: 'Characters',      value: 'characters'},
     ];
     function _ctrlToggleAutoBonusList() {
       const opening = !_ctrlAutoBonusListOpen;
@@ -10385,11 +10415,6 @@ def set_host_password(password: str):
     _host_password = (password or '').strip()
 
 
-def set_host_name(name: str):
-    """Deprecated: use set_host_password instead."""
-    set_host_password(name)
-
-
 def flush_pending_selections():
     """Drain _pending_selections into _answer_queue and _submitted_answers without clearing other state.
     Call this before scoring so silent selections are included in the results.
@@ -11183,7 +11208,6 @@ def _build_app():
 
     @_socketio.on('set_player_color')
     def handle_set_player_color(data):
-        from flask import request as _req
         name = str(data.get('name', '')).strip()
         bg   = str(data.get('bg',   '')).strip()
         text = str(data.get('text', '')).strip()

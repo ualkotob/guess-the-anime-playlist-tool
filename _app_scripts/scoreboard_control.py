@@ -14,7 +14,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 
 import requests
 
@@ -51,22 +50,6 @@ _align_sent       = False
 
 _colors_getter   = None   # callable() → (bg_color, text_color)
 _inverted_getter = None   # callable() → bool
-
-
-def set_getters(colors_fn=None, inverted_fn=None):
-    """Register callbacks so the module can read live app colours/layout settings.
-
-    Call once at startup:
-        scoreboard_control.set_getters(
-            colors_fn=lambda: (OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR),
-            inverted_fn=lambda: inverted_positions,
-        )
-    """
-    global _colors_getter, _inverted_getter
-    if colors_fn is not None:
-        _colors_getter = colors_fn
-    if inverted_fn is not None:
-        _inverted_getter = inverted_fn
 
 
 # ── Socket communication ──────────────────────────────────────────────────────
@@ -147,13 +130,6 @@ def send_colors(bg=None, text=None):
 def send_score(player_name, delta):
     """Tell the scoreboard to apply *delta* to *player_name*'s score."""
     send_command(f"[SCORE_WRITE][PLAYER]{player_name}[DELTA]{delta}")
-
-
-def send_align(inverted=None):
-    """Send alignment command based on *inverted* flag (or stored callback)."""
-    if inverted is None and _inverted_getter:
-        inverted = _inverted_getter()
-    send_command("align right" if inverted else "align left")
 
 
 # ── Score-change log ──────────────────────────────────────────────────────────
@@ -337,9 +313,10 @@ def download_scoreboard(root, highlight_color, window_pos_fn, save_config_fn, on
                 os.remove("universal_scoreboard.exe.tmp")
             except OSError:
                 pass
+            err_msg = str(e)
             root.after(0, lambda: messagebox.showerror(
                 "Download Failed",
-                f"Could not download the scoreboard:\n{e}\n\n"
+                f"Could not download the scoreboard:\n{err_msg}\n\n"
                 f"Download manually from:\n{_RELEASES_PAGE}",
             ))
         finally:
