@@ -4,3 +4,4 @@ metadata/youtube_metadata.json
 /metadata
 guess_the_anime.ico
 /_app_scripts/__pycache__
+*.pyc

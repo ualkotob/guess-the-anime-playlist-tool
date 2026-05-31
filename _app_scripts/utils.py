@@ -19,6 +19,8 @@ import tempfile
 import tkinter as tk
 from datetime import datetime
 
+from core.app_logging import log_exception, log_warning
+
 # ---------------------------------------------------------------------------
 # JSON infinity serialization helpers
 # ---------------------------------------------------------------------------
@@ -153,7 +155,7 @@ def save_metadata_compressed(filepath, data, encoding='utf-8', ensure_ascii=True
                 pass
             raise e
     except Exception:
-        pass  # Compression is optional optimization
+        log_exception("Failed to save compressed metadata for %s", filepath)
 
 
 def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
@@ -165,6 +167,7 @@ def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
                 return json.load(f), True
         except Exception as e:
             print(f"Warning: Failed to load compressed {name}: {e}")
+            log_warning("Failed to load compressed %s from %s.gz: %s", name, filepath, e)
 
     if os.path.exists(filepath):
         with open(filepath, "r", encoding=encoding) as f:

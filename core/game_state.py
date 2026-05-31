@@ -69,6 +69,19 @@ class GameState:
             check_theme_cache={},
             lightning_mode_settings={},
         )
+        # Control cluster - scalar playback/UI control state. Unlike the
+        # dict clusters, these values are intentionally reassigned.
+        self.controls = SimpleNamespace(
+            autoplay_toggle=0,
+            special_repeat_track_mode=False,
+            autoplay_fullscreen=True,
+            mpv_always_on_top=False,
+            volume_level=100,
+            bgm_volume=1.0,
+            stream_volume_boost=0,
+            disable_video_audio=False,
+            light_muted=False,
+        )
         # Widget cluster — references to long-lived Tk widgets created
         # once at startup. UNLIKE the dict clusters above, each is set
         # exactly once (the widget object itself is the shared thing);
