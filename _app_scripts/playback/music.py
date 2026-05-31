@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 
 import pygame
 from tinytag import TinyTag
@@ -35,7 +36,13 @@ from _app_scripts.queue_round.lightning_rounds import frame_round
 # Module init — ensure the music folder exists and the mixer is up before
 # play_background_music tries to touch pygame.mixer.music.
 # ---------------------------------------------------------------------------
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# When frozen by PyInstaller (--onefile), __file__ points into a temp extraction
+# dir (_MEIPASS) that gets wiped, so the music folder would resolve to the wrong
+# place. sys.executable always points at the real exe / script location.
+if getattr(sys, "frozen", False):
+    _PROJECT_ROOT = os.path.dirname(sys.executable)
+else:
+    _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _MUSIC_DIR = os.path.join(_PROJECT_ROOT, "music")
 if not os.path.exists(_MUSIC_DIR):
     os.makedirs(_MUSIC_DIR)
