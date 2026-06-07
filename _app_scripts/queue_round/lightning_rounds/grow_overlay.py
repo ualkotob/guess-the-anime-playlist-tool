@@ -16,6 +16,7 @@ import random
 import time as _time_mod
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -26,19 +27,6 @@ grow_position           = None   # (cx, cy) in OSD coords; also written by main'
 last_grow_block_percent = 100    # last block_percent (read by main's drag loop)
 _grow_osd_last_ms       = 0.0    # wall time of last ASS push; throttle to ~60fps
 _GROW_ASS_OSD_ID        = 51     # unique ID for osd-overlay (ASS-based) grow panel
-
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_osd_command = None
-_get_effective_video_rect = None
-
-
-def set_context(*, osd_command, get_effective_video_rect):
-    g = globals()
-    g['_osd_command'] = osd_command
-    g['_get_effective_video_rect'] = get_effective_video_rect
 
 
 def set_grow_position():
@@ -90,7 +78,8 @@ def _draw_grow_osd(block_percent, cx_osd, cy_osd):
     if (now - _grow_osd_last_ms) < 0.016:  # ~60fps cap
         return
     try:
-        osd_w, osd_h, fv_x, fv_y, fv_w, fv_h = _get_effective_video_rect()
+        import _app_scripts.information.information_popup as information_popup
+        osd_w, osd_h, fv_x, fv_y, fv_w, fv_h = information_popup._get_effective_video_rect()
         if not osd_w:
             return
         visible_w = int(fv_w * (1.0 - block_percent / 100.0))
@@ -116,7 +105,7 @@ def _draw_grow_osd(block_percent, cx_osd, cy_osd):
 
         if not paths:
             # Fully uncovered — nothing to draw
-            _osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
             return
 
         ass_payload = (
@@ -124,7 +113,7 @@ def _draw_grow_osd(block_percent, cx_osd, cy_osd):
             + " ".join(paths)
             + "{\\p0}"
         )
-        _osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'ass-events',
                      ass_payload, osd_w, osd_h, 0, 'no')
         _grow_osd_last_ms = now
     except Exception as e:
@@ -139,7 +128,7 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
 
     if destroy:
         try:
-            _osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _GROW_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         grow_overlay_boxes.clear()
@@ -174,7 +163,8 @@ def toggle_grow_overlay(block_percent=100, position="center", destroy=False):
     else:
         from _app_scripts.playback import blind_screen
         if blind_screen._video_frame_active:
-            _, _, fv_x, fv_y, fv_w, fv_h = _get_effective_video_rect()
+            import _app_scripts.information.information_popup as information_popup
+            _, _, fv_x, fv_y, fv_w, fv_h = information_popup._get_effective_video_rect()
             cx, cy = fv_x + fv_w // 2, fv_y + fv_h // 2
         else:
             cx, cy = osd_w // 2, osd_h // 2

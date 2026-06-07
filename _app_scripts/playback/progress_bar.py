@@ -2,43 +2,30 @@
 
 import json
 import os
+import time
 
 from PIL import ImageColor
 
+from core.game_state import state
+from core.paths import CENSOR_JSON_FILE
+import _app_scripts.playback.osd_text as osd_text
+import _app_scripts.playback.progress_overlay as progress_overlay
 
-_ctx = {}
 
+_PROGRESS_ASS_OSD_ID = 52   # thin progress bar OSD overlay slot
 _PROGRESS_BAR_HEIGHT_PCT = 0.008
 _PROGRESS_BAR_ASS_ALPHA = 0xB2
 
-
-def set_context(
-    *,
-    player,
-    osd_command,
-    progress_osd_id,
-    get_progress_bar_enabled,
-    set_progress_bar_enabled,
-    get_light_round_started,
-    get_light_round_start_time,
-    get_light_answer_wall_start,
-    get_light_round_length,
-    get_light_round_answer_length,
-    get_projected_player_time,
-    get_fixed_lightning_round_playlist_data,
-    get_fixed_playlist_progress,
-    wall_time,
-    censors,
-    censor_json_file,
-    apply_censors,
-):
-    _ctx.clear()
-    _ctx.update(locals())
+# Last fraction drawn while a fixed lightning playlist was active. Used to
+# freeze the bar across the inter-round transition (when light_round_started
+# is briefly False and the next round hasn't registered yet) so it doesn't
+# snap to the raw video position and back.
+_last_fixed_fraction = None
 
 
 def _draw_progress_osd(fraction, color_str="grey"):
     """Draw the progress bar OSD using ASS overlay."""
-    player = _ctx["player"]
+    player = state.widgets.player
     try:
         osd_w = int(player._p.osd_width or 0)
         osd_h = int(player._p.osd_height or 0)
@@ -70,14 +57,14 @@ def _draw_progress_osd(fraction, color_str="grey"):
         + "{\\p0}"
     )
     try:
-        _ctx["osd_command"]("osd-overlay", _ctx["progress_osd_id"], "ass-events", ass_payload, osd_w, osd_h, 2, "no")
+        osd_text.osd_command("osd-overlay", _PROGRESS_ASS_OSD_ID, "ass-events", ass_payload, osd_w, osd_h, 2, "no")
     except Exception as e:
         print(f"Progress OSD error: {e}")
 
 
 def _clear_progress_osd():
     try:
-        _ctx["osd_command"]("osd-overlay", _ctx["progress_osd_id"], "none", "", 0, 0, 0, "no")
+        osd_text.osd_command("osd-overlay", _PROGRESS_ASS_OSD_ID, "none", "", 0, 0, 0, "no")
     except Exception:
         pass
 
@@ -85,7 +72,8 @@ def _clear_progress_osd():
 def _effective_remaining_ms(current_ms, total_ms, filename):
     """Remaining ms of audible content, subtracting upcoming skip-censor durations."""
     raw = max(0.0, total_ms - current_ms)
-    censors = _ctx["censors"]
+    # Lazy import: progress_bar (playback) sits below the censors toggle module.
+    import _app_scripts.toggles.censors as censors
     if not (censors.censors_enabled or censors.censors_nsfw_enabled) or not filename:
         return raw
     file_censors = censors.get_file_censors(filename) or []
@@ -107,10 +95,9 @@ def _apply_skip_censor_to_progress(current_time_ms, total_time_ms, filename):
     if not filename:
         return current_time_ms, total_time_ms
     try:
-        censor_json_file = _ctx["censor_json_file"]
-        if not os.path.exists(censor_json_file):
+        if not os.path.exists(CENSOR_JSON_FILE):
             return current_time_ms, total_time_ms
-        with open(censor_json_file, "r", encoding="utf-8") as f:
+        with open(CENSOR_JSON_FILE, "r", encoding="utf-8") as f:
             censor_data = json.load(f)
         file_censors = censor_data.get(filename, [])
         cur_s = current_time_ms / 1000.0
@@ -135,31 +122,42 @@ def _apply_skip_censor_to_progress(current_time_ms, total_time_ms, filename):
 
 
 def update_progress_bar(current_time, total_time, filename=None):
-    if not _ctx["get_progress_bar_enabled"]():
+    global _last_fixed_fraction
+    if not state.controls.progress_bar_enabled:
         _clear_progress_osd()
         return
 
-    if _ctx["get_light_round_started"]() and _ctx["get_light_round_start_time"]() is not None:
-        light_answer_wall_start = _ctx["get_light_answer_wall_start"]()
-        light_round_length = _ctx["get_light_round_length"]()
+    fixed_active = bool(state.lightning.fixed_lightning_round_playlist_data)
+
+    if state.lightning.light_round_started and state.lightning.light_round_start_time is not None:
+        light_answer_wall_start = state.lightning.light_answer_wall_start
+        light_round_length = state.lightning.light_round_length
         if light_answer_wall_start is not None:
-            current_round_elapsed = light_round_length + (_ctx["wall_time"]() - light_answer_wall_start)
+            current_round_elapsed = light_round_length + (time.time() - light_answer_wall_start)
         else:
             current_round_elapsed = max(
                 0.0,
-                _ctx["get_projected_player_time"]() / 1000.0 - _ctx["get_light_round_start_time"](),
+                state.seek.projected_player_time / 1000.0 - state.lightning.light_round_start_time,
             )
-        if _ctx["get_fixed_lightning_round_playlist_data"]():
-            playlist_progress = _ctx["get_fixed_playlist_progress"](current_round_elapsed)
+        if fixed_active:
+            playlist_progress = progress_overlay._get_fixed_playlist_progress(current_round_elapsed)
             if playlist_progress:
                 current_time = playlist_progress[0] * 10
                 total_time = playlist_progress[1] * 10
                 filename = None
         else:
-            round_total = light_round_length + _ctx["get_light_round_answer_length"]()
+            round_total = light_round_length + state.lightning.light_round_answer_length
             current_time = min(current_round_elapsed, round_total) * 1000
             total_time = round_total * 1000
             filename = None
+    elif fixed_active and _last_fixed_fraction is not None:
+        # Between rounds of a fixed playlist (the next round hasn't registered
+        # light_round_started/light_round_start_time yet): hold the bar at the
+        # last playlist fraction instead of snapping to the raw video position.
+        _draw_progress_osd(_last_fixed_fraction)
+        return
+    elif not fixed_active:
+        _last_fixed_fraction = None
 
     if total_time <= 0:
         return
@@ -169,13 +167,18 @@ def update_progress_bar(current_time, total_time, filename=None):
         total_time,
         filename,
     )
-    _draw_progress_osd(effective_current_time / effective_total_time)
+    fraction = effective_current_time / effective_total_time
+    if fixed_active:
+        _last_fixed_fraction = fraction
+    _draw_progress_osd(fraction)
 
 
 def toggle_progress_bar():
-    enabled = not _ctx["get_progress_bar_enabled"]()
-    _ctx["set_progress_bar_enabled"](enabled)
+    enabled = not state.controls.progress_bar_enabled
+    state.controls.progress_bar_enabled = enabled
     print("Progress Bar Enabled: " + str(enabled))
-    player = _ctx["player"]
-    _ctx["apply_censors"](player.get_time() / 1000, player.get_length() / 1000)
+    # Lazy import: progress_bar (playback) sits below the censors toggle module.
+    import _app_scripts.toggles.censors as censors
+    player = state.widgets.player
+    censors.apply_censors(player.get_time() / 1000, player.get_length() / 1000)
     update_progress_bar(player.get_time(), player.get_length())

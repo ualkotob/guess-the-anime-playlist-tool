@@ -1,5 +1,4 @@
-# _app_scripts/generic_settings_editor.py
-# Generic tree-based settings editor - extracted from guess_the_anime.py (Step 36).
+# Generic tree-based settings editor.
 import ast
 import copy
 
@@ -8,19 +7,10 @@ from tkinter import ttk, simpledialog
 
 from core.game_state import state
 import _app_scripts.utils as utils
-
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context() at startup)
-# ---------------------------------------------------------------------------
-get_window_position_and_setup = None
+from ..ui import windowing
 
 # Module-private window state (was a main-file global)
 generic_settings_editor_window = None
-
-
-def set_context(*, get_window_position_and_setup):
-    g = globals()
-    g['get_window_position_and_setup'] = get_window_position_and_setup
 
 
 def open_generic_settings_editor(
@@ -299,7 +289,7 @@ def open_generic_settings_editor(
     window.title(title)
     window.geometry("400x450")
     window.configure(bg="#1e1e1e")
-    get_window_position_and_setup(window)
+    windowing.get_window_position_and_setup(window)
     
     # Track this window globally
     generic_settings_editor_window = window

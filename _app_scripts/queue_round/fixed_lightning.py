@@ -1,7 +1,4 @@
-"""
-Fixed Lightning Rounds — type definitions, field metadata, editor UI.
-Extracted from guess_the_anime.py.
-"""
+"""Fixed Lightning Rounds — type definitions, field metadata, editor UI."""
 
 import os
 import re
@@ -23,33 +20,26 @@ except ImportError:
     _requests = None
 
 from core.game_state import state
+from ..playback import cache_download, transport
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.file.tooltip as tooltip
+import _app_scripts.playlists.entry_paths as entry_paths
+import _app_scripts.ui.lists as lists
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.queue_round.lightning_rounds.title_overlay as title_overlay
+import _app_scripts.queue_round.lightning_rounds.lightning_settings as lightning_settings
+import _app_scripts.playback.streaming as streaming
+import _app_scripts.playback.music as music
+import _app_scripts.queue_round.fixed_lightning_actions as fixed_lightning_actions
 
-# ---------------------------------------------------------------------------
-# Context (injected by set_context at startup)
-# ---------------------------------------------------------------------------
-_BACKGROUND_COLOR = "gray12"
-_HIGHLIGHT_COLOR = "#333"
-_get_window_position_and_setup = None
-_ToolTip = None
-_get_clean_filename = None
-_is_animethemes_stream_file = None
-_get_title = None
-_get_metadata = None
-_get_display_title = None
-_get_base_title = None
-_play_video_from_filename = None
-_player = None
-_lightning_mode_settings_default = {}   # direct dict reference, set in set_context
+# Collaborators (read directly off state / sibling modules).
+_BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
+_HIGHLIGHT_COLOR = state.colors.HIGHLIGHT_COLOR
 # directory_files / playlist are read directly from state.metadata.*
 # currently_playing, fl_rounds_list, lightning_mode_settings are read directly from state.playback.*
-_play_video = None
-_set_fl_queue = None                    # fn(v): sets main-file fixed_lightning_queue
-_set_fl_round_playlist_data = None      # fn(v): sets main-file fixed_lightning_round_playlist_data
-_show_fixed_lightning_list = None       # fn ref (stays in main)
-_load_fixed_lightning_rounds = None     # fn ref (stays in main)
-_open_image_popup = None
-_stream_url = None
-_load_music_files = None
+# play_video is reached on the transport sibling directly.
+# fixed_lightning_queue / fixed_lightning_round_playlist_data are written directly to state.lightning.*
 # music_files is read directly from state.playback.music_files
 
 # ---------------------------------------------------------------------------
@@ -185,77 +175,23 @@ FIXED_LIGHTNING_ROUNDS = {
     ]
 }
 
-# Built lazily in set_context (some entries reference lightning_mode_settings_default)
-FIXED_LIGHTNING_ROUND_FIELD_INDEX = {}
-
 FIXED_LIGHTNING_FOLDER = "fixed_playlists"
 
 
-# ---------------------------------------------------------------------------
-# Context injection
-# ---------------------------------------------------------------------------
-
-def set_context(
-    background_color,
-    highlight_color,
-    get_window_position_and_setup,
-    ToolTip,
-    get_clean_filename,
-    is_animethemes_stream_file,
-    get_title,
-    get_metadata,
-    get_display_title,
-    get_base_title,
-    play_video_from_filename,
-    player,
-    lightning_mode_settings_default,
-    play_video,
-    set_fl_queue,
-    set_fl_round_playlist_data,
-    show_fixed_lightning_list,
-    load_fixed_lightning_rounds,
-    open_image_popup,
-    stream_url,
-    load_music_files,
-):
-    global _BACKGROUND_COLOR, _HIGHLIGHT_COLOR
-    global _get_window_position_and_setup, _ToolTip
-    global _get_clean_filename, _is_animethemes_stream_file
-    global _get_title, _get_metadata, _get_display_title, _get_base_title
-    global _play_video_from_filename, _player
-    global _lightning_mode_settings_default
-    global _play_video
-    global _set_fl_queue, _set_fl_round_playlist_data
-    global _show_fixed_lightning_list, _load_fixed_lightning_rounds
-    global _open_image_popup, _stream_url, _load_music_files
-    global FIXED_LIGHTNING_ROUND_FIELD_INDEX
-
+def _ensure_folder():
+    """Create the fixed-round playlist folder on demand. Kept lazy (not at import)
+    because the app sets its working directory via chdir() only at startup, after
+    this module is imported."""
     os.makedirs(FIXED_LIGHTNING_FOLDER, exist_ok=True)
 
-    _BACKGROUND_COLOR = background_color
-    _HIGHLIGHT_COLOR = highlight_color
-    _get_window_position_and_setup = get_window_position_and_setup
-    _ToolTip = ToolTip
-    _get_clean_filename = get_clean_filename
-    _is_animethemes_stream_file = is_animethemes_stream_file
-    _get_title = get_title
-    _get_metadata = get_metadata
-    _get_display_title = get_display_title
-    _get_base_title = get_base_title
-    _play_video_from_filename = play_video_from_filename
-    _player = player
-    _lightning_mode_settings_default = lightning_mode_settings_default
-    _play_video = play_video
-    _set_fl_queue = set_fl_queue
-    _set_fl_round_playlist_data = set_fl_round_playlist_data
-    _show_fixed_lightning_list = show_fixed_lightning_list
-    _load_fixed_lightning_rounds = load_fixed_lightning_rounds
-    _open_image_popup = open_image_popup
-    _stream_url = stream_url
-    _load_music_files = load_music_files
 
-    lmd = lightning_mode_settings_default
-    FIXED_LIGHTNING_ROUND_FIELD_INDEX = {
+# ---------------------------------------------------------------------------
+# Round field metadata — drives the fixed-round editor UI.
+# ---------------------------------------------------------------------------
+
+def _build_field_index():
+    lmd = lightning_settings.lightning_mode_settings_default
+    return {
         # Optional metadata per field:
         # tooltip: Hover text shown on the field label in the fixed-round editor.
         "theme": {"type": "file", "required": True, "tooltip": "Theme filename used for this round. Use SET TO CURRENT to capture the currently playing theme."},
@@ -384,6 +320,9 @@ def set_context(
     }
 
 
+FIXED_LIGHTNING_ROUND_FIELD_INDEX = _build_field_index()
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -392,12 +331,12 @@ def is_theme_missing(theme_filename):
     """Check if a theme file is missing from local storage and not a stream."""
     if not theme_filename:
         return False
-    clean_theme = _get_clean_filename(theme_filename)
+    clean_theme = entry_paths.get_clean_filename(theme_filename)
     # Check local directory files
     if clean_theme in state.metadata.directory_files:
         return False
     # Check if it's a valid stream
-    return not _is_animethemes_stream_file(theme_filename)
+    return not cache_download.is_animethemes_stream_file(theme_filename)
 
 def should_show_field(field_name, round_data):
     """Check if a field should be shown based on show_if conditions"""
@@ -438,6 +377,8 @@ def open_fixed_lightning_manager():
     """Open the fixed lightning round playlists manager window"""
     global _manager_window
 
+    _ensure_folder()  # editor create/rename actions write into this folder
+
     def manager_close():
         global _manager_window
         _manager_window.destroy()
@@ -452,7 +393,7 @@ def open_fixed_lightning_manager():
     _manager_window.title("Fixed Lightning Round Playlists Manager")
     _manager_window.configure(bg=_BACKGROUND_COLOR)
     _manager_window.geometry("600x400")
-    _get_window_position_and_setup(_manager_window)
+    windowing.get_window_position_and_setup(_manager_window)
 
     _manager_window.protocol("WM_DELETE_WINDOW", manager_close)
 
@@ -469,7 +410,7 @@ def open_fixed_lightning_manager():
             widget.destroy()
 
         # Reload rounds
-        _load_fixed_lightning_rounds()
+        fixed_lightning_actions.load_fixed_lightning_rounds()
 
         # Main container
         main_frame = tk.Frame(_manager_window, bg=_BACKGROUND_COLOR)
@@ -666,7 +607,7 @@ def open_fixed_lightning_manager():
                     json.dump(round_data, f, indent=4)
                 refresh_ui()
                 # Refresh the main list
-                _show_fixed_lightning_list(update=True)
+                fixed_lightning_actions.show_fixed_lightning_list(update=True)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to create round: {e}")
 
@@ -728,7 +669,7 @@ def open_fixed_lightning_manager():
                         json.dump(round_info['data'], f, indent=4)
 
                 refresh_ui()
-                _show_fixed_lightning_list(update=True)
+                fixed_lightning_actions.show_fixed_lightning_list(update=True)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to update metadata: {e}")
 
@@ -769,7 +710,7 @@ def open_fixed_lightning_manager():
                 selected_round[0] = None
                 refresh_ui()
                 # Refresh the main list
-                _show_fixed_lightning_list(update=True)
+                fixed_lightning_actions.show_fixed_lightning_list(update=True)
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to delete round: {e}")
 
@@ -869,7 +810,7 @@ def open_round_editor(round_info, manager_window=None, position=None):
         for i, rnd in enumerate(rounds):
             rnd_type = rnd.get('type', 'unknown').upper()
             rnd_theme = rnd.get('theme', 'No theme')
-            display_name = _get_title(rnd_theme, rnd_theme)
+            display_name = lists.get_title(rnd_theme, rnd_theme)
             if len(display_name) > 50:
                 display_name = display_name[:47] + "..."
             rounds_listbox.insert(tk.END, f"{i+1}. [{rnd_type}] {display_name}")
@@ -1007,7 +948,7 @@ def open_round_editor(round_info, manager_window=None, position=None):
                                         "Sort all rounds alphabetically by display name?",
                                         parent=editor_window)
             if result:
-                rounds.sort(key=lambda r: _get_title(r.get('theme', ''), r.get('theme', '')).lower())
+                rounds.sort(key=lambda r: lists.get_title(r.get('theme', ''), r.get('theme', '')).lower())
                 selected_round_index[0] = None
                 save_rounds()
                 refresh_editor()
@@ -1356,7 +1297,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 label_widget.pack(side="left", padx=(0, 4))
                 tooltip_text = field_info.get("tooltip", "")
                 if tooltip_text:
-                    _ToolTip(label_widget, tooltip_text)
+                    tooltip.ToolTip(label_widget, tooltip_text)
                 # Dynamic show/hide: watch the parent toggle specified in show_if
                 _show_if = field_info.get("show_if", {})
                 _parent_var = None
@@ -1408,7 +1349,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     if "default" in field_info and field_info.get("default") not in (None, ""):
                         tooltip_parts.append(f"Default: {field_info.get('default')}")
                     tooltip_text = "\n".join(tooltip_parts)
-                _ToolTip(label_widget, tooltip_text)
+                tooltip.ToolTip(label_widget, tooltip_text)
 
             # Input widget based on field type
             if field_type == "file":
@@ -1418,7 +1359,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
 
                 # Display current value with get_title
                 initial_value = round_data.get(field_name, "")
-                display_value = _get_title(initial_value, initial_value) if initial_value else "(No theme selected)"
+                display_value = lists.get_title(initial_value, initial_value) if initial_value else "(No theme selected)"
 
                 label = tk.Label(file_frame, text=display_value, font=font_entry,
                                bg=_BACKGROUND_COLOR, fg="white", anchor="w")
@@ -1431,12 +1372,12 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     filename = state.playback.currently_playing.get("filename", "")
                     if filename:
                         actual_filename[0] = filename
-                        display_name = _get_title(filename, filename)
+                        display_name = lists.get_title(filename, filename)
                         label.config(text=display_name)
 
                 def play_selected():
                     if actual_filename[0]:
-                        _play_video_from_filename(actual_filename[0])
+                        metadata_display.play_video_from_filename(actual_filename[0])
 
                 select_btn = tk.Button(file_frame, text="SET TO CURRENT", font=font_entry,
                                       bg="black", fg="white", command=set_currently_playing)
@@ -1456,7 +1397,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 # Duration field with +/- buttons (increment by 1 second)
                 # Get default duration from lightning_mode_settings_default
                 round_type = type_var.get()
-                default_duration = _lightning_mode_settings_default.get(round_type, {}).get("length", 12)
+                default_duration = lightning_settings.lightning_mode_settings_default.get(round_type, {}).get("length", 12)
                 if field_name == "answer_duration":
                     default_duration = 8  # Default answer duration
 
@@ -1502,7 +1443,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
 
                 def calc_from_now(e=entry, fn=field_name):
                     try:
-                        now = _player.get_time() / 1000.0
+                        now = state.widgets.player.get_time() / 1000.0
                         # For clip/ost rounds use clip_start_time as the reference:
                         #   duration       — always (clip/ost question counts from clip start)
                         #   answer_duration — only when clip_for_answer is toggled on
@@ -1621,7 +1562,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
 
                 def set_now(e=entry):
                     try:
-                        current_time = _player.get_time() / 1000.0  # Convert ms to seconds
+                        current_time = state.widgets.player.get_time() / 1000.0  # Convert ms to seconds
                         if current_time > 0:
                             e.delete(0, tk.END)
                             e.insert(0, f"{current_time:.1f}")
@@ -1631,7 +1572,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 def set_to_time(e=entry):
                     try:
                         time_val = float(e.get() or 0)
-                        _player.set_time(round(time_val * 1000))  # Convert seconds to ms
+                        state.widgets.player.set_time(round(time_val * 1000))  # Convert seconds to ms
                     except:
                         pass
 
@@ -1689,8 +1630,8 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 def open_selector(e=entry, fw=field_widgets, fn=field_name):
                     theme_wid = fw.get("theme")
                     theme_filename = theme_wid[1]() if theme_wid else ""
-                    data = _get_metadata(theme_filename) if theme_filename else {}
-                    title_text = _get_base_title(title=_get_display_title(data or {})) if theme_filename else ""
+                    data = metadata_fetch.get_metadata(theme_filename) if theme_filename else {}
+                    title_text = title_overlay.get_base_title(title=metadata_display.get_display_title(data or {})) if theme_filename else ""
                     if not title_text:
                         messagebox.showwarning("No Theme", "Please set the theme first.", parent=field_window)
                         return
@@ -1711,8 +1652,8 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 def open_letter_selector(e=entry, fw=field_widgets, fn=field_name):
                     theme_wid = fw.get("theme")
                     theme_filename = theme_wid[1]() if theme_wid else ""
-                    data = _get_metadata(theme_filename) if theme_filename else {}
-                    title_text = _get_base_title(title=_get_display_title(data or {})) if theme_filename else ""
+                    data = metadata_fetch.get_metadata(theme_filename) if theme_filename else {}
+                    title_text = title_overlay.get_base_title(title=metadata_display.get_display_title(data or {})) if theme_filename else ""
                     if not title_text:
                         messagebox.showwarning("No Theme", "Please set the theme first.", parent=field_window)
                         return
@@ -1734,7 +1675,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 def view_img(e=entry):
                     url = e.get().strip()
                     if url:
-                        _open_image_popup(url, "Image Preview")
+                        metadata_display.open_image_popup(url, "Image Preview")
                     else:
                         messagebox.showwarning("No URL", "Please enter an image URL first.")
                 tk.Button(url_frame, text="VIEW IMAGE", font=font_entry,
@@ -1750,7 +1691,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     if theme_wid:
                         filename = theme_wid[1]()
                         if filename:
-                            return (_get_metadata(filename) or {}).get("cover") or ""
+                            return (metadata_fetch.get_metadata(filename) or {}).get("cover") or ""
                     return ""
                 cover_url_var = [_theme_cover_url()]
                 url_label = tk.Label(cf_frame,
@@ -1948,7 +1889,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                 mt_frame.pack(side="left")
                 music_files = state.playback.music_files
                 if not music_files:
-                    _load_music_files()
+                    music.load_music_files()
                     music_files = state.playback.music_files
                 track_basenames = sorted([os.path.basename(f) for f in music_files], key=str.lower)
                 current_value = round_data.get(field_name, "")
@@ -2099,7 +2040,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                     url = e.get().strip()
                     if url:
                         # Stream YouTube URL using stream_url (same as YOUTUBE CLIP LIST)
-                        _stream_url(url, None, None, new_player=False)
+                        streaming.stream_url(url, None, None, new_player=False)
 
                 open_btn = tk.Button(url_frame, text="GO TO URL", font=font_entry,
                                     bg="black", fg="white", command=open_url_in_browser)
@@ -2289,9 +2230,9 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
 
         # Queue the test round
         temp_round_info['is_test'] = True
-        _set_fl_queue(temp_round_info)
-        _set_fl_round_playlist_data(None)  # Reset any existing data
-        _play_video(state.metadata.playlist["current_index"])
+        state.lightning.fixed_lightning_queue = temp_round_info
+        state.lightning.fixed_lightning_round_playlist_data = None  # Reset any existing data
+        transport.play_video(state.metadata.playlist["current_index"])
 
     save_button = tk.Button(button_frame, text="SAVE", font=("Arial", 10, "bold"),
                            bg="black", fg="white", command=save_round, width=15, pady=8)

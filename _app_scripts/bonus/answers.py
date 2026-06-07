@@ -7,15 +7,8 @@ right-column bonus-answers list, and the 1-second poll loop that drains
 `web_server.get_answers()` / `get_served()` / `get_removals()` / `get_emojis()`
 and watches `scoreboard_data/*.json` mtimes for color/score/team updates.
 
-Uses the `_main` module-reference pattern: state and helpers that still live
-in `guess_the_anime.py` (bonus_settings, BONUS_SETTINGS_DEFAULT, light/fixed
-round flags, list-column wiring, scoreboard senders, root.after) are reached
-through `_main.X`. `bonus`, `web_server`, and `session_stats` are imported
-directly.
-
-Cross-module use: `_app_scripts/file/web_server/web_host_actions.py` calls
-`_push_web_scores` via the `get_scores` action — that call now reaches this
-module directly rather than going through main.
+The scoreboard senders are thin pass-throughs to `scoreboard_control`;
+`selected_rules_file` lives in `state.config`.
 """
 
 import os
@@ -27,14 +20,17 @@ from core.game_state import state
 import _app_scripts.bonus.bonus as bonus
 import _app_scripts.file.web_server.web_server as web_server
 import _app_scripts.file.session_stats as session_stats
-
-
-_main = None
-
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
+import _app_scripts.file.scoreboard_control as scoreboard_control
+import _app_scripts.file.session_end as session_end
+import _app_scripts.search.search as search_ops
+import _app_scripts.playback.blind_screen as blind_screen
+import _app_scripts.toggles.censors as censors
+import _app_scripts.ui.lists as lists
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.queue_round.fixed_lightning_actions as fixed_lightning_actions
+from _app_scripts.queue_round.lightning_rounds import (
+    peek_dispatch, peek_overlay, edge_overlay, grow_overlay, filter_overlay,
+)
 
 
 _scoreboard_colors_mtime = 0.0
@@ -51,9 +47,9 @@ def _score_bonus_answers(answers, q_type, correct):
         return result
 
     if q_type in ("year", "members", "popularity", "score"):
-        _s = _main.bonus_settings.get(q_type, {})
-        _def = _main.BONUS_SETTINGS_DEFAULT[q_type]
-        if _main.light_round_started:
+        _s = state.playback.bonus_settings.get(q_type, {})
+        _def = bonus.BONUS_SETTINGS_DEFAULT[q_type]
+        if state.lightning.light_round_started:
             _pt_close = float(_s.get("lightning_points_close", _s.get("points_close", _def["points_close"])))
             _pt_exact = float(_s.get("lightning_points_exact", _s.get("points_exact", _def["points_exact"])))
         else:
@@ -75,8 +71,8 @@ def _score_bonus_answers(answers, q_type, correct):
             return result
         closest_delta = min(abs(v - correct_val) for v in seen.values())
         # Threshold for "exact" on percentage-scaled types: configurable per type.
-        _members_pct = float(_main.bonus_settings.get("members", {}).get("exact_pct", 0.10))
-        _popularity_pct = float(_main.bonus_settings.get("popularity", {}).get("exact_pct", 0.10))
+        _members_pct = float(state.playback.bonus_settings.get("members", {}).get("exact_pct", 0.10))
+        _popularity_pct = float(state.playback.bonus_settings.get("popularity", {}).get("exact_pct", 0.10))
         for name, guess in seen.items():
             if abs(guess - correct_val) <= closest_delta:
                 if q_type == "members":
@@ -92,10 +88,10 @@ def _score_bonus_answers(answers, q_type, correct):
                 result[name] = 0.0
 
     elif q_type == "multiple":
-        _s = _main.bonus_settings.get("multiple", {})
-        _def_multiple = _main.BONUS_SETTINGS_DEFAULT["multiple"]
-        _pts = float(_s.get("lightning_points" if _main.light_round_started else "points",
-                             _def_multiple["lightning_points"] if _main.light_round_started else _def_multiple["points"]))
+        _s = state.playback.bonus_settings.get("multiple", {})
+        _def_multiple = bonus.BONUS_SETTINGS_DEFAULT["multiple"]
+        _pts = float(_s.get("lightning_points" if state.lightning.light_round_started else "points",
+                             _def_multiple["lightning_points"] if state.lightning.light_round_started else _def_multiple["points"]))
         seen = set()
         for entry in answers:
             name = entry["name"].strip()
@@ -109,13 +105,13 @@ def _score_bonus_answers(answers, q_type, correct):
             name = entry["name"].strip()
             if name and name not in seen:
                 seen.add(name)
-                _s = _main.bonus_settings.get(q_type, {})
-                _def_choice = _main.BONUS_SETTINGS_DEFAULT[q_type]
-                _pts = float(_s.get("lightning_points" if _main.light_round_started else "points", _def_choice["lightning_points"] if _main.light_round_started else _def_choice["points"]))
+                _s = state.playback.bonus_settings.get(q_type, {})
+                _def_choice = bonus.BONUS_SETTINGS_DEFAULT[q_type]
+                _pts = float(_s.get("lightning_points" if state.lightning.light_round_started else "points", _def_choice["lightning_points"] if state.lightning.light_round_started else _def_choice["points"]))
                 result[name] = _pts if entry["answer"].strip().lower() == str(correct).strip().lower() else 0.0
 
     elif q_type == "fixed_mc":
-        _pts = float((_main.fixed_current_round or {}).get("mc_points", 1))
+        _pts = float((state.lightning.fixed_current_round or {}).get("mc_points", 1))
         seen = set()
         for entry in answers:
             name = entry["name"].strip()
@@ -133,9 +129,9 @@ def _score_bonus_answers(answers, q_type, correct):
                 result[name] = _pts if entry["answer"].strip().lower() == str(correct).strip().lower() else 0.0
 
     elif q_type == "tags":
-        _s = _main.bonus_settings.get("tags", {})
-        _def_tags = _main.BONUS_SETTINGS_DEFAULT["tags"]
-        if _main.light_round_started:
+        _s = state.playback.bonus_settings.get("tags", {})
+        _def_tags = bonus.BONUS_SETTINGS_DEFAULT["tags"]
+        if state.lightning.light_round_started:
             _pt_tag = float(_s.get("lightning_points_per_tag", _s.get("points_per_tag", _def_tags["points_per_tag"])))
         else:
             _pt_tag = float(_s.get("points_per_tag", _def_tags["points_per_tag"]))
@@ -152,9 +148,9 @@ def _score_bonus_answers(answers, q_type, correct):
                     result[name] = max(0.0, _pt_tag * right - _pt_tag * wrong)
 
     elif q_type == "characters":
-        _s = _main.bonus_settings.get("characters", {})
-        _def_chars = _main.BONUS_SETTINGS_DEFAULT["characters"]
-        if _main.light_round_started:
+        _s = state.playback.bonus_settings.get("characters", {})
+        _def_chars = bonus.BONUS_SETTINGS_DEFAULT["characters"]
+        if state.lightning.light_round_started:
             _pt_char = float(_s.get("lightning_points_per_correct", _def_chars["lightning_points_per_correct"]))
         else:
             _pt_char = float(_s.get("points_per_correct", _def_chars["points_per_correct"]))
@@ -181,9 +177,9 @@ def _evaluate_and_submit_bonus_answers():
 
     score_hints: dict = {}
     if q_type in ("year", "score", "members", "popularity") and scores:
-        _s   = _main.bonus_settings.get(q_type, {})
-        _def = _main.BONUS_SETTINGS_DEFAULT[q_type]
-        _is_light = _main.light_round_started
+        _s   = state.playback.bonus_settings.get(q_type, {})
+        _def = bonus.BONUS_SETTINGS_DEFAULT[q_type]
+        _is_light = state.lightning.light_round_started
         _pts_exact = float(_s.get("lightning_points_exact" if _is_light else "points_exact",
                                   _def["lightning_points_exact" if _is_light else "points_exact"]))
         for name, pts in scores.items():
@@ -224,14 +220,14 @@ def _evaluate_and_submit_bonus_answers():
             "correct": correct,
             "answers": log_entries,
         })
-        _main.save_session_history(create_text_file=False)
+        session_stats.save_session_history(create_text_file=False)
 
     if not (answers and correct is not None and web_server.is_running()):
         return
 
     for name, pts in scores.items():
         if pts > 0:
-            _main.send_scoreboard_score(name, pts)
+            scoreboard_control.send_score(name, pts)
         answer = next((e["answer"] for e in answers if e["name"].strip() == name), "?")
         print(f"[BONUS] {name}: {answer!r} → +{pts}")
 
@@ -252,7 +248,7 @@ def _preview_bonus_points(answers, q_type, correct):
 def _refresh_bonus_answer_list():
     """Show or update the bonus-answers list in the right column.
     Only acts if no other list is open, or if the bonus-answers list is already open."""
-    if _main.list_loaded is not None and _main.list_loaded != "bonus_answers":
+    if state.lists.list_loaded is not None and state.lists.list_loaded != "bonus_answers":
         return
     if not bonus._pending_bonus_answers:
         return  # Leave list as-is (shows last content after round ends; closed via K)
@@ -293,7 +289,7 @@ def _refresh_bonus_answer_list():
         if idx < 0 or idx >= len(items):
             return
         name = items[idx]
-        if not _main._list_action_from_keyboard:
+        if not state.lists._list_action_from_keyboard:
             if not messagebox.askyesno("Remove Submission", f"Remove {name}'s submission?"):
                 return
         bonus._pending_bonus_answers[:] = [e for e in bonus._pending_bonus_answers if e["name"].strip() != name]
@@ -301,9 +297,9 @@ def _refresh_bonus_answer_list():
         if bonus._pending_bonus_answers:
             _refresh_bonus_answer_list()
         else:
-            _main._close_list(_main.right_column)
+            lists._close_list(state.widgets.right_column)
 
-    _main.show_list("bonus_answers", _main.right_column, content, _name_func,
+    lists.show_list("bonus_answers", state.widgets.right_column, content, _name_func,
               _do_remove_bonus_answer, -1, update=True, title="BONUS QUESTION ANSWERS", show_numbers=False)
 
 
@@ -412,69 +408,69 @@ def _push_web_toggles():
     """Push current toggle states to all web host clients."""
     if not web_server.is_running():
         return
-    if not _main.fixed_lightning_rounds_list:
-        _main.load_fixed_lightning_rounds(filter_missing_themes=True)
-    fn = _main.currently_playing.get("filename", "")
-    _all_censors = _main.get_file_censors(fn) or [] if fn else []
+    if not state.playback.fl_rounds_list:
+        fixed_lightning_actions.load_fixed_lightning_rounds(filter_missing_themes=True)
+    fn = state.playback.currently_playing.get("filename", "")
+    _all_censors = censors.get_file_censors(fn) or [] if fn else []
     censor_count      = sum(1 for c in _all_censors if not c.get('nsfw'))
     censor_nsfw_count = sum(1 for c in _all_censors if c.get('nsfw'))
-    mute_state = state.controls.light_muted if (_main.light_mode or _main.light_round_started) else state.controls.disable_video_audio
-    scoreboard_open = bool(_main.is_scoreboard_running())
-    scoreboard_visible = bool(scoreboard_open and (_main.scoreboard_control.visible_hint is not False))
+    mute_state = state.controls.light_muted if (state.lightning.light_mode or state.lightning.light_round_started) else state.controls.disable_video_audio
+    scoreboard_open = bool(scoreboard_control.is_running())
+    scoreboard_visible = bool(scoreboard_open and (scoreboard_control.visible_hint is not False))
     web_server.push_toggles({
-        "blind":        _main.blind_screen.black_overlay is not None,
-        "reveal":         bool(_main.is_peek_active()),
+        "blind":        blind_screen.black_overlay is not None,
+        "reveal":         bool(peek_dispatch.is_peek_active()),
         "mute":         bool(mute_state),
-        "censors":      _main.censors.censors_enabled,
-        "censors_nsfw": _main.censors.censors_nsfw_enabled,
-        "shortcuts":    not _main.disable_shortcuts,
-        "dock":         bool(_main.is_docked()),
-        "info_start":   bool(_main.auto_info_start),
-        "info_end":     bool(_main.auto_info_end),
-        "info_popup":   bool(_main._title_popup_intent and not _main.title_info_only),
-        "title_popup":  bool(_main._title_popup_intent and _main.title_info_only),
-        "artist_popup": bool(_main._title_popup_intent and _main.artist_info_display),
-        "studio_popup": bool(_main._title_popup_intent and _main.studio_info_display),
-        "season_popup": bool(_main._title_popup_intent and _main.season_info_display),
-        "year_popup":   bool(_main._title_popup_intent and _main.year_info_display),
+        "censors":      censors.censors_enabled,
+        "censors_nsfw": censors.censors_nsfw_enabled,
+        "shortcuts":    not state.controls.disable_shortcuts,
+        "dock":         bool(windowing.is_docked()),
+        "info_start":   bool(state.controls.auto_info_start),
+        "info_end":     bool(state.controls.auto_info_end),
+        "info_popup":   bool(state.info_display._title_popup_intent and not state.info_display.title_info_only),
+        "title_popup":  bool(state.info_display._title_popup_intent and state.info_display.title_info_only),
+        "artist_popup": bool(state.info_display._title_popup_intent and state.info_display.artist_info_display),
+        "studio_popup": bool(state.info_display._title_popup_intent and state.info_display.studio_info_display),
+        "season_popup": bool(state.info_display._title_popup_intent and state.info_display.season_info_display),
+        "year_popup":   bool(state.info_display._title_popup_intent and state.info_display.year_info_display),
         "censor_count": censor_count,
         "censor_nsfw_count": censor_nsfw_count,
-        "queue_blind":   bool(_main.blind_screen.blind_round_toggle),
-        "queue_reveal":    bool(_main.peek_dispatch.peek_round_toggle),
-        "queue_mute_reveal": bool(_main.peek_dispatch.mute_peek_round_toggle),
-        "queued_peek_variant": _main.peek_dispatch._queued_peek_variant[0] or "",
+        "queue_blind":   bool(blind_screen.blind_round_toggle),
+        "queue_reveal":    bool(peek_dispatch.peek_round_toggle),
+        "queue_mute_reveal": bool(peek_dispatch.mute_peek_round_toggle),
+        "queued_peek_variant": peek_dispatch._queued_peek_variant[0] or "",
         "live_peek_variant": (
-            "slice" if _main.peek_overlay.peek_overlay1
-            else "edge" if _main.edge_overlay.edge_overlay_box
-            else "grow" if _main.grow_overlay.grow_overlay_boxes
-            else (_main.filter_overlay._filter_vf_variant or "") if _main.filter_overlay.filter_vf_active
+            "slice" if peek_overlay.peek_overlay1
+            else "edge" if edge_overlay.edge_overlay_box
+            else "grow" if grow_overlay.grow_overlay_boxes
+            else (filter_overlay._filter_vf_variant or "") if filter_overlay.filter_vf_active
             else ""
         ),
-        "light_mode":    _main.light_mode or "",
-        "has_fixed_lightning": bool(_main.fixed_lightning_rounds_list),
-        "has_youtube":   bool(_main.youtube_metadata.get("videos")),
-        "yt_queued":     bool(_main.youtube_queue),
-        "fl_queued":     bool(_main.fixed_lightning_queue),
-        "fl_active":     bool(_main.fixed_lightning_round_playlist_data),
-        "search_queued": bool(_main.search_ops.search_queue),
-        "difficulty":    _main.playlist.get("difficulty", 2),
-        "auto_bonus_start": _main.auto_bonus_start,
+        "light_mode":    state.lightning.light_mode or "",
+        "has_fixed_lightning": bool(state.playback.fl_rounds_list),
+        "has_youtube":   bool(state.metadata.youtube_metadata.get("videos")),
+        "yt_queued":     bool(state.playback.youtube_queue),
+        "fl_queued":     bool(state.lightning.fixed_lightning_queue),
+        "fl_active":     bool(state.lightning.fixed_lightning_round_playlist_data),
+        "search_queued": bool(search_ops.search_queue),
+        "difficulty":    state.metadata.playlist.get("difficulty", 2),
+        "auto_bonus_start": state.controls.auto_bonus_start,
         "active_bonus": bonus.guessing_extra,
-        "end_session_popup": bool(_main.session_end.end_message_window),
+        "end_session_popup": bool(session_end.end_message_window),
         "scoreboard_open": scoreboard_open,
         "scoreboard_visible": scoreboard_visible,
         "session_history_count": session_stats.get_themes_played_count(),
-        "selected_rules_file": _main.selected_rules_file,
-        "selected_light_mode_settings": _main.selected_light_mode_settings,
+        "selected_rules_file": state.config.selected_rules_file,
+        "selected_light_mode_settings": state.settings_presets.selected_light_mode_settings,
         "autoplay_fullscreen": bool(state.controls.autoplay_fullscreen),
         "always_on_top": bool(state.controls.mpv_always_on_top),
         "bonus_menu_visibility": {
-            t: _main.bonus_settings.get(t, {}).get("show_in_menu", True)
+            t: state.playback.bonus_settings.get(t, {}).get("show_in_menu", True)
             for t in ("freeform", "buzzer", "multiple", "year", "score", "members",
                       "popularity", "tags", "studio", "artist", "song", "characters")
         },
         "reveal_variant_menu_visibility": dict(
-            _main.lightning_mode_settings.get("reveal", {}).get("show_in_menu", {})
+            state.playback.lightning_mode_settings.get("reveal", {}).get("show_in_menu", {})
         ),
     })
 
@@ -488,9 +484,9 @@ def _poll_web_answers():
         if bonus.guessing_extra:
             bonus._pending_bonus_answers.append(entry)
             new_answers = True
-            _main.send_scoreboard_command(f"[SUBMITTED]{entry['name']}")
+            scoreboard_control.send_command(f"[SUBMITTED]{entry['name']}")
     for served_name in web_server.get_served():
-        _main.send_scoreboard_command(f"[SERVED]{served_name}")
+        scoreboard_control.send_command(f"[SERVED]{served_name}")
     for removed_name in web_server.get_removals():
         before = len(bonus._pending_bonus_answers)
         bonus._pending_bonus_answers[:] = [e for e in bonus._pending_bonus_answers if e["name"].strip() != removed_name]
@@ -498,8 +494,8 @@ def _poll_web_answers():
             new_answers = True
     for i, (emoji_name, emoji_char) in enumerate(web_server.get_emojis()):
         delay = i * 600
-        _main.root.after(delay, lambda n=emoji_name, e=emoji_char: _main.send_scoreboard_command(f"[EMOJI]{n}:{e}"))
-    if new_answers or _main.list_loaded == "bonus_answers":
+        state.widgets.root.after(delay, lambda n=emoji_name, e=emoji_char: scoreboard_control.send_command(f"[EMOJI]{n}:{e}"))
+    if new_answers or state.lists.list_loaded == "bonus_answers":
         _refresh_bonus_answer_list()
     try:
         _sc_colors_path = os.path.join('scoreboard_data', 'scoreboard_colors.json')
@@ -528,4 +524,29 @@ def _poll_web_answers():
                 _push_web_teams()
     except Exception:
         pass
-    _main.root.after(1000, _poll_web_answers)
+    state.widgets.root.after(1000, _poll_web_answers)
+
+
+def _start_web_server():
+    """Start the web answer server at startup if enabled and a tunnel is available."""
+    if not web_server.NGROK_AVAILABLE and not web_server.CLOUDFLARED_AVAILABLE:
+        print("[Web Server] No tunnel found (ngrok or cloudflared) — web answer server disabled. "
+              "Place ngrok.exe or cloudflared.exe next to this app or install one to PATH.")
+        return
+    if state.config.WEB_SERVER_ENABLED:
+        web_server.start(port=8080, ngrok_domain=state.config.NGROK_DOMAIN or None,
+                         cloudflare_token=state.config.CLOUDFLARE_TUNNEL_TOKEN or None,
+                         cloudflare_url=state.config.CLOUDFLARE_PUBLIC_URL or None)
+        state.widgets.root.after(1000, _poll_web_answers)
+
+
+def toggle_web_server():
+    """Manually start or stop the web answer server from the menu."""
+    if web_server.is_running():
+        web_server.stop()
+        print("[Web Server] Stopped.")
+    else:
+        web_server.start(port=8080, ngrok_domain=state.config.NGROK_DOMAIN or None,
+                         cloudflare_token=state.config.CLOUDFLARE_TUNNEL_TOKEN or None,
+                         cloudflare_url=state.config.CLOUDFLARE_PUBLIC_URL or None)
+        state.widgets.root.after(1000, _poll_web_answers)

@@ -19,8 +19,11 @@ from __future__ import annotations
 import random
 
 from PIL import Image, ImageDraw
+from tkinter.font import Font
 
 from core.game_state import state
+from ...ui.scaling import scl
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -39,43 +42,23 @@ _title_revealed: list = []       # revealed char or '' for each slot
 
 
 # ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
+# Title text wrapping (Tk Font measurement) — title-specific, lives here.
 # ---------------------------------------------------------------------------
-currently_playing: dict = {}
-_scl = None
-_get_title_text_lines = None
-_get_mpv_window_rect = None
-_get_ass_font = None
-_get_courier_font = None
-_get_title_light_string_value = lambda: ""
-_get_title_light_letters = lambda: []
-_get_character_round_answer = lambda: None
-_get_overlay_background_color = lambda: 'black'
-_get_overlay_text_color = lambda: 'white'
-_get_inverse_overlay_background_color = lambda: 'white'
-_get_inverse_overlay_text_color = lambda: 'black'
-
-
-def set_context(*, currently_playing, scl, get_title_text_lines,
-                get_mpv_window_rect, get_ass_font, get_courier_font,
-                get_title_light_string_value, get_title_light_letters,
-                get_character_round_answer, get_overlay_background_color,
-                get_overlay_text_color, get_inverse_overlay_background_color,
-                get_inverse_overlay_text_color):
-    g = globals()
-    g['currently_playing'] = currently_playing
-    g['_scl'] = scl
-    g['_get_title_text_lines'] = get_title_text_lines
-    g['_get_mpv_window_rect'] = get_mpv_window_rect
-    g['_get_ass_font'] = get_ass_font
-    g['_get_courier_font'] = get_courier_font
-    g['_get_title_light_string_value'] = get_title_light_string_value
-    g['_get_title_light_letters'] = get_title_light_letters
-    g['_get_character_round_answer'] = get_character_round_answer
-    g['_get_overlay_background_color'] = get_overlay_background_color
-    g['_get_overlay_text_color'] = get_overlay_text_color
-    g['_get_inverse_overlay_background_color'] = get_inverse_overlay_background_color
-    g['_get_inverse_overlay_text_color'] = get_inverse_overlay_text_color
+def get_title_text_lines(text, max_width, font=("Courier New", scl(80), "bold")):
+    f = Font(family=font[0], size=font[1], weight=font[2])
+    words = text.split(" ")
+    lines = []
+    current_line = ""
+    for word in words:
+        test_line = f"{current_line} {word}".strip()
+        if f.measure(test_line) <= max_width:
+            current_line = test_line
+        else:
+            lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +96,8 @@ def get_next_title_mode(title_text):
 
     def get_line_count():
         screen_width = root.winfo_screenwidth()
-        max_width = screen_width * 0.7 - _scl(40)
-        lines = _get_title_text_lines(title_text, max_width, font=("Courier New", _scl(80), "bold"))
+        max_width = screen_width * 0.7 - scl(40)
+        lines = get_title_text_lines(title_text, max_width, font=("Courier New", scl(80), "bold"))
         return len(lines)
 
     def get_long_word_count(length=5):
@@ -176,8 +159,8 @@ def get_unique_letters(title):
 
 
 def get_title_light_string(letters=0):
-    title_light_string = _get_title_light_string_value() or ""
-    title_light_letters = _get_title_light_letters() or []
+    title_light_string = state.lightning.title_light_string or ""
+    title_light_letters = state.lightning.title_light_letters or []
     revealed_title = ""
     for letter in title_light_string:
         if letter != " ":
@@ -195,11 +178,11 @@ def get_title_light_string(letters=0):
 
 def get_base_title(data=None, title=None):
     if not title:
-        cra = _get_character_round_answer()
+        cra = state.lightning.character_round_answer
         if cra:
             return cra[0]
         if not data:
-            data = currently_playing.get("data", {})
+            data = state.playback.currently_playing.get("data", {})
         if data:
             title = data.get('eng_title') or data.get("title") or ""
         else:
@@ -220,15 +203,15 @@ def get_base_title(data=None, title=None):
 def _title_colors():
     """Return (bg_rgba, fg_rgba) tuples based on current overlay color settings."""
     root = state.widgets.root
-    cra = _get_character_round_answer()
+    cra = state.lightning.character_round_answer
     try:
-        bg_key = _get_overlay_background_color() if not cra else _get_inverse_overlay_background_color()
+        bg_key = state.colors.OVERLAY_BACKGROUND_COLOR if not cra else state.colors.INVERSE_OVERLAY_BACKGROUND_COLOR
         r, g, b = [v >> 8 for v in root.winfo_rgb(bg_key)]
         bg = (r, g, b, 217)
     except Exception:
         bg = (0, 0, 0, 217) if not cra else (255, 255, 255, 217)
     try:
-        fg_key = _get_overlay_text_color() if not cra else _get_inverse_overlay_text_color()
+        fg_key = state.colors.OVERLAY_TEXT_COLOR if not cra else state.colors.INVERSE_OVERLAY_TEXT_COLOR
         r, g, b = [v >> 8 for v in root.winfo_rgb(fg_key)]
         fg = (r, g, b, 255)
     except Exception:
@@ -265,7 +248,7 @@ def _build_title_base(title_text):
     """Build the static PIL frame (box + header + underscore slots). Returns (img, letter_positions, ltr_font, (osd_w, osd_h))."""
     player = state.widgets.player
     root = state.widgets.root
-    cra = _get_character_round_answer()
+    cra = state.lightning.character_round_answer
     try:
         osd_w = int(player._p.osd_width  or 0) or 1920
         osd_h = int(player._p.osd_height or 0) or 1080
@@ -276,7 +259,9 @@ def _build_title_base(title_text):
     def ws(n): return max(1, int(n * mod))
 
     # Use physical window mod for font sizing (matches song/synopsis approach)
-    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    # Lazy import: information_popup is a higher layer than this overlay.
+    from ...information import information_popup
+    _mx, _my, mw_phys, mh_phys = information_popup._get_mpv_window_rect()
     if not mw_phys:
         mw_phys, mh_phys = osd_w, osd_h
     phys_mod = min(mw_phys / 2560, mh_phys / 1440)
@@ -287,8 +272,8 @@ def _build_title_base(title_text):
     us_fs   = max(1, round(max(1, int(65 * phys_mod)) * screen_dpi / 72))   # underscore (Courier)
     _ = us_fs  # reserved (underline drawn as rectangle below)
 
-    hdr_font = _get_ass_font(hdr_fs, bold=True)
-    ltr_font = _get_courier_font(ltr_fs)
+    hdr_font = osd_text._get_ass_font(hdr_fs, bold=True)
+    ltr_font = osd_text._get_courier_font(ltr_fs)
 
     bg, fg = _title_colors()
     border = ws(4)
@@ -404,13 +389,15 @@ def toggle_title_overlay(title_text=None, destroy=False):
     draw   = ImageDraw.Draw(canvas)
 
     # Rebuild ltr_font from cache (size may vary per OSD)
-    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    # Lazy import: information_popup is a higher layer than this overlay.
+    from ...information import information_popup
+    _mx, _my, mw_phys, mh_phys = information_popup._get_mpv_window_rect()
     if not mw_phys:
         mw_phys, mh_phys = osd_w, osd_h
     phys_mod   = min(mw_phys / 2560, mh_phys / 1440)
     screen_dpi = root.winfo_fpixels('1i')
     ltr_fs = max(1, round(max(1, int(80 * phys_mod)) * screen_dpi / 72))
-    ltr_font = _get_courier_font(ltr_fs)
+    ltr_font = osd_text._get_courier_font(ltr_fs)
 
     _, fg = _title_colors()
 

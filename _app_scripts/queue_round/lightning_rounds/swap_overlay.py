@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw
 
 from core.game_state import state
 from . import title_overlay
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -39,24 +40,6 @@ swap_completed        = 0
 swap_overlay_letters: list = []  # {char, index, pos:(cx,cy), correct, base_char}
 _swap_osd_size        = (0, 0)
 _swap_anim_after      = None  # pending root.after id for arc animation
-
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_get_mpv_window_rect = None
-_get_ass_font = None
-_get_courier_font = None
-_get_character_round_answer = lambda: None
-
-
-def set_context(*, get_mpv_window_rect, get_ass_font, get_courier_font,
-                get_character_round_answer):
-    g = globals()
-    g['_get_mpv_window_rect'] = get_mpv_window_rect
-    g['_get_ass_font'] = get_ass_font
-    g['_get_courier_font'] = get_courier_font
-    g['_get_character_round_answer'] = get_character_round_answer
 
 
 def _swap_colors():
@@ -78,7 +61,7 @@ def _build_swap_base():
 
     player = state.widgets.player
     root = state.widgets.root
-    cra = _get_character_round_answer()
+    cra = state.lightning.character_round_answer
 
     try:
         osd_w = int(player._p.osd_width  or 0) or 1920
@@ -89,7 +72,9 @@ def _build_swap_base():
     mod = min(osd_w / 2560, osd_h / 1440)
     def ws(n): return max(1, int(n * mod))
 
-    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    # Lazy import: information_popup is a higher layer than this overlay.
+    from ...information import information_popup
+    _mx, _my, mw_phys, mh_phys = information_popup._get_mpv_window_rect()
     if not mw_phys:
         mw_phys, mh_phys = osd_w, osd_h
     phys_mod   = min(mw_phys / 2560, mh_phys / 1440)
@@ -97,8 +82,8 @@ def _build_swap_base():
     hdr_fs = max(1, round(max(1, int(70 * phys_mod)) * screen_dpi / 72))
     ltr_fs = max(1, round(max(1, int(80 * phys_mod)) * screen_dpi / 72))
 
-    hdr_font = _get_ass_font(hdr_fs, bold=True)
-    ltr_font = _get_courier_font(ltr_fs)
+    hdr_font = osd_text._get_ass_font(hdr_fs, bold=True)
+    ltr_font = osd_text._get_courier_font(ltr_fs)
 
     bg, fg, _ = _swap_colors()
     border  = ws(4)
@@ -257,7 +242,7 @@ def toggle_swap_overlay(num_swaps=0, destroy=False, rebuild=False):
 
         spacing   = ws(64)
         overlay_w = round(osd_w * 0.7)
-        lines     = title_overlay._title_wrap_lines(swap_title_text, overlay_w - ws(40), _swap_ltr_font or _get_courier_font(
+        lines     = title_overlay._title_wrap_lines(swap_title_text, overlay_w - ws(40), _swap_ltr_font or osd_text._get_courier_font(
             max(1, round(max(1, int(80 * min(osd_w/2560, osd_h/1440))) *
                 root.winfo_fpixels('1i') / 72))))
         overlay_h = len(lines) * ws(100) + ws(320)

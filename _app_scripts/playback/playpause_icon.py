@@ -1,4 +1,4 @@
-"""PLAY/PAUSE ICON — extracted from guess_the_anime.py.
+"""Play/pause icon overlay.
 
 A transient fading play/pause icon flashed in the centre of the mpv OSD when the
 user toggles playback. Uses create_image_overlay() (overlay_add plane) so it
@@ -12,21 +12,12 @@ Public function:
     _show_playpause_icon(paused)   flash the icon (True=pause bars, False=play triangle)
 Private:
     _clear_playpause_icon()        cancel animation + remove overlay (called internally)
-
-Uses the `_main` module-reference pattern. OVERLAY_BACKGROUND_COLOR /
-OVERLAY_TEXT_COLOR are read live through `_main` (rebound by load_config).
 """
 
 import numpy as np
 from PIL import Image, ImageDraw
 
-
-_main = None
-
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
+from core.game_state import state
 
 
 # --- State ---
@@ -37,7 +28,7 @@ _playpause_img_overlay    = None  # mpv ImageOverlay (PIL bitmap) for the play/p
 def _clear_playpause_icon():
     """Cancel any in-progress play/pause icon animation and remove the overlay."""
     global _playpause_icon_after_ids, _playpause_img_overlay
-    root = _main.root
+    root = state.widgets.root
     for aid in _playpause_icon_after_ids:
         try:
             root.after_cancel(aid)
@@ -66,8 +57,8 @@ def _show_playpause_icon(paused):
     Per-frame: numpy alpha-scale — uniform, reliable fade for fill AND border.
     """
     global _playpause_icon_after_ids, _playpause_img_overlay
-    player = _main.player
-    root = _main.root
+    player = state.widgets.player
+    root = state.widgets.root
     _clear_playpause_icon()
 
     try:
@@ -80,9 +71,9 @@ def _show_playpause_icon(paused):
 
     # Resolve theme colors (RGB for PIL)
     try:
-        r16, g16, b16 = root.winfo_rgb(_main.OVERLAY_BACKGROUND_COLOR)
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_BACKGROUND_COLOR)
         fill_rgb = (r16 >> 8, g16 >> 8, b16 >> 8)
-        r16, g16, b16 = root.winfo_rgb(_main.OVERLAY_TEXT_COLOR)
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_TEXT_COLOR)
         bord_rgb = (r16 >> 8, g16 >> 8, b16 >> 8)
     except Exception:
         fill_rgb = (255, 255, 255)

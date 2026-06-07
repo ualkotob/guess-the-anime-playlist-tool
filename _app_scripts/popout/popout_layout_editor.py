@@ -1,28 +1,19 @@
-# _app_scripts/popout_layout_editor.py
-# Popout layout editor window - extracted from guess_the_anime.py (Step 27).
+# Popout layout editor window.
 import os
 import copy
 import tkinter as tk
 from tkinter import simpledialog
 
 from core.paths import POPOUT_LAYOUTS_FOLDER
+from core.game_state import state
+from _app_scripts.popout import popout_window
+from _app_scripts.ui import menu_registry
+from _app_scripts.ui.scaling import scl
+from _app_scripts.data import config_io
+# menu_builder is imported lazily inside open_popout_layout_editor() — it
+# imports this module back (Configure-Layout menu command), so a module-level
+# import would be a cycle.
 
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context() at startup)
-# ---------------------------------------------------------------------------
-get_flat_registry = None
-_get_menu_registry = None
-save_config = None
-create_popout_controls = None
-_save_popout_layout_preset = None
-_load_popout_layout_presets = None
-_get_popout_layout = None
-_set_popout_layout = None
-_get_popout_columns = None
-_set_popout_columns = None
-_get_popout_controls = None
-_set_popout_controls = None
-POPOUT_LAYOUT_DEFAULT = None
 _POPOUT_SPECIAL_LABELS = {
     "SEARCH ENTRY":       "Search Entry",
     "SEARCH DROPDOWN":    "Search Results Dropdown",
@@ -33,42 +24,10 @@ _POPOUT_SPECIAL_LABELS = {
     "DIFFICULTY DROPDOWN":"Difficulty Dropdown",
     "toggle_metadata":    "Toggle Metadata Area",
 }
-ROOT_FONT = None
-MENU_FONT = None
-BACKGROUND_COLOR = "gray12"
-HIGHLIGHT_COLOR = "gray26"
-
-
-def set_context(*, flat_registry, menu_registry, save_config_fn, create_popout_controls_fn,
-                save_preset_fn, load_presets_fn,
-                get_popout_layout, set_popout_layout,
-                get_popout_columns, set_popout_columns,
-                get_popout_controls, set_popout_controls,
-                popout_layout_default,
-                root_font, menu_font, background_color, highlight_color):
-    global get_flat_registry, _get_menu_registry, save_config, create_popout_controls
-    global _save_popout_layout_preset, _load_popout_layout_presets
-    global _get_popout_layout, _set_popout_layout, _get_popout_columns, _set_popout_columns
-    global _get_popout_controls, _set_popout_controls
-    global POPOUT_LAYOUT_DEFAULT, ROOT_FONT, MENU_FONT
-    global BACKGROUND_COLOR, HIGHLIGHT_COLOR
-    get_flat_registry = flat_registry
-    _get_menu_registry = menu_registry
-    save_config = save_config_fn
-    create_popout_controls = create_popout_controls_fn
-    _save_popout_layout_preset = save_preset_fn
-    _load_popout_layout_presets = load_presets_fn
-    _get_popout_layout = get_popout_layout
-    _set_popout_layout = set_popout_layout
-    _get_popout_columns = get_popout_columns
-    _set_popout_columns = set_popout_columns
-    _get_popout_controls = get_popout_controls
-    _set_popout_controls = set_popout_controls
-    POPOUT_LAYOUT_DEFAULT = popout_layout_default
-    ROOT_FONT = root_font
-    MENU_FONT = menu_font
-    BACKGROUND_COLOR = background_color
-    HIGHLIGHT_COLOR = highlight_color
+ROOT_FONT = ("Segoe UI", scl(9, "UI"))
+MENU_FONT = ("Segoe UI", scl(10, "UI"))
+BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
+HIGHLIGHT_COLOR = state.colors.HIGHLIGHT_COLOR
 
 
 def open_popout_layout_editor():
@@ -83,9 +42,10 @@ def open_popout_layout_editor():
     Save reloads the popout without closing this editor.
     """
 
-    ged_flat  = get_flat_registry()
-    ged_reg   = _get_menu_registry()
-    ged_cols  = [_get_popout_columns()]   # mutable int box
+    from _app_scripts.ui import menu_builder  # lazy: menu_builder imports this module back
+    ged_flat  = menu_builder.get_flat_registry()
+    ged_reg   = menu_registry.get_menu_registry()
+    ged_cols  = [state.popout.columns]   # mutable int box
     ged_nrows = [0]                # mutable row count (auto-grows)
 
     # ── Convert flat list ↔ positional dict ─────────────────────────────────
@@ -128,9 +88,9 @@ def open_popout_layout_editor():
                 result.append(dict(spec) if spec else {"type": "gap", "colspan": 1})
         return result
 
-    _pl = _get_popout_layout()
+    _pl = state.popout.layout
     ged_work = _list_to_grid(
-        _pl if _pl is not None else POPOUT_LAYOUT_DEFAULT
+        _pl if _pl is not None else popout_window.POPOUT_LAYOUT_DEFAULT
     )
 
     # ── Window ───────────────────────────────────────────────────────────────
@@ -754,26 +714,26 @@ def open_popout_layout_editor():
     bot.pack(fill="x", padx=10, pady=8)
 
     def _ged_save():
-        _set_popout_layout(_grid_to_flowing_list(ged_work) or None)
-        _set_popout_columns(max(1, col_var.get()))
-        save_config()
+        state.popout.layout = _grid_to_flowing_list(ged_work) or None
+        state.popout.columns = max(1, col_var.get())
+        config_io.save_config()
         # Reload popout if open — keep this editor window open
-        if _get_popout_controls():
+        if popout_window.popout_controls:
             _reopen_popout()
 
     def _reopen_popout():
-        pc = _get_popout_controls()
+        pc = popout_window.popout_controls
         if pc:
             try:
                 pc.destroy()
             except Exception:
                 pass
-            _set_popout_controls(None)   # must clear before calling create
-        create_popout_controls()
+            popout_window.popout_controls = None   # must clear before calling create
+        popout_window.create_popout_controls()
 
     def _ged_reset():
         ged_work.clear()
-        ged_work.update(_list_to_grid(copy.deepcopy(POPOUT_LAYOUT_DEFAULT)))
+        ged_work.update(_list_to_grid(copy.deepcopy(popout_window.POPOUT_LAYOUT_DEFAULT)))
         col_var.set(5)
         ged_cols[0] = 5
         ged_nrows[0] = 0
@@ -817,14 +777,14 @@ def open_popout_layout_editor():
             return
         layout_list = _grid_to_flowing_list(ged_work)
         try:
-            _save_popout_layout_preset(name, layout_list, ged_cols[0])
+            config_io._save_popout_layout_preset(name, layout_list, ged_cols[0])
         except Exception as e:
             print(f"Failed to save layout preset '{name}': {e}")
         preset_var.set(name)
         _refresh_preset_menu()
 
     def _ged_load_preset(name):
-        presets = _load_popout_layout_presets()
+        presets = config_io._load_popout_layout_presets()
         if name not in presets:
             return
         data = presets[name]
@@ -855,7 +815,7 @@ def open_popout_layout_editor():
     def _refresh_preset_menu():
         if _preset_menu[0]:
             _preset_menu[0].delete(0, "end")
-            presets = _load_popout_layout_presets()
+            presets = config_io._load_popout_layout_presets()
             for pname in presets:
                 _preset_menu[0].add_command(
                     label=pname, command=lambda n=pname: _ged_load_preset(n))

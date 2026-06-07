@@ -1,5 +1,4 @@
-# _app_scripts/bonus_template_editor.py
-# Bonus template editor window — extracted from guess_the_anime.py (Step 25).
+# Bonus template editor window.
 import re
 import tkinter as tk
 from tkinter import messagebox
@@ -7,26 +6,11 @@ from tkinter import messagebox
 from core.game_state import state
 import _app_scripts.bonus.bonus as bonus
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.playback.transport as transport
 
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context() at startup)
-# ---------------------------------------------------------------------------
-_get_window_position_and_setup = None
-_seek_to = None
-_get_projected_player_time = None
-BACKGROUND_COLOR = "gray12"
-HIGHLIGHT_COLOR = "gray26"
-
-
-def set_context(*, get_window_position_and_setup, seek_to, get_projected_player_time,
-                background_color, highlight_color):
-    global _get_window_position_and_setup, _seek_to, _get_projected_player_time
-    global BACKGROUND_COLOR, HIGHLIGHT_COLOR
-    _get_window_position_and_setup = get_window_position_and_setup
-    _seek_to = seek_to
-    _get_projected_player_time = get_projected_player_time
-    BACKGROUND_COLOR = background_color
-    HIGHLIGHT_COLOR = highlight_color
+BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
+HIGHLIGHT_COLOR = state.colors.HIGHLIGHT_COLOR
 
 
 def open_youtube_bonus_template_editor(video_id):
@@ -34,7 +18,7 @@ def open_youtube_bonus_template_editor(video_id):
     top = tk.Toplevel()
     top.title(f"Bonus Template Editor — {video_id}")
     top.configure(bg=BACKGROUND_COLOR)
-    _get_window_position_and_setup(top)
+    windowing.get_window_position_and_setup(top)
 
     questions = list(youtube_control.load_bonus_template(video_id))
     selected_idx = [0]
@@ -139,9 +123,9 @@ def open_youtube_bonus_template_editor(video_id):
     tk.Button(times_frame, text="+", font=font_big, bg="#333", fg=fg, width=2,
               command=lambda: st_var.set(round(st_var.get() + 0.1, 1))).pack(side="left")
     tk.Button(times_frame, text="NOW", font=font_sm, bg="#333", fg=fg,
-              command=lambda: st_var.set(round(_get_projected_player_time() / 1000, 1))).pack(side="left", padx=(4, 2))
+              command=lambda: st_var.set(round(state.seek.projected_player_time / 1000, 1))).pack(side="left", padx=(4, 2))
     tk.Button(times_frame, text="GO", font=font_sm, bg="#224466", fg=fg,
-              command=lambda: _seek_to(int(st_var.get() * 1000))).pack(side="left", padx=(0, 16))
+              command=lambda: transport.seek_to(int(st_var.get() * 1000))).pack(side="left", padx=(0, 16))
 
     tk.Label(times_frame, text="→", font=font_big, bg=bg, fg="#aaa").pack(side="left", padx=(0, 8))
 
@@ -153,9 +137,9 @@ def open_youtube_bonus_template_editor(video_id):
     tk.Button(times_frame, text="+", font=font_big, bg="#333", fg=fg, width=2,
               command=lambda: et_var.set(round(et_var.get() + 0.1, 1))).pack(side="left")
     tk.Button(times_frame, text="NOW", font=font_sm, bg="#333", fg=fg,
-              command=lambda: et_var.set(round(_get_projected_player_time() / 1000, 1))).pack(side="left", padx=(4, 2))
+              command=lambda: et_var.set(round(state.seek.projected_player_time / 1000, 1))).pack(side="left", padx=(4, 2))
     tk.Button(times_frame, text="GO", font=font_sm, bg="#224466", fg=fg,
-              command=lambda: _seek_to(int(et_var.get() * 1000))).pack(side="left", padx=(0, 0))
+              command=lambda: transport.seek_to(int(et_var.get() * 1000))).pack(side="left", padx=(0, 0))
     r += 1
 
     tk.Label(right_frame, text="Points:", font=font_big, bg=bg, fg=fg).grid(row=r, column=0, sticky="w", pady=4)
@@ -240,7 +224,7 @@ def open_youtube_bonus_template_editor(video_id):
             "question": "",
             "answer": "",
             "choices": [],
-            "start_time": round(_get_projected_player_time() / 1000, 1),
+            "start_time": round(state.seek.projected_player_time / 1000, 1),
             "end_time": 0.0,
             "points": 1.0,
         })
@@ -329,7 +313,7 @@ def open_youtube_bonus_template_editor(video_id):
             "question": "",
             "answer": "",
             "choices": [],
-            "start_time": round(_get_projected_player_time() / 1000, 1),
+            "start_time": round(state.seek.projected_player_time / 1000, 1),
             "end_time": 0.0,
             "points": 1.0,
         })

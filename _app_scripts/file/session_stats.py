@@ -9,42 +9,17 @@ from tkinter import messagebox
 from _app_scripts.file import scoreboard_control
 from _app_scripts import utils
 from _app_scripts.file.web_server import web_server
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.information.information_popup as information_popup
+import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
+import _app_scripts.playback.transport as transport
 
 # ---------------------------------------------------------------------------
 # Module-owned state
 # ---------------------------------------------------------------------------
 session_data = []
 session_start_time = None
-
-# ---------------------------------------------------------------------------
-# Context (injected at startup)
-# ---------------------------------------------------------------------------
-_get_metadata = None
-_get_song_string = None
-_get_display_title = None
-_get_youtube_display_title = None
-_get_file_metadata_by_name = None
-_update_playlist_name = None
-
-
-def set_context(
-    get_metadata,
-    get_song_string,
-    get_display_title,
-    get_youtube_display_title,
-    get_file_metadata_by_name,
-    update_playlist_name,
-):
-    global _get_metadata, _get_song_string, _get_display_title
-    global _get_youtube_display_title, _get_file_metadata_by_name
-    global _update_playlist_name
-
-    _get_metadata = get_metadata
-    _get_song_string = get_song_string
-    _get_display_title = get_display_title
-    _get_youtube_display_title = get_youtube_display_title
-    _get_file_metadata_by_name = get_file_metadata_by_name
-    _update_playlist_name = update_playlist_name
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +41,7 @@ def get_op_ed_counts(themes):
         if filename is None:
             continue
 
-        file_data = _get_file_metadata_by_name(filename)
+        file_data = metadata_fetch.get_file_metadata_by_name(filename)
         if file_data and file_data.get('slug'):
             slug = file_data['slug']
         else:
@@ -94,7 +69,7 @@ def get_top_series_from_session(session_entries):
         if entry.get("type") == "theme" and entry.get("id") and entry.get("slug"):
             theme_id = f"{entry.get('id')}_{entry.get('slug')}"
 
-            theme_data = _get_metadata(entry.get("filename", ""))
+            theme_data = metadata_fetch.get_metadata(entry.get("filename", ""))
             series_name = None
 
             if theme_data:
@@ -141,7 +116,7 @@ def get_top_artist_from_session(session_entries):
             if theme_id not in unique_themes:
                 unique_themes.add(theme_id)
 
-                theme_data = _get_metadata(entry.get("filename", ""))
+                theme_data = metadata_fetch.get_metadata(entry.get("filename", ""))
                 if theme_data:
                     for theme in theme_data.get("songs", []):
                         if theme.get("slug") == entry.get("slug"):
@@ -367,12 +342,12 @@ def generate_text_from_session_data(data=None):
             title = entry.get("title", "")
             slug = entry.get("slug", "")
 
-            theme_data = _get_metadata(filename)
+            theme_data = metadata_fetch.get_metadata(filename)
             song_and_artist = ""
 
             if theme_data and slug:
                 theme_data["slug"] = slug
-                song_and_artist = _get_song_string(theme_data)
+                song_and_artist = information_popup.get_song_string(theme_data)
 
             session_string = f"{session_string} {title} - {utils.format_slug(slug)}"
             if song_and_artist:
@@ -453,8 +428,7 @@ def load_recent_session():
             else:
                 session_start_time = datetime.now().strftime('%Y-%m-%d_%H-%M')
 
-            if _update_playlist_name:
-                _update_playlist_name()
+            transport.update_playlist_name()
             return True
 
     except (ValueError, json.JSONDecodeError, KeyError):
@@ -485,13 +459,13 @@ def add_session_history(currently_playing, light_mode, playlist, system_playlist
     if data:
         session_entry.update({
             "id": data.get("mal"),
-            "title": _get_display_title(data),
+            "title": metadata_display.get_display_title(data),
             "slug": data.get("slug"),
         })
 
         if currently_playing.get("type") == "youtube":
             session_entry["url"] = data.get("url")
-            session_entry["title"] = _get_youtube_display_title(data)
+            session_entry["title"] = youtube_ui.get_youtube_display_title(data)
             session_entry["name"] = data.get("name")
 
     session_data.append(session_entry)
@@ -578,5 +552,4 @@ def reset_session_history(confirm=True):
     if os.path.exists(_sc_path):
         open(_sc_path, "w").close()
 
-    if _update_playlist_name:
-        _update_playlist_name()
+    transport.update_playlist_name()

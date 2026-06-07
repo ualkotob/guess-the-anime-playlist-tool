@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw
 
 from core.game_state import state
 from . import title_overlay
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -42,26 +43,6 @@ scramble_letter_placed_indices: set = set()
 scramble_animating             = False
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_get_mpv_window_rect = None
-_get_ass_font = None
-_get_courier_font = None
-_get_character_round_answer = lambda: None
-_get_fixed_current_round = lambda: None
-
-
-def set_context(*, get_mpv_window_rect, get_ass_font, get_courier_font,
-                get_character_round_answer, get_fixed_current_round):
-    g = globals()
-    g['_get_mpv_window_rect'] = get_mpv_window_rect
-    g['_get_ass_font'] = get_ass_font
-    g['_get_courier_font'] = get_courier_font
-    g['_get_character_round_answer'] = get_character_round_answer
-    g['_get_fixed_current_round'] = get_fixed_current_round
-
-
 def _scramble_build_base():
     """Build and push the static base overlay (box + header + slots).
     Also allocates a fresh transparent letters canvas.
@@ -75,7 +56,7 @@ def _scramble_build_base():
 
     player = state.widgets.player
     root = state.widgets.root
-    cra = _get_character_round_answer()
+    cra = state.lightning.character_round_answer
 
     try:
         osd_w = int(player._p.osd_width or 0)
@@ -89,7 +70,9 @@ def _scramble_build_base():
     mod = min(osd_w / 2560, osd_h / 1440)
     def ws(n): return max(1, int(n * mod))
 
-    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    # Lazy import: information_popup is a higher layer than this overlay.
+    from ...information import information_popup
+    _mx, _my, mw_phys, mh_phys = information_popup._get_mpv_window_rect()
     if not mw_phys:
         mw_phys, mh_phys = osd_w, osd_h
     phys_mod   = min(mw_phys / 2560, mh_phys / 1440)
@@ -97,8 +80,8 @@ def _scramble_build_base():
     hdr_fs = max(1, round(max(1, int(70 * phys_mod)) * screen_dpi / 72))
     ltr_fs = max(1, round(max(1, int(80 * phys_mod)) * screen_dpi / 72))
 
-    hdr_font = _get_ass_font(hdr_fs, bold=True)
-    ltr_font = _get_courier_font(ltr_fs)
+    hdr_font = osd_text._get_ass_font(hdr_fs, bold=True)
+    ltr_font = osd_text._get_courier_font(ltr_fs)
     bg, fg   = title_overlay._title_colors()
     border   = ws(4)
     spacing  = ws(64)
@@ -218,7 +201,7 @@ def toggle_scramble_overlay(num_letters=0, destroy=False, rebuild=False):
     global scramble_title_text
 
     root = state.widgets.root
-    fixed_current_round = _get_fixed_current_round()
+    fixed_current_round = state.lightning.fixed_current_round
 
     if destroy:
         scramble_animating = False

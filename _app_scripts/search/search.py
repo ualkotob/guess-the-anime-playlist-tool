@@ -7,26 +7,23 @@ import tkinter as tk
 from tkinter import simpledialog
 
 from core.game_state import state
+import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.ui.lists as lists
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.playback.cache_download as cache_download
+import _app_scripts.playback.transport as transport
+import _app_scripts.data.config_io as config_io
+import _app_scripts.information.information_popup as information_popup
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context())
-# ---------------------------------------------------------------------------
-_root = None
-_right_column = None
-_get_disable_shortcuts = None
-_show_list = None
-_theme_context_menu = None
-_get_title = None
-_up_next_text = None
-_prefetch_next_themes = None
-_save_config = None
-_play_video = None
-_player = None
-_get_song_string = None
-_get_metadata = None
+# Collaborators (read directly off state / sibling modules).
+# play_video reached via transport sibling; root/right_column/player read from
+# state.widgets; show_list/theme_context_menu/get_title from lists; up_next_text
+# from metadata_display; prefetch_next_themes from cache_download; save_config
+# from config_io; get_song_string from information_popup; get_metadata from
+# metadata_fetch.
 # playlist is read directly from state.metadata.playlist
-_get_directory_files = None
-_deduplicate_theme_versions = None
+# directory_files / deduplicate_theme_versions are read directly from playlist_ops
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -37,41 +34,6 @@ SEARCH_BAR_PLACEHOLDER = "SEARCH THEMES"
 search_queue = None
 search_results = []
 _search_token = 0
-
-# ---------------------------------------------------------------------------
-# set_context()
-# ---------------------------------------------------------------------------
-def set_context(
-    root, right_column,
-    get_disable_shortcuts, show_list, theme_context_menu,
-    get_title, up_next_text, prefetch_next_themes,
-    save_config, play_video, player,
-    get_song_string, get_metadata,
-    get_directory_files, deduplicate_theme_versions,
-):
-    global _root, _right_column
-    global _get_disable_shortcuts, _show_list, _theme_context_menu
-    global _get_title, _up_next_text, _prefetch_next_themes
-    global _save_config, _play_video, _player
-    global _get_song_string, _get_metadata
-    global _get_directory_files, _deduplicate_theme_versions
-
-    _root = root
-    _right_column = right_column
-    _get_disable_shortcuts = get_disable_shortcuts
-    _show_list = show_list
-    _theme_context_menu = theme_context_menu
-    _get_title = get_title
-    _up_next_text = up_next_text
-    _prefetch_next_themes = prefetch_next_themes
-    _save_config = save_config
-    _play_video = play_video
-    _player = player
-    _get_song_string = get_song_string
-    _get_metadata = get_metadata
-    _get_directory_files = get_directory_files
-    _deduplicate_theme_versions = deduplicate_theme_versions
-
 
 # ===========================================================================
 #  SEARCHING THEMES
@@ -90,20 +52,20 @@ def _apply_search_results(token, results, term, update, add):
 
     def _search_right_click(index):
         if index > 0:
-            _theme_context_menu(search_results[index - 1], lambda: search(True, False))
+            lists._theme_context_menu(search_results[index - 1], lambda: search(True, False))
 
     if add:
-        _show_list("search_add", _right_column, search_list, _get_title, add_search_playlist, selected, update,
-                   right_click_func=_search_right_click, title="SEARCH: ADD TO PLAYLIST")
+        lists.show_list("search_add", state.widgets.right_column, search_list, lists.get_title, add_search_playlist, selected, update,
+                        right_click_func=_search_right_click, title="SEARCH: ADD TO PLAYLIST")
     else:
-        _show_list("search", _right_column, search_list, _get_title, set_search_queue, selected, update,
-                   right_click_func=_search_right_click, title="SEARCH RESULTS")
+        lists.show_list("search", state.widgets.right_column, search_list, lists.get_title, set_search_queue, selected, update,
+                        right_click_func=_search_right_click, title="SEARCH RESULTS")
 
 
 def search(update=False, ask=True, add=False):
     global search_results, search_term, _search_token
-    if ask and _get_disable_shortcuts():
-        search_term_ask = simpledialog.askstring("Search Themes", "Search Term:", initialvalue=search_term, parent=_root)
+    if ask and state.controls.disable_shortcuts:
+        search_term_ask = simpledialog.askstring("Search Themes", "Search Term:", initialvalue=search_term, parent=state.widgets.root)
         if not search_term_ask:
             return
         search_term = search_term_ask
@@ -118,7 +80,7 @@ def search(update=False, ask=True, add=False):
 
     def _run():
         results = search_playlist(term)
-        _root.after(0, lambda: _apply_search_results(token, results, term, update, add))
+        state.widgets.root.after(0, lambda: _apply_search_results(token, results, term, update, add))
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -147,9 +109,9 @@ def add_search_playlist(index):
         filename = search_results[index - 1]
         add_theme_next(filename, prevent_duplicates=True)
         search_add(True, False)
-        _up_next_text()
-        _prefetch_next_themes()
-        _save_config()
+        metadata_display.up_next_text()
+        cache_download.prefetch_next_themes()
+        config_io.save_config()
 
 
 def set_search_queue(index):
@@ -160,12 +122,12 @@ def set_search_queue(index):
             search_queue = None
         else:
             search_queue = filename
-            if not _player.is_playing():
-                _play_video()
+            if not state.widgets.player.is_playing():
+                transport.play_video()
                 return
         search(True, False)
-        _up_next_text()
-        _prefetch_next_themes()
+        metadata_display.up_next_text()
+        cache_download.prefetch_next_themes()
 
 
 def _focus_search_entry():
@@ -191,8 +153,8 @@ def search_playlist(search_term):
     priority_results = []
     results = []
     artist_results = []
-    for filename in _get_directory_files(include_non_local=True):
-        metadata = _get_metadata(filename)
+    for filename in playlist_ops.get_directory_files(include_non_local=True):
+        metadata = metadata_fetch.get_metadata(filename)
         filename_trim = filename.lower().replace(".webm", "").replace(".mp4", "")
         title = metadata.get("title", "").lower()
         english_title = (metadata.get("eng_title") or "").lower()
@@ -205,12 +167,12 @@ def search_playlist(search_term):
         elif (search_term in filename_trim) or (title and search_term in title) or (english_title and search_term in english_title) or studio_match or season_match:
             results.append(filename)
         else:
-            song_string = _get_song_string(metadata, artist_limit=None).lower()
+            song_string = information_popup.get_song_string(metadata, artist_limit=None).lower()
             if song_string and search_term in song_string:
                 artist_results.append(filename)
 
     def _slug_sort_key(file):
-        meta = _get_metadata(file)
+        meta = metadata_fetch.get_metadata(file)
         slug = (meta.get("slug") or "").upper()
         title_key = (meta.get("eng_title") or meta.get("title") or file).lower()
         if slug.startswith("OP"):
@@ -228,4 +190,4 @@ def search_playlist(search_term):
     priority_results.sort(key=_slug_sort_key)
     results.sort(key=_slug_sort_key)
     artist_results.sort(key=_slug_sort_key)
-    return _deduplicate_theme_versions(priority_results + results + artist_results)
+    return playlist_ops.deduplicate_theme_versions(priority_results + results + artist_results)

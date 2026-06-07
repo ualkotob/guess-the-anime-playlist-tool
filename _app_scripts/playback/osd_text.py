@@ -1,6 +1,6 @@
 """mpv OSD text primitives and shared ASS font/color helpers."""
 
-_ctx = {}
+from core.game_state import state
 
 # name -> allocated osd-overlay ID (60-79); permanent for the app lifetime
 _floating_text_osd_alloc = {}
@@ -15,30 +15,28 @@ _courier_font_cache = {}
 floating_windows = {}  # name -> osd_id (int); tracks active floating text OSD slots
 
 
-def set_context(
-    *,
-    root,
-    player,
-    osd_command,
-    web_server,
-    is_bonus_guessing,
-    get_inverted_positions,
-    get_overlay_text_color,
-    get_overlay_background_color,
-    get_inverse_overlay_text_color,
-    get_inverse_overlay_background_color,
-):
-    _ctx.clear()
-    _ctx.update(locals())
+def osd_command(*args):
+    """Send a raw osd-overlay command to the mpv player (no-op on failure).
+
+    Shared by every OSD overlay module; reads the live player from
+    ``state.widgets`` so callers need no injection.
+    """
+    try:
+        state.widgets.player._p.command(*args)
+    except Exception:
+        pass
 
 
 def set_countdown(value=None, position="top right", inverse=False):
     """Create, update, or remove the countdown overlay."""
-    if _ctx["get_inverted_positions"]():
+    if state.config.inverted_positions:
         position = "top left"
 
-    web_server = _ctx["web_server"]
-    if _ctx["is_bonus_guessing"]() and value is not None and web_server.is_running():
+    # Lazy imports: osd_text is a low-level OSD primitive; bonus and the web
+    # server sit above (or alongside) it, so reach them at call time.
+    import _app_scripts.file.web_server.web_server as web_server
+    import _app_scripts.bonus.bonus as bonus
+    if bonus.guessing_extra and value is not None and web_server.is_running():
         try:
             web_server.push_timer(float(value), paused=True)
         except (TypeError, ValueError):
@@ -121,7 +119,7 @@ def _get_floating_osd_id(name):
 def _color_str_to_ass_bgr(color_str):
     """Convert a Tkinter color string to an ASS BBGGRR hex string."""
     try:
-        r16, g16, b16 = _ctx["root"].winfo_rgb(color_str)
+        r16, g16, b16 = state.widgets.root.winfo_rgb(color_str)
         r, g, b = r16 >> 8, g16 >> 8, b16 >> 8
     except Exception:
         r, g, b = 255, 255, 255
@@ -166,7 +164,6 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         or (isinstance(value, int) and value < 0)
     )
 
-    osd_command = _ctx["osd_command"]
     if is_empty:
         if name in floating_windows:
             osd_id = floating_windows.pop(name)
@@ -176,7 +173,7 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
                 pass
         return
 
-    player = _ctx["player"]
+    player = state.widgets.player
     try:
         osd_w = int(player._p.osd_width or 0)
         osd_h = int(player._p.osd_height or 0)
@@ -221,11 +218,11 @@ def set_floating_text(name, value, position="top right", size=80, width_max=0.7,
         text_w, text_h, pad = _metrics(fs)
 
     if inverse:
-        text_bgr = _color_str_to_ass_bgr(_ctx["get_inverse_overlay_text_color"]())
-        bg_bgr = _color_str_to_ass_bgr(_ctx["get_inverse_overlay_background_color"]())
+        text_bgr = _color_str_to_ass_bgr(state.colors.INVERSE_OVERLAY_TEXT_COLOR)
+        bg_bgr = _color_str_to_ass_bgr(state.colors.INVERSE_OVERLAY_BACKGROUND_COLOR)
     else:
-        text_bgr = _color_str_to_ass_bgr(_ctx["get_overlay_text_color"]())
-        bg_bgr = _color_str_to_ass_bgr(_ctx["get_overlay_background_color"]())
+        text_bgr = _color_str_to_ass_bgr(state.colors.OVERLAY_TEXT_COLOR)
+        bg_bgr = _color_str_to_ass_bgr(state.colors.OVERLAY_BACKGROUND_COLOR)
 
     margin = max(4, round(10 * modifier))
     bord_bg = max(pad, round(fs * 0.17))

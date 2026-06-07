@@ -1,10 +1,8 @@
-"""
-Coming-up popup OSD + skip-to-end / fast-forward-to-end UI.
+"""Coming-up popup OSD + skip-to-end / fast-forward-to-end UI.
 
-Extracted from guess_the_anime.py "COMING UP UI" section. Owns its own ASS OSD
-state and the small flash overlays; the *coming_up_queue* dict that holds a
-queued popup lives in main (it is mutated by main's seek-bar ticker), so reads
-and writes against it go through main_globals.
+Owns its own ASS OSD state and the small flash overlays; the *coming_up_queue*
+dict that holds a queued popup lives in state.controls (rebound by main's
+seek-bar ticker).
 """
 
 import math
@@ -13,26 +11,8 @@ import time
 from PIL import Image
 
 from core.game_state import state
-
-
-_get_ass_font = None
-_ass_wrap_text = None
-_osd_command = None
-_color_str_to_ass_bgr = None
-_seek_to = None
-_main_globals = None
-
-
-def set_context(*, get_ass_font, ass_wrap_text, osd_command,
-                color_str_to_ass_bgr, seek_to, main_globals):
-    global _get_ass_font, _ass_wrap_text, _osd_command
-    global _color_str_to_ass_bgr, _seek_to, _main_globals
-    _get_ass_font = get_ass_font
-    _ass_wrap_text = ass_wrap_text
-    _osd_command = osd_command
-    _color_str_to_ass_bgr = color_str_to_ass_bgr
-    _seek_to = seek_to
-    _main_globals = main_globals
+import _app_scripts.playback.osd_text as osd_text
+import _app_scripts.playback.transport as transport
 
 
 _COMING_UP_ASS_OSD_ID        = 80
@@ -77,7 +57,7 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
     margin = max(4, round(10 * modifier))
 
     def _measure_w(text_block, fs):
-        fnt = _get_ass_font(fs)
+        fnt = osd_text._get_ass_font(fs)
         max_w = 0
         for line in text_block.split('\n'):
             if not line:
@@ -102,7 +82,7 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
         wrapped_title_lines = []
         for ln in title_text.split('\n'):
             if ln.strip():
-                greedy = _ass_wrap_text(ln, fs_title, title_wrap_max)
+                greedy = osd_text._ass_wrap_text(ln, fs_title, title_wrap_max)
                 if len(greedy) > 1:
                     # Binary-search for the minimum wrap width that still fits in the same
                     # number of lines — this gives the most evenly balanced split.
@@ -112,11 +92,11 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
                     hi = title_wrap_max
                     while lo < hi:
                         mid = (lo + hi) // 2
-                        if len(_ass_wrap_text(ln, fs_title, mid)) <= n:
+                        if len(osd_text._ass_wrap_text(ln, fs_title, mid)) <= n:
                             hi = mid
                         else:
                             lo = mid + 1
-                    wrapped_title_lines.extend(_ass_wrap_text(ln, fs_title, lo))
+                    wrapped_title_lines.extend(osd_text._ass_wrap_text(ln, fs_title, lo))
                 else:
                     wrapped_title_lines.extend(greedy)
             else:
@@ -130,7 +110,7 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
         wrapped_lines = []
         for ln in details.split('\n'):
             if ln.strip():
-                wrapped_lines.extend(_ass_wrap_text(ln, fs_details, wrap_max))
+                wrapped_lines.extend(osd_text._ass_wrap_text(ln, fs_details, wrap_max))
             else:
                 wrapped_lines.append('')
         details_wrapped = '\n'.join(wrapped_lines)
@@ -165,8 +145,8 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
     by = y
     cx = osd_w // 2
 
-    bg_bgr = _color_str_to_ass_bgr(_main_globals['OVERLAY_BACKGROUND_COLOR'])
-    fg_bgr = _color_str_to_ass_bgr(_main_globals['OVERLAY_TEXT_COLOR'])
+    bg_bgr = osd_text._color_str_to_ass_bgr(state.colors.OVERLAY_BACKGROUND_COLOR)
+    fg_bgr = osd_text._color_str_to_ass_bgr(state.colors.OVERLAY_TEXT_COLOR)
 
     # ASS alpha: 0x00=opaque, 0xFF=transparent.
     # Background target: 0x33 ≈ 80% opaque, matching the original -alpha 0.8.
@@ -211,7 +191,7 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
         )
 
     try:
-        _osd_command('osd-overlay', _COMING_UP_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _COMING_UP_ASS_OSD_ID, 'ass-events',
                      "\n".join(events), osd_w, osd_h, 3, 'no')
     except Exception as e:
         print(f"Coming-up OSD error: {e}")
@@ -279,7 +259,7 @@ def show_skip_to_end_osd():
             cx, cy = osd_w // 2, osd_h // 2
 
             label = "⏭ SKIPPED TO END"
-            fnt = _get_ass_font(fs)
+            fnt = osd_text._get_ass_font(fs)
             try:
                 text_w = round(fnt.getlength(label)) if fnt else round(len(label) * fs * 0.55)
             except AttributeError:
@@ -321,7 +301,7 @@ def show_skip_to_end_osd():
                 f"\\3c&H{border_bgr}&\\3a&H{border_ah}&"
                 f"\\bord{bord_w}\\shad0\\b1\\fs{fs}}}{label}",
             ]
-            _osd_command('osd-overlay', _SKIP_TO_END_ASS_OSD_ID, 'ass-events',
+            osd_text.osd_command('osd-overlay', _SKIP_TO_END_ASS_OSD_ID, 'ass-events',
                          "\n".join(events), osd_w, osd_h, 3, 'no')
         except Exception as e:
             print(f"Skip-to-end OSD error: {e}")
@@ -330,7 +310,7 @@ def show_skip_to_end_osd():
         global _skip_to_end_after
         _skip_to_end_after = None
         try:
-            _osd_command('osd-overlay', _SKIP_TO_END_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _SKIP_TO_END_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
 
@@ -355,7 +335,7 @@ def fast_forward_to_end(speed=4, ff_ms=500):
     global _ff_to_end_after
     player = state.widgets.player
     root = state.widgets.root
-    currently_playing = _main_globals['currently_playing']
+    currently_playing = state.playback.currently_playing
     length_ms = player.get_length()
     if length_ms <= 3000:
         return
@@ -367,7 +347,7 @@ def fast_forward_to_end(speed=4, ff_ms=500):
             pass
         _ff_to_end_after = None
     filename_at_start = currently_playing.get("filename")
-    normal_rate = _main_globals['light_speed_modifier']  # preserve lightning-round rate
+    normal_rate = state.lightning.light_speed_modifier  # preserve lightning-round rate
     player.set_rate(speed)
     show_skip_to_end_osd()
 
@@ -379,7 +359,7 @@ def fast_forward_to_end(speed=4, ff_ms=500):
         player.set_rate(normal_rate)
         cur_length_ms = player.get_length()
         if cur_length_ms > 3000:
-            _seek_to(cur_length_ms - 3000)
+            transport.seek_to(cur_length_ms - 3000)
         # root.after(0, show_skip_to_end_osd)
 
     _ff_to_end_after = root.after(ff_ms, _finish)
@@ -397,7 +377,7 @@ def _hide_coming_up_osd():
             pass
         _coming_up_anim_after = None
     try:
-        _osd_command('osd-overlay', _COMING_UP_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        osd_text.osd_command('osd-overlay', _COMING_UP_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
     except Exception:
         pass
     if _coming_up_img_overlay is not None:
@@ -424,14 +404,14 @@ def toggle_coming_up_popup(show, title="", details="", image=None, up_next=True,
         if _coming_up_osd_visible:
             if title == "" or (title and title.lower() in _coming_up_osd_current_title.lower()):
                 _hide_coming_up_osd()
-        coming_up_queue = _main_globals.get('coming_up_queue')
+        coming_up_queue = state.controls.coming_up_queue
         if coming_up_queue:
             if title in coming_up_queue["title"]:
-                _main_globals['coming_up_queue'] = None
+                state.controls.coming_up_queue = None
         return
 
     if queue and player.is_playing():
-        _main_globals['coming_up_queue'] = {
+        state.controls.coming_up_queue = {
             "title":   title,
             "details": details,
             "image":   image,

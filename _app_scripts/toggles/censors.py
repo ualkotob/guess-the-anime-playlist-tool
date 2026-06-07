@@ -1,7 +1,4 @@
-"""
-Censor boxes — OSD rendering, file loading, editor UI.
-Extracted from guess_the_anime.py.
-"""
+"""Censor boxes — OSD rendering, file loading, editor UI."""
 
 import os
 import json
@@ -15,104 +12,32 @@ import pyperclip
 import pyautogui
 
 from core.game_state import state
+from core.paths import CENSOR_JSON_FILE, CENSORS_FOLDER
+import _app_scripts.playback.streaming as streaming
+import _app_scripts.playback.osd_text as osd_text
+import _app_scripts.playback.transport as transport
+import _app_scripts.queue_round.lightning_rounds.mismatch_round as mismatch_round
+import _app_scripts.queue_round.lightning_rounds.filter_overlay as filter_overlay
+import _app_scripts.queue_round.youtube.youtube_control as youtube_control
+import _app_scripts.information.information_popup as information_popup
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.data.config_io as config_io
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.file.tooltip as tooltip
 
 # ---------------------------------------------------------------------------
-# Context (injected by set_context at startup)
+# Collaborators reached directly via module attr: play_next from the transport
+# sibling; root/player from state.widgets; is_title_window_up/
+# _get_mpv_client_rect_logical from information_popup; get_file_metadata_by_name
+# from metadata_fetch; _atomic_json_write from config_io;
+# get_window_position_and_setup from windowing; ToolTip from tooltip.
 # ---------------------------------------------------------------------------
-_root = None
-_player = None
-_get_black_overlay = None          # lambda: black_overlay
-_get_video_frame_active = None     # lambda: _video_frame_active
-_get_effective_video_rect = None   # function ref
-_osd_command_fn = None             # _osd_command function ref
-_get_zoom_state = None             # lambda: (z, ox, oy) or None
-_get_projected_player_time = None  # lambda: projected_player_time
-_get_mismatch_visuals = None       # lambda: mismatch_visuals
-_get_currently_streaming = None    # lambda: streaming.currently_streaming
-_get_light_round_started = None    # lambda: light_round_started
-_play_next_fn = None               # play_next function ref
-_is_title_window_up = None         # is_title_window_up function ref
-_get_mpv_client_rect_logical = None  # _get_mpv_client_rect_logical function ref
-_get_file_metadata_by_name = None  # get_file_metadata_by_name function ref
-_atomic_json_write_fn = None       # _atomic_json_write function ref
-_get_window_position_and_setup = None  # get_window_position_and_setup function ref
-_ToolTip = None                    # ToolTip class ref
-_get_filter_state = None           # lambda: (variant, progress) or None when no filter active
-_get_censor_filter_thresholds = None  # lambda: (blur_pct, pixelize_pct)
 
-# Settings (injected by update_settings)
-_CENSOR_JSON_FILE = "censors/censors.json"
-_CENSORS_FOLDER = "censors"
+# Censor JSON file / folder come from core.paths (imported above). The OSD slot
+# IDs (100-139, for up to 40 boxes — mpv renders lower IDs on top, so these sit
+# behind peek/grow/edge 50-59) and the background colour are module-owned.
 _CENSOR_ASS_OSD_IDS = list(range(100, 140))
-_BACKGROUND_COLOR = "gray12"
-
-
-def set_context(
-    root,
-    player,
-    get_black_overlay,
-    get_video_frame_active,
-    get_effective_video_rect,
-    osd_command,
-    get_projected_player_time,
-    get_mismatch_visuals,
-    get_currently_streaming,
-    get_light_round_started,
-    play_next_fn,
-    is_title_window_up,
-    get_mpv_client_rect_logical,
-    get_file_metadata_by_name,
-    atomic_json_write,
-    get_window_position_and_setup,
-    ToolTip_class,
-    get_zoom_state=None,
-    get_filter_state=None,
-    get_censor_filter_thresholds=None,
-):
-    global _root, _player, _get_black_overlay, _get_video_frame_active
-    global _get_effective_video_rect, _osd_command_fn, _get_projected_player_time
-    global _get_mismatch_visuals, _get_currently_streaming
-    global _get_light_round_started
-    global _play_next_fn, _is_title_window_up, _get_mpv_client_rect_logical
-    global _get_file_metadata_by_name, _atomic_json_write_fn
-    global _get_window_position_and_setup
-    global _ToolTip, _get_zoom_state, _get_filter_state, _get_censor_filter_thresholds
-    _root = root
-    _player = player
-    _get_black_overlay = get_black_overlay
-    _get_video_frame_active = get_video_frame_active
-    _get_effective_video_rect = get_effective_video_rect
-    _osd_command_fn = osd_command
-    _get_projected_player_time = get_projected_player_time
-    _get_mismatch_visuals = get_mismatch_visuals
-    _get_currently_streaming = get_currently_streaming
-    _get_light_round_started = get_light_round_started
-    _play_next_fn = play_next_fn
-    _is_title_window_up = is_title_window_up
-    _get_mpv_client_rect_logical = get_mpv_client_rect_logical
-    _get_file_metadata_by_name = get_file_metadata_by_name
-    _atomic_json_write_fn = atomic_json_write
-    _get_window_position_and_setup = get_window_position_and_setup
-    _ToolTip = ToolTip_class
-    if get_zoom_state is not None:
-        _get_zoom_state = get_zoom_state
-    if get_filter_state is not None:
-        _get_filter_state = get_filter_state
-    if get_censor_filter_thresholds is not None:
-        _get_censor_filter_thresholds = get_censor_filter_thresholds
-
-
-def update_settings(censor_json_file=None, censors_folder=None,
-                    censor_ass_osd_ids=None, background_color=None):
-    global _CENSOR_JSON_FILE, _CENSORS_FOLDER, _CENSOR_ASS_OSD_IDS, _BACKGROUND_COLOR
-    if censor_json_file is not None:
-        _CENSOR_JSON_FILE = censor_json_file
-    if censors_folder is not None:
-        _CENSORS_FOLDER = censors_folder
-    if censor_ass_osd_ids is not None:
-        _CENSOR_ASS_OSD_IDS = censor_ass_osd_ids
-    if background_color is not None:
-        _BACKGROUND_COLOR = background_color
+_BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
 
 
 # ---------------------------------------------------------------------------
@@ -121,9 +46,6 @@ def update_settings(censor_json_file=None, censors_folder=None,
 censor_list = {}
 other_censor_lists = []
 _youtube_censor_list    = {}   # {filename: [censor, ...]} — populated at YouTube play time
-_save_youtube_censors_fn = None
-_get_yt_video_id_fn      = None
-_is_youtube_file_fn      = None
 censors_enabled = True
 censors_nsfw_enabled = True
 
@@ -146,13 +68,14 @@ save_censors_button = None
 # OSD helpers
 # ---------------------------------------------------------------------------
 def _osd_command(*args):
-    if _osd_command_fn:
-        _osd_command_fn(*args)
+    osd_text.osd_command(*args)
 
 
 def _commit_censor_osd():
     """Draw censor boxes via ASS osd-overlay (IDs 100–139), one slot per box."""
     global _censor_osd_last_size
+    # Lazy import: blind_screen imports censors, so a module-level import would cycle.
+    import _app_scripts.playback.blind_screen as blind_screen
     active = [(d["censor"], d.get("color", "black"))
               for d in censor_boxes.values() if not d.get("destroying")]
 
@@ -161,7 +84,7 @@ def _commit_censor_osd():
             _osd_command('osd-overlay', _sid, 'none', '', 0, 0, 0, 'no')
 
     # Hide while blind/black overlay is active.
-    if not active or _get_black_overlay() is not None:
+    if not active or blind_screen.black_overlay is not None:
         _clear_all_slots()
         _censor_osd_last_size = (0, 0)
         return
@@ -174,20 +97,21 @@ def _commit_censor_osd():
 
     # Get actual mpv OSD (window) dimensions
     try:
-        osd_w = int(_player._p.osd_width or 0)
-        osd_h = int(_player._p.osd_height or 0)
+        osd_w = int(state.widgets.player._p.osd_width or 0)
+        osd_h = int(state.widgets.player._p.osd_height or 0)
     except Exception:
         osd_w, osd_h = 0, 0
     if not osd_w or not osd_h:
-        osd_w = _root.winfo_screenwidth()
-        osd_h = _root.winfo_screenheight()
+        osd_w = state.widgets.root.winfo_screenwidth()
+        osd_h = state.widgets.root.winfo_screenheight()
 
     # Compute video rect within OSD space (letterbox/pillarbox aware, framed-video aware)
-    if _get_video_frame_active():
-        _, _, video_x, video_y, video_w, video_h = _get_effective_video_rect()
+    if blind_screen._video_frame_active:
+        import _app_scripts.information.information_popup as information_popup
+        _, _, video_x, video_y, video_w, video_h = information_popup._get_effective_video_rect()
     else:
         try:
-            vw, vh = _player.video_get_size(0)
+            vw, vh = state.widgets.player.video_get_size(0)
         except Exception:
             vw, vh = 0, 0
         if vw and vh:
@@ -229,32 +153,31 @@ def _commit_censor_osd():
         # Apply zoom vf filter transform so censor boxes track the zoomed video.
         # The zoom filter crops a 1/z fraction of the frame then scales it back up;
         # we apply the same crop+scale to the censor box coordinates.
-        if _get_zoom_state:
-            _zs = _get_zoom_state()
-            if _zs:
-                _z, _ox, _oy = _zs
-                # Normalise box to [0,1] video space
-                _left_n  = (cx - video_x) / video_w
-                _top_n   = (cy - video_y) / video_h
-                _w_n     = cw / video_w
-                _h_n     = ch / video_h
-                # Crop origin in normalised video space (matches vf lavfi crop expr)
-                _crop_x  = (1 - 1 / _z) * (0.5 + _ox)
-                _crop_y  = (1 - 1 / _z) * (0.5 + _oy)
-                # Map to display space
-                _nl = (_left_n - _crop_x) * _z
-                _nt = (_top_n  - _crop_y) * _z
-                _nw = _w_n * _z
-                _nh = _h_n * _z
-                # Clip to visible area
-                _cl = max(0.0, _nl);  _cr = min(1.0, _nl + _nw)
-                _ct = max(0.0, _nt);  _cb = min(1.0, _nt + _nh)
-                if _cr <= _cl or _cb <= _ct:
-                    continue  # Censor scrolled off-screen
-                cx = video_x + int(_cl * video_w)
-                cy = video_y + int(_ct * video_h)
-                cw = int((_cr - _cl) * video_w)
-                ch = int((_cb - _ct) * video_h)
+        _zs = filter_overlay.get_zoom_state()
+        if _zs:
+            _z, _ox, _oy = _zs
+            # Normalise box to [0,1] video space
+            _left_n  = (cx - video_x) / video_w
+            _top_n   = (cy - video_y) / video_h
+            _w_n     = cw / video_w
+            _h_n     = ch / video_h
+            # Crop origin in normalised video space (matches vf lavfi crop expr)
+            _crop_x  = (1 - 1 / _z) * (0.5 + _ox)
+            _crop_y  = (1 - 1 / _z) * (0.5 + _oy)
+            # Map to display space
+            _nl = (_left_n - _crop_x) * _z
+            _nt = (_top_n  - _crop_y) * _z
+            _nw = _w_n * _z
+            _nh = _h_n * _z
+            # Clip to visible area
+            _cl = max(0.0, _nl);  _cr = min(1.0, _nl + _nw)
+            _ct = max(0.0, _nt);  _cb = min(1.0, _nt + _nh)
+            if _cr <= _cl or _cb <= _ct:
+                continue  # Censor scrolled off-screen
+            cx = video_x + int(_cl * video_w)
+            cy = video_y + int(_ct * video_h)
+            cw = int((_cr - _cl) * video_w)
+            ch = int((_cb - _ct) * video_h)
         ass_color = _to_ass_color(color_str)
         slot_id = _CENSOR_ASS_OSD_IDS[used_slots]
         rotation = censor.get('rotation') or 0.0
@@ -325,12 +248,12 @@ def toggle_censor_box(filename, censor, enabled, time=None):
     if censor_id in censor_boxes:
         if not enabled and not censor_boxes[censor_id].get("destroying"):
             if time is None:
-                time = _get_projected_player_time() / 1000
+                time = state.seek.projected_player_time / 1000
             censor_boxes[censor_id]["destroying"] = True
             def delete_censor(cid, cen):
                 if cid not in censor_boxes:
                     return
-                pj_time = _get_projected_player_time() / 1000
+                pj_time = state.seek.projected_player_time / 1000
                 _type_enabled = (censors_nsfw_enabled if cen.get('nsfw') else censors_enabled)
                 if (_type_enabled and show_censor(cen, check_title=True)
                         and pj_time <= cen.get("end") and pj_time >= cen.get("start")
@@ -340,7 +263,7 @@ def toggle_censor_box(filename, censor, enabled, time=None):
                     del censor_boxes[cid]
                     _commit_censor_osd()
             if time > censor.get("end") + 0.2:
-                _root.after(200, delete_censor, censor_id, censor)
+                state.widgets.root.after(200, delete_censor, censor_id, censor)
             else:
                 delete_censor(censor_id, censor)
         elif enabled:
@@ -374,18 +297,18 @@ def load_censors():
     global censor_list, other_censor_lists
 
     # Load main censor file
-    if os.path.exists(_CENSOR_JSON_FILE):
-        with open(_CENSOR_JSON_FILE, "r") as a:
+    if os.path.exists(CENSOR_JSON_FILE):
+        with open(CENSOR_JSON_FILE, "r") as a:
             censor_list = json.load(a)
             print(f"Loaded censors for {len(censor_list)} files...")
 
     # Load all other JSON files in the censors folder as additional censor lists
-    if os.path.exists(_CENSORS_FOLDER):
-        main_basename = os.path.basename(_CENSOR_JSON_FILE)
-        for fname in sorted(os.listdir(_CENSORS_FOLDER)):
+    if os.path.exists(CENSORS_FOLDER):
+        main_basename = os.path.basename(CENSOR_JSON_FILE)
+        for fname in sorted(os.listdir(CENSORS_FOLDER)):
             if fname.endswith(".json") and fname != main_basename:
                 try:
-                    with open(os.path.join(_CENSORS_FOLDER, fname), "r") as f:
+                    with open(os.path.join(CENSORS_FOLDER, fname), "r") as f:
                         data = json.load(f)
                         other_censor_lists.append(data)
                         print(f"Loaded {len(data)} entries from {fname}")
@@ -395,7 +318,7 @@ def load_censors():
 
 def _prime_start_censors(filename):
     """Immediately activate any censors whose start==0 for the incoming file."""
-    if (not censors_enabled and not censors_nsfw_enabled) or _get_mismatch_visuals() or _get_currently_streaming():
+    if (not censors_enabled and not censors_nsfw_enabled) or mismatch_round.mismatch_visuals or streaming.currently_streaming:
         return
     file_censors = get_file_censors(filename)
     if not file_censors:
@@ -430,17 +353,17 @@ def _prime_start_censors(filename):
 def apply_censors(time, length):
     """Apply Censors"""
     global censor_used, mute_censor_used
-    if (censors_enabled or censors_nsfw_enabled) and not _get_mismatch_visuals() and not _get_currently_streaming():
+    if (censors_enabled or censors_nsfw_enabled) and not mismatch_round.mismatch_visuals and not streaming.currently_streaming:
         check_file_censors(state.playback.currently_playing.get('filename'), time, True)
     else:
         remove_all_censor_boxes()
         if mute_censor_used:
             _target_mute = (
                 state.controls.light_muted
-                if _get_light_round_started()
+                if state.lightning.light_round_started
                 else state.controls.disable_video_audio
             )
-            _player.audio_set_mute(_target_mute)
+            state.widgets.player.audio_set_mute(_target_mute)
             mute_censor_used = False
 
 
@@ -451,7 +374,7 @@ def toggle_censor_bar(toggle=None):
     else:
         censors_enabled = not censors_enabled
     print("Censor Bar Enabled: " + str(censors_enabled))
-    apply_censors(_player.get_time() / 1000, _player.get_length() / 1000)
+    apply_censors(state.widgets.player.get_time() / 1000, state.widgets.player.get_length() / 1000)
     if not censors_enabled and not censors_nsfw_enabled:
         remove_all_censor_boxes()
 
@@ -463,17 +386,9 @@ def toggle_censor_nsfw_bar(toggle=None):
     else:
         censors_nsfw_enabled = not censors_nsfw_enabled
     print("NSFW Censor Bar Enabled: " + str(censors_nsfw_enabled))
-    apply_censors(_player.get_time() / 1000, _player.get_length() / 1000)
+    apply_censors(state.widgets.player.get_time() / 1000, state.widgets.player.get_length() / 1000)
     if not censors_enabled and not censors_nsfw_enabled:
         remove_all_censor_boxes()
-
-
-def set_youtube_context(save_youtube_censors_fn, get_video_id_from_filename_fn, is_youtube_file_fn):
-    """Inject YouTube-specific censor save/load helpers. Call once at startup."""
-    global _save_youtube_censors_fn, _get_yt_video_id_fn, _is_youtube_file_fn
-    _save_youtube_censors_fn = save_youtube_censors_fn
-    _get_yt_video_id_fn      = get_video_id_from_filename_fn
-    _is_youtube_file_fn      = is_youtube_file_fn
 
 
 def set_youtube_censors_for_file(filename, censors_list):
@@ -501,21 +416,20 @@ def get_file_censors(filename):
 
 
 def show_censor(censor, check_title=True):
-    return (not check_title or not _is_title_window_up() or censor.get("nsfw") or censor.get("skip"))
+    return (not check_title or not information_popup.is_title_window_up() or censor.get("nsfw") or censor.get("skip"))
 
 
 def _is_filter_suppressing_censors():
     """Return True when a blur/pixelize filter is active and its intensity exceeds the configured threshold."""
-    if _get_filter_state is None:
-        return False
-    fs = _get_filter_state()
+    fs = filter_overlay.get_filter_state()
     if fs is None:
         return False
     variant, progress = fs
     if variant not in ('blur', 'pixelize'):
         return False
-    thresholds = _get_censor_filter_thresholds() if _get_censor_filter_thresholds else (40, 40)
-    blur_pct, pix_pct = thresholds
+    reveal = state.playback.lightning_mode_settings.get("reveal", {})
+    blur_pct = reveal.get("blur_censor_percent", 40)
+    pix_pct = reveal.get("pixelize_censor_percent", 40)
     intensity = (1.0 - progress) * 100.0
     threshold = blur_pct if variant == 'blur' else pix_pct
     return intensity >= threshold
@@ -540,11 +454,11 @@ def check_file_censors(filename, time, check_title=True):
             if show_censor(censor, check_title) and (time >= censor.get('start', 0) and time <= censor.get('end', 0)):
                 if censor.get("skip"):
                     skip_length = censor.get('end', 0) - censor.get('start', 0)
-                    if not _get_light_round_started() and time < censor.get('start', 0) + (skip_length / 4):
-                        if censor.get('end', 0) < _player.get_length() / 1000:
-                            _player.set_time(round(censor.get('end', 0) * 1000))
+                    if not state.lightning.light_round_started and time < censor.get('start', 0) + (skip_length / 4):
+                        if censor.get('end', 0) < state.widgets.player.get_length() / 1000:
+                            state.widgets.player.set_time(round(censor.get('end', 0) * 1000))
                         else:
-                            _play_next_fn()
+                            transport.play_next()
                     censor_found = True
                 elif not censor.get("mute"):
                     if _is_filter_suppressing_censors():
@@ -557,14 +471,14 @@ def check_file_censors(filename, time, check_title=True):
                             _image_color = get_image_color()
                             _censor_color = _image_color or "black"
                         try:
-                            _cur_osd_size = (int(_player._p.osd_width or 0), int(_player._p.osd_height or 0))
+                            _cur_osd_size = (int(state.widgets.player._p.osd_width or 0), int(state.widgets.player._p.osd_height or 0))
                         except Exception:
                             _cur_osd_size = (0, 0)
                         if censor_entry.get("color") != _censor_color or not censor_entry.get("committed") or _cur_osd_size != _censor_osd_last_size:
                             censor_entry["color"] = _censor_color
                             _osd_dirty = True
                 else:
-                    _player.audio_set_mute(True)
+                    state.widgets.player.audio_set_mute(True)
                     mute_censor_used = True
                     mute_found = True
                 censor_found = True
@@ -581,10 +495,10 @@ def check_file_censors(filename, time, check_title=True):
     if not mute_found and mute_censor_used:
         _target_mute = (
             state.controls.light_muted
-            if _get_light_round_started()
+            if state.lightning.light_round_started
             else state.controls.disable_video_audio
         )
-        _player.audio_set_mute(_target_mute)
+        state.widgets.player.audio_set_mute(_target_mute)
         mute_censor_used = False
 
     return censor_found
@@ -605,7 +519,7 @@ def get_image_color():
     fallback_color = get_random_blind_color()
     try:
         try:
-            img = _player._p.screenshot_raw()
+            img = state.widgets.player._p.screenshot_raw()
         except Exception:
             return fallback_color
         if img is None:
@@ -684,7 +598,7 @@ class RectangleDrawerOverlay:
         self._math = _math
         self.on_rectangle_picked = on_rectangle_picked
 
-        mpv_x, mpv_y, mpv_w, mpv_h = _get_mpv_client_rect_logical()
+        mpv_x, mpv_y, mpv_w, mpv_h = information_popup._get_mpv_client_rect_logical()
         self.mpv_w, self.mpv_h = mpv_w, mpv_h
 
         self.root = tk.Toplevel()
@@ -717,7 +631,7 @@ class RectangleDrawerOverlay:
 
         # Compute video rect
         try:
-            vw, vh = _player.video_get_size(0)
+            vw, vh = state.widgets.player.video_get_size(0)
         except Exception:
             vw, vh = 0, 0
         if vw and vh:
@@ -881,17 +795,17 @@ class RectangleDrawerOverlay:
         _full_btn = tk.Button(bar, text="\u26f6 Full",    font=FONT_SM, bg="#334", fg="white",
                   bd=0, relief="flat", command=self._snap_fullscreen)
         _full_btn.pack(side="left", padx=4, pady=4)
-        _ToolTip(_full_btn, "Expand selection to cover the entire video")
+        tooltip.ToolTip(_full_btn, "Expand selection to cover the entire video")
         _rot0_btn = tk.Button(bar, text="\u21ba 0\u00b0",      font=FONT_SM, bg="#334", fg="#FFFF00",
                   bd=0, relief="flat", command=self._reset_rotation)
         _rot0_btn.pack(side="left", padx=4, pady=4)
-        _ToolTip(_rot0_btn, "Reset rotation to 0\u00b0")
+        tooltip.ToolTip(_rot0_btn, "Reset rotation to 0\u00b0")
         _shape_labels = {'rect': '\u25ad Rect', 'ellipse': '\u2b2d Ellipse'}
         self._shape_btn = tk.Button(bar, text=_shape_labels[self.sel_shape],
                                     font=FONT_SM, bg="#334", fg="white",
                                     bd=0, relief="flat", command=self._toggle_shape)
         self._shape_btn.pack(side="left", padx=4, pady=4)
-        _ToolTip(self._shape_btn, "Toggle censor shape between rectangle and ellipse")
+        tooltip.ToolTip(self._shape_btn, "Toggle censor shape between rectangle and ellipse")
         self._static_items.append(
             self.canvas.create_window(self.mpv_w // 2, self.mpv_h - 10,
                                       window=bar, anchor="s"))
@@ -899,11 +813,11 @@ class RectangleDrawerOverlay:
         snap = tk.Frame(self.canvas, bg="#1e1e1e")
         bkw = dict(font=("Arial", 11), bg="#334", fg="white", width=2, bd=1, relief="raised")
         tk.Label(snap, text="Snap", font=("Arial", 9), bg="#1e1e1e", fg="#aaa").grid(row=0, column=0, columnspan=3, pady=(2, 0))
-        _s_up  = tk.Button(snap, text="\u2191",  command=self._snap_top,     **bkw); _s_up.grid(row=1, column=1, padx=2, pady=2);  _ToolTip(_s_up,  "Snap top edge to video boundary")
-        _s_lft = tk.Button(snap, text="\u2190",  command=self._snap_left,    **bkw); _s_lft.grid(row=2, column=0, padx=2, pady=2); _ToolTip(_s_lft, "Snap left edge to video boundary")
-        _s_ctr = tk.Button(snap, text="\u25a3",  command=self._snap_center,  **bkw); _s_ctr.grid(row=2, column=1, padx=2, pady=2); _ToolTip(_s_ctr, "Centre selection in the video")
-        _s_rgt = tk.Button(snap, text="\u2192",  command=self._snap_right,   **bkw); _s_rgt.grid(row=2, column=2, padx=2, pady=2); _ToolTip(_s_rgt, "Snap right edge to video boundary")
-        _s_dn  = tk.Button(snap, text="\u2193",  command=self._snap_bottom,  **bkw); _s_dn.grid(row=3, column=1, padx=2, pady=2);  _ToolTip(_s_dn,  "Snap bottom edge to video boundary")
+        _s_up  = tk.Button(snap, text="\u2191",  command=self._snap_top,     **bkw); _s_up.grid(row=1, column=1, padx=2, pady=2);  tooltip.ToolTip(_s_up,  "Snap top edge to video boundary")
+        _s_lft = tk.Button(snap, text="\u2190",  command=self._snap_left,    **bkw); _s_lft.grid(row=2, column=0, padx=2, pady=2); tooltip.ToolTip(_s_lft, "Snap left edge to video boundary")
+        _s_ctr = tk.Button(snap, text="\u25a3",  command=self._snap_center,  **bkw); _s_ctr.grid(row=2, column=1, padx=2, pady=2); tooltip.ToolTip(_s_ctr, "Centre selection in the video")
+        _s_rgt = tk.Button(snap, text="\u2192",  command=self._snap_right,   **bkw); _s_rgt.grid(row=2, column=2, padx=2, pady=2); tooltip.ToolTip(_s_rgt, "Snap right edge to video boundary")
+        _s_dn  = tk.Button(snap, text="\u2193",  command=self._snap_bottom,  **bkw); _s_dn.grid(row=3, column=1, padx=2, pady=2);  tooltip.ToolTip(_s_dn,  "Snap bottom edge to video boundary")
         self._static_items.append(
             self.canvas.create_window(self.mpv_w - 8, 8, window=snap, anchor="ne"))
 
@@ -1199,7 +1113,7 @@ def extract_title_and_slug_from_filename(filename):
         if len(parts) >= 2:
             title_part = parts[0]
 
-            file_data = _get_file_metadata_by_name(filename)
+            file_data = metadata_fetch.get_file_metadata_by_name(filename)
             if file_data and file_data.get('slug'):
                 slug = file_data['slug']
                 version = file_data.get('version')
@@ -1319,13 +1233,13 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
             censor_editor = tk.Toplevel()
             censor_editor.configure(bg=_BACKGROUND_COLOR)
             censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
-            _get_window_position_and_setup(censor_editor)
+            windowing.get_window_position_and_setup(censor_editor)
             censor_editor.attributes("-topmost", bool(censor_editor_pinned[0]))
     else:
         censor_editor = tk.Toplevel()
         censor_editor.configure(bg=_BACKGROUND_COLOR)
         censor_editor.protocol("WM_DELETE_WINDOW", censor_editor_close)
-        _get_window_position_and_setup(censor_editor)
+        windowing.get_window_position_and_setup(censor_editor)
         censor_editor.attributes("-topmost", bool(censor_editor_pinned[0]))
 
     _aot_state = censor_editor_pinned
@@ -1393,7 +1307,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
     censor_editor.title(f"Censor Editor for {filename}")
 
     def current_time_func():
-        return _get_projected_player_time() / 1000
+        return state.seek.projected_player_time / 1000
 
     def pick_color_func(label):
         def set_color(hex_color):
@@ -1433,15 +1347,15 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
 
     def save_censor_func():
         global censor_list
-        if _is_youtube_file_fn and _save_youtube_censors_fn and _get_yt_video_id_fn and _is_youtube_file_fn(filename):
-            video_id = _get_yt_video_id_fn(filename)
+        if youtube_control.is_youtube_file(filename):
+            video_id = youtube_control.get_video_id_from_youtube_filename(filename)
             if video_id:
                 _youtube_censor_list[filename] = current_censors
-                _save_youtube_censors_fn(video_id, current_censors)
+                youtube_control.save_youtube_censors(video_id, current_censors)
                 update_censor_button_count()
                 return
         censor_list[filename] = current_censors
-        _atomic_json_write_fn(_CENSOR_JSON_FILE, censor_list, indent=4)
+        config_io._atomic_json_write(CENSOR_JSON_FILE, censor_list, indent=4)
         update_censor_button_count()
 
     def refresh_ui():
@@ -1477,7 +1391,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
             if is_start:
                 now_button.bind("<Button-3>", lambda e, v=var: v.set(0.0))
             else:
-                now_button.bind("<Button-3>", lambda e, v=var: v.set(round((_player.get_length() / 1000) + 0.1, 1)))
+                now_button.bind("<Button-3>", lambda e, v=var: v.set(round((state.widgets.player.get_length() / 1000) + 0.1, 1)))
             frame.grid(row=row, column=col, padx=6, pady=row_pady)
             return frame
 
@@ -1524,9 +1438,9 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                 _pick_btn = tk.Button(size_frame, text="\U0001f3af", width=3, font=font_big, bg=bg_color, fg=fg_color,
                                       command=lambda sv=size_var, prv=pos_rot_var, sb=shape_btn: pick_target_func(sv, prv, sb))
                 _pick_btn.pack(side="left")
-                _ToolTip(_pick_btn, "Open area selector to visually pick the censor region")
+                tooltip.ToolTip(_pick_btn, "Open area selector to visually pick the censor region")
                 shape_btn.pack(side="left", padx=(2, 0))
-                _ToolTip(shape_btn, "Toggle censor shape: rectangle (\u25ad) or ellipse (\u2b2d)")
+                tooltip.ToolTip(shape_btn, "Toggle censor shape: rectangle (\u25ad) or ellipse (\u2b2d)")
             size_frame.grid(row=display_idx+censor_start_row, column=0, padx=(6, 0), pady=row_pady)
 
             pos_frame = tk.Frame(censor_editor, bg=_BACKGROUND_COLOR)
@@ -1570,17 +1484,17 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
             actions_frame = tk.Frame(censor_editor, bg=_BACKGROUND_COLOR)
             test_button = tk.Button(actions_frame, text="\u25b6TEST", command=lambda c=actual_idx: test_censor_playback(c), font=font_big, bg="#226622", fg="white", activebackground="#2a8a2a", bd=0, relief="raised", width=6)
             test_button.pack(side="left", padx=(0, 2))
-            _ToolTip(test_button, "Preview from 1 second before censor start (right-click = test from end)")
+            tooltip.ToolTip(test_button, "Preview from 1 second before censor start (right-click = test from end)")
             test_button.bind("<Button-3>", lambda event, c=actual_idx: test_censor_playback_from_end(c))
             test_end_button = tk.Button(actions_frame, text="\u23ed", command=lambda c=actual_idx: test_censor_playback_from_end(c), font=font_big, bg="#226622", fg="white", activebackground="#2a8a2a", bd=0, relief="raised", width=2)
             test_end_button.pack(side="left", padx=(0, 4))
-            _ToolTip(test_end_button, "Preview from 1 second before censor end")
+            tooltip.ToolTip(test_end_button, "Preview from 1 second before censor end")
             dup_button = tk.Button(actions_frame, text="\U0001f5d0", bg=bg_color, fg=fg_color, width=2, font=font_big, command=lambda i=actual_idx: duplicate_censor(i))
             dup_button.pack(side="left", padx=(0, 4))
-            _ToolTip(dup_button, "Duplicate this censor")
+            tooltip.ToolTip(dup_button, "Duplicate this censor")
             delete_button = tk.Button(actions_frame, text="\u274c", bg=bg_color, fg="red", width=2, font=font_big, command=lambda i=actual_idx: delete_censor(i))
             delete_button.pack(side="left")
-            _ToolTip(delete_button, "Delete this censor")
+            tooltip.ToolTip(delete_button, "Delete this censor")
             actions_frame.grid(row=display_idx+censor_start_row, column=6, padx=6, pady=row_pady)
             row_widgets.extend([size_frame, pos_frame, start_frame, end_frame, color_frame, nsfw_button, actions_frame])
             censor_entry_widgets.append(row_widgets)
@@ -1603,8 +1517,8 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                 start = float(current_censors[censor].get("start", 0))
                 test_time = max(0, (start - 1) * 1000)
 
-            _player.set_time(round(test_time))
-            _player.play()
+            state.widgets.player.set_time(round(test_time))
+            state.widgets.player.play()
         except Exception as e:
             print(f"Error playing censor preview: {e}")
 
@@ -1764,9 +1678,9 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
         save_to_current()
         save_censor_func()
         save_censors_button.configure(text="SAVED!")
-        _root.after(300, lambda: save_censors_button.configure(text="SAVE CENSOR(S)"))
+        state.widgets.root.after(300, lambda: save_censors_button.configure(text="SAVE CENSOR(S)"))
         remove_all_censor_boxes()
-        apply_censors(_player.get_time() / 1000, _player.get_length() / 1000)
+        apply_censors(state.widgets.player.get_time() / 1000, state.widgets.player.get_length() / 1000)
 
     def import_previous_censors():
         similar_censors = _similar_censors_cache

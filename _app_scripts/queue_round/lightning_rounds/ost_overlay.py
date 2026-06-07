@@ -8,11 +8,19 @@ is only used at answer time to surface "what the song was actually
 called" when the YouTube source title still contains the track name
 after the anime metadata is scrubbed out.
 
-Stateless — no module state, no `set_context` needed.
+`extract_track_name_from_youtube_title` is stateless. The OST answer-transition
+cover overlay (`_show_ost_cover` / `_hide_ost_cover`) lives here too; callers
+reach it directly on this sibling — lightning_manager calls
+`ost_overlay._show_ost_cover()` and streaming uses the injected
+`hide_ost_cover_fn`.
 """
 from __future__ import annotations
 
 import re
+
+from core.game_state import state
+import _app_scripts.playback.blind_screen as blind_screen
+import _app_scripts.playback.osd_text as osd_text
 
 
 def extract_track_name_from_youtube_title(youtube_title, data):
@@ -138,3 +146,43 @@ def extract_track_name_from_youtube_title(youtube_title, data):
         return ""
 
     return result.strip()
+
+
+# =========================================
+#       OST ANSWER-TRANSITION COVER
+# =========================================
+_OST_COVER_ASS_OSD_ID = 57   # OST answer transition cover
+_ost_cover_overlay = None
+
+
+def _show_ost_cover():
+    """Draw a solid ASS OSD overlay covering the full mpv canvas, using the blind's last color."""
+    global _ost_cover_overlay
+    _ost_cover_overlay = True
+    try:
+        player = state.widgets.player
+        root = state.widgets.root
+        osd_w = int(player._p.osd_width or 0) or root.winfo_screenwidth()
+        osd_h = int(player._p.osd_height or 0) or root.winfo_screenheight()
+        # Match the existing blind color for a seamless transition
+        color_str = blind_screen._blind_osd_color_cache or "#000000"
+        try:
+            r16, g16, b16 = root.winfo_rgb(color_str)
+            r, g, b = r16 >> 8, g16 >> 8, b16 >> 8
+        except Exception:
+            r, g, b = 0, 0, 0
+        color_hex = f"{b:02X}{g:02X}{r:02X}"  # ASS: BGR
+        path = f"m 0 0 l {osd_w} 0 {osd_w} {osd_h} 0 {osd_h}"
+        ass = f"{{\\an7\\pos(0,0)\\1c&H{color_hex}&\\1a&H00&\\bord0\\shad0\\p1}}" + path + "{\\p0}"
+        osd_text.osd_command('osd-overlay', _OST_COVER_ASS_OSD_ID, 'ass-events', ass, osd_w, osd_h, 1, 'no')
+    except Exception:
+        pass
+
+
+def _hide_ost_cover():
+    global _ost_cover_overlay
+    _ost_cover_overlay = None
+    try:
+        osd_text.osd_command('osd-overlay', _OST_COVER_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+    except Exception:
+        pass

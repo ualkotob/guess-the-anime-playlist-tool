@@ -8,9 +8,8 @@ Houses the GitHub-Releases-backed update flow:
   - import_censors                                         (download + replace)
   - download_scoreboard                                    (thin scoreboard kickoff)
 
-State that stays in main: `metadata_last_updated`, `censors_last_updated`
-(read by save_config) per [[state-stays-with-its-readers]]. This module
-writes them via `_main.X = …`.
+Remote update timestamps live in ``state.update_timestamps`` and are persisted
+by config_io.
 """
 import os
 import json
@@ -27,6 +26,8 @@ from _app_scripts import utils
 from _app_scripts.file.metadata import metadata_import
 from _app_scripts.file import scoreboard_control
 from _app_scripts.toggles import censors
+from _app_scripts.data import config_io
+from _app_scripts.ui import windowing, menu_builder
 from core.paths import (
     CENSORS_FOLDER,
     FILE_METADATA_FILE,
@@ -37,13 +38,7 @@ from core.paths import (
     AI_METADATA_FILE,
     ANILIST_METADATA_FILE,
 )
-
-_main = None  # populated by set_context()
-
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
+from core.game_state import state
 
 
 # Import data package URL - modify this to point to your exported metadata package
@@ -67,7 +62,7 @@ def check_for_metadata_updates():
                 remote_timestamp = int(parsedate_to_datetime(last_modified).timestamp())
 
                 # Only prompt if remote is newer than local
-                if remote_timestamp > _main.metadata_last_updated:
+                if remote_timestamp > state.update_timestamps.metadata_last_updated:
                     # Format date for display
                     from datetime import datetime
                     date_str = datetime.fromtimestamp(remote_timestamp).strftime('%Y-%m-%d')
@@ -81,8 +76,8 @@ def check_for_metadata_updates():
                         import_data_from_source(prompt=False)
                     else:
                         # User declined - update timestamp so they don't get asked again until next update
-                        _main.metadata_last_updated = remote_timestamp
-                        _main.save_config()
+                        state.update_timestamps.metadata_last_updated = remote_timestamp
+                        config_io.save_config()
     except Exception as e:
         # Silently fail - don't bother user if check fails
         print(f"Could not check for metadata updates: {e}")
@@ -93,7 +88,7 @@ def check_for_censor_updates():
     # Check if ramuns_censors.json doesn't exist AND last_updated is not 0
     # If both conditions are true, skip the check (no file and never checked before)
     ramuns_censors_file = os.path.join(CENSORS_FOLDER, "ramuns_censors.json")
-    if not os.path.exists(ramuns_censors_file) and _main.censors_last_updated != 0:
+    if not os.path.exists(ramuns_censors_file) and state.update_timestamps.censors_last_updated != 0:
         return
 
     try:
@@ -107,7 +102,7 @@ def check_for_censor_updates():
                 remote_timestamp = int(parsedate_to_datetime(last_modified).timestamp())
 
                 # Only prompt if remote is newer than local
-                if remote_timestamp > _main.censors_last_updated:
+                if remote_timestamp > state.update_timestamps.censors_last_updated:
                     # Format date for display
                     from datetime import datetime
                     date_str = datetime.fromtimestamp(remote_timestamp).strftime('%Y-%m-%d')
@@ -121,8 +116,8 @@ def check_for_censor_updates():
                         import_censors(prompt=False)
                     else:
                         # User declined - update timestamp so they don't get asked again until next update
-                        _main.censors_last_updated = remote_timestamp
-                        _main.save_config()
+                        state.update_timestamps.censors_last_updated = remote_timestamp
+                        config_io.save_config()
     except Exception as e:
         # Silently fail - don't bother user if check fails
         print(f"Could not check for censor updates: {e}")
@@ -132,11 +127,11 @@ def check_for_censor_updates():
 
 def download_scoreboard():
     scoreboard_control.download_scoreboard(
-        _main.root,
-        _main.HIGHLIGHT_COLOR,
-        _main.get_window_position_and_setup,
-        _main.save_config,
-        _main.create_first_row_buttons,
+        state.widgets.root,
+        state.colors.HIGHLIGHT_COLOR,
+        windowing.get_window_position_and_setup,
+        config_io.save_config,
+        menu_builder.create_first_row_buttons,
     )
 
 
@@ -243,7 +238,7 @@ def import_censors(prompt=True):
     import_window.title("Importing Censors...")
     import_window.configure(bg="black")
     import_window.geometry("400x150")
-    _main.get_window_position_and_setup(import_window, offset_x=200, offset_y=200)
+    windowing.get_window_position_and_setup(import_window, offset_x=200, offset_y=200)
 
     # Status label
     status_label = tk.Label(import_window, text="Downloading censors...",
@@ -291,17 +286,17 @@ def import_censors(prompt=True):
                 last_modified = response.headers.get('Last-Modified')
                 if last_modified:
                     from email.utils import parsedate_to_datetime
-                    _main.censors_last_updated = int(parsedate_to_datetime(last_modified).timestamp())
+                    state.update_timestamps.censors_last_updated = int(parsedate_to_datetime(last_modified).timestamp())
                 else:
-                    _main.censors_last_updated = int(time.time())
+                    state.update_timestamps.censors_last_updated = int(time.time())
             except Exception:
-                _main.censors_last_updated = int(time.time())
-            _main.save_config()
+                state.update_timestamps.censors_last_updated = int(time.time())
+            config_io.save_config()
 
             print(f"Imported {len(new_censors)} censors from ramuns_censors.json.")
             if import_window.winfo_exists():
                 import_window.destroy()
-            _main.update_censor_button_count()
+            censors.update_censor_button_count()
 
         except requests.exceptions.RequestException as e:
             if import_window.winfo_exists():

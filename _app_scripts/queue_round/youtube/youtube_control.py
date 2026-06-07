@@ -21,6 +21,8 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import ttk
 
+from core.game_state import state
+
 try:
     from yt_dlp import YoutubeDL
 except ImportError:
@@ -44,9 +46,10 @@ YOUTUBE_CENSORS_FOLDER       = os.path.join(_ROOT_DIR, "youtube", "censors")
 
 # ── Module state ──────────────────────────────────────────────────────────────
 
-# youtube_metadata is updated in-place by load_youtube_metadata() so that any
-# alias held by the caller (main) automatically sees the new data.
-youtube_metadata: dict = {}
+# YouTube metadata lives in state.metadata.youtube_metadata (single owner).
+# load_youtube_metadata() mutates it in-place so app-wide readers and any
+# function-local alias (youtube_metadata = state.metadata.youtube_metadata)
+# stay valid after a reload.
 
 # Stream-URL cache: url → (direct_url, duration_s, title, channel)
 _cached_streams: dict = {}
@@ -55,15 +58,6 @@ _cached_streams: dict = {}
 _yt_cache_downloads_in_progress: set = set()
 # Progress info per vid_id: {downloaded, total, speed, eta}
 _yt_download_progress: dict = {}
-
-# Injected at startup by set_context()
-_root = None
-
-
-def set_context(root_widget):
-    """Provide the main tk.Tk root so popup dialogs can use it."""
-    global _root
-    _root = root_widget
 
 
 # ── Utility helpers ───────────────────────────────────────────────────────────
@@ -130,7 +124,7 @@ def extract_youtube_id_from_url(url):
 
 def is_youtube_file(filename):
     """Return True if *filename* matches a YouTube video in youtube_metadata."""
-    for _vid_id, video in youtube_metadata.get("videos", {}).items():
+    for _vid_id, video in state.metadata.youtube_metadata.get("videos", {}).items():
         if video.get("filename") == filename:
             return True
     return False
@@ -138,9 +132,9 @@ def is_youtube_file(filename):
 
 def get_youtube_metadata_by_filename(filename):
     """Return merged video + channel metadata dict for *filename*, or None."""
-    for video_id, video in youtube_metadata.get("videos", {}).items():
+    for video_id, video in state.metadata.youtube_metadata.get("videos", {}).items():
         if video.get("filename") == filename:
-            channel_info = youtube_metadata.get("channels", {}).get(
+            channel_info = state.metadata.youtube_metadata.get("channels", {}).get(
                 video.get("channel_id"), {"name": "N/A", "subscriber_count": 0}
             )
             return video | channel_info | {"url": video_id}
@@ -149,10 +143,10 @@ def get_youtube_metadata_by_filename(filename):
 
 def get_youtube_metadata_from_index(index=None, key_id=None):
     """Return video + channel metadata by numeric index or video-ID key."""
-    for idx, (key, value) in enumerate(youtube_metadata.get("videos", {}).items()):
+    for idx, (key, value) in enumerate(state.metadata.youtube_metadata.get("videos", {}).items()):
         if (key_id and key_id == key) or idx == index:
             value["url"] = key
-            channel_info = youtube_metadata.get("channels", {}).get(
+            channel_info = state.metadata.youtube_metadata.get("channels", {}).get(
                 value.get("channel_id"), {"name": "N/A", "subscriber_count": 0}
             )
             return value | channel_info
@@ -167,7 +161,7 @@ def save_youtube_metadata():
     os.makedirs(metadata_folder, exist_ok=True)
     tmp = YOUTUBE_METADATA_FILE + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(youtube_metadata, f, indent=4, ensure_ascii=False)
+        json.dump(state.metadata.youtube_metadata, f, indent=4, ensure_ascii=False)
     try:
         os.replace(tmp, YOUTUBE_METADATA_FILE)
     except OSError:
@@ -175,11 +169,11 @@ def save_youtube_metadata():
 
 
 def load_youtube_metadata():
-    """Load youtube_metadata from disk, updating the shared dict **in-place**.
+    """Load youtube metadata from disk into state.metadata.youtube_metadata **in-place**.
 
-    Updating in-place (rather than replacing the reference) ensures any alias
-    held by the caller (e.g. ``youtube_metadata = youtube_control.youtube_metadata``
-    in main) stays valid after the load.
+    Updating in-place (rather than replacing the reference) ensures app-wide
+    readers and any function-local alias (``youtube_metadata =
+    state.metadata.youtube_metadata``) stay valid after the load.
 
     Returns True if the file was found and loaded, False otherwise.
     """
@@ -187,16 +181,16 @@ def load_youtube_metadata():
         return False
     with open(YOUTUBE_METADATA_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
-    youtube_metadata.clear()
-    youtube_metadata.update(data)
+    state.metadata.youtube_metadata.clear()
+    state.metadata.youtube_metadata.update(data)
     print(
         "Loaded youtube metadata for "
-        + str(len(youtube_metadata.get("videos", [])))
+        + str(len(state.metadata.youtube_metadata.get("videos", [])))
         + " videos..."
     )
     # Migration: add date_added to entries that lack it
     migration_needed = False
-    for _vid_id, video in youtube_metadata.get("videos", {}).items():
+    for _vid_id, video in state.metadata.youtube_metadata.get("videos", {}).items():
         if "date_added" not in video:
             upload_date = video.get("upload_date", "")
             if upload_date:
@@ -227,7 +221,7 @@ def get_video_id_from_youtube_filename(filename):
     it up in youtube_metadata. Falls back to stripping the filename stem if not found."""
     if not filename:
         return None
-    for vid_id, video in youtube_metadata.get("videos", {}).items():
+    for vid_id, video in state.metadata.youtube_metadata.get("videos", {}).items():
         if video.get("filename") == filename:
             return vid_id
     # Fallback: strip path/extension (e.g. for files not yet in metadata)
@@ -414,9 +408,10 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
     """Show a blocking popup (root.wait_window) while a YT cache download finishes.
 
     Returns True if the cache file is ready when the popup closes, False otherwise.
-    Requires set_context(root) to have been called first.
+    Requires the tk root (state.widgets.root) to be available.
     """
-    if _root is None:
+    root = state.widgets.root
+    if root is None:
         return False
     vid_id = extract_youtube_id_from_url(youtube_url)
     if not vid_id:
@@ -429,10 +424,10 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
 
     bg_color, fg_color, border_color = "#1e1e1e", "white", "#444"
 
-    popup = tk.Toplevel(_root)
+    popup = tk.Toplevel(root)
     popup.overrideredirect(True)
     popup.attributes("-topmost", True)
-    popup.transient(_root)
+    popup.transient(root)
 
     main_frame  = tk.Frame(popup, bg=border_color, padx=2, pady=2)
     main_frame.pack(fill="both", expand=True)
@@ -518,14 +513,14 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
 
     popup.update_idletasks()
     w, h = 430, 165
-    x = (_root.winfo_screenwidth()  - w) // 2
-    y = (_root.winfo_screenheight() - h) // 2
+    x = (root.winfo_screenwidth()  - w) // 2
+    y = (root.winfo_screenheight() - h) // 2
     popup.geometry(f"{w}x{h}+{x}+{y}")
     popup.deiconify()
     popup.lift()
     popup.update()
     popup.after(250, _poll)
-    _root.wait_window(popup)
+    root.wait_window(popup)
     return result[0]
 
 
@@ -580,7 +575,7 @@ def download_youtube_video(video_id, button, refresh_ui_callback):
     """
     if YoutubeDL is None:
         return
-    video    = youtube_metadata["videos"][video_id]
+    video    = state.metadata.youtube_metadata["videos"][video_id]
     filename = os.path.join(YOUTUBE_FOLDER, video["filename"])
     max_total = {"bytes": 0}
 

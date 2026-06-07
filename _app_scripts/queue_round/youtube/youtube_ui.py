@@ -4,81 +4,59 @@ import os
 from datetime import datetime
 
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
+import _app_scripts.utils as utils
+import _app_scripts.playback.image_loader as image_loader
+import _app_scripts.playback.coming_up_ui as coming_up_ui
+import _app_scripts.playback.transport as transport
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.file.metadata.metadata_panel as metadata_panel
+import _app_scripts.bonus.bonus as bonus
+import _app_scripts.toggles.censors as censors
+import _app_scripts.ui.lists as lists
+import _app_scripts.file.web_server.web_server as web_server
+from core.game_state import state
 
+STREAM_ICON = '📶'
 
-_ctx = {}
 _youtube_playlist = {}
 _archived_youtube_playlist = {}
 
 
-def set_context(
-    *,
-    get_youtube_queue,
-    set_youtube_queue,
-    youtube_metadata,
-    get_playlist,
-    show_list,
-    get_right_column,
-    stream_icon,
-    load_pil_image_from_url,
-    format_seconds,
-    player,
-    player_play,
-    root,
-    set_video_stopped,
-    toggle_coming_up_popup,
-    play_video,
-    up_next_text,
-    get_popout_buttons_by_name,
-    button_selected,
-    bonus,
-    get_currently_playing,
-    censors,
-    get_left_column,
-    get_middle_column,
-    get_popout_currently_playing,
-    update_popout_currently_playing,
-    web_server,
-):
-    _ctx.clear()
-    _ctx.update(locals())
-
-
 def unload_youtube_video():
-    youtube_queue = _ctx["get_youtube_queue"]()
+    youtube_queue = state.playback.youtube_queue
     if youtube_queue:
-        _ctx["toggle_coming_up_popup"](False, get_youtube_display_title(youtube_queue))
+        coming_up_ui.toggle_coming_up_popup(False, get_youtube_display_title(youtube_queue))
     try:
-        popout_buttons = _ctx["get_popout_buttons_by_name"]()
+        popout_buttons = state.playback.popout_buttons_by_name
         if "YOUTUBE QUEUE" in popout_buttons:
-            _ctx["button_selected"](popout_buttons["YOUTUBE QUEUE"], False)
+            lists.button_seleted(popout_buttons["YOUTUBE QUEUE"], False)
         if "YOUTUBE DROPDOWN" in popout_buttons:
             popout_buttons["YOUTUBE DROPDOWN"].set("YOUTUBE VIDEOS")
     except Exception:
         pass
-    _ctx["set_youtube_queue"](None)
+    state.playback.youtube_queue = None
 
 
 def stream_youtube(youtube_url):
     """Stream a YouTube video using mpv."""
-    player = _ctx["player"]
+    player = state.widgets.player
     player.set_media(youtube_url)
-    _ctx["player_play"]()
+    transport.player_play()
     check_youtube_video_playing()
 
 
 def check_youtube_video_playing():
-    player = _ctx["player"]
+    player = state.widgets.player
     if player.is_playing():
-        _ctx["set_video_stopped"](False)
+        state.controls.video_stopped = False
     else:
-        _ctx["root"].after(1000, check_youtube_video_playing)
+        state.widgets.root.after(1000, check_youtube_video_playing)
 
 
 def _is_downloaded_youtube_file(filename):
     if os.path.exists(os.path.join("youtube", filename)):
         return True
-    for playlist_entry in _ctx["get_playlist"]().get("playlist", []):
+    for playlist_entry in state.metadata.playlist.get("playlist", []):
         if (
             os.path.isabs(playlist_entry)
             and os.path.basename(playlist_entry) == filename
@@ -110,7 +88,7 @@ def show_youtube_playlist(update=False):
     global _youtube_playlist
     all_videos = {}
 
-    for video_id, video in _ctx["youtube_metadata"].get("videos", {}).items():
+    for video_id, video in state.metadata.youtube_metadata.get("videos", {}).items():
         if video.get("archived", False):
             continue
 
@@ -123,7 +101,7 @@ def show_youtube_playlist(update=False):
     all_videos = dict(sorted(all_videos.items(), key=_sort_active_video_key, reverse=True))
 
     selected = -1
-    youtube_queue = _ctx["get_youtube_queue"]()
+    youtube_queue = state.playback.youtube_queue
     if youtube_queue:
         queue_video_id = youtube_queue.get("url")
         for index, (key, value) in enumerate(all_videos.items()):
@@ -134,9 +112,9 @@ def show_youtube_playlist(update=False):
 
     _youtube_playlist.clear()
     _youtube_playlist.update(all_videos)
-    _ctx["show_list"](
+    lists.show_list(
         "youtube",
-        _ctx["get_right_column"](),
+        state.widgets.right_column,
         all_videos,
         get_youtube_title,
         load_youtube_video,
@@ -147,21 +125,21 @@ def show_youtube_playlist(update=False):
 
 
 def get_youtube_title(key, value):
-    icon = _ctx["stream_icon"] if not value.get("downloaded", False) else ""
+    icon = STREAM_ICON if not value.get("downloaded", False) else ""
     display_title = shorten_youtube_title(get_youtube_display_title(value))
-    return f"{icon}[{str(_ctx['format_seconds'](get_youtube_duration(value)))}]{display_title}"
+    return f"{icon}[{str(utils.format_seconds(get_youtube_duration(value)))}]{display_title}"
 
 
 def _set_youtube_queue(video):
     """Activate or clear a YouTube queue item from any context."""
-    youtube_queue = _ctx["get_youtube_queue"]()
+    youtube_queue = state.playback.youtube_queue
     if video and youtube_queue != video:
         unload_youtube_video()
-        _ctx["set_youtube_queue"](video)
+        state.playback.youtube_queue = video
         youtube_queue = video
         title = get_youtube_display_title(youtube_queue)
         try:
-            image = _ctx["load_pil_image_from_url"](youtube_queue.get("thumbnail"), size=(400, 225))
+            image = image_loader.load_pil_image_from_url(youtube_queue.get("thumbnail"), size=(400, 225))
         except Exception:
             image = None
         try:
@@ -171,13 +149,13 @@ def _set_youtube_queue(video):
             upload_line = ""
         details = (
             f"Created by: {youtube_queue.get('name')} ({youtube_queue.get('subscriber_count', 0):,} subscribers)\n"
-            f"{upload_line}Duration: {_ctx['format_seconds'](get_youtube_duration(youtube_queue))} mins\n\n"
+            f"{upload_line}Duration: {utils.format_seconds(get_youtube_duration(youtube_queue))} mins\n\n"
             "1 PT for the first correct answer."
         )
-        if _ctx["player"].is_playing():
-            _ctx["toggle_coming_up_popup"](True, title, details, image, queue=True)
+        if state.widgets.player.is_playing():
+            coming_up_ui.toggle_coming_up_popup(True, title, details, image, queue=True)
         else:
-            _ctx["play_video"]()
+            transport.play_video()
     else:
         unload_youtube_video()
 
@@ -186,7 +164,7 @@ def load_youtube_video(index):
     video = get_youtube_metadata_from_index(key_id=list(_youtube_playlist.keys())[index])
     _set_youtube_queue(video)
     show_youtube_playlist(True)
-    _ctx["up_next_text"]()
+    metadata_display.up_next_text()
 
 
 def _sort_archived_video_key(item):
@@ -204,7 +182,7 @@ def show_archived_youtube_playlist(update=False):
     global _archived_youtube_playlist
     all_videos = {}
 
-    for video_id, video in _ctx["youtube_metadata"].get("videos", {}).items():
+    for video_id, video in state.metadata.youtube_metadata.get("videos", {}).items():
         if not video.get("archived", False):
             continue
         filename = video["filename"]
@@ -216,7 +194,7 @@ def show_archived_youtube_playlist(update=False):
     all_videos = dict(sorted(all_videos.items(), key=_sort_archived_video_key, reverse=True))
 
     selected = -1
-    youtube_queue = _ctx["get_youtube_queue"]()
+    youtube_queue = state.playback.youtube_queue
     if youtube_queue:
         queue_video_id = youtube_queue.get("url")
         for index, (key, value) in enumerate(all_videos.items()):
@@ -227,9 +205,9 @@ def show_archived_youtube_playlist(update=False):
 
     _archived_youtube_playlist.clear()
     _archived_youtube_playlist.update(all_videos)
-    _ctx["show_list"](
+    lists.show_list(
         "youtube",
-        _ctx["get_right_column"](),
+        state.widgets.right_column,
         all_videos,
         get_youtube_title,
         load_archived_youtube_video,
@@ -243,23 +221,23 @@ def load_archived_youtube_video(index):
     video = get_youtube_metadata_from_index(key_id=list(_archived_youtube_playlist.keys())[index])
     _set_youtube_queue(video)
     show_archived_youtube_playlist(True)
-    _ctx["up_next_text"]()
+    metadata_display.up_next_text()
 
 
 def update_youtube_metadata(data=None):
-    youtube_data = data or _ctx["get_youtube_queue"]()
+    youtube_data = data or state.playback.youtube_queue
     if not youtube_data:
         return
     video_id = youtube_data.get("url")
-    _ctx["bonus"].setup_for_youtube(load_bonus_template(video_id) if video_id else [])
-    currently_playing = _ctx["get_currently_playing"]()
+    bonus.setup_for_youtube(load_bonus_template(video_id) if video_id else [])
+    currently_playing = state.playback.currently_playing
     yt_filename = currently_playing.get("filename")
     if video_id and yt_filename:
-        _ctx["censors"].set_youtube_censors_for_file(yt_filename, youtube_control.load_youtube_censors(video_id))
-    _ctx["censors"].reset_for_new_file(yt_filename)
+        censors.set_youtube_censors_for_file(yt_filename, youtube_control.load_youtube_censors(video_id))
+    censors.reset_for_new_file(yt_filename)
 
-    left_column = _ctx["get_left_column"]()
-    middle_column = _ctx["get_middle_column"]()
+    left_column = state.widgets.left_column
+    middle_column = state.widgets.middle_column
     insert_column_line(left_column, "TITLE: ", get_youtube_display_title(youtube_data))
     insert_column_line(left_column, "FULL TITLE: ", youtube_data.get("title"))
     insert_column_line(left_column, "UPLOAD DATE: ", f"{datetime.strptime(youtube_data.get('upload_date'), '%Y%m%d').strftime('%Y-%m-%d')}")
@@ -267,13 +245,14 @@ def update_youtube_metadata(data=None):
     insert_column_line(left_column, "LIKES: ", f"{youtube_data.get('like_count') or 0:,}")
     insert_column_line(left_column, "CHANNEL: ", youtube_data.get("name"))
     insert_column_line(left_column, "SUBSCRIBERS: ", f"{youtube_data.get('subscriber_count') or 0:,}")
-    insert_column_line(left_column, "DURATION: ", str(_ctx["format_seconds"](get_youtube_duration(youtube_data))) + " mins")
+    insert_column_line(left_column, "DURATION: ", str(utils.format_seconds(get_youtube_duration(youtube_data))) + " mins")
     insert_column_line(middle_column, "DESCRIPTION: ", youtube_data.get("description"))
     show_youtube_playlist()
-    if _ctx["get_popout_currently_playing"]():
-        _ctx["update_popout_currently_playing"](_ctx["get_youtube_queue"]())
+    # Lazy import: popout_window imports youtube_ui, so a module-level import would cycle.
+    import _app_scripts.popout.popout_window as popout_window
+    if popout_window.popout_currently_playing:
+        metadata_panel.update_popout_currently_playling(state.playback.youtube_queue)
 
-    web_server = _ctx["web_server"]
     if web_server.is_running():
         try:
             yt_upload = youtube_data.get("upload_date")
@@ -291,7 +270,7 @@ def update_youtube_metadata(data=None):
                 "channel": youtube_data.get("name"),
                 "channel_id": youtube_data.get("channel_id"),
                 "subscriber_count": youtube_data.get("subscriber_count"),
-                "duration": str(_ctx["format_seconds"](yt_duration)) + " mins" if yt_duration else None,
+                "duration": str(utils.format_seconds(yt_duration)) + " mins" if yt_duration else None,
                 "duration_seconds": yt_duration,
                 "full_duration_seconds": youtube_data.get("duration"),
                 "start": youtube_data.get("start"),

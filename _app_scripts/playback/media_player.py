@@ -1,12 +1,10 @@
-"""
-Unified media-player abstraction - Phase 2: mpv backend.
+"""Unified media-player abstraction over the mpv backend.
 
 All time values are in milliseconds (consistent with the rest of the app).
 Volume uses the 0-200 scale that the app has always used (mpv 0-100 is doubled).
 
-Extracted from guess_the_anime.py. The class is constructed once in main with
-a configured mpv.MPV instance; main owns the property observers and event
-callbacks (which reach into many main globals) and the player instance lives
+The class is constructed once in main with a configured mpv.MPV instance; main
+owns the property observers and event callbacks, and the player instance lives
 on state.widgets.player.
 """
 

@@ -1,8 +1,4 @@
-# _app_scripts/metadata_panel.py
-# Metadata panel rendering - extracted from guess_the_anime.py (Step 29).
-# Currently houses _has_anilist_fallback + update_extra_metadata (right-column
-# renderer). Additional render functions (update_metadata, song info, etc.)
-# will move into this module in later steps.
+# Metadata panel rendering (right-column renderer).
 import re
 import webbrowser
 import tkinter as tk
@@ -18,179 +14,22 @@ import _app_scripts.file.web_server.web_server as web_server
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.utils as utils
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
+import _app_scripts.popout.popout_window as popout_window
+import _app_scripts.playlists.entry_paths as entry_paths
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
+import _app_scripts.playback.image_loader as image_loader
+import _app_scripts.ui.lists as lists
+import _app_scripts.data.metadata_io as metadata_io
+import _app_scripts.information.information_popup as information_popup
+import _app_scripts.playlists.marks as playlist_marks
+
+from _app_scripts.ui.scaling import scl
 
 # ---------------------------------------------------------------------------
-# Injected context (populated by set_context() at startup)
+# Module-level constants
 # ---------------------------------------------------------------------------
-scl = None
-get_file_path = None
-add_single_data_line = None
-show_youtube_playlist = None
-load_image_from_url = None
-_insert_list_title_row = None
-select_extra_metadata = None
-toggle_spoiler_tags = None
-download_animethemes_file = None
-move_cached_file_to_directory = None
-load_random_clips = None
-stream_clip = None
-reset_metadata = None
-_play_name_key = None
-_build_web_series_themes = None
-_calc_plays_info = None
-_fmt_plays = None
-get_all_theme_from_series = None
-play_video_from_filename = None
-save_metadata = None
-save_metadata_overrides = None
-get_theme_filename = None
-get_theme_filenames = None
-get_filenames_from_artist = None
-is_animethemes_stream_file = None
-stream_icon = ""
-get_display_title = None
-_safe_int = None
-is_game = None
-add_field_total_button = None
-get_all_matching_field = None
-get_filenames_from_studio = None
-add_multiple_data_line = None
-overall_theme_num_display = None
-_get_version_flags = None
-get_file_marks = None
-toggleColumnEdit = None
-get_artist_themes_data = None
-get_studio_entries_data = None
-get_format = None
-get_episode_display = None
-_shorten_platform = None
-get_tags_string = None
-get_tags = None
-get_song_string = None
-_push_web_marks = None
-check_favorited = None
-get_file_props_label = None
-_get_current_list_title = None
-_set_current_list_title = None
-_get_list_loaded = None
-_get_selected_extra_metadata = None
-_get_show_spoiler_tags = None
-_get_youtube_api_key = None
-_get_popout_currently_playing = None
-_get_popout_currently_playing_extra = None
-_get_popout_show_metadata = None
-_get_popout_show_currently_playing = None
-_get_youtube_queue = None
-_set_updating_metadata = None
-LISTS_TO_CLOSE = []
-HIGHLIGHT_COLOR = "gray26"
-
-
-def set_context(*, scl_fn, get_file_path_fn, add_single_data_line_fn, show_youtube_playlist_fn,
-                load_image_from_url_fn, insert_list_title_row_fn, select_extra_metadata_fn,
-                toggle_spoiler_tags_fn, download_animethemes_file_fn,
-                move_cached_file_to_directory_fn, load_random_clips_fn, stream_clip_fn,
-                reset_metadata_fn, play_name_key_fn, build_web_series_themes_fn,
-                calc_plays_info_fn, fmt_plays_fn, get_all_theme_from_series_fn,
-                play_video_from_filename_fn, save_metadata_fn, save_metadata_overrides_fn,
-                get_theme_filename_fn, get_theme_filenames_fn, get_filenames_from_artist_fn,
-                is_animethemes_stream_file_fn, stream_icon_val,
-                get_display_title_fn, safe_int_fn, is_game_fn,
-                add_field_total_button_fn, get_all_matching_field_fn, get_filenames_from_studio_fn,
-                add_multiple_data_line_fn, overall_theme_num_display_fn, get_version_flags_fn,
-                get_file_marks_fn, toggleColumnEdit_fn,
-                get_artist_themes_data_fn, get_studio_entries_data_fn,
-                get_format_fn, get_episode_display_fn, shorten_platform_fn,
-                get_tags_string_fn, get_tags_fn, get_song_string_fn,
-                push_web_marks_fn, check_favorited_fn, get_file_props_label_fn,
-                get_current_list_title, set_current_list_title,
-                get_list_loaded, get_selected_extra_metadata,
-                get_show_spoiler_tags, get_youtube_api_key,
-                get_popout_currently_playing, get_popout_currently_playing_extra,
-                get_popout_show_metadata, get_popout_show_currently_playing,
-                get_youtube_queue, set_updating_metadata,
-                lists_to_close, highlight_color):
-    global scl, get_file_path, add_single_data_line, show_youtube_playlist
-    global load_image_from_url, _insert_list_title_row, select_extra_metadata, toggle_spoiler_tags
-    global download_animethemes_file, move_cached_file_to_directory, load_random_clips, stream_clip
-    global reset_metadata, _play_name_key, _build_web_series_themes, _calc_plays_info, _fmt_plays
-    global get_all_theme_from_series, get_display_title, _safe_int, is_game
-    global play_video_from_filename, save_metadata, save_metadata_overrides
-    global get_theme_filename, get_theme_filenames, get_filenames_from_artist
-    global is_animethemes_stream_file, stream_icon
-    global add_field_total_button, get_all_matching_field, get_filenames_from_studio
-    global add_multiple_data_line, overall_theme_num_display, _get_version_flags, get_file_marks
-    global toggleColumnEdit, get_artist_themes_data, get_studio_entries_data
-    global get_format, get_episode_display, _shorten_platform, get_tags_string, get_tags, get_song_string
-    global _push_web_marks, check_favorited, get_file_props_label
-    global _get_current_list_title, _set_current_list_title
-    global _get_list_loaded, _get_selected_extra_metadata, _get_show_spoiler_tags, _get_youtube_api_key
-    global _get_popout_currently_playing, _get_popout_currently_playing_extra
-    global _get_popout_show_metadata, _get_popout_show_currently_playing
-    global _get_youtube_queue, _set_updating_metadata
-    global LISTS_TO_CLOSE, HIGHLIGHT_COLOR
-    scl = scl_fn
-    get_file_path = get_file_path_fn
-    add_single_data_line = add_single_data_line_fn
-    show_youtube_playlist = show_youtube_playlist_fn
-    load_image_from_url = load_image_from_url_fn
-    _insert_list_title_row = insert_list_title_row_fn
-    select_extra_metadata = select_extra_metadata_fn
-    toggle_spoiler_tags = toggle_spoiler_tags_fn
-    download_animethemes_file = download_animethemes_file_fn
-    move_cached_file_to_directory = move_cached_file_to_directory_fn
-    load_random_clips = load_random_clips_fn
-    stream_clip = stream_clip_fn
-    reset_metadata = reset_metadata_fn
-    _play_name_key = play_name_key_fn
-    _build_web_series_themes = build_web_series_themes_fn
-    _calc_plays_info = calc_plays_info_fn
-    _fmt_plays = fmt_plays_fn
-    get_all_theme_from_series = get_all_theme_from_series_fn
-    play_video_from_filename = play_video_from_filename_fn
-    save_metadata = save_metadata_fn
-    save_metadata_overrides = save_metadata_overrides_fn
-    get_theme_filename = get_theme_filename_fn
-    get_theme_filenames = get_theme_filenames_fn
-    get_filenames_from_artist = get_filenames_from_artist_fn
-    is_animethemes_stream_file = is_animethemes_stream_file_fn
-    stream_icon = stream_icon_val
-    get_display_title = get_display_title_fn
-    _safe_int = safe_int_fn
-    is_game = is_game_fn
-    add_field_total_button = add_field_total_button_fn
-    get_all_matching_field = get_all_matching_field_fn
-    get_filenames_from_studio = get_filenames_from_studio_fn
-    add_multiple_data_line = add_multiple_data_line_fn
-    overall_theme_num_display = overall_theme_num_display_fn
-    _get_version_flags = get_version_flags_fn
-    get_file_marks = get_file_marks_fn
-    toggleColumnEdit = toggleColumnEdit_fn
-    get_artist_themes_data = get_artist_themes_data_fn
-    get_studio_entries_data = get_studio_entries_data_fn
-    get_format = get_format_fn
-    get_episode_display = get_episode_display_fn
-    _shorten_platform = shorten_platform_fn
-    get_tags_string = get_tags_string_fn
-    get_tags = get_tags_fn
-    get_song_string = get_song_string_fn
-    _push_web_marks = push_web_marks_fn
-    check_favorited = check_favorited_fn
-    get_file_props_label = get_file_props_label_fn
-    _get_current_list_title = get_current_list_title
-    _set_current_list_title = set_current_list_title
-    _get_list_loaded = get_list_loaded
-    _get_selected_extra_metadata = get_selected_extra_metadata
-    _get_show_spoiler_tags = get_show_spoiler_tags
-    _get_youtube_api_key = get_youtube_api_key
-    _get_popout_currently_playing = get_popout_currently_playing
-    _get_popout_currently_playing_extra = get_popout_currently_playing_extra
-    _get_popout_show_metadata = get_popout_show_metadata
-    _get_popout_show_currently_playing = get_popout_show_currently_playing
-    _get_youtube_queue = get_youtube_queue
-    _set_updating_metadata = set_updating_metadata
-    LISTS_TO_CLOSE = lists_to_close
-    HIGHLIGHT_COLOR = highlight_color
+stream_icon = '📶'
 
 
 def _has_anilist_fallback(data, selected_extra_metadata):
@@ -211,23 +50,23 @@ def update_extra_metadata(column=None):
     currently_playing = state.playback.currently_playing
     anilist_metadata = state.metadata.anilist_metadata
     right_column = state.widgets.right_column
-    list_loaded = _get_list_loaded()
-    selected_extra_metadata = _get_selected_extra_metadata()
-    show_spoiler_tags = _get_show_spoiler_tags()
-    YOUTUBE_API_KEY = _get_youtube_api_key()
+    list_loaded = state.lists.list_loaded
+    selected_extra_metadata = state.metadata_panel.selected_extra_metadata
+    show_spoiler_tags = state.metadata_panel.show_spoiler_tags
+    YOUTUBE_API_KEY = state.config.YOUTUBE_API_KEY
     if currently_playing.get("type") == "youtube":
-        show_youtube_playlist()
+        youtube_ui.show_youtube_playlist()
         return
     
     data = currently_playing.get("data")
     if column is None:
         column = right_column
     # Don't overwrite a loaded list — it will show metadata when the list is closed
-    if column is right_column and not (not list_loaded or list_loaded in LISTS_TO_CLOSE):
+    if column is right_column and not (not list_loaded or list_loaded in metadata_display.LISTS_TO_CLOSE):
         return
-    if column is right_column and _get_current_list_title():
-        _set_current_list_title("")
-        _insert_list_title_row(column)
+    if column is right_column and state.lists.current_list_title:
+        state.lists.current_list_title = ""
+        lists._insert_list_title_row(column)
     column.config(state=tk.NORMAL, wrap="word")
     column.delete(1.0, tk.END)
     extra_data = [
@@ -237,10 +76,10 @@ def update_extra_metadata(column=None):
     if data:
         for e in extra_data:
             if selected_extra_metadata == e:
-                bg=HIGHLIGHT_COLOR
+                bg=state.colors.HIGHLIGHT_COLOR
             else:
                 bg="black"
-            column.window_create(tk.END, window=tk.Button(column, text=(f"{e.upper().replace("EPISODE_INFO", "EPS").replace("CsHARACTERS", "")}"), font=("Arial", scl(11, "UI"), "bold", "underline"), command=lambda x=e: select_extra_metadata(x), padx=scl(2), bg=bg, fg="white"))
+            column.window_create(tk.END, window=tk.Button(column, text=(f"{e.upper().replace("EPISODE_INFO", "EPS").replace("CsHARACTERS", "")}"), font=("Arial", scl(11, "UI"), "bold", "underline"), command=lambda x=e: metadata_display.select_extra_metadata(x), padx=scl(2), bg=bg, fg="white"))
         column.insert(tk.END, "\n\n", "blank")
     if not data or selected_extra_metadata == "clips":
         filename = currently_playing.get("filename")
@@ -248,7 +87,7 @@ def update_extra_metadata(column=None):
             column.config(state=tk.DISABLED, wrap="word")
             return
         playlist_entry = currently_playing.get("playlist_entry", filename)
-        filepath = get_file_path(playlist_entry) if playlist_entry else None
+        filepath = entry_paths.get_file_path(playlist_entry) if playlist_entry else None
         
         status = cache_download.get_file_status(filename)
         is_cached = status["is_cached"]
@@ -256,11 +95,11 @@ def update_extra_metadata(column=None):
         streaming.resolve_clips_for_data(data)
         links = [
             ["YOUTUBE CLIPS", "header", data and YOUTUBE_API_KEY],
-            ["LOAD YOUTUBE CLIPS", load_random_clips, data and YOUTUBE_API_KEY and not streaming._cached_clips_links],
-            ["YOUTUBE CLIP LIST", stream_clip, streaming._cached_clips_links],
+            ["LOAD YOUTUBE CLIPS", streaming.load_random_clips, data and YOUTUBE_API_KEY and not streaming._cached_clips_links],
+            ["YOUTUBE CLIP LIST", streaming.stream_clip, streaming._cached_clips_links],
             ["YOUTUBE OSTS", "header", data and YOUTUBE_API_KEY],
-            ["LOAD YOUTUBE OSTS", lambda: load_random_clips(ost=True), data and YOUTUBE_API_KEY and not streaming._cached_ost_clips_links],
-            ["YOUTUBE OST LIST", stream_clip, streaming._cached_ost_clips_links]
+            ["LOAD YOUTUBE OSTS", lambda: streaming.load_random_clips(ost=True), data and YOUTUBE_API_KEY and not streaming._cached_ost_clips_links],
+            ["YOUTUBE OST LIST", streaming.stream_clip, streaming._cached_ost_clips_links]
         ]
         def create_link_button(name, func, new_line=False, blank=True):
             b = tk.Button(
@@ -323,9 +162,9 @@ def update_extra_metadata(column=None):
                         )
                         # If cached, move to directory; otherwise download
                         if is_cached:
-                            dl_btn.config(command=lambda b=dl_btn, f=filename: move_cached_file_to_directory(f, b))
+                            dl_btn.config(command=lambda b=dl_btn, f=filename: cache_download.move_cached_file_to_directory(f, b))
                         else:
-                            dl_btn.config(command=lambda b=dl_btn, f=filename: download_animethemes_file(f, b))
+                            dl_btn.config(command=lambda b=dl_btn, f=filename: cache_download.download_animethemes_file(f, b))
                         column.window_create(tk.END, window=dl_btn)
                         column.insert(tk.END, " ")
                     else:
@@ -333,7 +172,7 @@ def update_extra_metadata(column=None):
     elif not data.get(selected_extra_metadata) and not _has_anilist_fallback(data, selected_extra_metadata):
         column.insert(tk.END, f"No {selected_extra_metadata.capitalize().replace('_info', 's')} data found.", "white")
     elif selected_extra_metadata == "synopsis":
-        add_single_data_line(column, data, "", 'synopsis')
+        metadata_display.add_single_data_line(column, data, "", 'synopsis')
     elif selected_extra_metadata == "characters":
         # AniDB Characters
         anidb_groups = {
@@ -370,7 +209,7 @@ def update_extra_metadata(column=None):
 
                 # Load image with error handling
                 try:
-                    tk_img = load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(scl(700), scl(700)))
+                    tk_img = image_loader.load_image_from_url("https://cdn-eu.anidb.net/images/main/" + image_filename, size=(scl(700), scl(700)))
                     if tk_img:
                         label = tk.Label(popup, image=tk_img, bg="black")
                         label.image = tk_img  # Keep reference
@@ -468,7 +307,7 @@ def update_extra_metadata(column=None):
                         image_url = char_data.get("image")
                         if image_url:
                             try:
-                                tk_img = load_image_from_url(image_url, size=(scl(700), scl(700)))
+                                tk_img = image_loader.load_image_from_url(image_url, size=(scl(700), scl(700)))
                                 if tk_img:
                                     label = tk.Label(popup, image=tk_img, bg="black")
                                     label.image = tk_img  # Keep reference
@@ -590,7 +429,7 @@ def update_extra_metadata(column=None):
                     column.window_create(tk.END, window=tk.Button(
                         column, 
                         text=button_text, 
-                        command=toggle_spoiler_tags, 
+                        command=metadata_display.toggle_spoiler_tags, 
                         padx=scl(2), 
                         bg="black", 
                         fg="white"
@@ -635,46 +474,46 @@ def update_metadata():
     playlist = state.metadata.playlist
     anilist_metadata = state.metadata.anilist_metadata
     left_column = state.widgets.left_column
-    popout_currently_playing = _get_popout_currently_playing()
+    popout_currently_playing = popout_window.popout_currently_playing
     try:
         filename = currently_playing.get("filename")
         if filename:
             data = currently_playing.get('data')
-            reset_metadata()
+            metadata_display.reset_metadata()
             # count number of times file / series appears in playlist
             if playlist.get("infinite"):
                 _pl      = playlist.get("playlist", [])
                 _cur_idx = playlist.get("current_index", 0)
-                _fp, _sp = _calc_plays_info(filename, data, _pl, _cur_idx)
+                _fp, _sp = metadata_display._calc_plays_info(filename, data, _pl, _cur_idx)
 
                 left_column.insert(tk.END, "PLAYS: ", "bold")
-                left_column.insert(tk.END, _fmt_plays(_fp), "white")
+                left_column.insert(tk.END, metadata_display._fmt_plays(_fp), "white")
                 if _sp:
                     left_column.insert(tk.END, "  SERIES: ", "bold")
-                    left_column.insert(tk.END, _fmt_plays(_sp), "white")
+                    left_column.insert(tk.END, metadata_display._fmt_plays(_sp), "white")
                 left_column.insert(tk.END, "\n\n", "blank")
 
             if data:
-                add_single_data_line(left_column, data, "TITLE: ", 'title', True)
-                add_single_data_line(left_column, data, "ENGLISH: ", 'eng_title', True)
+                metadata_display.add_single_data_line(left_column, data, "TITLE: ", 'title', True)
+                metadata_display.add_single_data_line(left_column, data, "ENGLISH: ", 'eng_title', True)
                 if data.get("synonyms"):
-                    add_multiple_data_line(left_column, data, "SYNONYMS: ", "synonyms", True)
-                if is_game(data):
-                    add_single_data_line(left_column, data, "RELEASE DATE: ", "release", True)
+                    metadata_display.add_multiple_data_line(left_column, data, "SYNONYMS: ", "synonyms", True)
+                if metadata_display.is_game(data):
+                    metadata_display.add_single_data_line(left_column, data, "RELEASE DATE: ", "release", True)
                 else:
-                    add_single_data_line(left_column, data, "AIR: ", "aired", False)
-                    add_single_data_line(left_column, data, ", ", "season", False, title_font="white")
-                    add_field_total_button(left_column, get_all_matching_field("season", data.get("season")), blank=True, title=(data.get("season") or "").upper())
-                add_single_data_line(left_column, data, "SCORE: ", 'score', False)
-                if not is_game(data):
-                    add_single_data_line(left_column, data, " (#", 'rank', False, title_font="white")
+                    metadata_display.add_single_data_line(left_column, data, "AIR: ", "aired", False)
+                    metadata_display.add_single_data_line(left_column, data, ", ", "season", False, title_font="white")
+                    metadata_display.add_field_total_button(left_column, metadata_display.get_all_matching_field("season", data.get("season")), blank=True, title=(data.get("season") or "").upper())
+                metadata_display.add_single_data_line(left_column, data, "SCORE: ", 'score', False)
+                if not metadata_display.is_game(data):
+                    metadata_display.add_single_data_line(left_column, data, " (#", 'rank', False, title_font="white")
                 if data.get("platforms"):
-                    _reviews_num = _safe_int(data.get("reviews", 0), 0)
+                    _reviews_num = metadata_display._safe_int(data.get("reviews", 0), 0)
                     _pop_display = data.get("popularity") or "N/A"
                     left_column.insert(tk.END, " REVIEWS: ", "bold")
                     left_column.insert(tk.END, f"{_reviews_num:,} (#{_pop_display})", "white")
                 else:
-                    _members_num = _safe_int(data.get("members", 0), 0)
+                    _members_num = metadata_display._safe_int(data.get("members", 0), 0)
                     _pop_display = data.get("popularity") or "N/A"
                     left_column.insert(tk.END, ") ", "white")
                     left_column.insert(tk.END, "MEMBERS: ", "bold")
@@ -723,17 +562,17 @@ def update_metadata():
                 
                 left_column.insert(tk.END, "\n\n", "blank")
                 if data.get("platforms"):
-                    add_multiple_data_line(left_column, data, "PLATFORMS: ", 'platforms', True)
+                    metadata_display.add_multiple_data_line(left_column, data, "PLATFORMS: ", 'platforms', True)
                     left_column.insert(tk.END, "TYPE: ", "bold")
-                    left_column.insert(tk.END, f"{get_format(data) or 'N/A'}", "white") 
+                    left_column.insert(tk.END, f"{information_popup.get_format(data) or 'N/A'}", "white") 
                 else:
                     left_column.insert(tk.END, "EPISODES: ", "bold")
-                    left_column.insert(tk.END, f"{get_episode_display(data, suffix='')}", "white")
+                    left_column.insert(tk.END, f"{information_popup.get_episode_display(data, suffix='')}", "white")
                     left_column.insert(tk.END, " TYPE: ", "bold")
-                    left_column.insert(tk.END, f"{get_format(data) or 'N/A'}", "white") 
-                add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
+                    left_column.insert(tk.END, f"{information_popup.get_format(data) or 'N/A'}", "white") 
+                metadata_display.add_single_data_line(left_column, data, " SOURCE: ", 'source', True)
                 left_column.insert(tk.END, "TAGS: ", "bold")
-                tags = get_tags(data)
+                tags = information_popup.get_tags(data)
                 for index, tag in enumerate(tags):
                     left_column.insert(tk.END, f"{tag}", "white")
                     if index < len(tags)-1:
@@ -742,26 +581,26 @@ def update_metadata():
                 left_column.insert(tk.END, "STUDIOS: ", "bold")
                 for index, studio in enumerate(data.get("studios", [])):
                     left_column.insert(tk.END, f"{studio}", "white")
-                    add_field_total_button(left_column, get_filenames_from_studio(studio), blank = False, title=studio)
+                    metadata_display.add_field_total_button(left_column, metadata_display.get_filenames_from_studio(studio), blank = False, title=studio)
                     if index < len(data.get("studios"))-1:
                         left_column.insert(tk.END, ", ", "white")
                 if data.get("series"):
                     left_column.insert(tk.END, "\n\n", "blank")
-                    add_multiple_data_line(left_column, data, "SERIES: ", "series", False)
+                    metadata_display.add_multiple_data_line(left_column, data, "SERIES: ", "series", False)
                     _series_val = data.get("series", "")
-                    add_field_total_button(left_column, get_all_matching_field("series", _series_val), title=(", ".join(_series_val) if isinstance(_series_val, list) else str(_series_val or "")))
+                    metadata_display.add_field_total_button(left_column, metadata_display.get_all_matching_field("series", _series_val), title=(", ".join(_series_val) if isinstance(_series_val, list) else str(_series_val or "")))
 
                 update_series_song_information(data, data.get("mal"))
 
             update_extra_metadata()
                 
-            toggleColumnEdit(False)
+            metadata_display.toggleColumnEdit(False)
 
             if popout_currently_playing:
                 update_popout_currently_playling(data)
             if web_server.is_running():
-                _is_game = is_game(data) if data else False
-                _tags = get_tags(data) if data else []
+                _is_game = metadata_display.is_game(data) if data else False
+                _tags = information_popup.get_tags(data) if data else []
                 _anilist_score_str = None
                 _anilist_popularity_val = None
                 _anilist_popularity_ranks = []
@@ -815,7 +654,7 @@ def update_metadata():
                         "reviews": data.get("reviews"),
                         "platforms": data.get("platforms") or [],
                         "episodes": data.get("episodes"),
-                        "format": get_format(data),
+                        "format": information_popup.get_format(data),
                         "source": data.get("source"),
                         "tags": _tags,
                         "studios": data.get("studios") or [],
@@ -840,14 +679,14 @@ def update_metadata():
                 if playlist.get("infinite"):
                     _pl      = playlist.get("playlist", [])
                     _cur_idx = playlist.get("current_index", 0)
-                    _fp, _sp = _calc_plays_info(filename, data, _pl, _cur_idx)
+                    _fp, _sp = metadata_display._calc_plays_info(filename, data, _pl, _cur_idx)
                     _web_meta["file_plays"]   = _fp
                     _web_meta["series_plays"] = _sp  # None if no series matches
                 if data:
                     _slug = data.get("slug")
                     _songs = data.get("songs") or []
                     _song = next((s for s in _songs if s.get("slug") == _slug), None)
-                    _overall_suffix = overall_theme_num_display(filename) if filename else ""
+                    _overall_suffix = metadata_display.overall_theme_num_display(filename) if filename else ""
                     _v_num_str = metadata_fetch.get_version_from_filename(filename) if filename else None
                     _v_num = int(_v_num_str) if _v_num_str and str(_v_num_str).isdigit() else None
                     _v_episodes = None
@@ -860,56 +699,56 @@ def update_metadata():
                                 _ver = _versions[0]
                             if _ver:
                                 _v_episodes = _ver.get("episodes")
-                                _v_flags = _get_version_flags(_ver)
+                                _v_flags = metadata_display._get_version_flags(_ver)
                         if not _v_episodes:
                             _v_episodes = _song.get("episodes")
                         if not _v_flags:
-                            _v_flags = _get_version_flags(_song)
+                            _v_flags = metadata_display._get_version_flags(_song)
                     _ct_artists = (_song.get("artist") or []) if _song else []
                     _web_meta["current_theme"] = {
                         "slug": _slug,
                         "overall_suffix": _overall_suffix,
                         "title": _song.get("title") if _song else None,
-                        "favorited": bool(check_favorited(filename)) if filename else False,
+                        "favorited": bool(playlist_marks.check_favorited(filename)) if filename else False,
                         "artists": _ct_artists,
                         "artists_str": metadata_fetch.get_artists_string(_ct_artists, total=True),
                         "version": _v_num,
                         "episodes": _v_episodes,
                         "flags": _v_flags,
-                        "file_props": get_file_props_label(filename) if filename else "",
+                        "file_props": metadata_display.get_file_props_label(filename) if filename else "",
                     }
                     # Add artist themes data for each artist in current theme
                     if _ct_artists:
                         _artist_themes_map = {}
                         for _artist in _ct_artists:
-                            _artist_themes_map[_artist] = get_artist_themes_data(_artist, filename, include_current=True)
+                            _artist_themes_map[_artist] = information_popup.get_artist_themes_data(_artist, filename, include_current=True)
                         _web_meta["current_theme"]["artist_themes"] = _artist_themes_map
                     _ct_studios = data.get("studios", []) or []
                     if _ct_studios:
                         _studio_entries_map = {}
                         _studio_total = 0
                         for _studio in _ct_studios:
-                            _s_data = get_studio_entries_data(_studio, filename, include_current=True)
+                            _s_data = information_popup.get_studio_entries_data(_studio, filename, include_current=True)
                             _studio_entries_map[_studio] = _s_data
                             _studio_total += int(_s_data.get("entry_count", 0) or 0)
                         _web_meta["current_theme"]["studio_entries"] = _studio_entries_map
                         _web_meta["current_theme"]["studio_entry_total"] = _studio_total
-                _web_meta["series_themes"] = _build_web_series_themes(data, filename)
+                _web_meta["series_themes"] = metadata_display._build_web_series_themes(data, filename)
                 web_server.push_metadata(_web_meta)
-                _push_web_marks(filename)
+                playlist_marks._push_web_marks(filename)
     except Exception:
         import traceback
         traceback.print_exc()
     finally:
-        _set_updating_metadata(False)
+        state.controls.updating_metadata = False
 
 def update_popout_currently_playling(data, clear=False):
     currently_playing = state.playback.currently_playing
-    popout_currently_playing = _get_popout_currently_playing()
-    popout_currently_playing_extra = _get_popout_currently_playing_extra()
-    popout_show_metadata = _get_popout_show_metadata()
-    popout_show_currently_playing = _get_popout_show_currently_playing()
-    youtube_queue = _get_youtube_queue()
+    popout_currently_playing = popout_window.popout_currently_playing
+    popout_currently_playing_extra = popout_window.popout_currently_playing_extra
+    popout_show_metadata = state.popout.show_metadata
+    popout_show_currently_playing = state.popout.show_currently_playing
+    youtube_queue = state.playback.youtube_queue
     is_youtube = currently_playing.get("type") == "youtube"
     popout_currently_playing_extra.config(state=tk.NORMAL, wrap="word")
     popout_currently_playing_extra.delete(1.0, tk.END)
@@ -917,7 +756,7 @@ def update_popout_currently_playling(data, clear=False):
         if is_youtube:
             title = youtube_control.get_youtube_display_title(data)
         else:
-            title = get_display_title(data)
+            title = metadata_display.get_display_title(data)
         japanese_title = data.get("title")
         slug = data.get("slug")
         # Handle YouTube videos or missing slug gracefully
@@ -927,18 +766,18 @@ def update_popout_currently_playling(data, clear=False):
             theme = "[YouTube]"
         else:
             theme = ""
-        song = get_song_string(data)
-        tags = get_tags_string(data)
+        song = information_popup.get_song_string(data)
+        tags = information_popup.get_tags_string(data)
         if is_youtube:
             studio = youtube_queue.get('name')
         else:
             studio = ", ".join(data.get("studios", []))
-        type = get_format(data)
+        type = information_popup.get_format(data)
         source = data.get("source")
-        marks = get_file_marks(currently_playing.get("filename", ""))
+        marks = metadata_display.get_file_marks(currently_playing.get("filename", ""))
         if data.get("platforms"):
-            episodes = ", ".join(_shorten_platform(p) for p in data.get("platforms"))
-            _reviews_num = _safe_int(data.get("reviews", 0), 0)
+            episodes = ", ".join(information_popup._shorten_platform(p) for p in data.get("platforms"))
+            _reviews_num = metadata_display._safe_int(data.get("reviews", 0), 0)
             members = f"Reviews: {_reviews_num:,}"
             score = f"Score: {data.get("score")}" if data.get("score") else ""
         elif is_youtube:
@@ -950,12 +789,12 @@ def update_popout_currently_playling(data, clear=False):
             members = f"Views: {data.get('view_count'):,}" if data.get('view_count') else ""
             score = f"Likes: {data.get('like_count'):,}" if data.get('like_count') else ""
         else:
-            episodes = get_episode_display(data)
-            _members_num = _safe_int(data.get("members", 0), 0)
+            episodes = information_popup.get_episode_display(data)
+            _members_num = metadata_display._safe_int(data.get("members", 0), 0)
             _pop_display = data.get("popularity") or "N/A"
             members = f"Members: {_members_num:,} (#{_pop_display})"
             score = f"Score: {data.get("score")} (#{data.get("rank")})"
-        if is_game(data):
+        if metadata_display.is_game(data):
             aired = data.get("release")
         elif is_youtube:
             aired = f"{datetime.strptime(data.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}"
@@ -965,7 +804,7 @@ def update_popout_currently_playling(data, clear=False):
         if is_youtube:
             popout_currently_playing_extra.insert(tk.END, f"Uploaded by {studio} ({data.get('subscriber_count', 0):,} subscribers)\n{japanese_title}\n{members} | {score} | {aired} | {episodes}", "white")
         else:
-            popout_currently_playing_extra.insert(tk.END, f"{marks}{theme}{overall_theme_num_display(currently_playing.get('filename'))} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
+            popout_currently_playing_extra.insert(tk.END, f"{marks}{theme}{metadata_display.overall_theme_num_display(currently_playing.get('filename'))} | {song} | {aired}\n{score} | {japanese_title} | {members}\n{studio} | {tags} | {episodes} | {type} | {source}", "white")
         popout_currently_playing.configure(fg="white")
     elif popout_show_metadata and not popout_show_currently_playing:
         # Show placeholder when metadata is on but currently playing is hidden
@@ -1030,7 +869,7 @@ def update_series_song_information(data, mal, rerender=False, scroll_to=None):
             _auto_init_section_collapse(str(mal), data.get("songs", []), playing_slug)
         update_song_information(data, mal, scroll_to=scroll_to, scroll_anchor_out=[])
     else:
-        all_series_themes = get_all_theme_from_series(data)
+        all_series_themes = metadata_display.get_all_theme_from_series(data)
         if len(all_series_themes) == 1:
             if not rerender:
                 _collapsed_anime.clear()
@@ -1059,7 +898,7 @@ def update_series_song_information(data, mal, rerender=False, scroll_to=None):
                 middle_column.window_create(tk.END, window=btn)
                 if scroll_to == aid_key:
                     scroll_anchor = btn
-                header = f" {get_display_title(anime)} [{get_format(anime)} / {anime.get('season')}]:\n"
+                header = f" {metadata_display.get_display_title(anime)} [{information_popup.get_format(anime)} / {anime.get('season')}]:\n"
                 middle_column.insert(tk.END, header, "bold underline")
 
                 if not is_collapsed:
@@ -1160,7 +999,7 @@ def update_song_information(data, mal, slug=None, scroll_to=None, scroll_anchor_
 def _render_file_props(column, files, playing_f):
     """Render file property label (single file) or clickable buttons (multiple files)."""
     for f in files:
-        props_label = get_file_props_label(f) or "[ALT]"
+        props_label = metadata_display.get_file_props_label(f) or "[ALT]"
         if len(files) == 1:
             column.tag_configure("file_props_small", font=(None, scl(9, "UI")), foreground="white")
             column.insert(tk.END, " " + props_label, "file_props_small")
@@ -1168,7 +1007,7 @@ def _render_file_props(column, files, playing_f):
             is_playing = f == playing_f
             display_label = (props_label[0] + ">" + props_label[1:]) if is_playing else props_label
             column.window_create(tk.END, window=tk.Button(column, text=display_label, borderwidth=0, pady=0,
-                command=lambda fi=f: play_video_from_filename(fi), bg="black", fg="white", relief="flat",
+                command=lambda fi=f: metadata_display.play_video_from_filename(fi), bg="black", fg="white", relief="flat",
                 font=(None, scl(9, "UI"), "bold") if is_playing else (None, scl(9, "UI"))))
 
 def add_op_ed(theme, column, slug, title, mal_id):
@@ -1191,13 +1030,13 @@ def add_op_ed(theme, column, slug, title, mal_id):
     if not versions or len(versions) == 1:
         # For single version, use the version-specific filename, otherwise use theme filename
         if len(versions) == 1:
-            filename = get_theme_filename(mal_id, theme_slug, versions[0].get('version'))
+            filename = metadata_display.get_theme_filename(mal_id, theme_slug, versions[0].get('version'))
         else:
-            filename = get_theme_filename(mal_id, theme_slug)
+            filename = metadata_display.get_theme_filename(mal_id, theme_slug)
         # ▶ button or fallback
         if filename:
-            column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(filename), borderwidth=0, pady=0, command=lambda: play_video_from_filename(filename), bg="black", fg="white"))
-            column.insert(tk.END, get_file_marks(filename), format)
+            column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(filename), borderwidth=0, pady=0, command=lambda: metadata_display.play_video_from_filename(filename), bg="black", fg="white"))
+            column.insert(tk.END, metadata_display.get_file_marks(filename), format)
         else:
             column.insert(tk.END, no_file_icon, format)
     else:
@@ -1205,9 +1044,9 @@ def add_op_ed(theme, column, slug, title, mal_id):
         column.insert(tk.END, no_file_icon, format)
 
     overall_display = ""
-    filename = get_theme_filename(mal_id, theme_slug)
+    filename = metadata_display.get_theme_filename(mal_id, theme_slug)
     if filename:
-        overall_display = overall_theme_num_display(filename)
+        overall_display = metadata_display.overall_theme_num_display(filename)
     if theme_slug == slug:
         format = "highlight"
     column.insert(tk.END, f"{theme_slug}{overall_display}: {song_title if song_title else '????'}\n", format)
@@ -1253,8 +1092,8 @@ def add_op_ed(theme, column, slug, title, mal_id):
             for s in anime_metadata[mal_id]["songs"]:
                 if s.get("slug") == theme_slug:
                     s["artist"] = [artist_input]
-            save_metadata_overrides()
-            save_metadata()
+            metadata_io.save_metadata_overrides()
+            metadata_io.save_metadata()
             filename = currently_playing.get("filename")
             if filename:
                 update_series_song_information(metadata_fetch.get_metadata(filename), mal_id)
@@ -1264,7 +1103,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
         for index, artist in enumerate(artist_list):
             column.insert(tk.END, f"{artist}", format)
             if theme_slug == slug:
-                add_field_total_button(column, get_filenames_from_artist(artist), blank=False, title=artist)
+                metadata_display.add_field_total_button(column, metadata_display.get_filenames_from_artist(artist), blank=False, title=artist)
             if index < len(artist_list) - 1:
                 column.insert(tk.END, ", ", format)
 
@@ -1280,12 +1119,12 @@ def add_op_ed(theme, column, slug, title, mal_id):
                 version_text += f"v{version_num}: "
             if version.get('episodes'):
                 version_text += f"(Eps: {version.get('episodes')})"
-            flags = _get_version_flags(version)
+            flags = metadata_display._get_version_flags(version)
             if flags:
                 version_text += f" {' '.join(flags)}"
             if version_text:
                 column.insert(tk.END, f"\n{version_text}", format)
-            all_ver_files = get_theme_filenames(mal_id, theme_slug, version_num)
+            all_ver_files = metadata_display.get_theme_filenames(mal_id, theme_slug, version_num)
             if all_ver_files:
                 if not version_text:
                     column.insert(tk.END, "\n", format)
@@ -1295,9 +1134,9 @@ def add_op_ed(theme, column, slug, title, mal_id):
             for i, version in enumerate(versions):
                 column.insert(tk.END, "\n", version_format if i > 0 else format)
                 version_num = version.get('version')
-                version_filename = get_theme_filename(mal_id, theme_slug, version_num, need_version=True)
+                version_filename = metadata_display.get_theme_filename(mal_id, theme_slug, version_num, need_version=True)
                 if version_num == 1 and not version_filename:
-                    version_filename = get_theme_filename(mal_id, theme_slug, None, need_version=True)
+                    version_filename = metadata_display.get_theme_filename(mal_id, theme_slug, None, need_version=True)
                 if version_num is None:
                     version_num = 1
 
@@ -1306,13 +1145,13 @@ def add_op_ed(theme, column, slug, title, mal_id):
                     version_format = "highlight"
 
                 if version_filename:
-                    column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(version_filename), borderwidth=0, pady=0, command=lambda f=version_filename: play_video_from_filename(f), bg="black", fg="white"))
-                    column.insert(tk.END, get_file_marks(version_filename), version_format)
+                    column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(version_filename), borderwidth=0, pady=0, command=lambda f=version_filename: metadata_display.play_video_from_filename(f), bg="black", fg="white"))
+                    column.insert(tk.END, metadata_display.get_file_marks(version_filename), version_format)
                 else:
                     column.insert(tk.END, no_versions_icon, version_format)
 
                 version_text = f"v{version_num}" if version_num else ""
-                flags = _get_version_flags(version)
+                flags = metadata_display._get_version_flags(version)
                 if version.get("episodes") or flags:
                     version_text += ":"
                     if version.get('episodes'):
@@ -1320,19 +1159,19 @@ def add_op_ed(theme, column, slug, title, mal_id):
                     if flags:
                         version_text += f" {' '.join(flags)}"
                 column.insert(tk.END, version_text, version_format)
-                all_ver_files = get_theme_filenames(mal_id, theme_slug, version_num, need_version=True)
+                all_ver_files = metadata_display.get_theme_filenames(mal_id, theme_slug, version_num, need_version=True)
                 _render_file_props(column, all_ver_files, currently_playing.get('filename'))
         column.insert(tk.END, "", "white")
     else:
         version_text = ""
         if episodes:
             version_text += f"(Eps: {episodes})"
-        flags = _get_version_flags(theme)
+        flags = metadata_display._get_version_flags(theme)
         if flags:
             version_text += f" {' '.join(flags)}"
         if version_text:
             column.insert(tk.END, f"\n{version_text}", format)
-        all_theme_files = get_theme_filenames(mal_id, theme_slug)
+        all_theme_files = metadata_display.get_theme_filenames(mal_id, theme_slug)
         if all_theme_files:
             if not version_text:
                 column.insert(tk.END, "\n", format)
@@ -1348,7 +1187,7 @@ def get_filename_icon(filename):
     directory_files = state.metadata.directory_files
     if filename in directory_files:
         return "▶"
-    elif is_animethemes_stream_file(filename):
+    elif cache_download.is_animethemes_stream_file(filename):
         return stream_icon
     else:
         return "❌"

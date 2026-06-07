@@ -23,6 +23,7 @@ import math
 import random
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -35,26 +36,6 @@ _tag_cloud_last_osd_h = 0
 _tag_cloud_font_sizes = []  # parallel to tag_cloud_tags; recomputed when osd_h changes
 
 _TAG_CLOUD_ASS_OSD_ID = 56  # unique ID for osd-overlay (ASS-based) tag cloud
-
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_osd_command           = None
-_get_tags              = None
-_color_str_to_ass_bgr  = None
-_get_overlay_text_color = lambda: '#ffffff'
-_get_overlay_background_color = lambda: '#000000'
-
-
-def set_context(*, osd_command, get_tags, color_str_to_ass_bgr,
-                get_overlay_text_color, get_overlay_background_color):
-    g = globals()
-    g['_osd_command'] = osd_command
-    g['_get_tags'] = get_tags
-    g['_color_str_to_ass_bgr'] = color_str_to_ass_bgr
-    g['_get_overlay_text_color'] = get_overlay_text_color
-    g['_get_overlay_background_color'] = get_overlay_background_color
 
 
 def set_cloud_tags():
@@ -92,7 +73,10 @@ def set_cloud_tags():
                 tags.append({"name": tag[0].replace(" - to be split and deleted", "").replace(" -- to be split and deleted", ""), "weight": tag[1]})
 
         if not tags:
-            for tag in _get_tags(data):
+            # Lazy import: overlays sit below information_popup in the layer
+            # graph, so importing it at module scope would form a cycle.
+            from _app_scripts.information import information_popup
+            for tag in information_popup.get_tags(data):
                 tags.append({"name": tag, "weight": 600})
             tags.append({"name": "only MAL tags", "weight": 600})
     else:
@@ -207,7 +191,7 @@ def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
         _tag_cloud_font_sizes = []
         _tag_cloud_last_osd_h = 0
         try:
-            _osd_command('osd-overlay', _TAG_CLOUD_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _TAG_CLOUD_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         return
@@ -234,10 +218,10 @@ def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
         _plan_tag_cloud_layout(osd_w, osd_h)
 
     # Build ASS payload for all visible tags
-    OVERLAY_TEXT_COLOR = _get_overlay_text_color()
-    OVERLAY_BACKGROUND_COLOR = _get_overlay_background_color()
-    text_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
-    bg_bgr   = _color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
+    OVERLAY_TEXT_COLOR = state.colors.OVERLAY_TEXT_COLOR
+    OVERLAY_BACKGROUND_COLOR = state.colors.OVERLAY_BACKGROUND_COLOR
+    text_bgr = osd_text._color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+    bg_bgr   = osd_text._color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
     lines = []
     for i in range(num_tags):
         tag = tag_cloud_tags[i]
@@ -253,7 +237,7 @@ def toggle_tag_cloud_overlay(num_tags=1, destroy=False):
         )
     ass_payload = "\n".join(lines)
     try:
-        _osd_command('osd-overlay', _TAG_CLOUD_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _TAG_CLOUD_ASS_OSD_ID, 'ass-events',
                           ass_payload, osd_w, osd_h, 3, 'no')
     except Exception as e:
         print(f"Tag cloud OSD error: {e}")

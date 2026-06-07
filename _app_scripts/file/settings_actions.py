@@ -2,82 +2,59 @@
 
 import copy
 
-
-_ctx = {}
-
-
-def set_context(
-    *,
-    open_generic_settings_editor,
-    save_config,
-    push_web_toggles,
-    sync_with_default,
-    get_lightning_settings,
-    get_lightning_defaults,
-    get_saved_lightning_settings,
-    get_selected_lightning_settings,
-    set_selected_lightning_settings,
-    get_infinite_settings,
-    get_infinite_defaults,
-    get_saved_infinite_settings,
-    get_selected_infinite_settings,
-    set_selected_infinite_settings,
-    is_infinite_playlist_active,
-    refetch_pop_time_groups,
-    clear_infinite_caches,
-    get_bonus_settings,
-    get_bonus_defaults,
-    get_saved_bonus_settings,
-    get_selected_bonus_settings,
-    set_selected_bonus_settings,
-):
-    _ctx.clear()
-    _ctx.update(locals())
+from core.game_state import state
+import _app_scripts.bonus.bonus as bonus
+import _app_scripts.bonus.answers as bonus_answers
+import _app_scripts.queue_round.lightning_rounds.lightning_settings as lightning_settings
+import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.file.generic_settings_editor as generic_settings_editor
+import _app_scripts.data.config_io as config_io
+import _app_scripts.utils as utils
 
 
 def open_settings_editor():
     """Open lightning mode settings editor."""
     def on_apply(new_settings, selected_name):
-        _ctx["set_selected_lightning_settings"](selected_name)
-        _ctx["push_web_toggles"]()
+        state.settings_presets.selected_light_mode_settings = selected_name
+        bonus_answers._push_web_toggles()
 
-    _ctx["open_generic_settings_editor"](
+    generic_settings_editor.open_generic_settings_editor(
         title="Lightning Mode Settings Editor",
-        current_settings_dict=_ctx["get_lightning_settings"](),
-        default_settings_dict=_ctx["get_lightning_defaults"](),
-        saved_settings_dict=_ctx["get_saved_lightning_settings"](),
-        selected_setting_name=_ctx["get_selected_lightning_settings"](),
+        current_settings_dict=state.playback.lightning_mode_settings,
+        default_settings_dict=lightning_settings.lightning_mode_settings_default,
+        saved_settings_dict=state.settings_presets.saved_lightning_mode_settings,
+        selected_setting_name=state.settings_presets.selected_light_mode_settings,
         on_apply_callback=on_apply,
-        on_save_config_callback=_ctx["save_config"],
+        on_save_config_callback=config_io.save_config,
     )
 
 
 def open_infinite_settings_editor():
     """Open infinite playlist settings editor."""
-    active_settings = _ctx["get_infinite_settings"]()
+    active_settings = playlist_ops.get_infinite_settings()
 
     def on_apply(new_settings, selected_name):
-        _ctx["set_selected_infinite_settings"](selected_name)
-        if _ctx["is_infinite_playlist_active"]():
-            _ctx["refetch_pop_time_groups"]()
-        _ctx["clear_infinite_caches"]()
+        state.settings_presets.selected_infinite_settings = selected_name
+        if state.metadata.playlist.get("infinite", False):
+            playlist_ops.get_pop_time_groups(refetch=True)
+        playlist_ops.reset_infinite_caches()
 
-    _ctx["open_generic_settings_editor"](
+    generic_settings_editor.open_generic_settings_editor(
         title="Infinite Playlist Settings Editor",
         current_settings_dict=active_settings,
-        default_settings_dict=_ctx["get_infinite_defaults"](),
-        saved_settings_dict=_ctx["get_saved_infinite_settings"](),
-        selected_setting_name=_ctx["get_selected_infinite_settings"](),
+        default_settings_dict=playlist_ops.INFINITE_SETTINGS_DEFAULT,
+        saved_settings_dict=state.settings_presets.saved_infinite_settings,
+        selected_setting_name=state.settings_presets.selected_infinite_settings,
         on_apply_callback=on_apply,
-        on_save_config_callback=_ctx["save_config"],
+        on_save_config_callback=config_io.save_config,
     )
 
 
 def open_bonus_settings_editor():
     """Open bonus round settings editor."""
-    bonus_settings = _ctx["get_bonus_settings"]()
-    bonus_defaults = _ctx["get_bonus_defaults"]()
-    sync_with_default = _ctx["sync_with_default"]
+    bonus_settings = state.playback.bonus_settings
+    bonus_defaults = bonus.BONUS_SETTINGS_DEFAULT
+    sync_with_default = utils.sync_with_default
 
     if not bonus_settings:
         bonus_settings.clear()
@@ -87,18 +64,18 @@ def open_bonus_settings_editor():
     bonus_settings.update(synced)
 
     def on_apply(new_settings, selected_name):
-        _ctx["set_selected_bonus_settings"](selected_name)
+        state.settings_presets.selected_bonus_settings = selected_name
         synced = sync_with_default(copy.deepcopy(new_settings), bonus_defaults)
         bonus_settings.clear()
         bonus_settings.update(synced)
-        _ctx["push_web_toggles"]()
+        bonus_answers._push_web_toggles()
 
-    _ctx["open_generic_settings_editor"](
+    generic_settings_editor.open_generic_settings_editor(
         title="Bonus Round Settings Editor",
         current_settings_dict=bonus_settings,
         default_settings_dict=bonus_defaults,
-        saved_settings_dict=_ctx["get_saved_bonus_settings"](),
-        selected_setting_name=_ctx["get_selected_bonus_settings"](),
+        saved_settings_dict=state.settings_presets.saved_bonus_settings,
+        selected_setting_name=state.settings_presets.selected_bonus_settings,
         on_apply_callback=on_apply,
-        on_save_config_callback=_ctx["save_config"],
+        on_save_config_callback=config_io.save_config,
     )

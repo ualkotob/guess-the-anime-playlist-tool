@@ -32,6 +32,7 @@ import threading
 from PIL import Image, ImageTk
 
 from core.game_state import state
+from ...playback import image_loader
 
 
 # ---------------------------------------------------------------------------
@@ -49,17 +50,6 @@ characters_round_image_cache_default_urls = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_load_image_from_url = None
-
-
-def set_context(*, load_image_from_url):
-    g = globals()
-    g['_load_image_from_url'] = load_image_from_url
-
-
 def get_cached_characters_round_images(urls, default=False, queue=False):
     chars = []
     root = state.widgets.root
@@ -68,7 +58,7 @@ def get_cached_characters_round_images(urls, default=False, queue=False):
     img_size = int(min(screen_width, screen_height) * 0.35)
     for index, url in enumerate(urls):
         try:
-            tk_img = _load_image_from_url(url, size=(img_size, img_size))
+            tk_img = image_loader.load_image_from_url(url, size=(img_size, img_size))
         except Exception as e:
             print(f"get_cached_characters_round_images: skipping {url!r}: {e}")
             tk_img = None

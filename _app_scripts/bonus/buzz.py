@@ -7,7 +7,7 @@ beep on the host machine.
 
 Cross-module use: `_app_scripts/file/web_server/web_host_actions.py` reaches
 `BUZZ_PRESETS`, `_buzz_preset_index`, and `_play_buzz_sound` through this
-module directly (imported alongside `_main`).
+module directly.
 """
 
 import os
@@ -16,14 +16,9 @@ import tkinter as tk
 
 from core.game_state import state
 from _app_scripts.file.web_server import web_server
-
-
-_main = None
-
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
+from _app_scripts.ui.scaling import scl
+import _app_scripts.bonus.bonus as bonus
+import _app_scripts.file.scoreboard_control as scoreboard_control
 
 
 def _web_buzzer_lock():
@@ -31,19 +26,19 @@ def _web_buzzer_lock():
         web_server.control_buzzer("lock")
     if web_server.buzzer_is_locked():
         # Just locked — clear ? marks but keep buzz_order numbers
-        _main.send_scoreboard_command("[CLEAR_SERVED]")
+        scoreboard_control.send_command("[CLEAR_SERVED]")
     else:
         # Just unlocked — restore ? marks; buzz_order preserved so buzzed players keep their number
         for name in web_server.get_connected_player_names():
-            _main.send_scoreboard_command(f"[SERVED]{name}")
+            scoreboard_control.send_command(f"[SERVED]{name}")
 
 
 def _web_buzzer_reset():
     if web_server.is_running():
         web_server.control_buzzer("reset")
-    _main.send_scoreboard_command("[CLEAR_BUZZ_ORDER]")
+    scoreboard_control.send_command("[CLEAR_BUZZ_ORDER]")
     for name in web_server.get_connected_player_names():
-        _main.send_scoreboard_command(f"[SERVED]{name}")
+        scoreboard_control.send_command(f"[SERVED]{name}")
 
 
 def _web_buzzer_open():
@@ -271,49 +266,52 @@ def _show_buzz_toast(rank, name):
             pass
         merged_colors.update(web_server._player_colors)
         clr = merged_colors.get(name) or {}
-        bg       = clr.get('bg',   _main.OVERLAY_BACKGROUND_COLOR)
-        fg       = clr.get('text', _main.OVERLAY_TEXT_COLOR)
+        bg       = clr.get('bg',   state.colors.OVERLAY_BACKGROUND_COLOR)
+        fg       = clr.get('text', state.colors.OVERLAY_TEXT_COLOR)
         border_c = fg
     except Exception:
-        bg       = _main.OVERLAY_BACKGROUND_COLOR
-        fg       = _main.OVERLAY_TEXT_COLOR
+        bg       = state.colors.OVERLAY_BACKGROUND_COLOR
+        fg       = state.colors.OVERLAY_TEXT_COLOR
         border_c = fg
 
     rank_labels = {1: '1st \u2013 BUZZ IN', 2: '2nd \u2013 BUZZ IN', 3: '3rd \u2013 BUZZ IN'}
     rank_str = rank_labels.get(rank, f'#{rank} \u2013 BUZZ IN')
 
-    mx, my, mw, mh = _main._get_mpv_window_rect()
-    _sw = _main.root.winfo_screenwidth()
-    _sh = _main.root.winfo_screenheight()
+    # Lazy import: buzz (bonus) sits below information_popup, which imports bonus.
+    import _app_scripts.information.information_popup as information_popup
+    mx, my, mw, mh = information_popup._get_mpv_window_rect()
+    _sw = state.widgets.root.winfo_screenwidth()
+    _sh = state.widgets.root.winfo_screenheight()
     mpv_frac = max(0.25, min(1.0, min(mw / max(_sw, 1), mh / max(_sh, 1))))
 
-    win = tk.Toplevel(_main.root)
+    win = tk.Toplevel(state.widgets.root)
     win.overrideredirect(True)
     win.attributes('-topmost', True)
     win.attributes('-alpha', 0.0)
     win.configure(bg=border_c)
 
-    border_px = max(1, int(_main.scl(3) * mpv_frac))
+    border_px = max(1, int(scl(3) * mpv_frac))
     outer = tk.Frame(win, bg=border_c, padx=border_px, pady=border_px)
     outer.pack()
-    inner = tk.Frame(outer, bg=bg, padx=int(_main.scl(40) * mpv_frac), pady=int(_main.scl(20) * mpv_frac))
+    inner = tk.Frame(outer, bg=bg, padx=int(scl(40) * mpv_frac), pady=int(scl(20) * mpv_frac))
     inner.pack()
     tk.Label(inner, text=rank_str,
-             font=('Segoe UI', max(9, int(_main.scl(24, 'UI') * mpv_frac)), 'bold'),
+             font=('Segoe UI', max(9, int(scl(24, 'UI') * mpv_frac)), 'bold'),
              fg=fg, bg=bg).pack()
     tk.Label(inner, text=name,
-             font=('Segoe UI', max(14, int(_main.scl(48, 'UI') * mpv_frac)), 'bold'),
+             font=('Segoe UI', max(14, int(scl(48, 'UI') * mpv_frac)), 'bold'),
              fg=fg, bg=bg).pack()
 
     win.update_idletasks()
     w  = win.winfo_width()
     h  = win.winfo_height()
 
-    _pp = _main.bonus_settings.get('buzzer', _main.BONUS_SETTINGS_DEFAULT['buzzer']).get(
-        'player_buzz_popup_properties', _main.BONUS_SETTINGS_DEFAULT['buzzer']['player_buzz_popup_properties'])
-    margin  = int(_main.scl(int(_pp.get('margin',     40))) * mpv_frac)
-    gap     = int(_main.scl(int(_pp.get('gap',        10))) * mpv_frac)
-    rise_px = int(_main.scl(int(_pp.get('rise_px',    50))) * mpv_frac)
+    bonus_defaults = bonus.BONUS_SETTINGS_DEFAULT
+    _pp = state.playback.bonus_settings.get('buzzer', bonus_defaults['buzzer']).get(
+        'player_buzz_popup_properties', bonus_defaults['buzzer']['player_buzz_popup_properties'])
+    margin  = int(scl(int(_pp.get('margin',     40))) * mpv_frac)
+    gap     = int(scl(int(_pp.get('gap',        10))) * mpv_frac)
+    rise_px = int(scl(int(_pp.get('rise_px',    50))) * mpv_frac)
     PUSH_MS    = int(_pp.get('push_ms',    220))
     PUSH_STEPS = int(_pp.get('push_steps', 18))
 
@@ -345,17 +343,17 @@ def _show_buzz_toast(rank, name):
             cur_y = int((e['base_y'] + push_amount) - push_amount * ease)
             e['win'].geometry(f"+{e['cx']}+{cur_y}")
         if step < PUSH_STEPS:
-            _main.root.after(push_step_ms, lambda: _push_others(step + 1))
+            state.widgets.root.after(push_step_ms, lambda: _push_others(step + 1))
         else:
             for e in existing:
                 if e['win'].winfo_exists():
                     e['win'].geometry(f"+{e['cx']}+{e['base_y']}")
 
-    _main.root.after(10, _push_others)
+    state.widgets.root.after(10, _push_others)
 
     # --- new toast: rise + fade in ---
-    _pp = _main.bonus_settings.get('buzzer', _main.BONUS_SETTINGS_DEFAULT['buzzer']).get(
-        'player_buzz_popup_properties', _main.BONUS_SETTINGS_DEFAULT['buzzer']['player_buzz_popup_properties'])
+    _pp = state.playback.bonus_settings.get('buzzer', bonus_defaults['buzzer']).get(
+        'player_buzz_popup_properties', bonus_defaults['buzzer']['player_buzz_popup_properties'])
     FADE_IN_MS  = int(_pp.get('fade_in_ms',  220))
     HOLD_MS     = int(_pp.get('hold_ms',     2400))
     FADE_OUT_MS = int(_pp.get('fade_out_ms', 350))
@@ -374,11 +372,11 @@ def _show_buzz_toast(rank, name):
             win.attributes('-alpha', t * _max_alpha)
             win.geometry(f'+{cx}+{int(base_y + rise_px * (1.0 - t))}')
             if step < STEPS:
-                _main.root.after(step_ms, lambda: _fade_in(step + 1))
+                state.widgets.root.after(step_ms, lambda: _fade_in(step + 1))
             else:
                 win.attributes('-alpha', _max_alpha)
                 win.geometry(f'+{cx}+{base_y}')
-                _main.root.after(HOLD_MS, _fade_out)
+                state.widgets.root.after(HOLD_MS, _fade_out)
         except Exception:
             pass
 
@@ -388,7 +386,7 @@ def _show_buzz_toast(rank, name):
         try:
             win.attributes('-alpha', _max_alpha * (1.0 - step / STEPS))
             if step < STEPS:
-                _main.root.after(out_step_ms, lambda: _fade_out(step + 1))
+                state.widgets.root.after(out_step_ms, lambda: _fade_out(step + 1))
             else:
                 try:
                     _buzz_toast_wins.remove(entry)
@@ -398,17 +396,18 @@ def _show_buzz_toast(rank, name):
         except Exception:
             pass
 
-    _main.root.after(10, _fade_in)
+    state.widgets.root.after(10, _fade_in)
 
 
 def _play_buzz_sound(rank, name):
     """Play a buzzer sound on the host machine when a player buzzes in."""
     if name != 'Test':
-        _main.send_scoreboard_command(f"[BUZZ_ORDER]{rank}:{name}")
-    _buz = _main.bonus_settings.get("buzzer", _main.BONUS_SETTINGS_DEFAULT["buzzer"])
+        scoreboard_control.send_command(f"[BUZZ_ORDER]{rank}:{name}")
+    bonus_defaults = bonus.BONUS_SETTINGS_DEFAULT
+    _buz = state.playback.bonus_settings.get("buzzer", bonus_defaults["buzzer"])
     if name != 'Test':
         if _buz.get("player_buzz_popup", True):
-            _main.root.after(0, lambda: _show_buzz_toast(rank, name))
+            state.widgets.root.after(0, lambda: _show_buzz_toast(rank, name))
     def _make_wav_segments(segments):
         import wave, struct, math, io, random
         rate = 44100
@@ -475,7 +474,7 @@ def _play_buzz_sound(rank, name):
     def _beep():
         try:
             import winsound
-            _buz_cfg = _main.bonus_settings.get("buzzer", _main.BONUS_SETTINGS_DEFAULT["buzzer"])
+            _buz_cfg = state.playback.bonus_settings.get("buzzer", bonus_defaults["buzzer"])
             if not _buz_cfg.get("sound", True):
                 return
             p = BUZZ_PRESETS[_buzz_preset_index]

@@ -5,12 +5,15 @@ The metadata dicts (file_metadata, anime_metadata, …) live in main and are
 mutated in place (clear + update) so module-level aliases and state.metadata.*
 keep the same identity — see the note in load_metadata.
 
-Cross-module references go through `_main.X`; set_context binds it.
+Sibling metadata helpers (metadata_fetch, metadata_display) are imported
+directly.
 """
 import os
+from core.game_state import state
 import json
 
 from _app_scripts import utils
+from _app_scripts.file.metadata import metadata_fetch, metadata_display
 from core.paths import (
     FILE_METADATA_FILE,
     FILE_METADATA_OVERRIDES_FILE,
@@ -21,13 +24,6 @@ from core.paths import (
     ANILIST_METADATA_FILE,
     MANUAL_METADATA_FILE,
 )
-
-_main = None  # populated by set_context()
-
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
 
 
 # Local aliases for utils helpers used here.
@@ -43,18 +39,18 @@ def save_metadata():
     if not os.path.exists(metadata_folder):
         os.makedirs(metadata_folder)
 
-    save_metadata_compressed(FILE_METADATA_FILE, _main.file_metadata)
+    save_metadata_compressed(FILE_METADATA_FILE, state.metadata.file_metadata)
 
-    deep_merge(_main.anime_metadata, _main.anime_metadata_overrides)
-    save_metadata_compressed(ANIME_METADATA_FILE, _main.anime_metadata)
-    save_metadata_compressed(ANIDB_METADATA_FILE, _main.anidb_metadata)
-    save_metadata_compressed(AI_METADATA_FILE, _main.ai_metadata, encoding="utf-8", ensure_ascii=False)
-    save_metadata_compressed(ANILIST_METADATA_FILE, _main.anilist_metadata, encoding="utf-8", ensure_ascii=False)
+    deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
+    save_metadata_compressed(ANIME_METADATA_FILE, state.metadata.anime_metadata)
+    save_metadata_compressed(ANIDB_METADATA_FILE, state.metadata.anidb_metadata)
+    save_metadata_compressed(AI_METADATA_FILE, state.metadata.ai_metadata, encoding="utf-8", ensure_ascii=False)
+    save_metadata_compressed(ANILIST_METADATA_FILE, state.metadata.anilist_metadata, encoding="utf-8", ensure_ascii=False)
 
 
 def save_metadata_overrides():
-    save_metadata_atomic(FILE_METADATA_OVERRIDES_FILE, _main.file_metadata_overrides)
-    save_metadata_atomic(ANIME_METADATA_OVERRIDES_FILE, _main.anime_metadata_overrides)
+    save_metadata_atomic(FILE_METADATA_OVERRIDES_FILE, state.metadata.file_metadata_overrides)
+    save_metadata_atomic(ANIME_METADATA_OVERRIDES_FILE, state.metadata.anime_metadata_overrides)
 
 
 def load_metadata():
@@ -66,75 +62,75 @@ def load_metadata():
     # Load file_metadata (with custom dict class)
     data, is_compressed = load_metadata_compressed(FILE_METADATA_FILE, name="file metadata")
     if data is not None:
-        _main.file_metadata.clear()
-        _main.file_metadata.update(data)
+        state.metadata.file_metadata.clear()
+        state.metadata.file_metadata.update(data)
         suffix = " (compressed)" if is_compressed else ""
-        file_count = _main.build_filename_to_mal_map()
-        print("Loaded file metadata for " + str(len(_main.file_metadata)) + " entries and " + str(file_count) + " files..." + suffix)
+        file_count = metadata_fetch.build_filename_to_mal_map()
+        print("Loaded file metadata for " + str(len(state.metadata.file_metadata)) + " entries and " + str(file_count) + " files..." + suffix)
 
     # Load file_metadata_overrides
     data, is_compressed = load_metadata_compressed(FILE_METADATA_OVERRIDES_FILE, name="file metadata overrides")
     if data is not None:
-        _main.file_metadata_overrides.clear()
-        _main.file_metadata_overrides.update(data)
+        state.metadata.file_metadata_overrides.clear()
+        state.metadata.file_metadata_overrides.update(data)
         suffix = " (compressed)" if is_compressed else ""
-        print("Loaded file metadata overrides for " + str(len(_main.file_metadata_overrides)) + " entries..." + suffix)
-        deep_merge(_main.file_metadata, _main.file_metadata_overrides)
+        print("Loaded file metadata overrides for " + str(len(state.metadata.file_metadata_overrides)) + " entries..." + suffix)
+        deep_merge(state.metadata.file_metadata, state.metadata.file_metadata_overrides)
         # Rebuild the lookup map after applying overrides
-        file_count = _main.build_filename_to_mal_map()
+        file_count = metadata_fetch.build_filename_to_mal_map()
 
     # Load anime_metadata
     data, is_compressed = load_metadata_compressed(ANIME_METADATA_FILE, name="anime metadata")
     if data is not None:
-        _main.anime_metadata.clear()
-        _main.anime_metadata.update(data)
+        state.metadata.anime_metadata.clear()
+        state.metadata.anime_metadata.update(data)
         suffix = " (compressed)" if is_compressed else ""
-        print("Loaded anime metadata for " + str(len(_main.anime_metadata)) + " entries..." + suffix)
+        print("Loaded anime metadata for " + str(len(state.metadata.anime_metadata)) + " entries..." + suffix)
 
     if os.path.exists(MANUAL_METADATA_FILE):
         with open(MANUAL_METADATA_FILE, "r", encoding="utf-8") as m:
             manual_metadata = json.load(m)
             for entry in manual_metadata:
-                _main.anime_metadata[entry] = manual_metadata[entry]
-                if _main.anime_metadata[entry].get("reviews") and (_main.is_game(_main.anime_metadata[entry])):
-                    _main.anime_metadata[entry]["members"] = _main.anime_metadata[entry].get("reviews") * REVIEW_MODIFIER
-                if _main.anime_metadata[entry].get("release"):
-                    _main.anime_metadata[entry]["aired"] = _main.anime_metadata[entry].get("release")
-                    _main.anime_metadata[entry]["season"] = _main.aired_to_season_year(_main.anime_metadata[entry].get("release"))
-                _main.anime_metadata[entry]["popularity"] = estimate_manual_popularity(_main.anime_metadata[entry].get("members"))
-                _main.anime_metadata[entry]["rank"] = estimate_manual_rank(_main.anime_metadata[entry].get("score"))
+                state.metadata.anime_metadata[entry] = manual_metadata[entry]
+                if state.metadata.anime_metadata[entry].get("reviews") and (metadata_display.is_game(state.metadata.anime_metadata[entry])):
+                    state.metadata.anime_metadata[entry]["members"] = state.metadata.anime_metadata[entry].get("reviews") * REVIEW_MODIFIER
+                if state.metadata.anime_metadata[entry].get("release"):
+                    state.metadata.anime_metadata[entry]["aired"] = state.metadata.anime_metadata[entry].get("release")
+                    state.metadata.anime_metadata[entry]["season"] = metadata_fetch.aired_to_season_year(state.metadata.anime_metadata[entry].get("release"))
+                state.metadata.anime_metadata[entry]["popularity"] = estimate_manual_popularity(state.metadata.anime_metadata[entry].get("members"))
+                state.metadata.anime_metadata[entry]["rank"] = estimate_manual_rank(state.metadata.anime_metadata[entry].get("score"))
     # Load anime_metadata_overrides (plain JSON only — never stored as .gz)
     if os.path.exists(ANIME_METADATA_OVERRIDES_FILE):
         with open(ANIME_METADATA_OVERRIDES_FILE, "r", encoding="utf-8") as f:
             loaded_overrides = json.load(f)
-        _main.anime_metadata_overrides.clear()
-        _main.anime_metadata_overrides.update(loaded_overrides)
-        print("Loaded anime metadata overrides for " + str(len(_main.anime_metadata_overrides)) + " entries...")
-        deep_merge(_main.anime_metadata, _main.anime_metadata_overrides)
+        state.metadata.anime_metadata_overrides.clear()
+        state.metadata.anime_metadata_overrides.update(loaded_overrides)
+        print("Loaded anime metadata overrides for " + str(len(state.metadata.anime_metadata_overrides)) + " entries...")
+        deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
 
     # Load anilist_metadata
     data, is_compressed = load_metadata_compressed(ANILIST_METADATA_FILE, encoding="utf-8", name="anilist metadata")
     if data is not None:
-        _main.anilist_metadata.clear()
-        _main.anilist_metadata.update(data)
+        state.metadata.anilist_metadata.clear()
+        state.metadata.anilist_metadata.update(data)
         suffix = " (compressed)" if is_compressed else ""
-        print(f"Loaded anilist metadata for {len(_main.anilist_metadata)} entries...{suffix}")
+        print(f"Loaded anilist metadata for {len(state.metadata.anilist_metadata)} entries...{suffix}")
 
     # Load anidb_metadata
     data, is_compressed = load_metadata_compressed(ANIDB_METADATA_FILE, name="anidb metadata")
     if data is not None:
-        _main.anidb_metadata.clear()
-        _main.anidb_metadata.update(data)
+        state.metadata.anidb_metadata.clear()
+        state.metadata.anidb_metadata.update(data)
         suffix = " (compressed)" if is_compressed else ""
-        print("Loaded anidb metadata for " + str(len(_main.anidb_metadata)) + " entries..." + suffix)
+        print("Loaded anidb metadata for " + str(len(state.metadata.anidb_metadata)) + " entries..." + suffix)
 
     # Load ai_metadata
     data, is_compressed = load_metadata_compressed(AI_METADATA_FILE, encoding="utf-8", name="ai metadata")
     if data is not None:
-        _main.ai_metadata.clear()
-        _main.ai_metadata.update(data)
+        state.metadata.ai_metadata.clear()
+        state.metadata.ai_metadata.update(data)
         suffix = " (compressed)" if is_compressed else ""
-        print(f"Loaded ai metadata for {len(_main.ai_metadata)} entries...{suffix}")
+        print(f"Loaded ai metadata for {len(state.metadata.ai_metadata)} entries...{suffix}")
 
 
 REVIEW_MODIFIER = 500
@@ -147,7 +143,7 @@ def estimate_manual_popularity(members):
 
     # Load all known anime popularity & members counts
     known_popularities = []
-    for anime in _main.anime_metadata.values():
+    for anime in state.metadata.anime_metadata.values():
         if anime.get("members") and anime.get("popularity") not in ["N/A", None]:
             known_popularities.append((anime["members"], anime["popularity"]))
 
@@ -173,7 +169,7 @@ def estimate_manual_rank(score):
 
     # Load all known anime rank & score
     known_ranks = []
-    for anime in _main.anime_metadata.values():
+    for anime in state.metadata.anime_metadata.values():
         if anime.get("score") and anime.get("rank") not in ["N/A", None]:
             known_ranks.append((anime["score"], anime["rank"]))
 

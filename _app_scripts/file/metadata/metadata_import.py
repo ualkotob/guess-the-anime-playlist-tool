@@ -1,11 +1,11 @@
 """Metadata package import (URL or local zip).
 
-Extracted from `guess_the_anime.py` to keep the main file lean. Call
-:func:`set_context` once at startup to inject the small set of main-file
-helpers / shared state this module needs, then call
-:func:`import_data_from_package` exactly as before.
+Extracted from `guess_the_anime.py` to keep the main file lean. Reads shared
+metadata dicts from `state.metadata` and reaches sibling modules directly;
+call :func:`import_data_from_package` exactly as before.
 """
 from __future__ import annotations
+from core.game_state import state
 
 import gzip
 import json
@@ -20,50 +20,11 @@ from tkinter import messagebox
 
 import requests
 
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-get_window_position_and_setup = None
-save_metadata = None
-load_metadata = None
-scan_directory = None
-show_playlist = None
-save_config = None
-
-# Metadata dicts — by-reference, mutated in-place via .update()/[]= assignment
-file_metadata = None
-file_metadata_overrides = None
-anime_metadata = None
-anidb_metadata = None
-ai_metadata = None
-anilist_metadata = None
-
-# main module's globals() — needed for reads/writes against vars that get
-# reassigned in main (list_loaded, metadata_last_updated)
-main_globals = {}
-
-
-def set_context(*, get_window_position_and_setup,
-                save_metadata, load_metadata, scan_directory, show_playlist,
-                save_config,
-                file_metadata, file_metadata_overrides,
-                anime_metadata, anidb_metadata, ai_metadata, anilist_metadata,
-                main_globals):
-    g = globals()
-    g['get_window_position_and_setup'] = get_window_position_and_setup
-    g['save_metadata'] = save_metadata
-    g['load_metadata'] = load_metadata
-    g['scan_directory'] = scan_directory
-    g['show_playlist'] = show_playlist
-    g['save_config'] = save_config
-    g['file_metadata'] = file_metadata
-    g['file_metadata_overrides'] = file_metadata_overrides
-    g['anime_metadata'] = anime_metadata
-    g['anidb_metadata'] = anidb_metadata
-    g['ai_metadata'] = ai_metadata
-    g['anilist_metadata'] = anilist_metadata
-    g['main_globals'] = main_globals
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.data.config_io as config_io
+import _app_scripts.data.metadata_io as metadata_io
+import _app_scripts.ui.lists as lists
+import _app_scripts.directory.scan as directory_scan
 
 
 def import_data_from_package(source, is_local=False, prompt=True):
@@ -87,7 +48,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
     import_window.title("Importing...")
     import_window.configure(bg="black")
     import_window.geometry("400x150")
-    get_window_position_and_setup(import_window, offset_x=200, offset_y=200)
+    windowing.get_window_position_and_setup(import_window, offset_x=200, offset_y=200)
 
     # Status label
     status_label = tk.Label(import_window, text="Starting import...",
@@ -136,12 +97,12 @@ def import_data_from_package(source, is_local=False, prompt=True):
 
             # Import metadata files
             metadata_files = [
-                ('metadata/file_metadata.json', 'file_metadata', lambda d: file_metadata),
-                ('metadata/file_metadata_overrides.json', 'file_metadata_overrides', lambda d: file_metadata_overrides),
-                ('metadata/anime_metadata.json', 'anime_metadata', lambda d: anime_metadata),
-                ('metadata/anidb_metadata.json', 'anidb_metadata', lambda d: anidb_metadata),
-                ('metadata/ai_metadata.json', 'ai_metadata', lambda d: ai_metadata),
-                ('metadata/anilist_metadata.json', 'anilist_metadata', lambda d: anilist_metadata),
+                ('metadata/file_metadata.json', 'file_metadata', lambda d: state.metadata.file_metadata),
+                ('metadata/file_metadata_overrides.json', 'file_metadata_overrides', lambda d: state.metadata.file_metadata_overrides),
+                ('metadata/anime_metadata.json', 'anime_metadata', lambda d: state.metadata.anime_metadata),
+                ('metadata/anidb_metadata.json', 'anidb_metadata', lambda d: state.metadata.anidb_metadata),
+                ('metadata/ai_metadata.json', 'ai_metadata', lambda d: state.metadata.ai_metadata),
+                ('metadata/anilist_metadata.json', 'anilist_metadata', lambda d: state.metadata.anilist_metadata),
             ]
 
             for file_path, name, get_dict in metadata_files:
@@ -174,17 +135,17 @@ def import_data_from_package(source, is_local=False, prompt=True):
 
                     # Update the global variable based on which file it is
                     if name == 'file_metadata':
-                        file_metadata.update(imported_data)
+                        state.metadata.file_metadata.update(imported_data)
                     elif name == 'file_metadata_overrides':
-                        file_metadata_overrides.update(imported_data)
+                        state.metadata.file_metadata_overrides.update(imported_data)
                     elif name == 'anime_metadata':
-                        anime_metadata.update(imported_data)
+                        state.metadata.anime_metadata.update(imported_data)
                     elif name == 'anidb_metadata':
-                        anidb_metadata.update(imported_data)
+                        state.metadata.anidb_metadata.update(imported_data)
                     elif name == 'ai_metadata':
-                        ai_metadata.update(imported_data)
+                        state.metadata.ai_metadata.update(imported_data)
                     elif name == 'anilist_metadata':
-                        anilist_metadata.update(imported_data)
+                        state.metadata.anilist_metadata.update(imported_data)
 
                     imported_items.append(f"{name}: {len(imported_data)} entries ({count} new)")
 
@@ -193,12 +154,12 @@ def import_data_from_package(source, is_local=False, prompt=True):
 
             # Save all metadata
             if imported_items:
-                save_metadata()
+                metadata_io.save_metadata()
                 # Reload metadata and refresh directory to show imported data
-                load_metadata()
-                scan_directory()
-                if main_globals.get('list_loaded') == "playlist":
-                    show_playlist(True)
+                metadata_io.load_metadata()
+                directory_scan.scan_directory()
+                if state.lists.list_loaded == "playlist":
+                    lists.show_playlist(True)
 
         except requests.exceptions.RequestException as e:
             errors.append(f"Failed to download package: {e}")
@@ -236,19 +197,19 @@ def import_data_from_package(source, is_local=False, prompt=True):
             # Update metadata timestamp after successful import
             if is_local:
                 # For local imports, use current time
-                main_globals['metadata_last_updated'] = int(time.time())
+                state.update_timestamps.metadata_last_updated = int(time.time())
             else:
                 # For remote imports, use Last-Modified from the response we already have
                 try:
                     last_modified = response.headers.get('Last-Modified')
                     if last_modified:
                         from email.utils import parsedate_to_datetime
-                        main_globals['metadata_last_updated'] = int(parsedate_to_datetime(last_modified).timestamp())
+                        state.update_timestamps.metadata_last_updated = int(parsedate_to_datetime(last_modified).timestamp())
                     else:
-                        main_globals['metadata_last_updated'] = int(time.time())
+                        state.update_timestamps.metadata_last_updated = int(time.time())
                 except:
-                    main_globals['metadata_last_updated'] = int(time.time())
-            save_config()
+                    state.update_timestamps.metadata_last_updated = int(time.time())
+            config_io.save_config()
         elif errors:
             if import_window.winfo_exists():
                 status_label.config(text="Import completed with errors", fg="red")

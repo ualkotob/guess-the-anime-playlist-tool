@@ -26,6 +26,7 @@ import random
 import tkinter.font as _tkfont
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -47,42 +48,7 @@ _mc_answer_phase = False
 _mc_cell_widgets: list = []       # (cell_frame, label_widget, choice_str) entries
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-currently_playing: dict = {}
-_get_mpv_window_rect = None
-_osd_command = None
-_color_str_to_ass_bgr = None
-_SYNOPSIS_ASS_OSD_ID = 58
-_get_fixed_current_round = lambda: None
-_get_light_round_length = lambda: 12
-_get_display_screen_width = lambda: 1920
-_get_display_screen_height = lambda: 1080
-_get_middle_overlay_background_color = lambda: 'dark gray'
-_get_overlay_background_color = lambda: 'black'
-_get_overlay_text_color = lambda: 'white'
-
-
-def set_context(*, currently_playing, get_mpv_window_rect, osd_command,
-                color_str_to_ass_bgr, synopsis_ass_osd_id,
-                get_fixed_current_round, get_light_round_length,
-                get_display_screen_width, get_display_screen_height,
-                get_middle_overlay_background_color,
-                get_overlay_background_color, get_overlay_text_color):
-    g = globals()
-    g['currently_playing'] = currently_playing
-    g['_get_mpv_window_rect'] = get_mpv_window_rect
-    g['_osd_command'] = osd_command
-    g['_color_str_to_ass_bgr'] = color_str_to_ass_bgr
-    g['_SYNOPSIS_ASS_OSD_ID'] = synopsis_ass_osd_id
-    g['_get_fixed_current_round'] = get_fixed_current_round
-    g['_get_light_round_length'] = get_light_round_length
-    g['_get_display_screen_width'] = get_display_screen_width
-    g['_get_display_screen_height'] = get_display_screen_height
-    g['_get_middle_overlay_background_color'] = get_middle_overlay_background_color
-    g['_get_overlay_background_color'] = get_overlay_background_color
-    g['_get_overlay_text_color'] = get_overlay_text_color
+_SYNOPSIS_ASS_OSD_ID = 58  # unique ID for osd-overlay (ASS-based) synopsis / trivia box
 
 
 # ---------------------------------------------------------------------------
@@ -96,15 +62,15 @@ TITLE_GENERIC_WORDS = {"the", "a", "an", "as", "and", "of", "in", "on", "to",
 def pick_synopsis():
     global synopsis_start_index, synopsis_split, synopsis_end_index
     if not synopsis_start_index:
-        fixed_current_round = _get_fixed_current_round()
-        light_round_length = _get_light_round_length()
+        fixed_current_round = state.lightning.fixed_current_round
+        light_round_length = state.lightning.light_round_length
         if fixed_current_round:
             synopsis = fixed_current_round.get("synopsis_text", "No synopsis found.").replace("\n", " \n")
             synopsis_split = synopsis.split(" ")
             synopsis_start_index = 0
             synopsis_end_index = len(synopsis_split)
             return
-        synopsis = (currently_playing.get("data", {}).get("synopsis") or "No synopsis found.")
+        synopsis = (state.playback.currently_playing.get("data", {}).get("synopsis") or "No synopsis found.")
         for extra_characters in ["\n\n[Written by MAL Rewrite]", "\n\n(Source: adapted from ANN)",
                                  "\n\n(Source: Yen Press)", " \n\n", "\n \n", "\n\n", "\n"]:
             synopsis = synopsis.replace(extra_characters, " ")
@@ -126,7 +92,7 @@ def is_end_of_sentence(word):
 
 def get_light_synopsis_string(words=None):
     from _app_scripts.queue_round.lightning_rounds import trivia_round
-    fixed_current_round = _get_fixed_current_round()
+    fixed_current_round = state.lightning.fixed_current_round
     light_trivia_answer = trivia_round.light_trivia_answer
     if not words:
         words = (synopsis_end_index or len(synopsis_split)) - (synopsis_start_index or 0)
@@ -139,7 +105,7 @@ def get_light_synopsis_string(words=None):
         if len(synopsis_split) > (w + synopsis_start_index):
             word = synopsis_split[synopsis_start_index + w]
             if not light_trivia_answer and not fixed_current_round:
-                data = currently_playing.get("data", {})
+                data = state.playback.currently_playing.get("data", {})
                 word_check = word.lower().strip(',!.":')
                 if "'s" in word_check and word_check[len(word_check) - 1] == "s" and word_check[len(word_check) - 2] == "'":
                     word_check = word_check.split("'s")[0]
@@ -198,7 +164,7 @@ def toggle_synopsis_overlay(text=None, destroy=False, quick_destroy=False):
         synopsis_label = None
         _synopsis_height_cache.clear()
         try:
-            _osd_command('osd-overlay', _SYNOPSIS_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _SYNOPSIS_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         return
@@ -216,13 +182,13 @@ def _synopsis_osd_redraw(synopsis_text=None):
     root = state.widgets.root
 
     from _app_scripts.queue_round.lightning_rounds import trivia_round
-    DISPLAY_SCREEN_WIDTH  = _get_display_screen_width()
-    DISPLAY_SCREEN_HEIGHT = _get_display_screen_height()
+    DISPLAY_SCREEN_WIDTH  = state.display.screen_width
+    DISPLAY_SCREEN_HEIGHT = state.display.screen_height
     light_trivia_answer   = trivia_round.light_trivia_answer
-    fixed_current_round   = _get_fixed_current_round()
-    MIDDLE_OVERLAY_BACKGROUND_COLOR = _get_middle_overlay_background_color()
-    OVERLAY_BACKGROUND_COLOR = _get_overlay_background_color()
-    OVERLAY_TEXT_COLOR = _get_overlay_text_color()
+    fixed_current_round   = state.lightning.fixed_current_round
+    MIDDLE_OVERLAY_BACKGROUND_COLOR = state.colors.MIDDLE_OVERLAY_BACKGROUND_COLOR
+    OVERLAY_BACKGROUND_COLOR = state.colors.OVERLAY_BACKGROUND_COLOR
+    OVERLAY_TEXT_COLOR = state.colors.OVERLAY_TEXT_COLOR
 
     text = synopsis_text or ""
 
@@ -235,7 +201,10 @@ def _synopsis_osd_redraw(synopsis_text=None):
     osd_mod = min(osd_w / 2560, osd_h / 1440)
     def ws_osd(n): return max(1, int(n * osd_mod))
 
-    _mx, _my, mw_phys, mh_phys = _get_mpv_window_rect()
+    # Lazy import: overlays sit below information_popup in the layer graph,
+    # so importing it at module scope would form a cycle.
+    from _app_scripts.information import information_popup
+    _mx, _my, mw_phys, mh_phys = information_popup._get_mpv_window_rect()
     if not mw_phys:
         mw_phys, mh_phys = DISPLAY_SCREEN_WIDTH, DISPLAY_SCREEN_HEIGHT
     phys_mod = min(mw_phys / 2560, mh_phys / 1440)
@@ -249,8 +218,8 @@ def _synopsis_osd_redraw(synopsis_text=None):
         bg_color = OVERLAY_BACKGROUND_COLOR
         fg_color = OVERLAY_TEXT_COLOR
 
-    bg_bgr = _color_str_to_ass_bgr(bg_color)
-    fg_bgr = _color_str_to_ass_bgr(fg_color)
+    bg_bgr = osd_text._color_str_to_ass_bgr(bg_color)
+    fg_bgr = osd_text._color_str_to_ass_bgr(fg_color)
 
     if fixed_current_round and (fixed_current_round.get("synopsis_header") or fixed_current_round.get("trivia_header")):
         header = ((fixed_current_round.get("synopsis_header") or fixed_current_round.get("trivia_header")).upper() + ":")
@@ -277,7 +246,25 @@ def _synopsis_osd_redraw(synopsis_text=None):
     fs_header_px = round(fs_tk_header * screen_dpi / 72)
 
     line_h_render = round(fs_tk_body_render * 1.35 * log_to_osd)
-    header_h      = round(fs_tk_header      * 1.35 * log_to_osd)
+
+    # Wrap the header to the box width (bold font) so a long custom
+    # synopsis/trivia header breaks onto multiple lines instead of
+    # overflowing the box. The header sits at hx (left of the body's tx),
+    # so wrapping at wraplength_phys is a safe/conservative bound.
+    _hfnt = _tkfont.Font(family="Arial", size=fs_tk_header, weight="bold")
+    _hsp = _hfnt.measure(' ')
+    _header_lines = []
+    _hcw, _hwords = 0, []
+    for _hw in header.split():
+        _hww = _hfnt.measure(_hw)
+        _hgap = _hsp if _hwords else 0
+        if _hwords and _hcw + _hgap + _hww > wraplength_phys:
+            _header_lines.append(' '.join(_hwords)); _hwords, _hcw = [_hw], _hww
+        else:
+            _hwords.append(_hw); _hcw += _hgap + _hww
+    _header_lines.append(' '.join(_hwords))
+    header_line_h = round(fs_tk_header * 1.35 * log_to_osd)
+    header_h      = header_line_h * len(_header_lines)
 
     # Count synopsis body lines (cached per full text)
     full_text = text
@@ -373,7 +360,8 @@ def _synopsis_osd_redraw(synopsis_text=None):
                       f"\\3c&H{fg_bgr}&\\3a&H00&\\bord{bord_px}\\shad0\\p1}}"
                       f"m 0 0 l {box_w} 0 {box_w} {syn_box_h} 0 {syn_box_h}{{\\p0}}")
         events.append(f"{{\\an7\\pos({hx},{hy})\\1c&H{fg_bgr}&\\1a&H00&"
-                      f"\\3c&H000000&\\3a&HFF&\\bord0\\shad0\\fs{fs_header_px}\\b1\\u1\\q2}}{header}")
+                      f"\\3c&H000000&\\3a&HFF&\\bord0\\shad0\\fs{fs_header_px}\\b1\\u1\\q2}}"
+                      + '\\N'.join(_header_lines))
         _fnt2 = _tkfont.Font(family="Arial", size=fs_tk_body_render)
         _sp_w2 = _fnt2.measure(' ')
         _lines2 = []
@@ -403,8 +391,8 @@ def _synopsis_osd_redraw(synopsis_text=None):
         for i, (label, choice, choice_lines) in enumerate(zip(LABELS, mc_choices, _mc_choice_lines)):
             row, col   = divmod(i, 2)
             is_correct = (_mc_answer_phase and _mc_last_correct_answer and choice == _mc_last_correct_answer)
-            cell_bg_bgr = _color_str_to_ass_bgr(fg_color if is_correct else bg_color)
-            cell_fg_bgr = _color_str_to_ass_bgr(bg_color if is_correct else fg_color)
+            cell_bg_bgr = osd_text._color_str_to_ass_bgr(fg_color if is_correct else bg_color)
+            cell_fg_bgr = osd_text._color_str_to_ass_bgr(bg_color if is_correct else fg_color)
             cx     = bx + bord_px + col * (mc_cell_w + mc_col_gap * 2)
             cell_y = _mc_row_top[row]
             cw, ch = mc_cell_w, _mc_row_h[row]
@@ -421,7 +409,7 @@ def _synopsis_osd_redraw(synopsis_text=None):
                           + '\\N'.join(choice_lines))
 
     try:
-        _osd_command('osd-overlay', _SYNOPSIS_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _SYNOPSIS_ASS_OSD_ID, 'ass-events',
                      "\n".join(events), osd_w, osd_h, 2, 'no')
     except Exception as e:
         print(f"Synopsis OSD error: {e}")

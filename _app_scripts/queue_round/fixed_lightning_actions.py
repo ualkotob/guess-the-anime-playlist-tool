@@ -1,41 +1,35 @@
-"""FIXED LIGHTNING ROUNDS (main-side actions) — extracted from
-guess_the_anime.py (Step 83, 2026-05-28).
+"""Fixed lightning rounds — the list/queue actions.
 
-Owns the 7 main-side helpers that drive the right-column "FIXED LIGHTNING
-ROUND PLAYLISTS" list, queue/play actions, and the context menu. All
-mutated state (`fixed_lightning_queue`, `fixed_lightning_round_playlist_data`,
-`fixed_current_round`, `fixed_lightning_rounds_list`) stays in main per
-[[state-stays-with-its-readers]] — those names are rebound from many sites
-across main + cross-module readers via `_main.X`. This module reads them via
-`_main.X` and writes the rebound `fixed_lightning_queue` via
-`_main.fixed_lightning_queue = ...`.
+Owns the main-side helpers that drive the right-column "FIXED LIGHTNING
+ROUND PLAYLISTS" list, queue/play actions, and the context menu.
+Fixed-lightning state lives in the central `state` container: the rounds list
+via `state.playback.fl_rounds_list` (in-place-mutated) and the rebound scalars
+`fixed_lightning_queue`, `fixed_lightning_round_playlist_data`,
+`fixed_current_round` via `state.lightning.*`.
 
 The editor/manager (`open_fixed_lightning_manager`) lives in sibling
-module `fixed_lightning.py`; this module is just the list/queue actions.
-
-Uses the `_main` module-reference pattern (Steps 70/71/75/79/80/81/82).
+module `fixed_lightning.py`.
 """
 
 import os
+from core.game_state import state
 import json
 import copy
 import random
 import tkinter as tk
 
 from . import fixed_lightning
-
-
-_main = None
-
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
+from .lightning_rounds import lightning_settings, lightning_manager
+from .youtube import youtube_ui
+from ..playlists import entry_paths
+from ..playback import coming_up_ui, cache_download, transport
+from ..file.metadata import metadata_display
+from ..ui import lists
 
 
 def load_fixed_lightning_rounds(filter_missing_themes=False):
     """Load fixed lightning round playlists from folder"""
-    rounds_list = _main.fixed_lightning_rounds_list
+    rounds_list = state.playback.fl_rounds_list
     rounds_list.clear()
 
     folder = fixed_lightning.FIXED_LIGHTNING_FOLDER
@@ -58,8 +52,8 @@ def load_fixed_lightning_rounds(filter_missing_themes=False):
 
                     for round_data in data.get("rounds", []):
                         theme = round_data.get("theme", "")
-                        if not filter_missing_themes or _main.get_clean_filename(theme) in _main.directory_files or _main.is_animethemes_stream_file(theme):
-                            duration = round_data.get("duration", _main.lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
+                        if not filter_missing_themes or entry_paths.get_clean_filename(theme) in state.metadata.directory_files or cache_download.is_animethemes_stream_file(theme):
+                            duration = round_data.get("duration", lightning_settings.lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
                             answer_duration = round_data.get("answer_duration", 8)
 
                             total_duration += duration + answer_duration
@@ -87,7 +81,7 @@ def load_fixed_lightning_rounds(filter_missing_themes=False):
 
 def _fl_set_queue_and_notify(round_info):
     """Set fixed_lightning_queue and show the coming-up popup + prefetch. Does NOT play."""
-    _main.fixed_lightning_queue = round_info
+    state.lightning.fixed_lightning_queue = round_info
     name = round_info.get('name', 'Unnamed Round')
     desc = round_info.get('description', '')
     creator = round_info.get('creator', '')
@@ -102,27 +96,27 @@ def _fl_set_queue_and_notify(round_info):
     seconds = int(total_duration % 60)
     duration_str = f"{minutes}:{seconds:02d}"
     details_text = f"Created by: {creator}\n{created_string}\nRounds: {rounds_count} | Duration: {duration_str} mins\n\n{desc}"
-    _main.toggle_coming_up_popup(True, name, details_text, queue=True)
-    _main.prefetch_next_themes()
+    coming_up_ui.toggle_coming_up_popup(True, name, details_text, queue=True)
+    cache_download.prefetch_next_themes()
 
 
 def _queue_fixed_lightning_round_by_index(index, randomize=False):
     """Queue a fixed lightning round by list index, optionally shuffling its rounds."""
-    rounds_list = _main.fixed_lightning_rounds_list
+    rounds_list = state.playback.fl_rounds_list
     if not (0 <= index < len(rounds_list)):
         return
     ri = copy.deepcopy(rounds_list[index])
     if randomize:
         random.shuffle(ri.get("rounds", []))
     _fl_set_queue_and_notify(ri)
-    _main.queue_next_lightning_mode()
+    lightning_manager.queue_next_lightning_mode()
     show_fixed_lightning_list(update=True)
-    _main.up_next_text()
+    metadata_display.up_next_text()
 
 
 def _play_fixed_lightning_round_now(index, randomize=False):
     """Immediately play a fixed lightning round by list index, optionally shuffling its rounds."""
-    rounds_list = _main.fixed_lightning_rounds_list
+    rounds_list = state.playback.fl_rounds_list
     if not (0 <= index < len(rounds_list)):
         return
     ri = copy.deepcopy(rounds_list[index])
@@ -130,13 +124,13 @@ def _play_fixed_lightning_round_now(index, randomize=False):
         random.shuffle(ri.get("rounds", []))
     _fl_set_queue_and_notify(ri)
     show_fixed_lightning_list(update=True)
-    _main.up_next_text()
-    _main.play_video()
+    metadata_display.up_next_text()
+    transport.play_video()
 
 
 def _fixed_lightning_context_menu(index):
     """Show right-click context menu for a fixed lightning list item."""
-    rounds_list = _main.fixed_lightning_rounds_list
+    rounds_list = state.playback.fl_rounds_list
     if index < 0 or index >= len(rounds_list):
         return
 
@@ -147,18 +141,18 @@ def _fixed_lightning_context_menu(index):
             _queue_fixed_lightning_round_by_index(index, randomize=True)
         else:
             # Mirror left-click toggle behaviour for non-randomized queue
-            if _main.fixed_lightning_queue and _main.fixed_lightning_queue.get("name") == round_info.get("name"):
-                _main.fixed_lightning_queue = None
-                _main.toggle_coming_up_popup(False, round_info.get('name', 'Unnamed Round'))
+            if state.lightning.fixed_lightning_queue and state.lightning.fixed_lightning_queue.get("name") == round_info.get("name"):
+                state.lightning.fixed_lightning_queue = None
+                coming_up_ui.toggle_coming_up_popup(False, round_info.get('name', 'Unnamed Round'))
                 show_fixed_lightning_list(update=True)
-                _main.up_next_text()
+                metadata_display.up_next_text()
             else:
                 _queue_fixed_lightning_round_by_index(index, randomize=False)
 
     def _do_play_now(randomize=False):
         _play_fixed_lightning_round_now(index, randomize=randomize)
 
-    root = _main.root
+    root = state.widgets.root
     menu = tk.Menu(root, tearoff=0)
     menu.add_command(label="Play Now", command=lambda: _do_play_now(False))
     menu.add_command(label="Play Now (Randomized)", command=lambda: _do_play_now(True))
@@ -176,7 +170,7 @@ def show_fixed_lightning_list(update=False):
     """Show fixed lightning round playlists list in right column"""
     load_fixed_lightning_rounds(filter_missing_themes=True)
 
-    rounds_list = _main.fixed_lightning_rounds_list
+    rounds_list = state.playback.fl_rounds_list
     rounds_dict = {i: round_info for i, round_info in enumerate(rounds_list)}
 
     def get_round_name(key, value):
@@ -184,32 +178,32 @@ def show_fixed_lightning_list(update=False):
         minutes = int(total_duration // 60)
         seconds = int(total_duration % 60)
         duration_str = f"[{minutes}:{seconds:02d}] "
-        name = _main.shorten_youtube_title(value.get("name", "Unnamed Round"))
+        name = youtube_ui.shorten_youtube_title(value.get("name", "Unnamed Round"))
         return duration_str + name
 
     selected = -1
-    fl_queue = _main.fixed_lightning_queue
+    fl_queue = state.lightning.fixed_lightning_queue
     if fl_queue:
         for i, round_info in enumerate(rounds_list):
             if round_info.get("name") == fl_queue.get("name"):
                 selected = i
                 break
 
-    _main.show_list("fixed_lightning", _main.right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update, right_click_func=_fixed_lightning_context_menu, title="FIXED LIGHTNING ROUND PLAYLISTS")
+    lists.show_list("fixed_lightning", state.widgets.right_column, rounds_dict, get_round_name, queue_fixed_lightning_round, selected, update, right_click_func=_fixed_lightning_context_menu, title="FIXED LIGHTNING ROUND PLAYLISTS")
 
 
 def queue_fixed_lightning_round(index):
     """Queue a selected fixed lightning round playlist"""
-    rounds_list = _main.fixed_lightning_rounds_list
+    rounds_list = state.playback.fl_rounds_list
 
     if 0 <= index < len(rounds_list):
         round_info = rounds_list[index]
         name = round_info.get('name', 'Unnamed Round')
-        if _main.fixed_lightning_queue == round_info:
-            _main.fixed_lightning_queue = None
-            _main.toggle_coming_up_popup(False, name)
+        if state.lightning.fixed_lightning_queue == round_info:
+            state.lightning.fixed_lightning_queue = None
+            coming_up_ui.toggle_coming_up_popup(False, name)
         else:
-            _main.fixed_lightning_queue = round_info
+            state.lightning.fixed_lightning_queue = round_info
 
             desc = round_info.get('description')
             creator = round_info.get('creator')
@@ -229,11 +223,11 @@ def queue_fixed_lightning_round(index):
 
             details_text = f"Created by: {creator}\n{created_string}\nRounds: {rounds_count} | Duration: {duration_str} mins\n\n{desc}"
 
-            _main.toggle_coming_up_popup(True, f"{name}", details_text, queue=True)
-            _main.queue_next_lightning_mode()
+            coming_up_ui.toggle_coming_up_popup(True, f"{name}", details_text, queue=True)
+            lightning_manager.queue_next_lightning_mode()
 
             # Prefetch themes from the queued playlist
-            _main.prefetch_next_themes()
+            cache_download.prefetch_next_themes()
 
     show_fixed_lightning_list(update=True)
-    _main.up_next_text()
+    metadata_display.up_next_text()

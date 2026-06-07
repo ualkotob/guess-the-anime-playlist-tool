@@ -8,6 +8,11 @@ from PIL import Image, ImageDraw
 from _app_scripts.file import session_stats
 from core.app_logging import log_exception
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
+import _app_scripts.file.scoreboard_control as scoreboard_control
+# bonus.answers imports this module back; `import ... as` binds the module
+# object so call-time attribute access stays cycle-safe.
+import _app_scripts.bonus.answers as bonus_answers
 
 # ---------------------------------------------------------------------------
 # Module-owned state
@@ -22,32 +27,15 @@ DEFAULT_END_SESSION_MESSAGE = "THANKS FOR\nPLAYING!♥"
 get_op_ed_counts = session_stats.get_op_ed_counts
 
 # ---------------------------------------------------------------------------
-# Context (injected at startup)
-# ---------------------------------------------------------------------------
-_get_ass_font = None
-_push_web_toggles = None
-_send_scoreboard_command = None
-_main_globals = None
-
-
-def set_context(get_ass_font, push_web_toggles, send_scoreboard_command, main_globals):
-    global _get_ass_font, _push_web_toggles, _send_scoreboard_command, _main_globals
-    _get_ass_font = get_ass_font
-    _push_web_toggles = push_web_toggles
-    _send_scoreboard_command = send_scoreboard_command
-    _main_globals = main_globals
-
-
-# ---------------------------------------------------------------------------
 # End-session entry point
 # ---------------------------------------------------------------------------
 def end_session():
     if not end_message_window:
-        _main_globals['video_stopped'] = True
+        state.controls.video_stopped = True
     else:
-        _main_globals['video_stopped'] = False
+        state.controls.video_stopped = False
     toggle_end_message()
-    _send_scoreboard_command("end")
+    scoreboard_control.send_command("end")
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +70,7 @@ def _end_msg_build_canvas(y_top):
     fixed_playlist_count = summary["fixed_playlist_count"]
     youtube_count = summary["youtube_count"]
 
-    end_session_txt = _main_globals.get('end_session_txt', '')
+    end_session_txt = state.config.end_session_txt
     raw_msg  = end_session_txt.replace("\\n", "\n") if end_session_txt else DEFAULT_END_SESSION_MESSAGE
     safe_msg = raw_msg.replace("\U0001f90d", "♥").replace("❤️", "♥").replace("❤", "♥")
 
@@ -140,7 +128,7 @@ def _end_msg_build_canvas(y_top):
     for kind, text, pt, bold in rows:
         if kind in ("msg", "text") and text:
             size = _fs(pt)
-            fnt  = _get_ass_font(size, bold=bold, narrow=True)
+            fnt  = osd_text._get_ass_font(size, bold=bold, narrow=True)
             if fnt:
                 try:
                     w = round(fnt.getlength(text))
@@ -160,14 +148,14 @@ def _end_msg_build_canvas(y_top):
         total_h += (size + gap) if kind == "sep" else (size + gap)
 
     squeezed_w = round(box_w * H_SQUEEZE)
-    inverted_positions = _main_globals.get('inverted_positions', False)
+    inverted_positions = state.config.inverted_positions
     box_x = max(4, round(10 * modifier)) if inverted_positions else osd_w - squeezed_w - max(4, round(10 * modifier))
 
     # Colours
     try:
-        r16, g16, b16 = root.winfo_rgb(_main_globals['OVERLAY_BACKGROUND_COLOR'])
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_BACKGROUND_COLOR)
         bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
-        r16, g16, b16 = root.winfo_rgb(_main_globals['OVERLAY_TEXT_COLOR'])
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_TEXT_COLOR)
         fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
     except Exception:
         bg_r, bg_g, bg_b = 0,   0,   0
@@ -187,7 +175,7 @@ def _end_msg_build_canvas(y_top):
                             fill=(fg_r, fg_g, fg_b, 200))
             cy += size + gap
         else:
-            fnt    = _get_ass_font(size, bold=bold, narrow=True)
+            fnt    = osd_text._get_ass_font(size, bold=bold, narrow=True)
             line_h = size
             if text and fnt:
                 try:
@@ -324,13 +312,13 @@ def toggle_end_message(speed=500):
                     pass
                 _end_msg_img_overlay = None
             end_message_window = None
-            _push_web_toggles()
+            bonus_answers._push_web_toggles()
             return
 
         end_message_window = True
         _end_msg_slide_in()
         session_stats.save_session_history(create_text_file=True, silent=False)
-        _push_web_toggles()
+        bonus_answers._push_web_toggles()
     except Exception as e:
         log_exception("Error displaying end session message")
         print("Error displaying end session message:", e)

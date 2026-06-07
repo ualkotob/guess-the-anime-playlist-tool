@@ -1,5 +1,4 @@
-"""
-_app_scripts/utils.py — Pure utility helpers extracted from guess_the_anime.py.
+"""Pure utility helpers.
 
 Contains:
   - JSON infinity serialization helpers
@@ -20,6 +19,7 @@ import tkinter as tk
 from datetime import datetime
 
 from core.app_logging import log_exception, log_warning
+from core.game_state import state
 
 # ---------------------------------------------------------------------------
 # JSON infinity serialization helpers
@@ -209,12 +209,13 @@ def color_to_rgb(color):
     """Convert any color (hex, name, etc.) to RGB tuple using tkinter"""
     try:
         temp_root = None
-        if _tk_root is None:
+        tk_root = state.widgets.root
+        if tk_root is None:
             temp_root = tk.Tk()
             temp_root.withdraw()  # Hide the temporary window
             widget_parent = temp_root
         else:
-            widget_parent = _tk_root
+            widget_parent = tk_root
 
         # Create a temporary tkinter widget to resolve color names
         temp_widget = tk.Label(widget_parent)
@@ -243,16 +244,6 @@ def color_to_rgb(color):
 def rgb_to_hex(rgb):
     """Convert RGB tuple to hex color"""
     return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
-
-
-# Module-level tkinter root reference (set via set_context for efficiency)
-_tk_root = None
-
-
-def set_context(root):
-    """Provide the application's tkinter root so color_to_rgb avoids creating temp windows."""
-    global _tk_root
-    _tk_root = root
 
 
 # ---------------------------------------------------------------------------

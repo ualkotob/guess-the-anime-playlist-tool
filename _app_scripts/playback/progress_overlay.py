@@ -9,27 +9,9 @@ import unicodedata
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from core.game_state import state
 
-_ctx = {}
-
-
-def set_context(
-    *,
-    root,
-    player,
-    unregister_mpv_tracked_window,
-    get_fixed_lightning_round_playlist_data,
-    get_fixed_current_round,
-    get_light_mode,
-    get_lightning_mode_settings,
-    get_overlay_background_color,
-    get_overlay_text_color,
-    get_middle_overlay_background_color,
-    light_round_length_default,
-    light_round_answer_length_default,
-):
-    _ctx.clear()
-    _ctx.update(locals())
+import _app_scripts.queue_round.lightning_rounds.lightning_settings as lightning_settings
 
 
 def is_light_progress_bar_active():
@@ -87,7 +69,7 @@ def _get_fixed_playlist_progress(current_round_elapsed_secs):
     playlist rather than just the current round.  Each round contributes its
     question duration plus its answer duration to the total.
     """
-    fixed_lightning_round_playlist_data = _ctx["get_fixed_lightning_round_playlist_data"]()
+    fixed_lightning_round_playlist_data = state.lightning.fixed_lightning_round_playlist_data
     if not fixed_lightning_round_playlist_data:
         return None
     rounds = fixed_lightning_round_playlist_data.get("rounds", [])
@@ -96,11 +78,11 @@ def _get_fixed_playlist_progress(current_round_elapsed_secs):
         return None
     total = 0.0
     elapsed = 0.0
-    lightning_mode_settings = _ctx["get_lightning_mode_settings"]()
+    lightning_mode_settings = state.playback.lightning_mode_settings
     for i, r in enumerate(rounds):
         rtype = r.get("type", "regular")
-        default_dur = lightning_mode_settings.get(rtype, {}).get("length", _ctx["light_round_length_default"])
-        default_ans = lightning_mode_settings["_misc_settings"].get("answer_length", _ctx["light_round_answer_length_default"])
+        default_dur = lightning_mode_settings.get(rtype, {}).get("length", lightning_settings.LIGHT_ROUND_LENGTH_DEFAULT)
+        default_ans = lightning_mode_settings["_misc_settings"].get("answer_length", lightning_settings.LIGHT_ROUND_ANSWER_LENGTH_DEFAULT)
         dur = float(r.get("duration", default_dur))
         ans = float(r.get("answer_duration", default_ans))
         total += dur + ans
@@ -129,11 +111,11 @@ def _rebuild_progress_bg_layer(osd_w, osd_h):
     def ws(n): return max(1, int(n * osd_mod))
 
     # Colours — resolve once here, cache for fast access every frame
-    root = _ctx["root"]
+    root = state.widgets.root
     try:
-        r16, g16, b16 = root.winfo_rgb(_ctx["get_overlay_background_color"]())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_BACKGROUND_COLOR)
         bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
-        r16, g16, b16 = root.winfo_rgb(_ctx["get_overlay_text_color"]())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_TEXT_COLOR)
         fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
     except Exception:
         bg_r, bg_g, bg_b = 30, 30, 30
@@ -183,7 +165,7 @@ def _rebuild_progress_bg_layer(osd_w, osd_h):
     d.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], fill=bg)
     d.rectangle([box_x, box_y, box_x + box_w, box_y + box_h], outline=fg, width=border)
     try:
-        mr16, mg16, mb16 = root.winfo_rgb(_ctx["get_middle_overlay_background_color"]())
+        mr16, mg16, mb16 = root.winfo_rgb(state.colors.MIDDLE_OVERLAY_BACKGROUND_COLOR)
         tr, tg, tb_ = mr16 >> 8, mg16 >> 8, mb16 >> 8
     except Exception:
         tr = max(0, bg_r - 30); tg = max(0, bg_g - 30); tb_ = max(0, bg_b - 30)
@@ -414,7 +396,7 @@ def _redraw_progress_overlay():
 
     if _progress_bgra_arr is None or _progress_img_overlay is None:
         return
-    player = _ctx["player"]
+    player = state.widgets.player
     try:
         osd_w = player._p.osd_width
         osd_h = player._p.osd_height
@@ -513,8 +495,8 @@ def _progress_overlay_tick(_gen=None):
         return  # a newer tick loop has taken over — self-terminate
     if _progress_img_overlay is None:
         return  # overlay destroyed — let the loop die
-    root = _ctx["root"]
-    player = _ctx["player"]
+    root = state.widgets.root
+    player = state.widgets.player
     if not player.is_playing():
         root.after(500, _progress_overlay_tick, _gen)   # check again later when paused
         return
@@ -533,7 +515,9 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
     global _progress_sub_x, _progress_sub_y, _progress_sub_w, _progress_sub_h
 
     if destroy:
-        _ctx["unregister_mpv_tracked_window"]("progress_overlay")
+        # Lazy import: progress_overlay is a playback primitive below information_popup.
+        import _app_scripts.information.information_popup as information_popup
+        information_popup._unregister_mpv_tracked_window("progress_overlay")
         if _progress_img_overlay is not None:
             try:
                 _progress_img_overlay.remove()
@@ -571,15 +555,15 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         _ic_h = random.random()                              # random hue 0–1
         _ic_r, _ic_g, _ic_b = colorsys.hsv_to_rgb(_ic_h, 0.85, 1.0)   # vivid, full brightness
         _progress_icon_color = (int(_ic_r * 255), int(_ic_g * 255), int(_ic_b * 255))
-        fixed_current_round = _ctx["get_fixed_current_round"]()
-        light_mode = _ctx["get_light_mode"]()
+        fixed_current_round = state.lightning.fixed_current_round
+        light_mode = state.lightning.light_mode
         if fixed_current_round and fixed_current_round.get("music_icon"):
             _progress_music_icon = fixed_current_round["music_icon"]
         elif light_mode == 'ost':
             _progress_music_icon = "\U0001f3bc"   # 🎼
         else:
             _progress_music_icon = "\U0001f3b5"   # 🎵
-        player = _ctx["player"]
+        player = state.widgets.player
         _progress_img_overlay = player._p.create_image_overlay()
         progress_overlay   = True   # sentinel
         light_progress_bar = True   # sentinel checked externally (line ~14773)
@@ -595,7 +579,7 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
         # Draw one frame immediately, then start the 50 ms animation loop
         _progress_tick_gen += 1
         _redraw_progress_overlay()
-        root = _ctx["root"]
+        root = state.widgets.root
         root.after(50, _progress_overlay_tick, _progress_tick_gen)
 
 def pulsate_music_icon(label, sizes=None, _step=None, _font="Arial", _interval=50):
@@ -605,12 +589,12 @@ def pulsate_music_icon(label, sizes=None, _step=None, _font="Arial", _interval=5
     if not label.winfo_exists():
         return  # Stop if truly gone
 
-    root = _ctx["root"]
+    root = state.widgets.root
     if not label.winfo_ismapped():
         root.after(100, pulsate_music_icon, label, sizes, _step, _font, _interval)  # Wait and retry
         return
 
-    player = _ctx["player"]
+    player = state.widgets.player
     if not player.is_playing():
         root.after(500, pulsate_music_icon, label, sizes, _step, _font, _interval)  # Check again later if paused
         return

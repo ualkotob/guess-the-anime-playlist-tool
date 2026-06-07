@@ -16,6 +16,9 @@ import unicodedata
 from PIL import Image, ImageDraw
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
+from ...file.metadata import metadata_display
+from ...data import metadata_io
 
 
 # ---------------------------------------------------------------------------
@@ -26,48 +29,17 @@ _emoji_img_overlay = None
 
 
 # ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-currently_playing: dict = {}
-ai_metadata: dict = {}
-_get_display_title = None
-_extract_response_text = None
-_save_metadata = None
-_get_ass_font = None
-_get_mpv_window_rect = None
-_get_openai_api_key = lambda: ''
-_get_overlay_background_color = lambda: 'black'
-_get_overlay_text_color = lambda: 'white'
-
-
-def set_context(*, currently_playing, ai_metadata, get_display_title,
-                extract_response_text, save_metadata, get_ass_font,
-                get_mpv_window_rect, get_openai_api_key,
-                get_overlay_background_color, get_overlay_text_color):
-    g = globals()
-    g['currently_playing'] = currently_playing
-    g['ai_metadata'] = ai_metadata
-    g['_get_display_title'] = get_display_title
-    g['_extract_response_text'] = extract_response_text
-    g['_save_metadata'] = save_metadata
-    g['_get_ass_font'] = get_ass_font
-    g['_get_mpv_window_rect'] = get_mpv_window_rect
-    g['_get_openai_api_key'] = get_openai_api_key
-    g['_get_overlay_background_color'] = get_overlay_background_color
-    g['_get_overlay_text_color'] = get_overlay_text_color
-
-
 def get_emoji_clues_for_title(data):
     """Uses OpenAI to generate emoji clues for the anime's title/concept."""
     mal_id = data.get("mal")
-    if mal_id and mal_id in ai_metadata and "emojis" in ai_metadata[mal_id]:
-        return ai_metadata[mal_id]["emojis"]
+    if mal_id and mal_id in state.metadata.ai_metadata and "emojis" in state.metadata.ai_metadata[mal_id]:
+        return state.metadata.ai_metadata[mal_id]["emojis"]
     from _app_scripts.queue_round.lightning_rounds import trivia_round
     client = trivia_round.client
-    api_key = _get_openai_api_key()
+    api_key = state.config.OPENAI_API_KEY
     if not client or not api_key:
         return ["❓"]
-    title = _get_display_title(data)
+    title = metadata_display.get_display_title(data)
     year = int(data.get("season", "9999")[-4:])
     prompt = (
         f"Give me exactly 6 emojis that represent the anime '{title}' ({year}). "
@@ -81,7 +53,7 @@ def get_emoji_clues_for_title(data):
             input=prompt
         )
         # Extract emojis from response
-        content = _extract_response_text(response)
+        content = trivia_round.extract_response_text(response)
         # Split by whitespace - compound emojis stay intact since ZWJ isn't whitespace
         emojis = content.split()
 
@@ -89,8 +61,8 @@ def get_emoji_clues_for_title(data):
         emojis = emojis[:6]
 
         if mal_id:
-            ai_metadata.setdefault(mal_id, {})["emojis"] = emojis
-            _save_metadata()
+            state.metadata.ai_metadata.setdefault(mal_id, {})["emojis"] = emojis
+            metadata_io.save_metadata()
 
         return emojis if emojis else ["❓"]
     except Exception as e:
@@ -117,7 +89,7 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
         return
 
     if not emojis:
-        data = currently_playing.get("data", {})
+        data = state.playback.currently_playing.get("data", {})
         emojis = get_emoji_clues_for_title(data)
 
     if max_emojis is not None:
@@ -135,7 +107,9 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
     def ws(n): return max(1, int(n * modifier))
 
     # Header font size — mirrors synopsis exactly: physical window mod × screen DPI → OSD pixels
-    _mx, _my, _mw_phys, _mh_phys = _get_mpv_window_rect()
+    # Lazy import: information_popup is a higher layer than this overlay.
+    from ...information import information_popup
+    _mx, _my, _mw_phys, _mh_phys = information_popup._get_mpv_window_rect()
     if not _mw_phys:
         _mw_phys, _mh_phys = osd_w, osd_h
     _phys_mod = min(_mw_phys / 2560, _mh_phys / 1440)
@@ -144,9 +118,9 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
 
     # Colours
     try:
-        r16, g16, b16 = root.winfo_rgb(_get_overlay_background_color())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_BACKGROUND_COLOR)
         bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
-        r16, g16, b16 = root.winfo_rgb(_get_overlay_text_color())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_TEXT_COLOR)
         fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
     except Exception:
         bg_r, bg_g, bg_b = 0, 0, 0
@@ -171,7 +145,7 @@ def toggle_emoji_overlay(emojis=None, destroy=False, max_emojis=None, title="EMO
                    outline=fg, width=border)
 
     # Title — style matches synopsis header (bold, underline under text only)
-    title_font = _get_ass_font(header_font_px, bold=True)
+    title_font = osd_text._get_ass_font(header_font_px, bold=True)
     title_bottom = box_y + pad + header_font_px + ws(20)   # fallback
     if title_font:
         tb = draw.textbbox((0, 0), title, font=title_font)

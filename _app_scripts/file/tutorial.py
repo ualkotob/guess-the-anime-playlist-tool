@@ -1,54 +1,28 @@
 import tkinter as tk
 
+from _app_scripts.ui.scaling import scl
+from _app_scripts.ui import windowing
+from _app_scripts.data import config_io
+from core.game_state import state
+
 # ── Module-level window reference ─────────────────────────────────────────────
 _tutorial_window = None
-_action_context = {}
-
-
-def set_action_context(
-    *,
-    root,
-    bg_color,
-    hl_color,
-    root_font,
-    scl,
-    get_window_pos,
-    get_tutorial_shown,
-    set_tutorial_shown,
-    save_config,
-):
-    """Set providers used by the main Help/Tutorial menu action."""
-    _action_context.clear()
-    _action_context.update({
-        "root": root,
-        "bg_color": bg_color,
-        "hl_color": hl_color,
-        "root_font": root_font,
-        "scl": scl,
-        "get_window_pos": get_window_pos,
-        "get_tutorial_shown": get_tutorial_shown,
-        "set_tutorial_shown": set_tutorial_shown,
-        "save_config": save_config,
-    })
+ROOT_FONT = ("Segoe UI", scl(9, "UI"))
 
 
 def open_tutorial_popup():
     """Open the configured Help & Tutorial popup."""
-    if not _action_context:
-        raise RuntimeError("tutorial.set_action_context() must be called before open_tutorial_popup()")
-
     def _on_close(show_on_startup):
-        _action_context["set_tutorial_shown"](not show_on_startup)
-        _action_context["save_config"]()
+        state.controls.tutorial_shown = not show_on_startup
+        config_io.save_config()
 
     show_tutorial_popup(
-        _action_context["root"],
-        bg_color=_action_context["bg_color"],
-        hl_color=_action_context["hl_color"],
-        root_font=_action_context["root_font"],
-        scl=_action_context["scl"],
-        get_window_pos=_action_context["get_window_pos"],
-        is_shown=_action_context["get_tutorial_shown"](),
+        state.widgets.root,
+        bg_color=state.colors.BACKGROUND_COLOR,
+        hl_color=state.colors.HIGHLIGHT_COLOR,
+        root_font=ROOT_FONT,
+        get_window_pos=windowing.get_window_position_and_setup,
+        is_shown=state.controls.tutorial_shown,
         on_close=_on_close,
     )
 
@@ -1531,6 +1505,20 @@ TUTORIAL_CONTENT = [
                 ],
             },
             {
+                "title": "Themes by Title [🛠]",
+                "content": [
+                    ("h1", "Themes by Title [🛠]"),
+                    ("p", "[WORK IN PROGRESS] List all themes grouped by anime title (seasons listed separately)."),
+                ],
+            },
+            {
+                "title": "Themes by Playlist [🛠]",
+                "content": [
+                    ("h1", "Themes by Playlist [🛠]"),
+                    ("p", "[WORK IN PROGRESS] Browse user or system playlists, then click a playlist to choose how to list its themes: Alphabetical (Ascending/Descending), Most/Least Popular, Newest/Oldest (by season), Playlist Order (Ascending/Descending), or Most Played. Every option lists each theme once except Playlist Order, which keeps duplicate copies; Most Played also shows each theme's play counts (▶ regular / ⚡ lightning)."),
+                ],
+            },
+            {
                 "title": "Themes by Slug [🛠]",
                 "content": [
                     ("h1", "Themes by Slug [🛠]"),
@@ -1570,7 +1558,7 @@ TUTORIAL_CONTENT = [
 ]
 
 
-def show_tutorial_popup(root, *, bg_color, hl_color, root_font, scl,
+def show_tutorial_popup(root, *, bg_color, hl_color, root_font,
                         get_window_pos, is_shown, on_close):
     """Opens the Help & Tutorial window with a sidebar-driven layout.
 
@@ -1579,7 +1567,6 @@ def show_tutorial_popup(root, *, bg_color, hl_color, root_font, scl,
         bg_color:       BACKGROUND_COLOR string.
         hl_color:       HIGHLIGHT_COLOR string.
         root_font:      ROOT_FONT tuple.
-        scl:            Scale function scl(value, mode).
         get_window_pos: get_window_position_and_setup function.
         is_shown:       Current value of tutorial_shown (bool).
         on_close:       Callback(show_on_startup: bool) invoked when the

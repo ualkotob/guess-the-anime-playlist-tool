@@ -186,6 +186,46 @@ def get_url():
     return f"http://{ip}:{_server_port}"
 
 
+def _real_client_ip(environ) -> str | None:
+    """Return the originating client's IP, seeing through the ngrok/Cloudflare tunnel.
+
+    Every tunnelled connection reaches Flask from 127.0.0.1 (the local end of the
+    tunnel), so REMOTE_ADDR is identical for all players — banning one IP would ban
+    everyone. The real client IP is carried in a forwarding header instead:
+    Cloudflare sets CF-Connecting-IP; ngrok and generic proxies set X-Forwarded-For
+    (the leftmost entry is the original client). Falls back to REMOTE_ADDR for the
+    no-tunnel local case.
+    """
+    if not environ:
+        return None
+    cf = environ.get('HTTP_CF_CONNECTING_IP')
+    if cf:
+        return cf.strip()
+    xff = environ.get('HTTP_X_FORWARDED_FOR')
+    if xff:
+        # "client, proxy1, proxy2" — leftmost is the originating client
+        first = xff.split(',')[0].strip()
+        if first:
+            return first
+    return environ.get('REMOTE_ADDR')
+
+
+def _req_client_ip(req) -> str | None:
+    """Real client IP for the current Flask/SocketIO request (see _real_client_ip)."""
+    try:
+        return _real_client_ip(req.environ)
+    except Exception:
+        return getattr(req, 'remote_addr', None)
+
+
+def _sid_client_ip(sid) -> str | None:
+    """Real client IP for a given Socket.IO sid (see _real_client_ip)."""
+    try:
+        return _real_client_ip(_socketio.server.get_environ(sid))
+    except Exception:
+        return None
+
+
 def _get_emoji_status(name: str) -> dict:
   """Return emoji moderation status for a player name."""
   now = time.time()
@@ -1985,7 +2025,7 @@ _HTML = r"""<!DOCTYPE html>
       background: #1a1a30; border: 1px solid #334; border-radius: 5px;
       color: #aac; font-size: 0.78em; padding: 5px 10px; cursor: pointer;
       transition: background .15s, color .15s;
-      min-width: 44px; text-align: center; line-height: 1.2;
+      min-width: 38px; text-align: center; line-height: 1.2;
     }
     .ctrl-bonus-btn:hover { background: #252540; color: #ddf; }
     .ctrl-bonus-btn.ctrl-bonus-more {
@@ -8096,12 +8136,17 @@ _HTML = r"""<!DOCTYPE html>
       {key:'artist',             label:'Themes by Artist',        header: true},
       {key:'artist_alpha',       label:'  ↳ Alphabetical',        baseLabel:'Themes by Artist'},
       {key:'artist',             label:'  ↳ Theme Total',         baseLabel:'Themes by Artist'},
+      {key:'playlist',           label:'Themes by Playlist',      header: true},
+      {key:'playlist_user',      label:'  ↳ User Playlists',       baseLabel:'Themes by Playlist'},
+      {key:'playlist_system',    label:'  ↳ System Playlists',     baseLabel:'Themes by Playlist'},
+      {key:'season',             label:'Themes by Season'},
       {key:'series',             label:'Themes by Series',        header: true},
       {key:'series_alpha',       label:'  ↳ Alphabetical',        baseLabel:'Themes by Series'},
       {key:'series_popularity',  label:'  ↳ Popularity',          baseLabel:'Themes by Series'},
       {key:'series',             label:'  ↳ Theme Total',         baseLabel:'Themes by Series'},
-      {key:'season',             label:'Themes by Season'},
-      {key:'year',               label:'Themes by Year'},
+      {key:'slug',               label:'Themes by Slug',          header: true},
+      {key:'slug_alpha',         label:'  ↳ Alphabetical',        baseLabel:'Themes by Slug'},
+      {key:'slug',               label:'  ↳ Theme Total',         baseLabel:'Themes by Slug'},
       {key:'studio',             label:'Themes by Studio',        header: true},
       {key:'studio_alpha',       label:'  ↳ Alphabetical',        baseLabel:'Themes by Studio'},
       {key:'studio',             label:'  ↳ Theme Total',         baseLabel:'Themes by Studio'},
@@ -8111,11 +8156,47 @@ _HTML = r"""<!DOCTYPE html>
       {key:'anilist_tag',        label:'Themes by Tag (AniList)', header: true},
       {key:'anilist_tag_alpha',  label:'  ↳ Alphabetical',        baseLabel:'Themes by Tag (AniList)'},
       {key:'anilist_tag',        label:'  ↳ Theme Total',         baseLabel:'Themes by Tag (AniList)'},
+      {key:'title',              label:'Themes by Title',         header: true},
+      {key:'title_alpha',        label:'  ↳ Alphabetical',        baseLabel:'Themes by Title'},
+      {key:'title_popularity',   label:'  ↳ Popularity',          baseLabel:'Themes by Title'},
       {key:'type',               label:'Themes by Type'},
-      {key:'slug',               label:'Themes by Slug',          header: true},
-      {key:'slug_alpha',         label:'  ↳ Alphabetical',        baseLabel:'Themes by Slug'},
-      {key:'slug',               label:'  ↳ Theme Total',         baseLabel:'Themes by Slug'},
+      {key:'year',               label:'Themes by Year'},
     ];
+
+    // Per-playlist sort sub-menu (mirrors the main program's PLAYLIST_SORT_OPTIONS).
+    const _CTRL_PLAYLIST_SORT_OPTIONS = [
+      {mode:'alpha_asc',  label:'Alphabetical (Ascending)'},
+      {mode:'alpha_desc', label:'Alphabetical (Descending)'},
+      {mode:'pop_most',   label:'Most Popular'},
+      {mode:'pop_least',  label:'Least Popular'},
+      {mode:'newest',     label:'Newest'},
+      {mode:'oldest',     label:'Oldest'},
+      {mode:'order_asc',  label:'Playlist Order (Ascending)'},
+      {mode:'order_desc', label:'Playlist Order (Descending)'},
+      {mode:'played',     label:'Most Played'},
+    ];
+
+    // 'playlist_user' / 'playlist_user_alpha_asc' → 'user'; non-playlist → null.
+    function _ctrlPlaylistScopeFromKey(key) {
+      if (!key || key.indexOf('playlist_') !== 0) return null;
+      const rest = key.slice('playlist_'.length);
+      if (rest === 'user' || rest.indexOf('user_') === 0) return 'user';
+      if (rest === 'system' || rest.indexOf('system_') === 0) return 'system';
+      return null;
+    }
+
+    function _ctrlPlaylistScopeLabel(scope) {
+      return scope === 'system' ? 'Themes by Playlist (System)' : 'Themes by Playlist (User)';
+    }
+
+    // Display label for any directory key, including playlist mode keys that no
+    // longer have a flat entry in _ctrlDirStatTypes.
+    function _ctrlDirStatLabelForKey(key) {
+      const scope = _ctrlPlaylistScopeFromKey(key);
+      if (scope) return _ctrlPlaylistScopeLabel(scope);
+      const entry = _ctrlDirStatTypes.find(t => t.key === key) || {};
+      return _ctrlDirDisplayLabel(entry) || 'Directory';
+    }
 
     function _ctrlToggleDirectoryList() {
       const opening = !_ctrlDirListOpen;
@@ -8127,8 +8208,11 @@ _HTML = r"""<!DOCTYPE html>
           // Restore to last-used stat type (or group if one was open)
           _ctrlDirStatType = saved.statType;
           _ctrlDirGroupLabel = saved.groupLabel || null;
-          const _savedEntry = _ctrlDirStatTypes.find(t => t.key === saved.statType) || {};
-          const statLabel = _ctrlDirDisplayLabel(_savedEntry) || 'Directory';
+          // For a restored playlist+sort, the group is the playlist itself, so
+          // title with the playlist name; otherwise use the stat-type label.
+          const statLabel = (saved.groupLabel && _ctrlPlaylistScopeFromKey(saved.statType))
+            ? saved.groupLabel
+            : _ctrlDirStatLabelForKey(saved.statType);
           _ctrlListPopupOpen(statLabel + ' — Loading…', 'dir_type');
           const list = document.getElementById('ctrl-list-popup-list');
           if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
@@ -8156,11 +8240,17 @@ _HTML = r"""<!DOCTYPE html>
       const saved = _ctrlDirLoadPos();
       if (saved.statType) {
         // Show a quick "last used" hint at top — prefer sub-entry over header when keys collide
-        const allMatches = _ctrlDirStatTypes.filter(t => t.key === saved.statType);
-        const savedEntry = allMatches.find(t => t.baseLabel) || allMatches[0] || {};
-        const hintLabel = savedEntry.baseLabel
-          ? savedEntry.baseLabel + ' › ' + savedEntry.label.replace(/^\s*↳\s*/, '')
-          : (savedEntry.header ? '' : savedEntry.label);
+        const _hintScope = _ctrlPlaylistScopeFromKey(saved.statType);
+        let hintLabel;
+        if (_hintScope) {
+          hintLabel = _ctrlPlaylistScopeLabel(_hintScope);
+        } else {
+          const allMatches = _ctrlDirStatTypes.filter(t => t.key === saved.statType);
+          const savedEntry = allMatches.find(t => t.baseLabel) || allMatches[0] || {};
+          hintLabel = savedEntry.baseLabel
+            ? savedEntry.baseLabel + ' › ' + savedEntry.label.replace(/^\s*↳\s*/, '')
+            : (savedEntry.header ? '' : savedEntry.label);
+        }
         if (hintLabel) {
           const hint = document.createElement('div');
           hint.style.cssText = 'padding:2px 10px 5px;font-size:0.75em;color:#557;';
@@ -8194,14 +8284,54 @@ _HTML = r"""<!DOCTYPE html>
       });
     }
 
+    // Per-playlist sort sub-menu: scope+name → list sort options → themes.
+    // Mirrors the main program's scope → playlist → sort → themes flow.
+    function _ctrlShowPlaylistSortMenu(scope, name) {
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      const box = document.getElementById('ctrl-list-popup-box');
+      if (box) box.classList.remove('search-mode');
+      list.innerHTML = '';
+      const titleEl = document.getElementById('ctrl-list-popup-title');
+      if (titleEl) titleEl.textContent = name;
+      // Back → playlist list for this scope.
+      const back = document.createElement('div');
+      back.className = 'ctrl-popup-item-back';
+      back.innerHTML = '&#x2190; ' + _ctrlEscapeHtml(_ctrlPlaylistScopeLabel(scope));
+      back.onclick = () => {
+        _ctrlDirStatType = 'playlist_' + scope;
+        _ctrlDirGroupLabel = null;
+        _ctrlDirSavePos('playlist_' + scope, null);
+        if (titleEl) titleEl.textContent = _ctrlPlaylistScopeLabel(scope) + ' — Loading…';
+        list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+        socket.emit('host_action', {action: 'get_directory_groups', stat_type: 'playlist_' + scope});
+      };
+      list.appendChild(back);
+      const div = document.createElement('div'); div.className = 'ctrl-popup-divider'; list.appendChild(div);
+      _CTRL_PLAYLIST_SORT_OPTIONS.forEach(opt => {
+        const el = document.createElement('div');
+        el.className = 'ctrl-popup-item';
+        el.textContent = opt.label;
+        el.onclick = () => {
+          const fullKey = 'playlist_' + scope + '_' + opt.mode;
+          _ctrlDirStatType = fullKey;
+          _ctrlDirGroupLabel = name;
+          _ctrlDirSavePos(fullKey, name);
+          if (titleEl) titleEl.textContent = _ctrlEscapeHtml(name) + ' — Loading…';
+          list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
+          socket.emit('host_action', {action: 'get_directory_themes', stat_type: fullKey, group_label: name});
+        };
+        list.appendChild(el);
+      });
+    }
+
     socket.on('directory_groups', data => {
       if (!_ctrlDirListOpen) return;
       const list = document.getElementById('ctrl-list-popup-list');
       if (!list) return;
       list.innerHTML = '';
       const titleEl = document.getElementById('ctrl-list-popup-title');
-      const _statEntry = _ctrlDirStatTypes.find(t => t.key === data.stat_type) || {};
-      const statLabel = _ctrlDirDisplayLabel(_statEntry) || 'Directory';
+      const statLabel = _ctrlDirStatLabelForKey(data.stat_type);
       if (titleEl) titleEl.textContent = statLabel + ' (' + (data.groups ? data.groups.length : 0) + ')';
       // Back button
       const back = document.createElement('div');
@@ -8230,6 +8360,14 @@ _HTML = r"""<!DOCTYPE html>
         el.innerHTML = '<span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(g.label) + '</span>' +
                        '<span class="ctrl-popup-item-dur">' + g.count + ' (' + pct + '%)</span>';
         el.onclick = () => {
+          const _scope = _ctrlPlaylistScopeFromKey(data.stat_type);
+          if (_scope) {
+            // Playlist: drill into the per-playlist sort menu, not straight to themes.
+            _ctrlDirGroupLabel = g.label;
+            _ctrlDirSavePos('playlist_' + _scope, null);
+            _ctrlShowPlaylistSortMenu(_scope, g.label);
+            return;
+          }
           _ctrlDirGroupLabel = g.label;
           _ctrlDirSavePos(data.stat_type, g.label);
           if (titleEl) titleEl.textContent = _ctrlEscapeHtml(g.label) + ' — Loading…';
@@ -8249,16 +8387,23 @@ _HTML = r"""<!DOCTYPE html>
       list.innerHTML = '';
       const titleEl = document.getElementById('ctrl-list-popup-title');
       const groupLabel = data.group_label || _ctrlDirGroupLabel || '';
-      const _statEntry2 = _ctrlDirStatTypes.find(t => t.key === data.stat_type) || {};
-      const statLabel = _ctrlDirDisplayLabel(_statEntry2) || 'Directory';
+      const _plScope = _ctrlPlaylistScopeFromKey(data.stat_type);
+      const statLabel = _ctrlDirStatLabelForKey(data.stat_type);
       const results = Array.isArray(data.results) ? data.results : [];
       if (titleEl) titleEl.textContent = _ctrlEscapeHtml(groupLabel) + ' (' + results.length + ')';
-      // Back button → returns to group list
+      // Back button → playlist sort menu (playlists) or group list (everything else).
       const back = document.createElement('div');
       back.className = 'ctrl-popup-item-back';
-      back.innerHTML = '&#x2190; ' + _ctrlEscapeHtml(statLabel);
+      back.innerHTML = '&#x2190; ' + _ctrlEscapeHtml(_plScope ? groupLabel : statLabel);
       back.onclick = () => {
         if (box) box.classList.remove('search-mode');
+        if (_plScope) {
+          // Return to this playlist's sort menu.
+          _ctrlDirStatType = 'playlist_' + _plScope;
+          _ctrlDirSavePos('playlist_' + _plScope, null);
+          _ctrlShowPlaylistSortMenu(_plScope, groupLabel);
+          return;
+        }
         _ctrlDirGroupLabel = null;
         _ctrlDirSavePos(data.stat_type, null);
         if (titleEl) titleEl.textContent = statLabel + ' — Loading…';
@@ -11405,7 +11550,7 @@ def _build_app():
     @_socketio.on('connect')
     def on_connect():
         from flask import request as _req
-        if _req.remote_addr in _hard_banned_ips:
+        if _req_client_ip(_req) in _hard_banned_ips:
             emit('banned', {})
             disconnect()
             return
@@ -11450,12 +11595,7 @@ def _build_app():
         if existing:
             existing['name'] = name
         else:
-            _ip = None
-            try:
-                environ = _socketio.server.get_environ(_req.sid)
-                _ip = environ.get('REMOTE_ADDR') if environ else None
-            except Exception:
-                _ip = None
+            _ip = _sid_client_ip(_req.sid)
             _player_meta[_req.sid] = {'join_ms': int(time.time() * 1000), 'ip': _ip, 'name': name}
         emit('emoji_status', _get_emoji_status(name))
         _broadcast_players_update()
@@ -11493,7 +11633,7 @@ def _build_app():
     @_socketio.on('host_message_send')
     def handle_host_message_send(data):
         from flask import request as _req
-        if _req.remote_addr in _shadow_kicked_ips:
+        if _req_client_ip(_req) in _shadow_kicked_ips:
             return
         name = _connected_players.get(_req.sid, '').strip()
         if not name or name in _banned_names:
@@ -11520,7 +11660,7 @@ def _build_app():
     @_socketio.on('select_answer')
     def handle_select(data):
       from flask import request as _req
-      if _req.remote_addr in _shadow_kicked_ips:
+      if _req_client_ip(_req) in _shadow_kicked_ips:
         return
       sid_name = _connected_players.get(_req.sid, '')
       raw_name = sid_name if sid_name else str((data or {}).get('name', 'Anonymous'))
@@ -11537,7 +11677,7 @@ def _build_app():
     @_socketio.on('submit_answer')
     def handle_answer(data):
       from flask import request as _req
-      if _req.remote_addr in _shadow_kicked_ips:
+      if _req_client_ip(_req) in _shadow_kicked_ips:
         return  # silently discard (shadow kick)
       sid_name = _connected_players.get(_req.sid, '')
       raw_name = sid_name if sid_name else str((data or {}).get('name', 'Anonymous'))
@@ -11688,11 +11828,7 @@ def _build_app():
         ip = None
         for sid, pname in list(_connected_players.items()):
             if pname == name:
-                try:
-                    environ = _socketio.server.get_environ(sid)
-                    ip = environ.get('REMOTE_ADDR') if environ else None
-                except Exception:
-                    pass
+                ip = _sid_client_ip(sid) or ip
                 del _connected_players[sid]
                 _submitted_sids.discard(sid)
         _shadow_kicked_players[name] = ip
@@ -11713,13 +11849,9 @@ def _build_app():
         ip = None
         for sid, pname in list(_connected_players.items()):
             if pname == name:
-                try:
-                    environ = _socketio.server.get_environ(sid)
-                    ip = environ.get('REMOTE_ADDR') if environ else None
-                    if ip:
-                        _hard_banned_ips.add(ip)
-                except Exception:
-                    pass
+                ip = _sid_client_ip(sid) or ip
+                if ip:
+                    _hard_banned_ips.add(ip)
                 try:
                     _socketio.server.disconnect(sid)
                 except Exception:
@@ -11786,13 +11918,7 @@ def _build_app():
         if not target or target not in _connected_players:
             return
         name = _connected_players.get(target, '')
-        ip = (_player_meta.get(target) or {}).get('ip')
-        if not ip:
-            try:
-                environ = _socketio.server.get_environ(target)
-                ip = environ.get('REMOTE_ADDR') if environ else None
-            except Exception:
-                ip = None
+        ip = (_player_meta.get(target) or {}).get('ip') or _sid_client_ip(target)
         if ip:
             _hard_banned_ips.add(ip)
         try:
@@ -11840,7 +11966,7 @@ def _build_app():
     @_socketio.on('send_emoji')
     def handle_send_emoji(data):
         from flask import request as _req
-        if _req.remote_addr in _shadow_kicked_ips:
+        if _req_client_ip(_req) in _shadow_kicked_ips:
             return
         name = _connected_players.get(_req.sid, '').strip()
         if not name or name in _banned_names:
@@ -11936,7 +12062,7 @@ def _build_app():
     @_socketio.on('buzz_press')
     def handle_buzz_press(data):
       from flask import request as _req
-      if _req.remote_addr in _shadow_kicked_ips:
+      if _req_client_ip(_req) in _shadow_kicked_ips:
         return
       name = _connected_players.get(_req.sid, '').strip()
       if not name or name in _banned_names:
@@ -11985,7 +12111,7 @@ def _build_app():
         name = _connected_players.get(_req.sid, '').strip()
         if not name or name != _skip_grant_player:
             return
-        if name in _banned_names or _req.remote_addr in _shadow_kicked_ips:
+        if name in _banned_names or _req_client_ip(_req) in _shadow_kicked_ips:
             return
         # Consume the grant (one-time use)
         push_skip_grant('')
@@ -12002,7 +12128,7 @@ def _build_app():
         name = _connected_players.get(_req.sid, '').strip()
         if not name or name != _skip_grant_player:
             return
-        if name in _banned_names or _req.remote_addr in _shadow_kicked_ips:
+        if name in _banned_names or _req_client_ip(_req) in _shadow_kicked_ips:
             return
         push_skip_grant('')
 

@@ -1,12 +1,11 @@
-"""BLIND SCREEN — extracted from guess_the_anime.py (Step 82, 2026-05-28).
+"""Blind screen overlays.
 
 Owns the blind (black) OSD overlay used by blind rounds, the OST → answer
 transition, and as a pre-load cover for reveal rounds; plus the "framed video"
 effect used by the FRAME lightning round (zoom-out with image-color matte and
 white outline ring).
 
-State owned (all rebound at runtime — external readers MUST go through this
-module, not through stale main-side aliases):
+State owned (rebound at runtime — read it through this module, never cache):
     black_overlay              None = inactive; True = active
     _blind_osd_color_cache     last color used; needed for hide path
     blind_enabled              True while a blind round is in progress
@@ -25,21 +24,20 @@ Public functions:
 Private functions (called from main and the lightning ticker):
     _draw_frame_border_osd, _set_blind_osd_alpha
 
-Uses the `_main` module-reference pattern (Steps 70/71/75/79/80/81). Sibling
-modules (peek_dispatch, streaming, censors) are imported directly.
+Sibling modules (peek_dispatch, streaming, censors) are imported directly.
+Main-file behavior is supplied through narrow callbacks.
 """
 
 from . import streaming
+from . import progress_overlay
+from . import osd_text
+from . import coming_up_ui
 from ..queue_round.lightning_rounds import peek_dispatch
 from ..toggles import censors
-
-
-_main = None
-
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
+from ..toggles import audio_toggles
+from ..information import information_popup
+from ..ui import styling
+from core.game_state import state
 
 
 # --- ASS OSD ID constants (only used by this module) ---
@@ -66,8 +64,8 @@ blind_round_toggle = False
 
 def _draw_frame_border_osd():
     """Draw the framed-video effect: image-color fill in margins + white outline ring around the video."""
-    player = _main.player
-    root = _main.root
+    player = state.widgets.player
+    root = state.widgets.root
     try:
         osd_w = int(player._p.osd_width or 0)
         osd_h = int(player._p.osd_height or 0)
@@ -76,7 +74,7 @@ def _draw_frame_border_osd():
     if not (osd_w and osd_h):
         return
     scale = 2 ** _video_frame_zoom
-    _, _, vid_x, vid_y, vid_w, vid_h = _main._get_osd_video_rect()
+    _, _, vid_x, vid_y, vid_w, vid_h = information_popup._get_osd_video_rect()
     if not vid_w:
         vid_x, vid_y, vid_w, vid_h = 0, 0, osd_w, osd_h
     # Video rect after zoom + vertical pan applied from OSD centre
@@ -112,12 +110,12 @@ def _draw_frame_border_osd():
         + outer + " " + inner + "{\\p0}"
     )
     try:
-        _main._osd_command('osd-overlay', _FRAME_BORDER_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _FRAME_BORDER_ASS_OSD_ID, 'ass-events',
                      ass_bg, osd_w, osd_h, 0, 'no')  # z=0: behind blind (z=1)
     except Exception as e:
         print(f"[frame_border] bg OSD error: {e}")
     try:
-        _main._osd_command('osd-overlay', _FRAME_OUTLINE_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _FRAME_OUTLINE_ASS_OSD_ID, 'ass-events',
                      ass_ring, osd_w, osd_h, 0, 'no')  # z=0: behind blind (z=1)
     except Exception as e:
         print(f"[frame_border] ring OSD error: {e}")
@@ -126,7 +124,7 @@ def _draw_frame_border_osd():
 def set_video_frame(enabled, answer_phase=False):
     """Enable, update, or disable the framed-video lightning round effect."""
     global _video_frame_active, _video_frame_zoom, _video_frame_color
-    player = _main.player
+    player = state.widgets.player
     _video_frame_active = bool(enabled)
     if not enabled:
         _video_frame_zoom = _FRAME_VIDEO_ZOOM
@@ -141,10 +139,10 @@ def set_video_frame(enabled, answer_phase=False):
             pass
         for _oid in (_FRAME_BORDER_ASS_OSD_ID, _FRAME_OUTLINE_ASS_OSD_ID):
             try:
-                _main._osd_command('osd-overlay', _oid, 'none', '', 0, 0, 0, 'no')
+                osd_text.osd_command('osd-overlay', _oid, 'none', '', 0, 0, 0, 'no')
             except Exception:
                 pass
-        _main._unregister_mpv_tracked_window("frame_border")
+        information_popup._unregister_mpv_tracked_window("frame_border")
         return
     _video_frame_zoom = _FRAME_VIDEO_ZOOM_ANSWER if answer_phase else _FRAME_VIDEO_ZOOM
     # Use the same color the blind was rendered with; fall back to sampling if not set
@@ -160,19 +158,19 @@ def set_video_frame(enabled, answer_phase=False):
     def _on_mpv_rect(mx, my, mw, mh):
         if _video_frame_active:
             _draw_frame_border_osd()
-    _main._register_mpv_tracked_window("frame_border", None, _on_mpv_rect)
+    information_popup._register_mpv_tracked_window("frame_border", None, _on_mpv_rect)
     _draw_frame_border_osd()
 
 
 def _set_blind_osd_alpha(color_str, alpha):
     """Show or hide the blind OSD using ASS osd-overlay (z=1, below progress bar at z=2)."""
     # ASS alpha: 0x00=opaque, 0xFF=transparent. Convert from PIL-style 0-255 opacity.
-    player = _main.player
-    root = _main.root
+    player = state.widgets.player
+    root = state.widgets.root
     if alpha <= 0:
         # Hide — clear the overlay
         try:
-            _main._osd_command('osd-overlay', _BLIND_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _BLIND_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         return
@@ -199,7 +197,7 @@ def _set_blind_osd_alpha(color_str, alpha):
         + "{\\p0}"
     )
     try:
-        _main._osd_command('osd-overlay', _BLIND_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _BLIND_ASS_OSD_ID, 'ass-events',
                           ass_payload, osd_w, osd_h, 1, 'no')  # z=1
     except Exception as e:
         print(f"Blind OSD error: {e}")
@@ -214,9 +212,9 @@ def blind(manual=False):
     else:
         manual_blind = False
         if not streaming.currently_streaming:
-            _main.toggle_mute(False, True)
+            audio_toggles.toggle_mute(False, True)
         set_black_screen(False)
-        _main.set_progress_overlay(destroy=True)
+        progress_overlay.set_progress_overlay(destroy=True)
 
 
 def set_black_screen(toggle, smooth=True, color=None):
@@ -237,15 +235,15 @@ def set_black_screen(toggle, smooth=True, color=None):
         black_overlay = True
         _set_blind_osd_alpha(_color, 255)
         set_blind_enabled(True)
-        _main._register_mpv_tracked_window("blind_osd", None, _main._blind_osd_on_mpv_rect)
+        information_popup._register_mpv_tracked_window("blind_osd", None, information_popup._blind_osd_on_mpv_rect)
     else:
         if black_overlay:
             _set_blind_osd_alpha(_blind_osd_color_cache, 0)
         black_overlay = None
-        _main._unregister_mpv_tracked_window("blind_osd")
+        information_popup._unregister_mpv_tracked_window("blind_osd")
         set_blind_enabled(False)
-        _main._commit_censor_osd()  # restore censor overlay now that blind is gone
-    _main.root.after(100, _main.configure_style)
+        censors._commit_censor_osd()  # restore censor overlay now that blind is gone
+    state.widgets.root.after(100, styling.configure_style)
 
 
 def set_blind_enabled(toggle):
@@ -262,11 +260,11 @@ def toggle_blind_round():
     blind_round_toggle = not blind_round_toggle
     if blind_round_toggle:
         if peek_dispatch.peek_round_toggle:
-            _main.toggle_peek_round()
+            peek_dispatch.toggle_peek_round()
         if peek_dispatch.mute_peek_round_toggle:
-            _main.toggle_mute_peek_round()
+            peek_dispatch.toggle_mute_peek_round()
 
-        if _main.special_round_warning:
-            _main.toggle_coming_up_popup(True, "Blind Round", "Guess the anime from just the music.\nNormal rules apply.", queue=True)
+        if state.config.special_round_warning:
+            coming_up_ui.toggle_coming_up_popup(True, "Blind Round", "Guess the anime from just the music.\nNormal rules apply.", queue=True)
     else:
-        _main.toggle_coming_up_popup(False, "Blind Round")
+        coming_up_ui.toggle_coming_up_popup(False, "Blind Round")

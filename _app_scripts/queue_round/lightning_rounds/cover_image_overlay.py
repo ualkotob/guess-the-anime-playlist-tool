@@ -34,6 +34,8 @@ import requests
 from PIL import Image, ImageTk
 
 from core.game_state import state
+from . import title_overlay
+from ...file.metadata import metadata_display
 
 
 # ---------------------------------------------------------------------------
@@ -55,24 +57,6 @@ SERPAPI_SEARCH_URL = "https://serpapi.com/search"
 serpapi_limited = False
 serpapi_limited_count = 0
 _cached_serpapi_image_results = {}
-
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_get_display_title = None
-_get_base_title    = None
-_get_serpapi_key = lambda: ''
-_get_fixed_current_round = lambda: None
-
-
-def set_context(*, get_display_title, get_base_title, get_serpapi_key,
-                get_fixed_current_round):
-    g = globals()
-    g['_get_display_title'] = get_display_title
-    g['_get_base_title']    = get_base_title
-    g['_get_serpapi_key'] = get_serpapi_key
-    g['_get_fixed_current_round'] = get_fixed_current_round
 
 
 # =============================================================================
@@ -132,8 +116,8 @@ def get_light_cover_image():
 
 def _build_image_search_queries(data):
     """Build search queries for anime images."""
-    title = _get_display_title(data)
-    base_title = _get_base_title(title=title)
+    title = metadata_display.get_display_title(data)
+    base_title = title_overlay.get_base_title(title=title)
     year = (data.get("season", "") or "")[-4:]
     year_token = year if year.isdigit() else ""
 
@@ -158,7 +142,7 @@ def _build_image_search_queries(data):
 def search_serpapi_image_urls(query, max_results=8):
     """Return a list of image URLs from SerpAPI image search."""
     global serpapi_limited, serpapi_limited_count
-    SERPAPI_KEY = _get_serpapi_key()
+    SERPAPI_KEY = state.config.SERPAPI_KEY
 
     if not SERPAPI_KEY or serpapi_limited:
         return []
@@ -227,7 +211,7 @@ def search_serpapi_image_urls(query, max_results=8):
 def get_google_image_url(data=None):
     """Pick a random image URL for the given anime data using SerpAPI."""
     currently_playing = state.playback.currently_playing
-    fixed_current_round = _get_fixed_current_round()
+    fixed_current_round = state.lightning.fixed_current_round
     if not data:
         data = currently_playing.get("data")
     if fixed_current_round:

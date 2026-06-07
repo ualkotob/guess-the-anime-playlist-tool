@@ -15,6 +15,7 @@ from __future__ import annotations
 from PIL import Image, ImageDraw
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -24,24 +25,6 @@ _clues_img_overlay = None
 _clues_cell_values: dict = {}   # key → text string currently displayed
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_get_ass_font = None
-get_format = None
-currently_playing: dict = {}
-_get_overlay_background_color = lambda: 'black'
-_get_overlay_text_color = lambda: 'white'
-
-
-def set_context(*, get_ass_font, get_format, currently_playing,
-                get_overlay_background_color, get_overlay_text_color):
-    g = globals()
-    g['_get_ass_font'] = get_ass_font
-    g['get_format'] = get_format
-    g['currently_playing'] = currently_playing
-    g['_get_overlay_background_color'] = get_overlay_background_color
-    g['_get_overlay_text_color'] = get_overlay_text_color
 
 
 def _draw_clues_canvas():
@@ -61,9 +44,9 @@ def _draw_clues_canvas():
     def fs(pt): return max(6, round(pt * modifier * 1.15))
 
     try:
-        r16, g16, b16 = root.winfo_rgb(_get_overlay_background_color())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_BACKGROUND_COLOR)
         bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
-        r16, g16, b16 = root.winfo_rgb(_get_overlay_text_color())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_TEXT_COLOR)
         fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
     except Exception:
         bg_r, bg_g, bg_b = 0,   0,   0
@@ -77,7 +60,7 @@ def _draw_clues_canvas():
     pad     = max(4, round(16 * modifier))
     border  = max(1, round(4  * modifier))
     title_fs = fs(58)
-    title_fnt = _get_ass_font(title_fs, bold=True)
+    title_fnt = osd_text._get_ass_font(title_fs, bold=True)
 
     n_cols   = 3
     col_w    = (box_w - gap * (n_cols - 1)) // n_cols
@@ -161,7 +144,7 @@ def _draw_clues_canvas():
                 if total_text_h <= remaining_h:
                     break
                 val_fs = max(6, val_fs - 1)
-            val_fnt = _get_ass_font(val_fs, bold=False)
+            val_fnt = osd_text._get_ass_font(val_fs, bold=False)
             if val_fnt:
                 total_text_h  = len(lines) * val_fs + max(0, len(lines) - 1) * line_gap
                 text_y        = iy + max(0, (remaining_h - total_text_h) // 2)
@@ -173,7 +156,7 @@ def _draw_clues_canvas():
                     fnt_use, lw_use = val_fnt, lw
                     if lw > inner_w and line:
                         scaled_fs = max(6, round(val_fs * inner_w / lw))
-                        fnt_use = _get_ass_font(scaled_fs, bold=False)
+                        fnt_use = osd_text._get_ass_font(scaled_fs, bold=False)
                         try:
                             lw_use = round(fnt_use.getlength(line))
                         except AttributeError:
@@ -204,13 +187,15 @@ def toggle_clues_overlay(destroy=False, **_ignored):
     if _clues_cell_values:
         return  # already visible
 
-    data = currently_playing.get("data")
+    data = state.playback.currently_playing.get("data")
     if not data:
         return
 
+    # Lazy import: information_popup is a higher layer than this overlay.
+    from ...information import information_popup
     _clues_cell_values.clear()
     _clues_cell_values.update({
-        "Type":     get_format(data),
+        "Type":     information_popup.get_format(data),
         "Source":   data.get("source", ""),
         "Season":   data.get("season", "").replace(" ", "\n"),
         "Studio":   "\n".join(data.get("studios", [])),

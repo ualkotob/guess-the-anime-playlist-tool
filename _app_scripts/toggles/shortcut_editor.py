@@ -1,44 +1,13 @@
-# _app_scripts/shortcut_editor.py
-# Keyboard shortcut viewer/editor window - extracted from guess_the_anime.py (Step 35).
+# Keyboard shortcut viewer/editor window.
 import tkinter as tk
 from tkinter import messagebox
 
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context() at startup)
-# ---------------------------------------------------------------------------
-get_window_position_and_setup = None
-get_menu_registry = None
-get_flat_registry = None
-shortcut_display_name = None
-bind_shortcuts = None
-rebuild_shortcut_dispatch = None
-save_config = None
-_get_shortcuts_config = None
-_set_shortcuts_config = None
-BACKGROUND_COLOR = "gray12"
-DEFAULT_SHORTCUTS = {}
-FIXED_SHORTCUTS = {}
-scl = None
-
-
-def set_context(*, get_window_position_and_setup, get_menu_registry, get_flat_registry,
-                shortcut_display_name, bind_shortcuts, rebuild_shortcut_dispatch,
-                save_config, get_shortcuts_config, set_shortcuts_config,
-                background_color, default_shortcuts, fixed_shortcuts, scl):
-    g = globals()
-    g['scl'] = scl
-    g['get_window_position_and_setup'] = get_window_position_and_setup
-    g['get_menu_registry'] = get_menu_registry
-    g['get_flat_registry'] = get_flat_registry
-    g['shortcut_display_name'] = shortcut_display_name
-    g['bind_shortcuts'] = bind_shortcuts
-    g['rebuild_shortcut_dispatch'] = rebuild_shortcut_dispatch
-    g['save_config'] = save_config
-    g['_get_shortcuts_config'] = get_shortcuts_config
-    g['_set_shortcuts_config'] = set_shortcuts_config
-    g['BACKGROUND_COLOR'] = background_color
-    g['DEFAULT_SHORTCUTS'] = default_shortcuts
-    g['FIXED_SHORTCUTS'] = fixed_shortcuts
+from _app_scripts.ui.scaling import scl
+from core.game_state import state
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.ui.menu_builder as menu_builder
+import _app_scripts.ui.menu_registry as menu_registry_mod
+import _app_scripts.data.config_io as config_io
 
 
 def open_shortcut_editor():
@@ -64,7 +33,7 @@ def open_shortcut_editor():
     def _collect_shortcuttable():
         """Walk registry and return {section_key: [items]} for items with shortcut=True."""
         result = {}
-        for section_key, items in get_menu_registry().items():
+        for section_key, items in menu_registry_mod.get_menu_registry().items():
             section_items = []
             for entry in items:
                 if entry == "---" or not isinstance(entry, dict):
@@ -79,10 +48,10 @@ def open_shortcut_editor():
         return result
 
     shortcuttable = _collect_shortcuttable()
-    flat  = get_flat_registry()
-    draft = dict(_get_shortcuts_config())   # working copy — committed only on Save
+    flat  = menu_builder.get_flat_registry()
+    draft = dict(state.shortcuts.config)   # working copy — committed only on Save
 
-    BG         = BACKGROUND_COLOR
+    BG         = state.colors.BACKGROUND_COLOR
     FG         = "white"
     DIM        = "#888888"
     CAPTURE_BG = "#1e3a6e"
@@ -95,7 +64,7 @@ def open_shortcut_editor():
     win.title("Keyboard Shortcuts")
     win.configure(bg=BG)
     win.resizable(False, True)
-    get_window_position_and_setup(win)
+    windowing.get_window_position_and_setup(win)
 
     # ── search bar ───────────────────────────────────────────────────────────
     search_frame = tk.Frame(win, bg=BG)
@@ -140,16 +109,16 @@ def open_shortcut_editor():
     # ── helpers ──────────────────────────────────────────────────────────────
     def _effective_key(item_id):
         # draft[item_id] = ""  means explicitly cleared (no key)
-        # item_id not in draft means fall back to DEFAULT_SHORTCUTS
+        # item_id not in draft means fall back to menu_builder.DEFAULT_SHORTCUTS
         if item_id in draft:
             return draft[item_id] or None
-        return DEFAULT_SHORTCUTS.get(item_id) or None
+        return menu_builder.DEFAULT_SHORTCUTS.get(item_id) or None
 
     def _display_key(item_id):
         k = _effective_key(item_id)
         if not k:
             return ""
-        return shortcut_display_name(k) or k
+        return menu_builder._shortcut_display_name(k) or k
 
     def _all_shortcuttable_ids():
         return {item["id"] for items in shortcuttable.values()
@@ -259,7 +228,7 @@ def open_shortcut_editor():
         """Explicitly unassign — no key even if there's a default."""
         if capturing_id[0] == item_id:
             _exit_capture(item_id)
-        if item_id in DEFAULT_SHORTCUTS:
+        if item_id in menu_builder.DEFAULT_SHORTCUTS:
             draft[item_id] = ""   # explicit override: no key
         else:
             draft.pop(item_id, None)
@@ -289,13 +258,13 @@ def open_shortcut_editor():
             label_text = item.get("label") or item_id.replace("_", " ").title()
             row_search_text[item_id] = label_text.lower()
 
-            is_fixed    = item_id in FIXED_SHORTCUTS
-            default_key = DEFAULT_SHORTCUTS.get(item_id)
+            is_fixed    = item_id in menu_builder.FIXED_SHORTCUTS
+            default_key = menu_builder.DEFAULT_SHORTCUTS.get(item_id)
             if is_fixed:
-                fixed_key, _fixed_lbl, _fixed_note = FIXED_SHORTCUTS[item_id]
-                def_display = shortcut_display_name(fixed_key) or fixed_key
+                fixed_key, _fixed_lbl, _fixed_note = menu_builder.FIXED_SHORTCUTS[item_id]
+                def_display = menu_builder._shortcut_display_name(fixed_key) or fixed_key
             else:
-                def_display = (shortcut_display_name(default_key) or default_key) if default_key else ""
+                def_display = (menu_builder._shortcut_display_name(default_key) or default_key) if default_key else ""
 
             row = tk.Frame(inner, bg=BG)
             row.pack(fill="x", padx=8, pady=1)
@@ -334,7 +303,7 @@ def open_shortcut_editor():
 
     # ── fixed-only section: keys with no registry entry ──────────────────────
     registry_ids = set(row_frames.keys())
-    extra_fixed  = [(fid, fdata) for fid, fdata in FIXED_SHORTCUTS.items()
+    extra_fixed  = [(fid, fdata) for fid, fdata in menu_builder.FIXED_SHORTCUTS.items()
                     if fid not in registry_ids]
     if extra_fixed:
         sh = tk.Frame(inner, bg=BG)
@@ -345,7 +314,7 @@ def open_shortcut_editor():
         tk.Frame(sh, bg=DIM, height=1).pack(side="left", fill="x", expand=True, padx=4, pady=6)
 
         for fid, (fkey, flabel, fnote) in extra_fixed:
-            fkey_display = shortcut_display_name(fkey) or fkey
+            fkey_display = menu_builder._shortcut_display_name(fkey) or fkey
             hint_text    = fnote or "hardcoded"
             row_search_text[fid] = flabel.lower()
             row = tk.Frame(inner, bg=BG)
@@ -388,9 +357,9 @@ def open_shortcut_editor():
         if capturing_id[0]:
             _exit_capture(capturing_id[0])
         for iid in _all_shortcuttable_ids():
-            if iid in FIXED_SHORTCUTS:
+            if iid in menu_builder.FIXED_SHORTCUTS:
                 continue   # hardcoded — cannot clear
-            if iid in DEFAULT_SHORTCUTS:
+            if iid in menu_builder.DEFAULT_SHORTCUTS:
                 draft[iid] = ""
             else:
                 draft.pop(iid, None)
@@ -401,11 +370,12 @@ def open_shortcut_editor():
         if capturing_id[0]:
             _exit_capture(capturing_id[0])
         new_cfg = {k: v for k, v in draft.items()
-                   if v != DEFAULT_SHORTCUTS.get(k)}
-        _set_shortcuts_config(new_cfg)
-        rebuild_shortcut_dispatch()
-        bind_shortcuts()
-        save_config()
+                   if v != menu_builder.DEFAULT_SHORTCUTS.get(k)}
+        state.shortcuts.config.clear()
+        state.shortcuts.config.update(new_cfg)
+        menu_builder.rebuild_shortcut_dispatch()
+        menu_builder.bind_shortcuts()
+        config_io.save_config()
 
     def _cancel():
         if capturing_id[0]:

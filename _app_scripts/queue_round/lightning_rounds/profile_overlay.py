@@ -20,6 +20,7 @@ from __future__ import annotations
 from PIL import Image, ImageDraw, ImageTk, ImageFilter
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -31,24 +32,6 @@ profile_overlay_window         = None   # sentinel — True when active, None wh
 _profile_img_overlay           = None
 _profile_last_word_count       = 0
 _profile_last_image_countdown  = 15
-
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_get_ass_font = None
-_get_character_round_answer = lambda: None
-_get_inverse_overlay_background_color = lambda: '#ffffff'
-_get_inverse_overlay_text_color = lambda: '#000000'
-
-
-def set_context(*, get_ass_font, get_character_round_answer,
-                get_inverse_overlay_background_color, get_inverse_overlay_text_color):
-    g = globals()
-    g['_get_ass_font'] = get_ass_font
-    g['_get_character_round_answer'] = get_character_round_answer
-    g['_get_inverse_overlay_background_color'] = get_inverse_overlay_background_color
-    g['_get_inverse_overlay_text_color'] = get_inverse_overlay_text_color
 
 
 def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=False, quick_destroy=False):
@@ -71,13 +54,13 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
             )
         return
 
-    character_round_answer = _get_character_round_answer()
+    character_round_answer = state.lightning.character_round_answer
     if not character_round_answer:
         return
 
     lightning_mode_settings = state.playback.lightning_mode_settings
-    INVERSE_OVERLAY_BACKGROUND_COLOR = _get_inverse_overlay_background_color()
-    INVERSE_OVERLAY_TEXT_COLOR = _get_inverse_overlay_text_color()
+    INVERSE_OVERLAY_BACKGROUND_COLOR = state.colors.INVERSE_OVERLAY_BACKGROUND_COLOR
+    INVERSE_OVERLAY_TEXT_COLOR = state.colors.INVERSE_OVERLAY_TEXT_COLOR
     player = state.widgets.player
     root = state.widgets.root
 
@@ -135,8 +118,8 @@ def toggle_character_profile_overlay(word_count=0, image_countdown=15, destroy=F
     draw.rectangle([box_x, box_y, box_x + target_w, box_y + target_h],
                    outline=fg, width=border)
 
-    title_font = _get_ass_font(title_font_px, bold=True)
-    body_font  = _get_ass_font(body_font_px,  bold=False)
+    title_font = osd_text._get_ass_font(title_font_px, bold=True)
+    body_font  = osd_text._get_ass_font(body_font_px,  bold=False)
 
     # Left panel text origin (inside border + outer padding + label padding)
     text_x = box_x + outer_pad_x + inner_pad

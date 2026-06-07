@@ -1,8 +1,10 @@
 """Audio mute, volume, and test distortion toggle commands."""
 
-from core.game_state import state
+import pygame
 
-_ctx = {}
+import _app_scripts.playback.streaming as streaming
+import _app_scripts.playback.music as music
+from core.game_state import state
 
 AUDIO_DISTORTION_FILTERS = {
     "echo": "aecho=0.8:0.8:500|700:0.4|0.3",
@@ -20,32 +22,8 @@ AUDIO_DISTORTION_FILTERS = {
 audio_distortions_active = set()
 
 
-def set_context(
-    *,
-    player,
-    pygame,
-    get_light_mode,
-    get_light_round_started,
-    update_volume_display,
-    play_background_music,
-    streaming,
-    music,
-    get_fixed_current_round,
-    sync_legacy_globals=None,
-):
-    _ctx.clear()
-    _ctx.update(locals())
-
-
 def _set_main_volume_level(value):
     state.controls.volume_level = int(value)
-    _sync_legacy_globals()
-
-
-def _sync_legacy_globals():
-    sync_legacy_globals = _ctx.get("sync_legacy_globals")
-    if sync_legacy_globals:
-        sync_legacy_globals()
 
 
 def set_volume(value):
@@ -53,9 +31,9 @@ def set_volume(value):
     volume_level = int(value)
     _set_main_volume_level(volume_level)
 
-    player = _ctx["player"]
-    if _ctx["streaming"].currently_streaming:
-        fixed_current_round = _ctx["get_fixed_current_round"]()
+    player = state.widgets.player
+    if streaming.currently_streaming:
+        fixed_current_round = state.lightning.fixed_current_round
         volume_adjustment = (
             fixed_current_round.get("volume_adjustment", 0)
             if fixed_current_round
@@ -69,7 +47,7 @@ def set_volume(value):
     else:
         player.audio_set_volume(volume_level)
 
-    if _ctx["music"].music_loaded:
+    if music.music_loaded:
         if state.controls.disable_video_audio or volume_level == 0:
             vol = 0.0
         else:
@@ -77,9 +55,9 @@ def set_volume(value):
             bgm_db_range = 45
             bgm_volume = state.controls.bgm_volume
             vol = bgm_volume * (10 ** ((volume_level / 200 - 1) * bgm_db_range / 20))
-        _ctx["pygame"].mixer.music.set_volume(vol)
+        pygame.mixer.music.set_volume(vol)
 
-    _ctx["update_volume_display"]()
+    state.widgets.volume_label.config(text=str(state.controls.volume_level))
 
 
 def increase_volume():
@@ -111,7 +89,7 @@ def _apply_audio_distortions():
         if k in AUDIO_DISTORTION_FILTERS
     ]
     try:
-        _ctx["player"]._p["af"] = ",".join(filters) if filters else ""
+        state.widgets.player._p["af"] = ",".join(filters) if filters else ""
     except Exception as e:
         print(f"Audio distortion apply error: {e}")
 
@@ -127,31 +105,29 @@ def toggle_audio_distortion(key):
 
 
 def toggle_mute(muted=None, lightning=False):
-    light_mode = _ctx["get_light_mode"]()
-    light_round_started = _ctx["get_light_round_started"]()
+    light_mode = state.lightning.light_mode
+    light_round_started = state.lightning.light_round_started
     disable_video_audio = state.controls.disable_video_audio
     light_muted = state.controls.light_muted
-    player = _ctx["player"]
+    player = state.widgets.player
 
     if light_mode or light_round_started or lightning:
         if muted is None:
             muted = not light_muted
         state.controls.light_muted = muted
-        _sync_legacy_globals()
         if not disable_video_audio:
             player.audio_set_mute(muted)
             if not muted:
                 set_volume(state.controls.volume_level)
-        _ctx["play_background_music"](
+        music.play_background_music(
             muted
-            and not _ctx["streaming"].currently_streaming
+            and not streaming.currently_streaming
             and light_mode not in ["clip", "ost"]
         )
     else:
         if muted is None:
             muted = not disable_video_audio
         state.controls.disable_video_audio = muted
-        _sync_legacy_globals()
         player.audio_set_mute(muted)
-        if _ctx["music"].music_loaded:
+        if music.music_loaded:
             set_volume(state.controls.volume_level)

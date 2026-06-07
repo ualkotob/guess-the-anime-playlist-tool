@@ -36,6 +36,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 from core.game_state import state
+from ...ui.scaling import scl
 
 
 # ---------------------------------------------------------------------------
@@ -67,21 +68,6 @@ tile_overlay_grid_size    = 4
 
 
 # ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_scl               = None
-_get_character_round_answer = lambda: None
-_get_fixed_current_round = lambda: None
-
-
-def set_context(*, scl, get_character_round_answer, get_fixed_current_round):
-    g = globals()
-    g['_scl']         = scl
-    g['_get_character_round_answer'] = get_character_round_answer
-    g['_get_fixed_current_round'] = get_fixed_current_round
-
-
-# ---------------------------------------------------------------------------
 # Shared image-source selection (cover image > character image > bail)
 # ---------------------------------------------------------------------------
 def _get_source_tk():
@@ -95,7 +81,7 @@ def _get_source_tk():
     from _app_scripts.queue_round.lightning_rounds import cover_image_overlay
     if cover_image_overlay.light_cover_image:
         return cover_image_overlay.light_cover_image
-    character_round_answer = _get_character_round_answer()
+    character_round_answer = state.lightning.character_round_answer
     if not character_round_answer:
         return None
     return character_round_answer[1]
@@ -135,7 +121,7 @@ def generate_pixelation_steps(steps=6, final_pixel_size=4, max_pixel_size=35, pi
     """
     global character_pixel_images
     if not pil_image:
-        character_round_answer = _get_character_round_answer()
+        character_round_answer = state.lightning.character_round_answer
         pil_image = ImageTk.getimage(character_round_answer[1]).convert("RGBA")
     width, height = pil_image.size
 
@@ -187,7 +173,7 @@ def toggle_character_pixel_overlay(step=0, destroy=False):
     new_w, new_h = max(1, int(img_w * scale)), max(1, int(img_h * scale))
     resized = pil_step.resize((new_w, new_h), Image.LANCZOS)
 
-    border = _scl(4)
+    border = scl(4)
     canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
     cx = (osd_w - new_w) // 2
     cy = (osd_h - new_h) // 2
@@ -270,7 +256,7 @@ def toggle_character_reveal_overlay(percent=1.0, destroy=False, direction="top")
     ix = (osd_w - iw) // 2
     iy = (osd_h - ih) // 2
     draw = ImageDraw.Draw(canvas)
-    border = _scl(4)
+    border = scl(4)
     draw.rectangle([ix - border, iy - border, ix + iw + border, iy + ih + border], fill=(0, 0, 0, 242))
     canvas.paste(pil_img, (ix, iy))
 
@@ -333,7 +319,7 @@ def toggle_character_blur_reveal_overlay(percent=1.0, destroy=False):
     canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
     ix = (osd_w - iw) // 2
     iy = (osd_h - ih) // 2
-    border = _scl(4)
+    border = scl(4)
     ImageDraw.Draw(canvas).rectangle([ix - border, iy - border, ix + iw + border, iy + ih + border], fill=(0, 0, 0, 242))
     canvas.paste(blurred, (ix, iy))
 
@@ -356,7 +342,7 @@ def pick_interesting_zoom_crop(pil_img, crop_size=(0.35, 0.35), attempts=50, ini
     For fixed rounds with selected area: the area itself is returned.
     For automatic selection: finds an area that looks interesting when zoomed in.
     """
-    fixed_current_round = _get_fixed_current_round()
+    fixed_current_round = state.lightning.fixed_current_round
 
     # Check if we're in a fixed round with a pre-selected area
     if fixed_current_round and fixed_current_round.get("image_selected_area"):
@@ -408,7 +394,7 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
     """
     global zoom_reveal_image_window, zoom_reveal_crop
     player = state.widgets.player
-    fixed_current_round = _get_fixed_current_round()
+    fixed_current_round = state.lightning.fixed_current_round
 
     if destroy:
         if zoom_reveal_image_window is not None:
@@ -516,7 +502,7 @@ def toggle_character_zoom_reveal_overlay(percent=1.0, destroy=False):
     canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
     ix = (osd_w - new_size[0]) // 2
     iy = (osd_h - new_size[1]) // 2
-    border = _scl(4)
+    border = scl(4)
     ImageDraw.Draw(canvas).rectangle(
         [ix - border, iy - border, ix + new_size[0] + border, iy + new_size[1] + border],
         fill=(0, 0, 0, 242)
@@ -626,7 +612,7 @@ def toggle_slice_overlay(num_revealed=10, num_slices=10, vertical=True, swap=Fal
     osd_canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
     ix = (osd_w - img_w) // 2
     iy = (osd_h - img_h) // 2
-    border = _scl(4)
+    border = scl(4)
     ImageDraw.Draw(osd_canvas).rectangle(
         [ix - border, iy - border, ix + img_w + border, iy + img_h + border],
         fill=(0, 0, 0, 242),
@@ -783,7 +769,7 @@ def toggle_tile_overlay(num_revealed=1, grid_size=4, swap=False, destroy=False):
     osd_canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
     ix = (osd_w - img_w) // 2
     iy = (osd_h - img_h) // 2
-    border = _scl(4)
+    border = scl(4)
     ImageDraw.Draw(osd_canvas).rectangle(
         [ix - border, iy - border, ix + img_w + border, iy + img_h + border],
         fill=(0, 0, 0, 242),

@@ -1,23 +1,10 @@
 """Autoplay and related playback-window toggle commands."""
 
+import tkinter as tk
+
 from core.game_state import state
-
-_ctx = {}
-
-
-def set_context(
-    *,
-    player,
-    root,
-    tk,
-    popup_menu,
-    save_config,
-    highlight_color,
-    sync_legacy_globals=None,
-    get_autoplay_button=None,
-):
-    _ctx.clear()
-    _ctx.update(locals())
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.data.config_io as config_io
 
 
 def _get_state(name, default=None):
@@ -26,38 +13,30 @@ def _get_state(name, default=None):
 
 def _set_state(name, value):
     setattr(state.controls, name, value)
-    sync_legacy_globals = _ctx.get("sync_legacy_globals")
-    if sync_legacy_globals:
-        sync_legacy_globals()
-
-
-def _get_autoplay_button():
-    get_autoplay_button = _ctx.get("get_autoplay_button")
-    return get_autoplay_button() if get_autoplay_button else None
 
 
 def toggle_mpv_always_on_top():
     value = not bool(_get_state("mpv_always_on_top", False))
     _set_state("mpv_always_on_top", value)
     try:
-        _ctx["player"]._p.ontop = value
+        state.widgets.player._p.ontop = value
     except Exception:
         pass
-    _ctx["save_config"]()
+    config_io.save_config()
 
 
 def toggle_autoplay_fullscreen():
     value = not bool(_get_state("autoplay_fullscreen", True))
     _set_state("autoplay_fullscreen", value)
     try:
-        _ctx["player"].set_fullscreen(value)
+        state.widgets.player.set_fullscreen(value)
     except Exception:
         pass
-    _ctx["save_config"]()
+    config_io.save_config()
 
 
 def update_autoplay_button():
-    button = _get_autoplay_button()
+    button = state.widgets.autoplay_button
     if button is None:
         return
 
@@ -71,7 +50,7 @@ def update_autoplay_button():
     elif autoplay_toggle == 1:
         button.configure(text="🔂", fg="white")
     elif autoplay_toggle == 2:
-        button.configure(text="🔁", fg=_ctx["highlight_color"])
+        button.configure(text="🔁", fg=state.colors.HIGHLIGHT_COLOR)
     elif autoplay_toggle == 3:
         button.configure(text="❌", fg="red")
 
@@ -97,11 +76,10 @@ def toggle_autoplay():
 def show_autoplay_menu(event=None):
     toggle_autoplay()  # advance to next mode on every left-click
 
-    tk = _ctx["tk"]
-    root = _ctx["root"]
+    root = state.widgets.root
     autoplay_toggle = _get_state("autoplay_toggle", 0)
     special_repeat_track_mode = _get_state("special_repeat_track_mode", False)
-    highlight_color = _ctx["highlight_color"]
+    highlight_color = state.colors.HIGHLIGHT_COLOR
 
     menu = tk.Menu(
         root,
@@ -154,12 +132,12 @@ def show_autoplay_menu(event=None):
     )
     menu.update_idletasks()
 
-    button = _get_autoplay_button()
+    button = state.widgets.autoplay_button
     if button is None:
         return
     x = button.winfo_rootx()
     y = button.winfo_rooty() - menu.winfo_reqheight() - 5
-    _ctx["popup_menu"](menu, x, y)
+    windowing.popup_menu(menu, x, y)
 
 
 def toggle_special_repeat(event=None):

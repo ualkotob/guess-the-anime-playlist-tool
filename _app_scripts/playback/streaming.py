@@ -15,6 +15,10 @@ import re
 
 from _app_scripts.queue_round.youtube import youtube_control
 from core.game_state import state
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.queue_round.lightning_rounds.title_overlay as title_overlay
+import _app_scripts.queue_round.lightning_rounds.ost_overlay as ost_overlay
+import _app_scripts.information.information_popup as information_popup
 
 try:
     from googleapiclient.discovery import build as _yt_build
@@ -35,76 +39,6 @@ _cached_ost_clips = {}
 _cached_clips_links = []      # resolved for currently-displayed data; set by resolve_clips_for_data()
 _cached_ost_clips_links = []  # same for OST clips
 test_printing = False
-
-# ---------------------------------------------------------------------------
-# Context (injected at startup)
-# ---------------------------------------------------------------------------
-_root = None
-_player = None
-_get_previous_media = None
-_get_projected_player_time = None
-_get_light_round_start_time = None
-_get_light_round_length = None
-_get_fixed_current_round = None
-_set_video_stopped = None
-_get_light_mode = None
-_get_display_title = None
-_is_game = None
-_get_base_title = None
-_get_format = None
-_get_selected_extra_metadata = None
-_hide_ost_cover_fn = None
-_update_extra_metadata_fn = None
-_youtube_api_key = ""
-
-
-def set_context(
-    root,
-    player,
-    get_previous_media,
-    get_projected_player_time,
-    get_light_round_start_time,
-    get_light_round_length,
-    get_fixed_current_round,
-    set_video_stopped,
-    get_light_mode,
-    get_display_title,
-    is_game,
-    get_base_title,
-    get_format,
-    get_selected_extra_metadata,
-    hide_ost_cover_fn,
-    update_extra_metadata_fn,
-):
-    global _root, _player
-    global _get_previous_media, _get_projected_player_time
-    global _get_light_round_start_time, _get_light_round_length, _get_fixed_current_round
-    global _set_video_stopped, _get_light_mode
-    global _get_display_title, _is_game, _get_base_title, _get_format
-    global _get_selected_extra_metadata, _hide_ost_cover_fn, _update_extra_metadata_fn
-
-    _root = root
-    _player = player
-    _get_previous_media = get_previous_media
-    _get_projected_player_time = get_projected_player_time
-    _get_light_round_start_time = get_light_round_start_time
-    _get_light_round_length = get_light_round_length
-    _get_fixed_current_round = get_fixed_current_round
-    _set_video_stopped = set_video_stopped
-    _get_light_mode = get_light_mode
-    _get_display_title = get_display_title
-    _is_game = is_game
-    _get_base_title = get_base_title
-    _get_format = get_format
-    _get_selected_extra_metadata = get_selected_extra_metadata
-    _hide_ost_cover_fn = hide_ost_cover_fn
-    _update_extra_metadata_fn = update_extra_metadata_fn
-
-
-def update_settings(youtube_api_key=""):
-    global _youtube_api_key
-    _youtube_api_key = youtube_api_key
-
 
 # ---------------------------------------------------------------------------
 # _stream_wall_start accessor (for external mutation from lightning round code)
@@ -162,8 +96,8 @@ def stream_url(url, name=None, channel=None, new_player=True):
     if direct_stream:
         currently_streaming = [name, url, channel]
         last_streamed = [currently_playing.get("filename"), name, url, channel]
-        _stream_theme_path = _get_previous_media()
-        _player.set_media(direct_stream)
+        _stream_theme_path = state.playback.previous_media
+        state.widgets.player.set_media(direct_stream)
     else:
         currently_streaming = None
     return length
@@ -179,14 +113,14 @@ def stop_stream(restore=True):
     _stream_wall_start = None
 
     if _stream_theme_path and restore:
-        _set_video_stopped(True)
+        state.controls.video_stopped = True
         restore_path = _stream_theme_path
         _stream_theme_path = None
-        _player.set_media(restore_path)
+        state.widgets.player.set_media(restore_path)
 
-        _expected_start = _get_light_round_start_time()
+        _expected_start = state.lightning.light_round_start_time
         _seek_types = ["regular", "reveal", "blind", "song"]
-        fixed_current_round = _get_fixed_current_round()
+        fixed_current_round = state.lightning.fixed_current_round
         _fixed_answer_start = (
             fixed_current_round.get("start_time")
             if (fixed_current_round
@@ -195,8 +129,8 @@ def stop_stream(restore=True):
                 and not fixed_current_round.get("clip_for_answer"))
             else None
         )
-        light_round_start_time = _get_light_round_start_time()
-        light_round_length = _get_light_round_length()
+        light_round_start_time = state.lightning.light_round_start_time
+        light_round_length = state.lightning.light_round_length
         if _fixed_answer_start is not None:
             _target_ms = int(_fixed_answer_start * 1000)
         elif light_round_start_time is not None:
@@ -205,33 +139,33 @@ def stop_stream(restore=True):
             _target_ms = None
 
         def _seek_to_answer(attempt=0):
-            if (_get_light_round_start_time() != _expected_start
+            if (state.lightning.light_round_start_time != _expected_start
                     or currently_streaming
                     or _target_ms is None):
-                _hide_ost_cover_fn()
+                ost_overlay._hide_ost_cover()
                 return
-            current_ms = _player.get_time()
+            current_ms = state.widgets.player.get_time()
             if abs(current_ms - _target_ms) <= 1000:
-                _hide_ost_cover_fn()
+                ost_overlay._hide_ost_cover()
                 return
-            if _player.is_playing():
-                if _get_projected_player_time() < _target_ms - 500 or _get_projected_player_time() > _target_ms + 500:
-                    _player.set_time(_target_ms)
-                _hide_ost_cover_fn()
+            if state.widgets.player.is_playing():
+                if state.seek.projected_player_time < _target_ms - 500 or state.seek.projected_player_time > _target_ms + 500:
+                    state.widgets.player.set_time(_target_ms)
+                ost_overlay._hide_ost_cover()
             elif attempt < 12:
                 try:
-                    _root.after(50, _seek_to_answer, attempt + 1)
+                    state.widgets.root.after(50, _seek_to_answer, attempt + 1)
                 except Exception:
-                    _hide_ost_cover_fn()
+                    ost_overlay._hide_ost_cover()
         try:
-            _root.after(50, _seek_to_answer)
+            state.widgets.root.after(50, _seek_to_answer)
         except Exception:
-            _hide_ost_cover_fn()
+            ost_overlay._hide_ost_cover()
     else:
         if not restore:
             _stream_theme_path = None
         else:
-            _player.stop()
+            state.widgets.player.stop()
 
 
 def play_trailer(url=None):
@@ -239,13 +173,13 @@ def play_trailer(url=None):
     url = url or currently_playing.get("data", {}).get("trailer")
     if url:
         url = f"https://www.youtube.com/watch?v={url}"
-        return stream_url(url, "Trailer", "Trailer", _get_light_mode() == 'clip')
+        return stream_url(url, "Trailer", "Trailer", state.lightning.light_mode == 'clip')
     return 0
 
 
 def get_stream_start_time(length):
-    fixed_current_round = _get_fixed_current_round()
-    light_round_length = _get_light_round_length()
+    fixed_current_round = state.lightning.fixed_current_round
+    light_round_length = state.lightning.light_round_length
 
     _cst = fixed_current_round.get("clip_start_time") if fixed_current_round else None
     if _cst is not None:
@@ -287,20 +221,21 @@ def load_random_clips(data=None, limit_channels=False, ost=False):
     currently_playing = state.playback.currently_playing
     if not data:
         data = currently_playing.get("data")
-    title = _get_display_title(data)
+    title = metadata_display.get_display_title(data)
     year = int(data.get("season", "9999")[-4:])
     if ost:
         url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=False, ost=True)
     else:
         url = name = channel = None
-        if not _is_game(data) and len(data.get("title", "")) > 1:
+        if not metadata_display.is_game(data) and len(data.get("title", "")) > 1:
             url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=True)
-        if not url and title != _get_base_title(title=title):
-            url, name, channel = get_random_anime_clip_stream_url(_get_base_title(title=title), year, data, limit_channels=True)
+        if not url and title != title_overlay.get_base_title(title=title):
+            url, name, channel = get_random_anime_clip_stream_url(title_overlay.get_base_title(title=title), year, data, limit_channels=True)
         if not url and not limit_channels:
             url, name, channel = get_random_anime_clip_stream_url(title, year, data, limit_channels=False)
-    if _get_selected_extra_metadata() == "clips":
-        _update_extra_metadata_fn()
+    if state.metadata_panel.selected_extra_metadata == "clips":
+        import _app_scripts.file.metadata.metadata_panel as metadata_panel
+        metadata_panel.update_extra_metadata()
     return url, name, channel
 
 
@@ -316,12 +251,11 @@ def resolve_clips_for_data(data):
     """Populate _cached_clips_links and _cached_ost_clips_links for *data*.
 
     Call this before building the clips link list so the lists reflect the
-    current track. Encapsulates the cache-key computation that previously
-    lived in the main module.
+    current track.
     """
     global _cached_clips_links, _cached_ost_clips_links
-    cached_id = f"{_get_display_title(data)}-{data.get('season', '9999')[-4:]}"
-    cached_id_base = f"{_get_base_title(title=_get_display_title(data))}-{data.get('season', '9999')[-4:]}"
+    cached_id = f"{metadata_display.get_display_title(data)}-{data.get('season', '9999')[-4:]}"
+    cached_id_base = f"{title_overlay.get_base_title(title=metadata_display.get_display_title(data))}-{data.get('season', '9999')[-4:]}"
     _cached_clips_links = _cached_clips.get(cached_id) or _cached_clips.get(cached_id_base) or []
     _cached_ost_clips_links = _cached_ost_clips.get(cached_id) or _cached_ost_clips.get(cached_id_base) or []
 
@@ -340,7 +274,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
     else:
         if _yt_build is None:
             return None, None, None
-        youtube = _yt_build("youtube", "v3", developerKey=_youtube_api_key)
+        youtube = _yt_build("youtube", "v3", developerKey=state.config.YOUTUBE_API_KEY)
         video_ids = None
         if limit_channels:
             query_extra = "crunchyroll"
@@ -434,7 +368,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                 game_bad_keywords = [
                     "gameplay", "let's play", "walkthrough", "opening cinematic", "game trailer", "action rpg",
                 ]
-                if not _is_game(data):
+                if not metadata_display.is_game(data):
                     bad_keywords += game_bad_keywords
                 if not ost:
                     bad_keywords += ost_bad_keywords
@@ -461,7 +395,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     test_print(f"[{video_id}]{title}:  has a whole-word keyword")
                     continue
 
-                if "movie" not in anime_title.lower() and "movie" in title.lower() and not _get_format(data) == "Movie":
+                if "movie" not in anime_title.lower() and "movie" in title.lower() and not information_popup.get_format(data) == "Movie":
                     test_print(f"[{video_id}]{title}:  movie in title when not movie")
                     continue
 
@@ -485,7 +419,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                 elif any(phrase in description.lower() for phrase in different_title_phrases):
                     check_description = False
 
-                for t in [anime_title, data.get("title"), _get_base_title(title=anime_title), _get_base_title(title=data.get("title"))]:
+                for t in [anime_title, data.get("title"), title_overlay.get_base_title(title=anime_title), title_overlay.get_base_title(title=data.get("title"))]:
                     t_edits = [t]
                     colon_split = t.split(": ")[0]
                     if colon_split != t and len(colon_split.strip()) >= 3:

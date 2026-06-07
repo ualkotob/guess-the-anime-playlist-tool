@@ -1,8 +1,8 @@
-"""Web host action dispatcher — extracted from guess_the_anime.py.
+"""Web host action dispatcher.
 
-Handles remote control commands sent by the web host controller (web_server callback).
-Uses the _main module-reference pattern: main injects itself via set_context(main_module=...)
-and the dispatcher reaches main-resident state and helpers via _main.X.
+Handles remote control commands sent by the web host controller (web_server
+callback). The playback hub fns (play_video / seek_to / update_playlist_name /
+update_current_index / stop_all_queues) come from the transport sibling.
 """
 import copy
 import os
@@ -12,19 +12,81 @@ from datetime import datetime
 
 from core.game_state import state
 import _app_scripts.file.web_server.web_server as web_server
+import _app_scripts.file.web_server.web_search as web_search
 import _app_scripts.queue_round.lightning_rounds.peek_dispatch as peek_dispatch
 import _app_scripts.playback.music as music
+import _app_scripts.playback.cache_download as cache_download
+import _app_scripts.playback.transport as transport
 import _app_scripts.bonus.bonus as bonus
 import _app_scripts.bonus.buzz as buzz
 import _app_scripts.bonus.answers as bonus_answers
 import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.playlists.entry_paths as entry_paths
+import _app_scripts.directory.stats as stats_ops
+import _app_scripts.search.search as search_ops
+import _app_scripts.file.scoreboard_control as scoreboard_control
+import _app_scripts.file.session_stats as session_stats
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.information.information_popup as information_popup
+import _app_scripts.ui.lists as lists
+import _app_scripts.toggles.audio_toggles as audio_toggles
+import _app_scripts.toggles.autoplay as autoplay_toggles
+import _app_scripts.data.config_io as config_io
+import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
+import _app_scripts.queue_round.fixed_lightning_actions as fixed_lightning_actions
+import _app_scripts.queue_round.lightning_rounds.lightning_settings as lightning_settings
 
-_main = None
+
+def _parse_playlist_stat(st):
+    """Split a 'Themes by Playlist' stat_type into (scope, sort_mode).
+
+    stat_type looks like 'playlist_user_alpha_asc' or 'playlist_system_played'.
+    Returns (None, None) when it isn't a playlist stat. A bare 'playlist_user'
+    /'playlist_system' (the header keys) defaults to playlist order.
+    """
+    if not st.startswith('playlist_'):
+        return None, None
+    rest = st[len('playlist_'):]
+    for scope in ('user', 'system'):
+        if rest == scope:
+            return scope, 'order_asc'
+        if rest.startswith(scope + '_'):
+            return scope, rest[len(scope) + 1:]
+    return None, None
 
 
-def set_context(*, main_module):
-    global _main
-    _main = main_module
+def _playlist_names_for_scope(scope):
+    if scope == 'system':
+        return list(playlist_ops.get_playlists_dict(system_only=True).values())
+    return list(playlist_ops.get_playlists_dict(exclude_system=True).values())
+
+
+def _get_player_names():
+    """Provider for the web scoreboard: the saved leaderboard list (or [])."""
+    path = os.path.join('scoreboard_data', 'scoreboard_leaderboard.json')
+    if os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    return []
+
+
+def _on_skip_grant_changed(name):
+    if name:
+        scoreboard_control.send_command(f"[SKIP_GRANT]{name}")
+    else:
+        scoreboard_control.send_command("[SKIP_GRANT_CLEAR]")
+
+
+def wire_web_server():
+    """Register every web-server provider/callback. Called once at startup."""
+    web_server.set_titles_provider(web_search.get_all_anime_titles)
+    web_server.set_player_names_provider(_get_player_names)
+    web_server.set_host_password(state.config.HOST_PASSWORD)
+    web_server.set_host_action_callback(_handle_host_action)
+    web_server.set_buzz_callback(buzz._play_buzz_sound)
+    web_server.set_skip_grant_callback(_on_skip_grant_changed)
 
 
 def _handle_host_action(action: str, data: dict):
@@ -32,19 +94,19 @@ def _handle_host_action(action: str, data: dict):
     def _dispatch():
 
         def _get_web_playlist_source():
-            if _main.fixed_lightning_round_playlist_data and _main.fixed_lightning_round_playlist_data.get("rounds"):
-                rounds = _main.fixed_lightning_round_playlist_data.get("rounds", [])
-                current_index = _main.fixed_lightning_round_playlist_data.get("current_index", 0)
+            if state.lightning.fixed_lightning_round_playlist_data and state.lightning.fixed_lightning_round_playlist_data.get("rounds"):
+                rounds = state.lightning.fixed_lightning_round_playlist_data.get("rounds", [])
+                current_index = state.lightning.fixed_lightning_round_playlist_data.get("current_index", 0)
                 return {
                     "is_fixed": True,
                     "items": rounds,
                     "current_index": current_index,
                     "counter": f'{current_index + 1}/{len(rounds)}' if rounds else '0/0',
-                    "label": _main.fixed_lightning_round_playlist_data.get('name') or 'Fixed Playlist',
+                    "label": state.lightning.fixed_lightning_round_playlist_data.get('name') or 'Fixed Playlist',
                 }
-            items = _main.playlist.get("playlist", [])
-            current_index = _main.playlist.get("current_index", -1)
-            if _main.playlist.get("infinite", False):
+            items = state.metadata.playlist.get("playlist", [])
+            current_index = state.metadata.playlist.get("current_index", -1)
+            if state.metadata.playlist.get("infinite", False):
                 out_of = playlist_ops.total_infinite_files - len(playlist_ops.cached_skipped_themes)
                 counter = f'∞/{out_of}'
             else:
@@ -55,23 +117,23 @@ def _handle_host_action(action: str, data: dict):
                 "items": items,
                 "current_index": current_index,
                 "counter": counter,
-                "label": _main.playlist.get('name') or 'Playlist',
+                "label": state.metadata.playlist.get('name') or 'Playlist',
             }
 
         if action == 'invoke':
             item_id = str(data.get('id', '')).strip()
             if item_id:
-                _main._invoke_registry_by_id(item_id)
-                _main._push_web_toggles()
-                _main._push_web_marks()
+                web_search._invoke_registry_by_id(item_id)
+                bonus_answers._push_web_toggles()
+                playlist_marks._push_web_marks()
         elif action == 'queue_peek_variant':
             variant = str(data.get('variant', '')).strip()
             mute = bool(data.get('mute', False))
             if variant and variant in peek_dispatch._PEEK_VARIANT_LABELS:
-                _main._queue_peek_variant(variant, mute=mute)
+                peek_dispatch._queue_peek_variant(variant, mute=mute)
             else:
-                _main._queue_peek_random(mute=mute)
-            _main._push_web_toggles()
+                peek_dispatch._queue_peek_random(mute=mute)
+            bonus_answers._push_web_toggles()
         elif action == 'set_peek_variant':
             # Set queued variant without touching the round toggle (used by live tgl_peek dropdown)
             variant = str(data.get('variant', '')).strip()
@@ -79,55 +141,53 @@ def _handle_host_action(action: str, data: dict):
                 peek_dispatch._queued_peek_variant[0] = variant
             else:
                 peek_dispatch._queued_peek_variant[0] = None
-            _main._push_web_toggles()
+            bonus_answers._push_web_toggles()
         elif action in ('stop_queues', 'stop_lightning'):
-            _main.stop_all_queues()
-            _main._push_web_toggles()
+            transport.stop_all_queues()
+            bonus_answers._push_web_toggles()
         elif action == 'seek':
             ms = int(data.get('position_ms', 0))
-            _main.seek_to(ms)
+            transport.seek_to(ms)
         elif action == 'seek_near_end':
-            state.widgets.root.after(0, lambda: _main._invoke_registry_by_id("skip_to_end_ff"))
+            state.widgets.root.after(0, lambda: web_search._invoke_registry_by_id("skip_to_end_ff"))
         elif action == 'set_volume':
             vol = max(0, min(100, int(data.get('volume', 100))))
-            _main.set_volume(vol)
+            audio_toggles.set_volume(vol)
         elif action == 'set_bgm_modifier':
             state.controls.bgm_volume = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
-            _main._sync_control_globals()
             if music.music_loaded:
-                _main.set_volume(state.controls.volume_level)
-            _main.save_config()
+                audio_toggles.set_volume(state.controls.volume_level)
+            config_io.save_config()
         elif action == 'set_bzz_modifier':
-            _main.bonus_settings.setdefault('buzzer', dict(_main.BONUS_SETTINGS_DEFAULT['buzzer']))['sound_volume'] = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
-            _main.save_config()
+            state.playback.bonus_settings.setdefault('buzzer', dict(bonus.BONUS_SETTINGS_DEFAULT['buzzer']))['sound_volume'] = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
+            config_io.save_config()
         elif action == 'set_strm_boost':
             state.controls.stream_volume_boost = max(-100, min(100, int(data.get('boost', 0))))
-            _main._sync_control_globals()
-            _main.set_volume(state.controls.volume_level)
-            _main.save_config()
+            audio_toggles.set_volume(state.controls.volume_level)
+            config_io.save_config()
         elif action == 'set_autoplay':
-            _main.set_autoplay_mode(max(0, min(3, int(data.get('mode', 0)))))
+            autoplay_toggles.set_autoplay_mode(max(0, min(3, int(data.get('mode', 0)))))
         elif action == 'request_state':
             web_server.push_playback_state(
-                _main.projected_player_time, state.widgets.player.get_length(), state.widgets.player.is_playing(), state.controls.volume_level, state.controls.autoplay_toggle, state.controls.bgm_volume,
-                bzz_modifier=_main.bonus_settings.get('buzzer', _main.BONUS_SETTINGS_DEFAULT['buzzer']).get('sound_volume', 1.0),
+                state.seek.projected_player_time, state.widgets.player.get_length(), state.widgets.player.is_playing(), state.controls.volume_level, state.controls.autoplay_toggle, state.controls.bgm_volume,
+                bzz_modifier=state.playback.bonus_settings.get('buzzer', bonus.BONUS_SETTINGS_DEFAULT['buzzer']).get('sound_volume', 1.0),
                 strm_boost=state.controls.stream_volume_boost
             )
         elif action == 'toggle_scoreboard':
             # Follow the menu registry's open/close items so behavior matches UI menu
             try:
-                if _main.is_scoreboard_running():
-                    _main._invoke_registry_by_id('close_scoreboard')
+                if scoreboard_control.is_running():
+                    web_search._invoke_registry_by_id('close_scoreboard')
                 else:
-                    _main._invoke_registry_by_id('open_scoreboard')
+                    web_search._invoke_registry_by_id('open_scoreboard')
             except Exception:
                 # Fall back to visibility toggle if registry items unavailable
-                _main._invoke_registry_by_id('scoreboard_toggle')
-            _main._push_web_toggles()
-            _main._push_web_marks()
+                web_search._invoke_registry_by_id('scoreboard_toggle')
+            bonus_answers._push_web_toggles()
+            playlist_marks._push_web_marks()
         elif action == 'reset_session_history':
-            _main.reset_session_history(confirm=False)
-            _main._push_web_toggles()
+            session_stats.reset_session_history(confirm=False)
+            bonus_answers._push_web_toggles()
         elif action == 'get_youtube_list':
             def _vid_date(vid):
                 da = vid.get("date_added")
@@ -140,17 +200,17 @@ def _handle_host_action(action: str, data: dict):
                     except (ValueError, TypeError): pass
                 return datetime(1900, 1, 1)
             videos = []
-            for vid_id, vid in _main.youtube_metadata.get("videos", {}).items():
+            for vid_id, vid in state.metadata.youtube_metadata.get("videos", {}).items():
                 if vid.get("archived", False):
                     continue
                 full_title = (vid.get("custom_title") or vid.get("title") or "")
                 start = vid.get("start") or 0
                 end = vid.get("end") or vid.get("duration") or 0
-                dur = _main._fmt_seconds(round(end - start)) if end else _main._fmt_seconds(vid.get("duration") or 0)
-                short_title = _main.shorten_youtube_title(full_title).strip()
+                dur = web_search._fmt_seconds(round(end - start)) if end else web_search._fmt_seconds(vid.get("duration") or 0)
+                short_title = youtube_ui.shorten_youtube_title(full_title).strip()
                 videos.append({"id": vid_id, "title": short_title or full_title, "full_title": full_title, "duration": dur, "_date": _vid_date(vid)})
             videos.sort(key=lambda v: v.pop("_date"), reverse=True)
-            queued_id = (_main.youtube_queue or {}).get("url")
+            queued_id = (state.playback.youtube_queue or {}).get("url")
             web_server.push_youtube_list(videos, queued_id)
         elif action == 'get_archived_youtube_list':
             def _arc_date(vid):
@@ -160,96 +220,98 @@ def _handle_host_action(action: str, data: dict):
                     except (ValueError, TypeError): pass
                 return datetime(1900, 1, 1)
             videos = []
-            for vid_id, vid in _main.youtube_metadata.get("videos", {}).items():
+            for vid_id, vid in state.metadata.youtube_metadata.get("videos", {}).items():
                 if not vid.get("archived", False):
                     continue
                 full_title = (vid.get("custom_title") or vid.get("title") or "")
                 start = vid.get("start") or 0
                 end = vid.get("end") or vid.get("duration") or 0
-                dur = _main._fmt_seconds(round(end - start)) if end else _main._fmt_seconds(vid.get("duration") or 0)
-                short_title = _main.shorten_youtube_title(full_title).strip()
+                dur = web_search._fmt_seconds(round(end - start)) if end else web_search._fmt_seconds(vid.get("duration") or 0)
+                short_title = youtube_ui.shorten_youtube_title(full_title).strip()
                 videos.append({"id": vid_id, "title": short_title or full_title, "full_title": full_title, "duration": dur, "_date": _arc_date(vid)})
             videos.sort(key=lambda v: v.pop("_date"), reverse=True)
-            queued_id = (_main.youtube_queue or {}).get("url")
+            queued_id = (state.playback.youtube_queue or {}).get("url")
             web_server.push_archived_youtube_list(videos, queued_id)
         elif action in ('queue_youtube', 'queue_archived_youtube'):
             video_id = str(data.get('video_id', '')).strip()
             if video_id:
-                video = _main.get_youtube_metadata_from_index(key_id=video_id)
-                _main._set_youtube_queue(video)
-                _main.up_next_text()
+                video = youtube_ui.get_youtube_metadata_from_index(key_id=video_id)
+                youtube_ui._set_youtube_queue(video)
+                metadata_display.up_next_text()
         elif action == 'get_fixed_lightning_list':
-            _main.load_fixed_lightning_rounds(filter_missing_themes=True)
+            fixed_lightning_actions.load_fixed_lightning_rounds(filter_missing_themes=True)
             rounds = []
-            for i, r in enumerate(_main.fixed_lightning_rounds_list):
+            for i, r in enumerate(state.playback.fl_rounds_list):
                 rounds.append({
                     "index": i,
                     "name": r.get("name", ""),
-                    "duration": _main._fmt_seconds(r.get("total_duration", 0)),
+                    "duration": web_search._fmt_seconds(r.get("total_duration", 0)),
                     "description": r.get("description", ""),
                 })
-            queued_name = (_main.fixed_lightning_queue or {}).get("name")
+            queued_name = (state.lightning.fixed_lightning_queue or {}).get("name")
             web_server.push_fixed_lightning_list(rounds, queued_name)
         elif action == 'queue_fixed_lightning':
             idx = data.get('index')
             if idx is not None:
-                _main.queue_fixed_lightning_round(int(idx))
-                _main.up_next_text()
+                fixed_lightning_actions.queue_fixed_lightning_round(int(idx))
+                metadata_display.up_next_text()
         elif action == 'queue_fixed_lightning_randomized':
             idx = data.get('index')
             if idx is not None:
-                _main._queue_fixed_lightning_round_by_index(int(idx), randomize=True)
+                fixed_lightning_actions._queue_fixed_lightning_round_by_index(int(idx), randomize=True)
         elif action in ('play_fixed_lightning_now', 'play_fixed_lightning_now_randomized'):
             idx = data.get('index')
             if idx is not None:
-                _main._play_fixed_lightning_round_now(int(idx), randomize=(action == 'play_fixed_lightning_now_randomized'))
+                fixed_lightning_actions._play_fixed_lightning_round_now(int(idx), randomize=(action == 'play_fixed_lightning_now_randomized'))
         elif action == 'get_rules_list':
-            files = _main.get_available_rules_files()
-            web_server.push_rules_list(files, _main.selected_rules_file)
+            files = scoreboard_control.get_available_rules_files()
+            web_server.push_rules_list(files, state.config.selected_rules_file)
         elif action == 'select_rules_file':
             new_file = str(data.get('file', '')).strip()
-            if new_file in _main.get_available_rules_files():
-                _main.selected_rules_file = new_file
-                _main.scoreboard_rules = _main.load_rules(_main.selected_rules_file)
-                _main.save_config()
-                _main.set_rules()
-                _main._push_web_toggles()
+            if new_file in scoreboard_control.get_available_rules_files():
+                state.config.selected_rules_file = new_file
+                state.config.scoreboard_rules = scoreboard_control.load_rules(state.config.selected_rules_file)
+                config_io.save_config()
+                scoreboard_control.set_rules(state.config.scoreboard_rules, None, web_server, bonus_answers._push_web_toggles)
+                bonus_answers._push_web_toggles()
         elif action == 'get_playlist_list':
-            names = list(_main.get_playlists_dict(exclude_system=True).values())
-            system_names = list(_main.get_playlists_dict(system_only=True).values())
-            web_server.push_playlist_list(names, system_names, _main.playlist.get('name'), changed=_main._playlist_has_unsaved_changes())
+            names = list(playlist_ops.get_playlists_dict(exclude_system=True).values())
+            system_names = list(playlist_ops.get_playlists_dict(system_only=True).values())
+            web_server.push_playlist_list(names, system_names, state.metadata.playlist.get('name'), changed=playlist_ops._playlist_has_unsaved_changes())
         elif action == 'select_playlist':
             target = str(data.get('name', '')).strip()
-            all_pl = _main.get_playlists_dict()
+            all_pl = playlist_ops.get_playlists_dict()
             if target and target in all_pl.values():
-                _main._load_playlist_by_name(target, save_first=bool(data.get('save_first')))
+                playlist_ops._load_playlist_by_name(target, save_first=bool(data.get('save_first')))
         elif action == 'get_lightning_presets_list':
-            presets = sorted(_main.saved_lightning_mode_settings.keys())
-            web_server.push_lightning_presets_list(presets, _main.selected_light_mode_settings)
+            presets_state = state.settings_presets
+            presets = sorted(presets_state.saved_lightning_mode_settings.keys())
+            web_server.push_lightning_presets_list(presets, presets_state.selected_light_mode_settings)
         elif action == 'select_lightning_preset':
             preset_name = str(data.get('name', '')).strip()
-            if preset_name == '' or preset_name in _main.saved_lightning_mode_settings:
-                _main.selected_light_mode_settings = preset_name
-                if preset_name and preset_name in _main.saved_lightning_mode_settings:
-                    _main.lightning_mode_settings.clear()
-                    _main.lightning_mode_settings.update(_main.update_lightning_mode_settings(
-                        copy.deepcopy(_main.saved_lightning_mode_settings[preset_name])
+            presets_state = state.settings_presets
+            if preset_name == '' or preset_name in presets_state.saved_lightning_mode_settings:
+                presets_state.selected_light_mode_settings = preset_name
+                if preset_name and preset_name in presets_state.saved_lightning_mode_settings:
+                    state.playback.lightning_mode_settings.clear()
+                    state.playback.lightning_mode_settings.update(lightning_settings.update_lightning_mode_settings(
+                        copy.deepcopy(presets_state.saved_lightning_mode_settings[preset_name])
                     ))
                 else:
-                    _main.lightning_mode_settings.clear()
-                    _main.lightning_mode_settings.update(_main.update_lightning_mode_settings(
-                        copy.deepcopy(_main.lightning_mode_settings_default)
+                    state.playback.lightning_mode_settings.clear()
+                    state.playback.lightning_mode_settings.update(lightning_settings.update_lightning_mode_settings(
+                        copy.deepcopy(lightning_settings.lightning_mode_settings_default)
                     ))
-                _main.save_config()
-                _main._push_web_toggles()
+                config_io.save_config()
+                bonus_answers._push_web_toggles()
         elif action == 'search_themes':
             query = str(data.get('query', '')).strip()
             if query:
                 def _run_search(q=query):
-                    _play_count_map, _play_last_map, _series_play_map, _cur_idx = _main._build_play_maps()
-                    raw = _main.search_playlist(q)
-                    results = [_main._build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_map, _cur_idx, query_lower=q.lower()) for fn in raw]
-                    web_server.push_theme_search_results(results, _main.playlist.get('infinite', False), q)
+                    _play_count_map, _play_last_map, _series_play_map, _cur_idx = web_search._build_play_maps()
+                    raw = search_ops.search_playlist(q)
+                    results = [web_search._build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_map, _cur_idx, query_lower=q.lower()) for fn in raw]
+                    web_server.push_theme_search_results(results, state.metadata.playlist.get('infinite', False), q)
                 threading.Thread(target=_run_search, daemon=True).start()
 
         elif action == 'get_directory_groups':
@@ -269,11 +331,11 @@ def _handle_host_action(action: str, data: dict):
                 try:
                     if _base == 'artist':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            fd = _main.get_file_metadata_by_name(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            fd = metadata_fetch.get_file_metadata_by_name(fn)
                             if not fd: continue
                             slug = fd.get('slug')
-                            meta = _main.get_metadata(fn)
+                            meta = metadata_fetch.get_metadata(fn)
                             for song in meta.get('songs', []):
                                 if song.get('slug') == slug:
                                     for artist in song.get('artist', []):
@@ -283,10 +345,17 @@ def _handle_host_action(action: str, data: dict):
                             groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
                         else:
                             groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif st.startswith('playlist'):
+                        # Groups are the playlists themselves (listing order
+                        # preserved); the sort mode applies to the themes inside.
+                        _scope, _ = _parse_playlist_stat(st)
+                        for name in _playlist_names_for_scope(_scope):
+                            pdata = playlist_marks.get_playlist(name) or {}
+                            groups_raw.append((name, list(pdata.get('playlist', []))))
                     elif _base == 'series':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             series = meta.get('series') or meta.get('title', 'Unknown')
                             if isinstance(series, list):
                                 for s in series: d.setdefault(s, []).append(fn)
@@ -296,16 +365,30 @@ def _handle_host_action(action: str, data: dict):
                             groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
                         elif _sort == 'popularity':
                             def _spop(item):
-                                ranks = [_main.get_metadata(fn).get('popularity') for fn in item[1]]
+                                ranks = [metadata_fetch.get_metadata(fn).get('popularity') for fn in item[1]]
                                 ranks = [r for r in ranks if r is not None]
                                 return min(ranks) if ranks else float('inf')
                             groups_raw = sorted(d.items(), key=_spop)
                         else:
                             groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                    elif _base == 'title':
+                        d = {}
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
+                            title = meta.get('title') or 'Unknown'
+                            d.setdefault(title, []).append(fn)
+                        if _sort == 'popularity':
+                            def _tpop(item):
+                                ranks = [metadata_fetch.get_metadata(fn).get('popularity') for fn in item[1]]
+                                ranks = [r for r in ranks if r is not None]
+                                return min(ranks) if ranks else float('inf')
+                            groups_raw = sorted(d.items(), key=_tpop)
+                        else:
+                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
                     elif _base == 'season':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             s = meta.get('season') or 'Unknown'
                             if s == 'N/A': s = 'Unknown'
                             d.setdefault(s, []).append(fn)
@@ -318,8 +401,8 @@ def _handle_host_action(action: str, data: dict):
                         groups_raw = [(s, d[s]) for s in sorted(d, key=_sk, reverse=True)]
                     elif _base == 'year':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             season = meta.get('season', '')
                             yr = season[-4:] if season and season[-4:].isdigit() else 'Unknown'
                             if yr.isdigit():
@@ -341,8 +424,8 @@ def _handle_host_action(action: str, data: dict):
                         groups_raw = [(g, d[g]) for g in sorted(d, key=_yk)]
                     elif _base == 'studio':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             for studio in meta.get('studios', []):
                                 d.setdefault(studio, []).append(fn)
                         if _sort == 'alpha':
@@ -351,9 +434,9 @@ def _handle_host_action(action: str, data: dict):
                             groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
                     elif _base == 'tag':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
-                            for tag in _main.get_tags(meta):
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
+                            for tag in information_popup.get_tags(meta):
                                 d.setdefault(tag, []).append(fn)
                         if _sort == 'alpha':
                             groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
@@ -361,12 +444,12 @@ def _handle_host_action(action: str, data: dict):
                             groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
                     elif _base == 'anilist_tag':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             al_id = meta.get('anilist')
                             if not al_id:
                                 continue
-                            al_data = _main.anilist_metadata.get(str(al_id), {})
+                            al_data = state.metadata.anilist_metadata.get(str(al_id), {})
                             for tag in al_data.get('tags', []):
                                 name = tag.get('name')
                                 if name:
@@ -377,15 +460,15 @@ def _handle_host_action(action: str, data: dict):
                             groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
                     elif _base == 'type':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
-                            t = _main.get_format(meta) or 'Unknown'
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
+                            t = information_popup.get_format(meta) or 'Unknown'
                             d.setdefault(t, []).append(fn)
                         groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
                     elif _base == 'slug':
                         d = {}
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             slug = meta.get('slug', 'Unknown')
                             d.setdefault(slug, []).append(fn)
                         if _sort == 'alpha':
@@ -409,34 +492,46 @@ def _handle_host_action(action: str, data: dict):
                     files = []
                     # Strip sort suffix — 'series_alpha' → 'series', 'artist_alpha' → 'artist', etc.
                     _base = st.removesuffix('_alpha').removesuffix('_popularity')
-                    if _base == 'artist':
-                        for fn in _main.get_cached_deduplicated_files():
-                            fd = _main.get_file_metadata_by_name(fn)
+                    _preserve_order = st.startswith('playlist')
+                    if _preserve_order:
+                        # gl is the playlist name; order/dedupe per the chosen mode.
+                        _scope, _mode = _parse_playlist_stat(st)
+                        pdata = playlist_marks.get_playlist(gl) or {}
+                        ordered, _nf = stats_ops._build_playlist_theme_list(
+                            list(pdata.get('playlist', [])), _mode)
+                        files = [entry_paths.get_clean_filename(f) for f in ordered]
+                    elif _base == 'artist':
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            fd = metadata_fetch.get_file_metadata_by_name(fn)
                             if not fd: continue
                             slug = fd.get('slug')
-                            meta = _main.get_metadata(fn)
+                            meta = metadata_fetch.get_metadata(fn)
                             for song in meta.get('songs', []):
                                 if song.get('slug') == slug:
                                     if gl in song.get('artist', []):
                                         files.append(fn)
                                     break
                     elif _base == 'series':
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             series = meta.get('series') or meta.get('title', 'Unknown')
                             if isinstance(series, list):
                                 if gl in series: files.append(fn)
                             else:
                                 if series == gl: files.append(fn)
+                    elif _base == 'title':
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
+                            if (meta.get('title') or 'Unknown') == gl: files.append(fn)
                     elif _base == 'season':
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             s = meta.get('season') or 'Unknown'
                             if s == 'N/A': s = 'Unknown'
                             if s == gl: files.append(fn)
                     elif _base == 'year':
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             season = meta.get('season', '')
                             yr = season[-4:] if season and season[-4:].isdigit() else 'Unknown'
                             if yr.isdigit():
@@ -451,24 +546,25 @@ def _handle_host_action(action: str, data: dict):
                                 g = 'Unknown'
                             if g == gl: files.append(fn)
                     elif _base == 'studio':
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             if gl in meta.get('studios', []): files.append(fn)
                     elif _base == 'tag':
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
-                            if gl in _main.get_tags(meta): files.append(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
+                            if gl in information_popup.get_tags(meta): files.append(fn)
                     elif _base == 'type':
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
-                            if (_main.get_format(meta) or 'Unknown') == gl: files.append(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
+                            if (information_popup.get_format(meta) or 'Unknown') == gl: files.append(fn)
                     elif _base == 'slug':
-                        for fn in _main.get_cached_deduplicated_files():
-                            meta = _main.get_metadata(fn)
+                        for fn in playlist_ops.get_cached_deduplicated_files():
+                            meta = metadata_fetch.get_metadata(fn)
                             if meta.get('slug', 'Unknown') == gl: files.append(fn)
-                    files.sort(key=lambda f: _main.get_title(f, f).lower())
-                    _play_count_map, _play_last_map, _series_play_map, _cur_idx = _main._build_play_maps()
-                    results = [_main._build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_map, _cur_idx) for fn in files]
+                    if not _preserve_order:
+                        files.sort(key=lambda f: lists.get_title(f, f).lower())
+                    _play_count_map, _play_last_map, _series_play_map, _cur_idx = web_search._build_play_maps()
+                    results = [web_search._build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_map, _cur_idx) for fn in files]
                 except Exception as e:
                     print(f"[directory_themes error] {e}")
                     results = []
@@ -491,34 +587,34 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'queue_theme':
             fn = str(data.get('filename', '')).strip()
             if fn:
-                if _main.playlist.get('infinite', False):
-                    _main.add_theme_next(fn, prevent_duplicates=True)
-                    _main.save_config()
-                    _main.up_next_text()
+                if state.metadata.playlist.get('infinite', False):
+                    search_ops.add_theme_next(fn, prevent_duplicates=True)
+                    config_io.save_config()
+                    metadata_display.up_next_text()
                 else:
-                    _main._queue_theme_standard(fn)
-                _main._push_web_toggles()
+                    web_search._queue_theme_standard(fn)
+                bonus_answers._push_web_toggles()
 
         elif action == 'queue_theme_only':
             fn = str(data.get('filename', '')).strip()
             if fn:
-                _main._queue_theme_standard(fn)
-                _main._push_web_toggles()
+                web_search._queue_theme_standard(fn)
+                bonus_answers._push_web_toggles()
 
         elif action == 'play_theme_now':
             fn = str(data.get('filename', '')).strip()
             if fn:
-                _main.play_video_from_filename(fn)
-                _main.up_next_text()
-                _main._push_web_toggles()
+                metadata_display.play_video_from_filename(fn)
+                metadata_display.up_next_text()
+                bonus_answers._push_web_toggles()
 
         elif action == 'add_theme':
             fn = str(data.get('filename', '')).strip()
             if fn:
-                _main.add_theme_next(fn, prevent_duplicates=True)
-                _main.save_config()
-                _main.up_next_text()
-                _main.prefetch_next_themes()
+                search_ops.add_theme_next(fn, prevent_duplicates=True)
+                config_io.save_config()
+                metadata_display.up_next_text()
+                cache_download.prefetch_next_themes()
         elif action == 'get_playlist_info':
             source = _get_web_playlist_source()
             web_server.push_playlist_info(len(source['items']), source['current_index'], to_sid=data.get('_sid'), counter=source['counter'], label=source['label'])
@@ -527,32 +623,32 @@ def _handle_host_action(action: str, data: dict):
             source = _get_web_playlist_source()
             if 0 <= idx < len(source['items']):
                 if source['is_fixed']:
-                    state.widgets.root.after(0, _main.play_fixed_round_by_index, idx)
+                    state.widgets.root.after(0, lists.play_fixed_round_by_index, idx)
                 else:
-                    state.widgets.root.after(0, _main.play_video, idx)
+                    state.widgets.root.after(0, transport.play_video, idx)
         elif action == 'playlist_delete':
             idx = int(data.get('index', -1))
             source = _get_web_playlist_source()
             if not source['is_fixed'] and 0 <= idx < len(source['items']):
                 def _do_delete(i=idx):
-                    pl = _main.playlist.get("playlist", [])
+                    pl = state.metadata.playlist.get("playlist", [])
                     if not (0 <= i < len(pl)):
                         return
                     del pl[i]
                     # Adjust current_index pointer so current track doesn't shift
-                    cur = _main.playlist.get("current_index", 0)
+                    cur = state.metadata.playlist.get("current_index", 0)
                     if i < cur:
-                        _main.playlist["current_index"] = max(0, cur - 1)
+                        state.metadata.playlist["current_index"] = max(0, cur - 1)
                     # Clamp scroll offset so it can't be past the end (causes black screen)
-                    entries_count = _main.get_list_entries_count()
+                    entries_count = lists.get_list_entries_count()
                     max_offset = max(0, len(pl) - entries_count)
-                    _main.current_list_offset = min(_main.current_list_offset, max_offset)
-                    _main.update_playlist_name()
-                    _main.update_current_index()
+                    state.lists.current_list_offset = min(state.lists.current_list_offset, max_offset)
+                    transport.update_playlist_name()
+                    transport.update_current_index()
                     # update_playlist_display rebuilds current_list_content and current_list_selected
                     # correctly, then calls refresh_current_list()
-                    if _main.list_loaded == "playlist":
-                        _main.update_playlist_display()
+                    if state.lists.list_loaded == "playlist":
+                        lists.update_playlist_display()
                     # Build correct args for push_playlist_info(total, current_index, counter, label)
                     new_source = _get_web_playlist_source()
                     web_server.push_playlist_info(len(new_source['items']), new_source['current_index'], counter=new_source['counter'], label=new_source['label'])
@@ -568,7 +664,7 @@ def _handle_host_action(action: str, data: dict):
             for rel_i, item in enumerate(chunk):
                 abs_i = offset + rel_i
                 if source['is_fixed']:
-                    title = _main.get_fixed_round_title(f'round_{abs_i}', item)
+                    title = lists.get_fixed_round_title(f'round_{abs_i}', item)
                     slug = ''
                     song_title = ''
                     song_artist = ''
@@ -576,11 +672,11 @@ def _handle_host_action(action: str, data: dict):
                     fn = item
                     is_lightning = fn.startswith('[L]')
                     clean_fn = fn[3:] if is_lightning else fn
-                    file_data = _main.get_file_metadata_by_name(clean_fn)
+                    file_data = metadata_fetch.get_file_metadata_by_name(clean_fn)
                     if file_data:
                         mal_key = file_data.get('mal')
-                        anime_d = _main.anime_metadata.get(mal_key, {}) if mal_key else {}
-                        title = _main.get_display_title({**file_data, **anime_d}) if anime_d else (file_data.get('name') or clean_fn)
+                        anime_d = state.metadata.anime_metadata.get(mal_key, {}) if mal_key else {}
+                        title = metadata_display.get_display_title({**file_data, **anime_d}) if anime_d else (file_data.get('name') or clean_fn)
                         slug  = ('[L] ' if is_lightning else '') + file_data.get('slug', '')
                         song_title  = ''
                         song_artist = ''
@@ -588,7 +684,7 @@ def _handle_host_action(action: str, data: dict):
                             if s.get('slug') == file_data.get('slug', ''):
                                 song_title = s.get('title') or ''
                                 if abs_i == cur:
-                                    song_artist = _main.get_artists_string(s.get('artist') or [], total=True)
+                                    song_artist = metadata_fetch.get_artists_string(s.get('artist') or [], total=True)
                                 break
                     else:
                         title       = clean_fn
@@ -607,12 +703,12 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'set_difficulty':
             val = data.get('value')
             if val is not None:
-                _main._set_difficulty_from_menu(max(0, min(5, int(val))))
-                _main._push_web_toggles()
+                playlist_ops._set_difficulty_from_menu(max(0, min(5, int(val))))
+                bonus_answers._push_web_toggles()
         elif action == 'set_auto_bonus':
             val = str(data.get('value', '')).strip() or None
-            _main.set_auto_bonus_start(val)
-            _main._push_web_toggles()
+            bonus.set_auto_bonus_start(val)
+            bonus_answers._push_web_toggles()
         elif action == 'buzzer_control':
             cmd = str(data.get('cmd', '')).strip().lower()
             print(f"[BUZZER][HOST_ACTION] cmd='{cmd}' running={web_server.is_running()} guessing_extra='{bonus.guessing_extra}'")
@@ -624,7 +720,7 @@ def _handle_host_action(action: str, data: dict):
             except (ValueError, TypeError):
                 delta = 0.0
             if name and delta != 0:
-                _main.send_scoreboard_score(name, delta)
+                scoreboard_control.send_score(name, delta)
         elif action == 'score_set':
             name = str(data.get('name', '')).strip()
             try:
@@ -632,20 +728,20 @@ def _handle_host_action(action: str, data: dict):
             except (ValueError, TypeError):
                 score = 0.0
             if name:
-                _main.send_scoreboard_command(f"[SCORE_SET][PLAYER]{name}[SCORE]{score}")
+                scoreboard_control.send_command(f"[SCORE_SET][PLAYER]{name}[SCORE]{score}")
         elif action == 'player_add':
             name = str(data.get('name', '')).strip()
             if name:
-                _main.send_scoreboard_command(f"[PLAYER_ADD][NAME]{name}")
+                scoreboard_control.send_command(f"[PLAYER_ADD][NAME]{name}")
         elif action == 'player_remove':
             name = str(data.get('name', '')).strip()
             if name:
-                _main.send_scoreboard_command(f"[PLAYER_REMOVE][NAME]{name}")
+                scoreboard_control.send_command(f"[PLAYER_REMOVE][NAME]{name}")
         elif action == 'player_rename':
             old_name = str(data.get('old_name', '')).strip()
             new_name = str(data.get('new_name', '')).strip()
             if old_name and new_name:
-                _main.send_scoreboard_command(f"[PLAYER_RENAME][OLD]{old_name}[NEW]{new_name}")
+                scoreboard_control.send_command(f"[PLAYER_RENAME][OLD]{old_name}[NEW]{new_name}")
         elif action == 'sc_set_prefs':
             cfg_path = os.path.join('scoreboard_data', 'scoreboard_config.json')
             if os.path.exists(cfg_path):
@@ -662,7 +758,7 @@ def _handle_host_action(action: str, data: dict):
                 except Exception as e:
                     print(f"Error saving sc_set_prefs: {e}")
         elif action == 'scores_clear_all':
-            _main.send_scoreboard_command("[CLEAR_ALL]")
+            scoreboard_control.send_command("[CLEAR_ALL]")
             try:
                 _sc_path = os.path.join('scoreboard_data', 'score_changes.json')
                 open(_sc_path, 'w', encoding='utf-8').close()
@@ -670,11 +766,11 @@ def _handle_host_action(action: str, data: dict):
                 print(f"Error clearing score history on clear_all: {e}")
             web_server.push_score_history([], to_sid=data.get('_sid'))
         elif action == 'scores_archive':
-            _main.send_scoreboard_command("[ARCHIVE]")
+            scoreboard_control.send_command("[ARCHIVE]")
         elif action == 'get_scores':
             bonus_answers._push_web_scores()
         elif action == 'get_score_history':
-            entries = _main.read_all_score_changes()
+            entries = scoreboard_control.read_score_changes()
             web_server.push_score_history(entries, to_sid=data.get('_sid'))
         elif action == 'clear_score_history':
             try:
@@ -687,7 +783,7 @@ def _handle_host_action(action: str, data: dict):
             name      = str(data.get('name', '')).strip()
             team_name = str(data.get('team', '')).strip()
             if name:
-                _main.send_scoreboard_command(f"[PLAYER_SET_TEAM][NAME]{name}[TEAM]{team_name}")
+                scoreboard_control.send_command(f"[PLAYER_SET_TEAM][NAME]{name}[TEAM]{team_name}")
         elif action == 'get_teams':
-            _main.send_scoreboard_command("[GET_TEAM_NAMES]")
+            scoreboard_control.send_command("[GET_TEAM_NAMES]")
     state.widgets.root.after(0, _dispatch)

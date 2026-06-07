@@ -1,50 +1,32 @@
-# _app_scripts/settings_popup.py
-# Configuration settings popup - extracted from guess_the_anime.py (Step 37).
+# Configuration settings popup.
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
 from core.game_state import state
 import _app_scripts.file.scoreboard_control as scoreboard_control
+import _app_scripts.data.config_io as config_io
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.file.tooltip as tooltip
+import _app_scripts.file.web_server.web_server as web_server
 
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context() at startup)
-# ---------------------------------------------------------------------------
-get_window_position_and_setup = None
-get_available_rules_files = None
-load_config = None
-save_config = None
-ToolTip = None
-BACKGROUND_COLOR = "gray12"
-OVERLAY_COLOR_OPTIONS = ()
-SETTINGS_SCHEMA = ()
-CLOUDFLARED_AVAILABLE = False
-NGROK_AVAILABLE = False
-# Reference to the main module's globals() dict. Settings live as
-# module-level variables in main, so reads/writes from the SETTINGS_SCHEMA
-# must go through this — using settings_popup's own globals() instead
-# would KeyError on the first setting access.
-main_globals = {}
+BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
 
 # Module-private window state (was a main-file global)
 settings_window = None
 
 
-def set_context(*, get_window_position_and_setup, get_available_rules_files,
-                load_config, save_config, ToolTip,
-                background_color, overlay_color_options, settings_schema,
-                cloudflared_available, ngrok_available, main_globals):
-    g = globals()
-    g['main_globals'] = main_globals
-    g['get_window_position_and_setup'] = get_window_position_and_setup
-    g['get_available_rules_files'] = get_available_rules_files
-    g['load_config'] = load_config
-    g['save_config'] = save_config
-    g['ToolTip'] = ToolTip
-    g['BACKGROUND_COLOR'] = background_color
-    g['OVERLAY_COLOR_OPTIONS'] = overlay_color_options
-    g['SETTINGS_SCHEMA'] = settings_schema
-    g['CLOUDFLARED_AVAILABLE'] = cloudflared_available
-    g['NGROK_AVAILABLE'] = ngrok_available
+def _get_setting_value(setting):
+    """Read a schema setting's live value from its state cluster.
+
+    Every SETTINGS_SCHEMA entry is tagged {"state": "<cluster>"}, so the value
+    always lives at state.<cluster>.<key> (same dispatch config_io load/save use).
+    """
+    return getattr(getattr(state, setting["state"]), setting["key"])
+
+
+def _set_setting_value(setting, value):
+    """Write a schema setting's value back to its state cluster."""
+    setattr(getattr(state, setting["state"]), setting["key"], value)
 
 
 def show_settings_popup():
@@ -86,12 +68,12 @@ def show_settings_popup():
             "• Hex codes: #FF5733, #00FF00, #123ABC")
         if new_color:
             new_color = new_color.strip()
-            if new_color in OVERLAY_COLOR_OPTIONS:
+            if new_color in state.colors.OVERLAY_COLOR_OPTIONS:
                 messagebox.showinfo("Color Already Exists", f"'{new_color}' is already in the color list.")
                 return
             if is_valid_color(new_color):
-                OVERLAY_COLOR_OPTIONS.append(new_color)
-                dropdown['values'] = OVERLAY_COLOR_OPTIONS
+                state.colors.OVERLAY_COLOR_OPTIONS.append(new_color)
+                dropdown['values'] = state.colors.OVERLAY_COLOR_OPTIONS
                 color_var.set(new_color)
             else:
                 messagebox.showerror("Invalid Color",
@@ -112,19 +94,22 @@ def show_settings_popup():
             return
         if not messagebox.askyesno("Delete Color", f"Delete '{current_color}' from the color list?"):
             return
-        if current_color in OVERLAY_COLOR_OPTIONS:
-            OVERLAY_COLOR_OPTIONS.remove(current_color)
-            back_dd['values'] = OVERLAY_COLOR_OPTIONS
-            text_dd['values'] = OVERLAY_COLOR_OPTIONS
+        if current_color in state.colors.OVERLAY_COLOR_OPTIONS:
+            state.colors.OVERLAY_COLOR_OPTIONS.remove(current_color)
+            back_dd['values'] = state.colors.OVERLAY_COLOR_OPTIONS
+            text_dd['values'] = state.colors.OVERLAY_COLOR_OPTIONS
             color_var.set("black")
+
+    def _schema_val(s):
+        return _get_setting_value(s)
 
     def save_settings():
         try:
             # Snapshot originals for after_save callbacks
-            _orig = {s["key"]: main_globals[s["key"]] for s in SETTINGS_SCHEMA if s.get("after_save")}
+            _orig = {s["key"]: _schema_val(s) for s in config_io.SETTINGS_SCHEMA if s.get("after_save")}
 
             # Apply all schema settings from their tk vars
-            for s in SETTINGS_SCHEMA:
+            for s in config_io.SETTINGS_SCHEMA:
                 if s["key"] not in _setting_vars:
                     continue
                 var = _setting_vars[s["key"]]
@@ -142,21 +127,21 @@ def show_settings_popup():
                         val = max(s["min"], val)
                     if "max" in s:
                         val = min(s["max"], val)
-                main_globals[s["key"]] = val
+                _set_setting_value(s, val)
 
-            save_config()
-            load_config()
+            config_io.save_config()
+            config_io.load_config()
 
             # After-save callbacks
-            for s in SETTINGS_SCHEMA:
+            for s in config_io.SETTINGS_SCHEMA:
                 after = s.get("after_save")
                 if after == "restart_warning":
-                    if _orig[s["key"]] != main_globals[s["key"]]:
+                    if _orig[s["key"]] != _schema_val(s):
                         messagebox.showinfo("Restart Required",
                                             "The 'Scale Main UI' setting has been changed.\n\n"
                                             "Please restart the application for this change to take effect.")
                 elif after == "reset_serpapi":
-                    if _orig[s["key"]] != main_globals[s["key"]]:
+                    if _orig[s["key"]] != _schema_val(s):
                         from _app_scripts.queue_round.lightning_rounds import cover_image_overlay
                         cover_image_overlay.serpapi_limited = False
                         cover_image_overlay.serpapi_limited_count = 0
@@ -182,7 +167,7 @@ def show_settings_popup():
 
     try:
         settings_window.transient(root)
-        get_window_position_and_setup(settings_window)
+        windowing.get_window_position_and_setup(settings_window)
     except tk.TclError:
         pass
 
@@ -209,17 +194,18 @@ def show_settings_popup():
         lbl = tk.Label(frame, text=s["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
         lbl.pack(side="left")
         if s.get("tooltip"):
-            ToolTip(lbl, s["tooltip"])
+            tooltip.ToolTip(lbl, s["tooltip"])
         t = s["type"]
         if t == "bool":
-            var = tk.BooleanVar(value=main_globals[s["key"]])
-            text_var = tk.StringVar(value="Enabled" if main_globals[s["key"]] else "Disabled")
+            cur = _schema_val(s)
+            var = tk.BooleanVar(value=cur)
+            text_var = tk.StringVar(value="Enabled" if cur else "Disabled")
             btn = tk.Checkbutton(frame, variable=var, textvariable=text_var,
                                  bg=BACKGROUND_COLOR, fg="white", selectcolor="black",
                                  command=lambda v=var, tv=text_var: tv.set("Enabled" if v.get() else "Disabled"))
             btn.pack(side="left", padx=(5, 0))
         else:
-            var = tk.StringVar(value=str(main_globals[s["key"]]))
+            var = tk.StringVar(value=str(_schema_val(s)))
             kw = {"textvariable": var, "bg": "black", "fg": "white",
                   "insertbackground": "white",
                   "width": s.get("width", 10), "justify": "center"}
@@ -231,22 +217,22 @@ def show_settings_popup():
 
     def _render_skip_group(parent):
         """Render the four skip settings as a single consolidated row."""
-        group = [s for s in SETTINGS_SCHEMA if s.get("group") == "skip_group"]
+        group = [s for s in config_io.SETTINGS_SCHEMA if s.get("group") == "skip_group"]
         frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
         frame.pack(fill="x", pady=5)
         lbl = tk.Label(frame, text=group[0]["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
         lbl.pack(side="left")
-        ToolTip(lbl, "Auto-skip settings: play duration, jump distance, and fade timing.")
+        tooltip.ToolTip(lbl, "Auto-skip settings: play duration, jump distance, and fade timing.")
         inputs = tk.Frame(frame, bg=BACKGROUND_COLOR)
         inputs.pack(side="left", padx=(5, 0))
         for sg in group:
-            var = tk.StringVar(value=str(main_globals[sg["key"]]))
+            var = tk.StringVar(value=str(_schema_val(sg)))
             entry = tk.Entry(inputs, textvariable=var, bg="black", fg="white",
                              insertbackground="white",
                              width=sg.get("width", 6), justify="center")
             entry.pack(side="left", padx=(0, 3))
             if sg.get("tooltip"):
-                ToolTip(entry, sg["tooltip"])
+                tooltip.ToolTip(entry, sg["tooltip"])
             _setting_vars[sg["key"]] = var
 
     def _render_color_row(s, parent):
@@ -255,9 +241,9 @@ def show_settings_popup():
         frame.pack(fill="x", pady=5)
         lbl = tk.Label(frame, text=s["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
         lbl.pack(side="left")
-        ToolTip(lbl, s["tooltip"])
-        var = tk.StringVar(value=main_globals[s["key"]])
-        dropdown = ttk.Combobox(frame, textvariable=var, values=OVERLAY_COLOR_OPTIONS, width=15)
+        tooltip.ToolTip(lbl, s["tooltip"])
+        var = tk.StringVar(value=_schema_val(s))
+        dropdown = ttk.Combobox(frame, textvariable=var, values=state.colors.OVERLAY_COLOR_OPTIONS, width=15)
         dropdown.pack(side="left", padx=(5, 2))
         _setting_vars[s["key"]] = var
         _color_dropdowns[s["key"]] = dropdown
@@ -278,21 +264,21 @@ def show_settings_popup():
         frame.pack(fill="x", pady=5)
         lbl = tk.Label(frame, text=s["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
         lbl.pack(side="left")
-        ToolTip(lbl, s["tooltip"])
-        var = tk.StringVar(value=main_globals[s["key"]])
-        ttk.Combobox(frame, textvariable=var, values=get_available_rules_files(),
+        tooltip.ToolTip(lbl, s["tooltip"])
+        var = tk.StringVar(value=_schema_val(s))
+        ttk.Combobox(frame, textvariable=var, values=scoreboard_control.get_available_rules_files(),
                      width=25, state="readonly").pack(side="left", padx=(5, 0))
         _setting_vars[s["key"]] = var
 
     # Collect visible rows first so we can split evenly
     _visible_rows = []
     _skip_group_seen = False
-    for s in SETTINGS_SCHEMA:
-        if s.get("requires_ngrok") and not NGROK_AVAILABLE:
+    for s in config_io.SETTINGS_SCHEMA:
+        if s.get("requires_ngrok") and not web_server.NGROK_AVAILABLE:
             continue
-        if s.get("requires_cloudflared") and not CLOUDFLARED_AVAILABLE:
+        if s.get("requires_cloudflared") and not web_server.CLOUDFLARED_AVAILABLE:
             continue
-        if s.get("requires_tunnel") and not (NGROK_AVAILABLE or CLOUDFLARED_AVAILABLE):
+        if s.get("requires_tunnel") and not (web_server.NGROK_AVAILABLE or web_server.CLOUDFLARED_AVAILABLE):
             continue
         if s.get("requires_scoreboard") and not scoreboard_control.AVAILABLE:
             continue

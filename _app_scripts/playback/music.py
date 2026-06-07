@@ -5,19 +5,13 @@ with a half-playlist no-repeat history, and pumps pygame.mixer.music for
 play/pause/random-start. The visual "Now Playing" floating label is rendered
 via the injected ``set_floating_text`` (a main-resident overlay primitive).
 
-State staying here (in line with [[state-stays-with-its-readers]]):
+State owned here (read reassigned scalars through this module, never cache):
   - music_files          — list, mutated in place via .clear()/.extend();
-                           same object also aliased onto state.playback.music_files
-                           and onto main as ``music_files`` for backward compat.
-  - current_music_index  — int, reassigned. External readers must qualify
-                           through this module (``music.current_music_index``).
-  - music_loaded         — bool, reassigned; same external-qualify rule.
+                           also aliased onto state.playback.music_files.
+  - current_music_index  — int, reassigned.
+  - music_loaded         — bool, reassigned.
   - music_changed        — bool, internal only.
   - checked_music_folder — bool, internal only (one-shot warning gate).
-
-State staying in main:
-  - background_music_rounds — round-counter; only mutated by main's
-                              play_filename, not by anything in here.
 """
 from __future__ import annotations
 
@@ -29,7 +23,9 @@ import pygame
 from tinytag import TinyTag
 
 from core.game_state import state
-from _app_scripts.queue_round.lightning_rounds import frame_round
+from _app_scripts.queue_round.lightning_rounds import frame_round, peek_dispatch, lightning_settings
+from _app_scripts.toggles import audio_toggles
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -59,34 +55,6 @@ current_music_index = 0
 music_loaded = False
 music_changed = False
 checked_music_folder = False
-
-
-# ---------------------------------------------------------------------------
-# Context (injected by set_context)
-# ---------------------------------------------------------------------------
-_set_floating_text = None
-_set_volume = None
-_is_peek_active = None
-_get_fixed_current_round = None
-_get_light_mode = None
-_get_light_round_started = None
-_get_character_round_answer = None
-_LIGHT_ROUND_LENGTH_DEFAULT = 10
-
-
-def set_context(*, set_floating_text, set_volume, is_peek_active,
-                get_fixed_current_round, get_light_mode,
-                get_light_round_started, get_character_round_answer,
-                light_round_length_default):
-    g = globals()
-    g['_set_floating_text'] = set_floating_text
-    g['_set_volume'] = set_volume
-    g['_is_peek_active'] = is_peek_active
-    g['_get_fixed_current_round'] = get_fixed_current_round
-    g['_get_light_mode'] = get_light_mode
-    g['_get_light_round_started'] = get_light_round_started
-    g['_get_character_round_answer'] = get_character_round_answer
-    g['_LIGHT_ROUND_LENGTH_DEFAULT'] = light_round_length_default
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +122,7 @@ def play_background_music(toggle):
             checked_music_folder = True
         return
 
-    fixed_current_round       = _get_fixed_current_round()
+    fixed_current_round       = state.lightning.fixed_current_round
     disable_video_audio       = state.controls.disable_video_audio
     lightning_mode_settings   = state.playback.lightning_mode_settings
     volume_level              = state.controls.volume_level
@@ -192,7 +160,7 @@ def play_background_music(toggle):
                     duration = tag.duration if tag.duration else 0
 
                     # Start at random position (leave 10 seconds at end to avoid abrupt restart)
-                    play_length = _LIGHT_ROUND_LENGTH_DEFAULT * 2 * lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"]
+                    play_length = lightning_settings.LIGHT_ROUND_LENGTH_DEFAULT * 2 * lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"]
                     if duration > play_length:
                         max_start = duration - play_length
                         random_start_pos = random.uniform(0, max_start)
@@ -204,7 +172,7 @@ def play_background_music(toggle):
             else:
                 pygame.mixer.music.play(-1)  # -1 loops indefinitely
 
-            _set_volume(volume_level)
+            audio_toggles.set_volume(volume_level)
             music_changed = False
             # Record track usage only when actually played
             record_background_track_usage(track_path)
@@ -237,13 +205,13 @@ def record_background_track_usage(track_path):
 def now_playing_background_music(track=None):
     """Update the 'Now Playing' floating label (or hide it during reveal phases)."""
     lightning_mode_settings = state.playback.lightning_mode_settings
-    light_mode              = _get_light_mode()
-    light_round_started     = _get_light_round_started()
+    light_mode              = state.lightning.light_mode
+    light_round_started     = state.lightning.light_round_started
     light_muted             = state.controls.light_muted
-    character_round_answer  = _get_character_round_answer()
+    character_round_answer  = state.lightning.character_round_answer
 
     hide_during_reveal = lightning_mode_settings.get("_misc_settings", {}).get("background_music", {}).get("hide_display_during_reveal", False)
-    is_reveal_mode = ((light_mode == 'reveal' and light_round_started) or not light_muted or _is_peek_active())
+    is_reveal_mode = ((light_mode == 'reveal' and light_round_started) or not light_muted or peek_dispatch.is_peek_active())
     if not frame_round.frame_light_round_started and (hide_during_reveal and is_reveal_mode):
         track = None
     if track:
@@ -277,4 +245,4 @@ def now_playing_background_music(track=None):
                 display_text = basename
 
         track = "NOW PLAYING:\n" + display_text
-    _set_floating_text("Now Playing Background Music", track, position="bottom left", size=14, inverse=character_round_answer, align="left")
+    osd_text.set_floating_text("Now Playing Background Music", track, position="bottom left", size=14, inverse=character_round_answer, align="left")

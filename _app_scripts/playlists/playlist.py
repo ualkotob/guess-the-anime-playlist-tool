@@ -19,72 +19,52 @@ from tkinter import ttk
 
 from _app_scripts import utils
 from core.game_state import state
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.popout.popout_window as popout_window
+import _app_scripts.playback.cache_download as cache_download
+import _app_scripts.playback.transport as transport
+import _app_scripts.playlists.entry_paths as entry_paths
+import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.information.information_popup as information_popup
+import _app_scripts.toggles.censors as censors
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.file.metadata.metadata_panel as metadata_panel
+import _app_scripts.file.session_stats as session_stats
+import _app_scripts.queue_round.lightning_rounds.variety_round as variety_round
+import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_manager
+import _app_scripts.data.config_io as config_io
+import _app_scripts.data.metadata_io as metadata_io
+import _app_scripts.ui.lists as lists
+from core.paths import PLAYLISTS_FOLDER, FILTERS_FOLDER
+from core.app_meta import APP_VERSION
+from _app_scripts.playlists.marks import SYSTEM_PLAYLISTS
 
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context())
-# ---------------------------------------------------------------------------
-_root = None
-_player = None
-_right_column = None
+# Collaborators (read directly off state / sibling modules).
 # Metadata-cluster dicts (playlist, directory_files, file_metadata, anime_metadata)
-# are read directly from `state.metadata.*` — no getters needed.
-_get_filename_to_mal = None
-_get_list_loaded = None
-_get_light_mode = None
-_get_popout_controls = None
+# are read directly from `state.metadata.*`; widgets from `state.widgets.*`.
 # check_theme_cache is read directly from state.playback.check_theme_cache
-_get_difficulty_dropdown = None
 # popout_buttons_by_name is read directly from state.playback.popout_buttons_by_name
-_get_selected_difficulty = None
-_get_metadata = None
-_get_clean_filename = None
-_get_file_metadata_by_name = None
-_get_tags = None
-_get_file_censors = None
-_get_format = None
-_is_game = None
-_is_animethemes_stream_file = None
-_is_downloading = None
-_series_overlap = None
-_series_primary = None
-_series_list = None
-_series_set = None
-_series_cache_key = None
-_get_series_popularity = None
-_get_op_ed_counts = None
-_play_name_key = None
-_get_version_from_filename = None
-_check_theme = None
-_prioritize_theme_files = None
-_aired_to_season_year = None
-_fetch_anilist_user_ids = None
-_get_saved_playlist = None
-_update_current_index = None
-_update_playlist_name = None
-_show_playlist = None
-_show_list = None
-_notify_playlist_list_updated = None
-_save_config = None
-_save_metadata = None
-_up_next_text = None
-_prefetch_next_themes = None
-_queue_next_lightning_mode = None
-_stop = None
-_download_to_cache = None
-_cancel_download = None
-_check_missing_artists = None
-_build_filename_to_mal_map = None
-_update_extra_metadata = None
-_update_metadata = None
-_refresh_popout_toggles = None
-_get_current_session_lightning_tracks = None
-
-PLAYLISTS_FOLDER = None
-FILTERS_FOLDER = None
-SYSTEM_PLAYLISTS = None
-BLANK_PLAYLIST = None
-APP_VERSION = None
-BACKGROUND_COLOR = None
+# All former sibling-callback getters are inlined to their owning modules
+# (metadata_fetch / metadata_display / information_popup / censors / lists /
+# playlist_marks / cache_download / config_io / metadata_io / session_stats /
+# variety_round / lightning_manager / metadata_panel / popout_window / entry_paths).
+# The playback-hub fns (update_current_index / update_playlist_name / stop) are
+# reached on the transport sibling directly.
+# Canonical empty-playlist template. Owned here; callers (config_io, main)
+# read it directly as `playlist_ops.BLANK_PLAYLIST`. Copy with
+# copy.deepcopy() before mutating.
+BLANK_PLAYLIST = {
+    "name": "",
+    "current_index": -1,
+    "lightning_history": {},
+    "background_track_history": [],
+    "infinite": False,
+    "difficulty": 2,
+    "order": 0,
+    "pop_time_order": [],
+    "playlist": [],
+}
+BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -122,11 +102,6 @@ difficulty_ranges = [
     ["easy", "medium", "hard"],
 ]
 
-difficulty_options = [
-    "MODE: VERY EASY", "MODE: EASY", "MODE: NORMAL",
-    "MODE: HARD", "MODE: VERY HARD", "MODE: RANDOM",
-]
-
 INT_INF = float('inf')
 SEASON_ORDER = ["Winter", "Spring", "Summer", "Fall"]
 
@@ -145,7 +120,6 @@ _spec_pick_running = False
 playlist_loaded = False
 series_totals = None
 filter_popup = None
-_best_duplicate_map = {}
 _lowest_version_map = {}
 _reroll_debounce_id = None
 
@@ -160,113 +134,14 @@ SORTING_TYPES = [
 
 
 
-# ---------------------------------------------------------------------------
-# set_context()
-# ---------------------------------------------------------------------------
-def set_context(
-    root, player, right_column,
-    get_filename_to_mal, get_list_loaded, get_light_mode,
-    get_popout_controls,
-    get_difficulty_dropdown, get_selected_difficulty,
-    get_metadata, get_clean_filename, get_file_metadata_by_name,
-    get_tags, get_file_censors, get_format, is_game,
-    is_animethemes_stream_file, is_downloading,
-    series_overlap, series_primary, series_list, series_set,
-    series_cache_key, get_series_popularity, get_op_ed_counts,
-    play_name_key,
-    get_version_from_filename, check_theme, prioritize_theme_files,
-    aired_to_season_year, fetch_anilist_user_ids, get_saved_playlist,
-    update_current_index, update_playlist_name, show_playlist, show_list,
-    notify_playlist_list_updated,
-    save_config, save_metadata, up_next_text, prefetch_next_themes,
-    queue_next_lightning_mode, stop,
-    download_to_cache, cancel_download, check_missing_artists,
-    build_filename_to_mal_map, update_extra_metadata, update_metadata,
-    refresh_popout_toggles,
-    get_current_session_lightning_tracks,
-    playlists_folder, filters_folder, system_playlists,
-    blank_playlist, app_version, background_color,
-):
-    global _root, _player, _right_column
-    global _get_filename_to_mal, _get_list_loaded, _get_light_mode
-    global _get_popout_controls
-    global _get_difficulty_dropdown, _get_selected_difficulty
-    global _get_metadata, _get_clean_filename, _get_file_metadata_by_name
-    global _get_tags, _get_file_censors, _get_format, _is_game
-    global _is_animethemes_stream_file, _is_downloading
-    global _series_overlap, _series_primary, _series_list, _series_set
-    global _series_cache_key, _get_series_popularity, _get_op_ed_counts
-    global _play_name_key
-    global _get_version_from_filename, _check_theme, _prioritize_theme_files
-    global _aired_to_season_year, _fetch_anilist_user_ids, _get_saved_playlist
-    global _update_current_index, _update_playlist_name, _show_playlist, _show_list
-    global _notify_playlist_list_updated
-    global _save_config, _save_metadata, _up_next_text, _prefetch_next_themes
-    global _queue_next_lightning_mode, _stop
-    global _download_to_cache, _cancel_download, _check_missing_artists
-    global _build_filename_to_mal_map, _update_extra_metadata, _update_metadata
-    global _refresh_popout_toggles
-    global _get_current_session_lightning_tracks
-    global PLAYLISTS_FOLDER, FILTERS_FOLDER, SYSTEM_PLAYLISTS
-    global BLANK_PLAYLIST, APP_VERSION, BACKGROUND_COLOR
-
-    _root = root
-    _player = player
-    _right_column = right_column
-    _get_filename_to_mal = get_filename_to_mal
-    _get_list_loaded = get_list_loaded
-    _get_light_mode = get_light_mode
-    _get_popout_controls = get_popout_controls
-    _get_difficulty_dropdown = get_difficulty_dropdown
-    _get_selected_difficulty = get_selected_difficulty
-    _get_metadata = get_metadata
-    _get_clean_filename = get_clean_filename
-    _get_file_metadata_by_name = get_file_metadata_by_name
-    _get_tags = get_tags
-    _get_file_censors = get_file_censors
-    _get_format = get_format
-    _is_game = is_game
-    _is_animethemes_stream_file = is_animethemes_stream_file
-    _is_downloading = is_downloading
-    _series_overlap = series_overlap
-    _series_primary = series_primary
-    _series_list = series_list
-    _series_set = series_set
-    _series_cache_key = series_cache_key
-    _get_series_popularity = get_series_popularity
-    _get_op_ed_counts = get_op_ed_counts
-    _play_name_key = play_name_key
-    _get_version_from_filename = get_version_from_filename
-    _check_theme = check_theme
-    _prioritize_theme_files = prioritize_theme_files
-    _aired_to_season_year = aired_to_season_year
-    _fetch_anilist_user_ids = fetch_anilist_user_ids
-    _get_saved_playlist = get_saved_playlist
-    _update_current_index = update_current_index
-    _update_playlist_name = update_playlist_name
-    _show_playlist = show_playlist
-    _show_list = show_list
-    _notify_playlist_list_updated = notify_playlist_list_updated
-    _save_config = save_config
-    _save_metadata = save_metadata
-    _up_next_text = up_next_text
-    _prefetch_next_themes = prefetch_next_themes
-    _queue_next_lightning_mode = queue_next_lightning_mode
-    _stop = stop
-    _download_to_cache = download_to_cache
-    _cancel_download = cancel_download
-    _check_missing_artists = check_missing_artists
-    _build_filename_to_mal_map = build_filename_to_mal_map
-    _update_extra_metadata = update_extra_metadata
-    _update_metadata = update_metadata
-    _refresh_popout_toggles = refresh_popout_toggles
-    _get_current_session_lightning_tracks = get_current_session_lightning_tracks
-    PLAYLISTS_FOLDER = playlists_folder
-    FILTERS_FOLDER = filters_folder
-    SYSTEM_PLAYLISTS = system_playlists
-    BLANK_PLAYLIST = blank_playlist
-    APP_VERSION = app_version
-    BACKGROUND_COLOR = background_color
+def _notify_playlist_list_updated():
+    """Refresh the right-column list view when the live playlist changes,
+    but only while the playlist list (not a system/filter list) is shown."""
+    if state.lists.list_loaded == "playlist":
+        playlist = state.metadata.playlist
+        state.lists.current_list_content = lists.convert_playlist_to_dict(playlist["playlist"])
+        state.lists.current_list_selected = playlist["current_index"]
+        lists.refresh_current_list()
 
 
 # ===========================================================================
@@ -281,6 +156,33 @@ def generate_playlist(include_non_local=False):
     for file in get_directory_files(include_non_local=include_non_local):
         playlis.append(file)
     return playlis
+
+
+def check_missing_artists():
+    """Build the 'Missing Artists' system playlist: themes whose own song entry
+    has an empty artist list."""
+    playlist = state.metadata.playlist
+    playlist["name"] = "Missing Artists"
+
+    def remove_previous_playlist():
+        try:
+            os.remove(os.path.join(PLAYLISTS_FOLDER, f"{playlist['name']}.json"))
+        except Exception as e:
+            print(e)
+
+    missing_artists = []
+    previous_removed = False
+    for filename in state.metadata.directory_files:
+        data = metadata_fetch.get_metadata(filename)
+        for theme in data.get("songs", []):
+            if theme.get("slug") == data.get("slug") and theme.get("artist") == []:
+                if not previous_removed:
+                    remove_previous_playlist()
+                    previous_removed = True
+                playlist_marks.toggle_theme(playlist["name"], filename)
+                missing_artists.append(filename)
+    playlist["playlist"] = missing_artists
+    transport.update_current_index(0)
 
 
 def empty_playlist():
@@ -315,13 +217,13 @@ def generate_playlist_button(include_non_local=None):
 
 def get_anilist_matching_files(user_id, only_watched, include_non_local):
     """Fetch and return matching files for an AniList user."""
-    user_anime_ids = _fetch_anilist_user_ids(user_id, only_watched)
+    user_anime_ids = metadata_fetch.fetch_anilist_user_ids(user_id, only_watched)
     if not user_anime_ids:
         return None
 
     matching_files = []
     for file in get_directory_files(include_non_local=include_non_local):
-        data = _get_metadata(file)
+        data = metadata_fetch.get_metadata(file)
         if data and str(data.get("anilist")) in user_anime_ids:
             matching_files.append(file)
 
@@ -769,21 +671,21 @@ def new_playlist(playlis, name=None):
     state.metadata.playlist.clear()
     state.metadata.playlist.update(copy.deepcopy(BLANK_PLAYLIST))
     playlist = state.metadata.playlist
-    _up_next_text()
-    _update_playlist_name(name=name)
+    metadata_display.up_next_text()
+    transport.update_playlist_name(name=name)
     playlist["playlist"] = playlis
-    _update_current_index(0)
-    _update_playlist_name()
-    _save_config()
+    transport.update_current_index(0)
+    transport.update_playlist_name()
+    config_io.save_config()
     playlist_changed = True
 
     if playlis and len(playlis) > 0:
         first_entry = playlis[0]
-        first_filename = _get_clean_filename(first_entry)
+        first_filename = entry_paths.get_clean_filename(first_entry)
         directory_files = state.metadata.directory_files
-        if _is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
+        if cache_download.is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
             threading.Thread(
-                target=lambda: _download_to_cache(first_filename, silent=False),
+                target=lambda: cache_download.download_to_cache(first_filename, silent=False),
                 daemon=True,
             ).start()
 
@@ -811,18 +713,18 @@ def create_infinite_playlist(include_non_local=None):
     get_next_infinite_track()
     def _init_tail():
         fill_speculative_tail()
-        _prefetch_next_themes()
-    _root.after(200, _init_tail)
-    _update_playlist_name("")
-    _save_config()
+        cache_download.prefetch_next_themes()
+    state.widgets.root.after(200, _init_tail)
+    transport.update_playlist_name("")
+    config_io.save_config()
 
     if playlist["playlist"] and len(playlist["playlist"]) > 0:
         first_entry = playlist["playlist"][0]
-        first_filename = _get_clean_filename(first_entry)
+        first_filename = entry_paths.get_clean_filename(first_entry)
         directory_files = state.metadata.directory_files
-        if _is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
+        if cache_download.is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
             threading.Thread(
-                target=lambda: _download_to_cache(first_filename, silent=False),
+                target=lambda: cache_download.download_to_cache(first_filename, silent=False),
                 daemon=True,
             ).start()
 
@@ -840,7 +742,7 @@ def randomize_playlist():
     if not confirm:
         return
     random.shuffle(playlist["playlist"])
-    _update_current_index(0)
+    transport.update_current_index(0)
 
 
 def weighted_randomize():
@@ -853,7 +755,7 @@ def weighted_randomize():
     if not confirm:
         return
     playlist["playlist"] = weighted_shuffle(playlist["playlist"])
-    _update_current_index(0)
+    transport.update_current_index(0)
 
 
 def weighted_shuffle(playlis):
@@ -861,7 +763,7 @@ def weighted_shuffle(playlis):
     if not playlis:
         return playlis
 
-    sorted_playlist = sorted(playlis, key=lambda x: _get_metadata(x).get("members", 0) or 0, reverse=True)
+    sorted_playlist = sorted(playlis, key=lambda x: metadata_fetch.get_metadata(x).get("members", 0) or 0, reverse=True)
     group_size = len(sorted_playlist) // 3
 
     popular = sorted_playlist[:group_size]
@@ -869,7 +771,7 @@ def weighted_shuffle(playlis):
     niche = sorted_playlist[group_size * 2:]
 
     def sort_by_year(entries):
-        return sorted(entries, key=lambda x: int(_get_metadata(x).get("season", "9999")[-4:]))
+        return sorted(entries, key=lambda x: int(metadata_fetch.get_metadata(x).get("season", "9999")[-4:]))
 
     popular_sorted = sort_by_year(popular)
     mid_sorted = sort_by_year(mid)
@@ -908,11 +810,11 @@ def weighted_shuffle(playlis):
     def find_suitable_swap(index):
         spacing = min_spacing
         for swap_index in range(index + spacing, len(final_playlist)):
-            if filename_group[_get_clean_filename(final_playlist[index])] == filename_group[_get_clean_filename(final_playlist[swap_index])]:
+            if filename_group[entry_paths.get_clean_filename(final_playlist[index])] == filename_group[entry_paths.get_clean_filename(final_playlist[swap_index])]:
                 if is_safe_swap(index, swap_index):
                     return swap_index
         for swap_index in range(index - spacing, -1, -1):
-            if filename_group[_get_clean_filename(final_playlist[index])] == filename_group[_get_clean_filename(final_playlist[swap_index])]:
+            if filename_group[entry_paths.get_clean_filename(final_playlist[index])] == filename_group[entry_paths.get_clean_filename(final_playlist[swap_index])]:
                 if is_safe_swap(index, swap_index):
                     return swap_index
         return None
@@ -921,14 +823,14 @@ def weighted_shuffle(playlis):
         def is_valid_placement(index, entry_data):
             for offset in range(1, min_spacing + 1):
                 if index - offset >= 0:
-                    if _series_overlap(entry_data, _get_metadata(final_playlist[index - offset])):
+                    if metadata_display.series_overlap(entry_data, metadata_fetch.get_metadata(final_playlist[index - offset])):
                         return False
                 if index + offset < len(final_playlist):
-                    if _series_overlap(entry_data, _get_metadata(final_playlist[index + offset])):
+                    if metadata_display.series_overlap(entry_data, metadata_fetch.get_metadata(final_playlist[index + offset])):
                         return False
             return True
-        data1 = _get_metadata(final_playlist[i1])
-        data2 = _get_metadata(final_playlist[i2])
+        data1 = metadata_fetch.get_metadata(final_playlist[i1])
+        data2 = metadata_fetch.get_metadata(final_playlist[i2])
         return is_valid_placement(i2, data1) and is_valid_placement(i1, data2)
 
     get_series_totals(check_all=False)
@@ -949,8 +851,8 @@ def weighted_shuffle(playlis):
                 f"({swapped_entrys} swapped / {skipped_entries} skipped)",
                 end="\r",
             )
-            _cur_data = _get_metadata(_get_clean_filename(final_playlist[i]))
-            _cur_primary = _series_primary(_cur_data)
+            _cur_data = metadata_fetch.get_metadata(entry_paths.get_clean_filename(final_playlist[i]))
+            _cur_primary = metadata_display.series_primary(_cur_data)
             total_series = series_totals.get(_cur_primary, 0)
             if total_series > 1:
                 if _cur_primary in exausted_series:
@@ -959,8 +861,8 @@ def weighted_shuffle(playlis):
                     min_spacing = int(min(350, max(3, (len(final_playlist) // total_series))) * (0.9 ** swap_pass))
                     for j in range(1, min_spacing + 1):
                         if i + j < len(final_playlist):
-                            _next_data = _get_metadata(_get_clean_filename(final_playlist[i + j]))
-                            if _series_overlap(_cur_data, _next_data):
+                            _next_data = metadata_fetch.get_metadata(entry_paths.get_clean_filename(final_playlist[i + j]))
+                            if metadata_display.series_overlap(_cur_data, _next_data):
                                 swap_index = find_suitable_swap(i + j)
                                 if swap_index:
                                     swapped_entrys += 1
@@ -1050,10 +952,10 @@ def get_series_boost_multiplier(series, cache=None):
     series_boost = 1
     directory_files = state.metadata.directory_files
     for _filename in directory_files:
-        _data = _get_metadata(_filename)
+        _data = metadata_fetch.get_metadata(_filename)
         if not _data:
             continue
-        if _series_set(_data) & series_target:
+        if metadata_display.series_set(_data) & series_target:
             series_boost = min(series_boost, get_boost_multiplier(_data.get("season", "Fall 2000")))
             if series_boost <= 1:
                 break
@@ -1064,9 +966,9 @@ def get_series_boost_multiplier(series, cache=None):
 
 def select_difficulty(event=None):
     playlist = state.metadata.playlist
-    difficulty_dropdown = _get_difficulty_dropdown()
+    difficulty_dropdown = state.playlist_ui.difficulty_dropdown
     value = difficulty_dropdown.get()
-    for i, d in enumerate(difficulty_options):
+    for i, d in enumerate(state.playlist_ui.difficulty_options):
         if d == value:
             playlist["difficulty"] = i
             refresh_pop_time_groups()
@@ -1076,8 +978,8 @@ def select_difficulty(event=None):
     if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
         value = difficulty_dropdown.get()
         popout_buttons_by_name["DIFFICULTY DROPDOWN"].set(value)
-    _refresh_popout_toggles()
-    _save_config()
+    popout_window._refresh_popout_toggles()
+    config_io.save_config()
 
 
 def _set_difficulty_from_menu(idx):
@@ -1086,24 +988,24 @@ def _set_difficulty_from_menu(idx):
     playlist["difficulty"] = idx
     refresh_pop_time_groups()
     try:
-        _get_selected_difficulty().set(difficulty_options[idx])
-        _get_difficulty_dropdown().selection_clear()
+        state.playlist_ui.selected_difficulty.set(state.playlist_ui.difficulty_options[idx])
+        state.playlist_ui.difficulty_dropdown.selection_clear()
     except Exception:
         pass
     popout_buttons_by_name = state.playback.popout_buttons_by_name
     if popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
-        popout_buttons_by_name["DIFFICULTY DROPDOWN"].set(difficulty_options[idx])
-    _refresh_popout_toggles()
-    _save_config()
+        popout_buttons_by_name["DIFFICULTY DROPDOWN"].set(state.playlist_ui.difficulty_options[idx])
+    popout_window._refresh_popout_toggles()
+    config_io.save_config()
 
 
 def _clear_speculative_tail():
     """Cancel downloads for and discard all speculative tail entries."""
     playlist = state.metadata.playlist
     for f in playlist.get("speculative_tail", []):
-        clean = _get_clean_filename(f)
-        if _is_downloading(clean):
-            _cancel_download(clean)
+        clean = entry_paths.get_clean_filename(f)
+        if cache_download.is_downloading(clean):
+            cache_download.cancel_download(clean)
     playlist["speculative_tail"] = []
     playlist.pop("spec_order", None)
 
@@ -1111,15 +1013,15 @@ def _clear_speculative_tail():
 def refresh_pop_time_groups(refetch_next=True):
     playlist = state.metadata.playlist
     get_pop_time_groups(refetch=True)
-    _update_current_index(save=False)
+    transport.update_current_index(save=False)
     if refetch_next and playlist["current_index"] == len(playlist["playlist"]) - 2:
         refetch_next_track()
     elif refetch_next:
         _clear_speculative_tail()
         global _refetch_debounce_id
         if _refetch_debounce_id is not None:
-            _root.after_cancel(_refetch_debounce_id)
-        _refetch_debounce_id = _root.after(5000, _start_refetch_prefetch)
+            state.widgets.root.after_cancel(_refetch_debounce_id)
+        _refetch_debounce_id = state.widgets.root.after(5000, _start_refetch_prefetch)
 
 
 def _start_refetch_prefetch():
@@ -1127,10 +1029,10 @@ def _start_refetch_prefetch():
     _refetch_debounce_id = None
     playlist = state.metadata.playlist
     if playlist.get("playlist"):
-        cn = _get_clean_filename(playlist["playlist"][-1])
-        if _is_downloading(cn):
-            _cancel_download(cn)
-    _prefetch_next_themes()
+        cn = entry_paths.get_clean_filename(playlist["playlist"][-1])
+        if cache_download.is_downloading(cn):
+            cache_download.cancel_download(cn)
+    cache_download.prefetch_next_themes()
 
 
 def refetch_next_track():
@@ -1138,30 +1040,38 @@ def refetch_next_track():
     playlist = state.metadata.playlist
 
     if playlist.get("playlist"):
-        old_next = _get_clean_filename(playlist["playlist"][-1])
-        if _is_downloading(old_next):
-            _cancel_download(old_next)
+        old_next = entry_paths.get_clean_filename(playlist["playlist"][-1])
+        if cache_download.is_downloading(old_next):
+            cache_download.cancel_download(old_next)
 
     _clear_speculative_tail()
 
     if _refetch_debounce_id is not None:
-        _root.after_cancel(_refetch_debounce_id)
+        state.widgets.root.after_cancel(_refetch_debounce_id)
         _refetch_debounce_id = None
 
     playlist["playlist"].pop(len(playlist["playlist"]) - 1)
     get_next_infinite_track(increment=False)
 
     if playlist.get("playlist"):
-        new_next = _get_clean_filename(playlist["playlist"][-1])
-        if _is_downloading(new_next):
-            _cancel_download(new_next)
+        new_next = entry_paths.get_clean_filename(playlist["playlist"][-1])
+        if cache_download.is_downloading(new_next):
+            cache_download.cancel_download(new_next)
 
-    _up_next_text()
-    _root.after(1000, _queue_next_lightning_mode)
+    metadata_display.up_next_text()
+    state.widgets.root.after(1000, lightning_manager.queue_next_lightning_mode)
 
-    _root.after(100, lambda: fill_speculative_tail())
+    state.widgets.root.after(100, lambda: fill_speculative_tail())
 
-    _refetch_debounce_id = _root.after(5000, _start_refetch_prefetch)
+    _refetch_debounce_id = state.widgets.root.after(5000, _start_refetch_prefetch)
+
+
+def reset_infinite_caches():
+    """Clear cached infinite-playlist grouping/cooldown data."""
+    global cached_pop_time_group, series_cooldowns_cache, file_cooldowns_cache
+    cached_pop_time_group = None
+    series_cooldowns_cache = None
+    file_cooldowns_cache = None
 
 
 def get_cached_deduplicated_files(include_non_local=True):
@@ -1191,7 +1101,7 @@ def deduplicate_theme_versions(filenames, keep_versions=False):
 
     theme_groups = {}
     for filename in filenames:
-        file_data = _get_file_metadata_by_name(filename)
+        file_data = metadata_fetch.get_file_metadata_by_name(filename)
         if file_data:
             mal_id = file_data.get("mal")
             slug = file_data.get("slug")
@@ -1211,7 +1121,7 @@ def deduplicate_theme_versions(filenames, keep_versions=False):
 
     deduplicated_set = set()
     for group_files in theme_groups.values():
-        best_file = _prioritize_theme_files(group_files)
+        best_file = metadata_display.prioritize_theme_files(group_files)
         if best_file:
             deduplicated_set.add(best_file)
 
@@ -1226,13 +1136,13 @@ def deduplicate_theme_versions(filenames, keep_versions=False):
 def get_directory_files(include_non_local=False, deduplicate_files=False, deduplicate_versions=False):
     """Get directory files with optional non-local and deduplication."""
     directory_files = state.metadata.directory_files
-    filename_to_mal = _get_filename_to_mal()
+    filename_to_mal = metadata_fetch.filename_to_mal
     if include_non_local:
         non_local_files = []
         for f in filename_to_mal:
             if '.' not in f:
                 continue
-            if f in directory_files or not _is_animethemes_stream_file(f):
+            if f in directory_files or not cache_download.is_animethemes_stream_file(f):
                 continue
             non_local_files.append(f)
         all_files = list(directory_files.keys()) + non_local_files
@@ -1275,13 +1185,13 @@ def get_pop_time_groups(refetch=False):
             )
 
         total_infinite_files = len(directory_options)
-        all_metadata = {f: _get_metadata(f) for f in directory_options}
-        current_session_lightning = _get_current_session_lightning_tracks()
+        all_metadata = {f: metadata_fetch.get_metadata(f) for f in directory_options}
+        current_session_lightning = session_stats.get_current_session_lightning_tracks()
 
         playlist_mal_history = []
         for f in playlist_history:
-            clean_f = _get_clean_filename(f)
-            metadata = _get_metadata(clean_f)
+            clean_f = entry_paths.get_clean_filename(f)
+            metadata = metadata_fetch.get_metadata(clean_f)
             if metadata and metadata.get("mal"):
                 if not f.startswith("[L]") or clean_f in current_session_lightning:
                     playlist_mal_history.append(metadata.get("mal"))
@@ -1291,7 +1201,7 @@ def get_pop_time_groups(refetch=False):
             mal_last_index[mal_id] = idx
         history_len = len(playlist_mal_history)
 
-        _check_theme("", "Favorite Themes")
+        playlist_marks.check_theme("", "Favorite Themes")
         check_theme_cache = state.playback.check_theme_cache
         favorited_set = check_theme_cache.get("Favorite Themes", set())
 
@@ -1315,7 +1225,7 @@ def get_pop_time_groups(refetch=False):
                 continue
 
             if group_series:
-                p = _get_series_popularity(d)
+                p = variety_round.get_series_popularity(d)
             else:
                 p = d.get("popularity") or INT_INF
             mal = d.get("mal")
@@ -1355,7 +1265,7 @@ def get_pop_time_groups(refetch=False):
             for entry, meta in all_metadata.items():
                 if meta:
                     if meta.get("aired"):
-                        season = _aired_to_season_year(meta.get("aired"), False)
+                        season = metadata_fetch.aired_to_season_year(meta.get("aired"), False)
                     else:
                         season = meta.get("season", "9999")[-4:]
                     year_cache[entry] = int(season[-4:])
@@ -1383,7 +1293,7 @@ def get_pop_time_groups(refetch=False):
             file_last_index[f] = idx
         ph_len = len(playlist_history)
         fav_boost = get_infinite_settings()["favorites_boost_multiplier"]
-        _check_theme("", "Favorite Themes")
+        playlist_marks.check_theme("", "Favorite Themes")
         check_theme_cache = state.playback.check_theme_cache
         favorited_set = check_theme_cache.get("Favorite Themes", set())
 
@@ -1468,11 +1378,11 @@ def get_next_infinite_track(increment=True, speculative=False):
     if result:
         playlist["playlist"].append(result)
         if playlist["current_index"] == -1:
-            _update_current_index(0)
+            transport.update_current_index(0)
         else:
-            _update_current_index()
+            transport.update_current_index()
         _notify_playlist_list_updated()
-        _prefetch_next_themes()
+        cache_download.prefetch_next_themes()
     return result
 
 
@@ -1480,7 +1390,7 @@ def _start_reroll_prefetch():
     """Called 5 s after the last re-roll to download the chosen next track."""
     global _reroll_debounce_id
     _reroll_debounce_id = None
-    _prefetch_next_themes()
+    cache_download.prefetch_next_themes()
 
 
 def is_reroll_valid():
@@ -1501,25 +1411,25 @@ def reroll_next():
     playlist = state.metadata.playlist
 
     if playlist["playlist"]:
-        old_next = _get_clean_filename(playlist["playlist"][-1])
-        if _is_downloading(old_next):
-            _cancel_download(old_next)
+        old_next = entry_paths.get_clean_filename(playlist["playlist"][-1])
+        if cache_download.is_downloading(old_next):
+            cache_download.cancel_download(old_next)
 
     if _reroll_debounce_id is not None:
-        _root.after_cancel(_reroll_debounce_id)
+        state.widgets.root.after_cancel(_reroll_debounce_id)
         _reroll_debounce_id = None
 
     playlist["playlist"].pop()
     get_next_infinite_track(increment=False)
-    _up_next_text()
-    _root.after(1000, _queue_next_lightning_mode)
+    metadata_display.up_next_text()
+    state.widgets.root.after(1000, lightning_manager.queue_next_lightning_mode)
 
     if playlist["playlist"]:
-        new_next = _get_clean_filename(playlist["playlist"][-1])
-        if _is_downloading(new_next):
-            _cancel_download(new_next)
+        new_next = entry_paths.get_clean_filename(playlist["playlist"][-1])
+        if cache_download.is_downloading(new_next):
+            cache_download.cancel_download(new_next)
 
-    _reroll_debounce_id = _root.after(5000, _start_reroll_prefetch)
+    _reroll_debounce_id = state.widgets.root.after(5000, _start_reroll_prefetch)
 
 
 _spec_pick_running = False
@@ -1544,7 +1454,7 @@ def _build_spec_snapshot():
         "next_pop_time_order": list(playlist.get("next_pop_time_order", [])),
         "difficulty": playlist["difficulty"],
         "inf_settings": inf_settings,
-        "light_mode": _get_light_mode(),
+        "light_mode": state.lightning.light_mode,
     }
 
 
@@ -1586,19 +1496,19 @@ def _select_speculative_track(snap):
     max_tag_tries = min(len(groups[p][t]) // 3, 5) if (p < len(groups) and t < len(groups[p])) else 0
     _hist_entry_cache = {}
 
-    op_count, ed_count = _get_op_ed_counts(snap["last50"])
+    op_count, ed_count = session_stats.get_op_ed_counts(snap["last50"])
     series_boost_cache = {}
-    current_session_lightning = _get_current_session_lightning_tracks()
+    current_session_lightning = session_stats.get_current_session_lightning_tracks()
 
     recent_tags_union = set()
     if inf_settings.get("tag_cooldown"):
         tag_cooldown_limit = inf_settings["tag_cooldown"]
         for recent_file in (playlist_history + spec_tail)[-tag_cooldown_limit:]:
-            recent_tags_union.update(_get_tags(_get_metadata(_get_clean_filename(recent_file))))
+            recent_tags_union.update(information_popup.get_tags(metadata_fetch.get_metadata(entry_paths.get_clean_filename(recent_file))))
 
     while not selected_file:
         if p < len(groups) and t < len(groups[p]):
-            group_op_count, group_ed_count = _get_op_ed_counts(groups[p][t])
+            group_op_count, group_ed_count = session_stats.get_op_ed_counts(groups[p][t])
         else:
             group_op_count, group_ed_count = 0, 0
         if group_ed_count == 0 or (ed_count + op_count) == 0:
@@ -1631,7 +1541,7 @@ def _select_speculative_track(snap):
             file = file.replace("[EXTRA]", "")
             extra_file = True
         else:
-            selected_mal = _get_metadata(file).get("mal")
+            selected_mal = metadata_fetch.get_metadata(file).get("mal")
 
         if extra_file or selected_mal not in checked_mal_ids:
             if extra_file:
@@ -1647,13 +1557,13 @@ def _select_speculative_track(snap):
                     selected_file = None
                     continue
                 checked_files.add(selected_file)
-                d = _get_metadata(selected_file)
+                d = metadata_fetch.get_metadata(selected_file)
 
                 if need_op and not utils.is_slug_op(d.get("slug")):
                     selected_file = None
                     continue
 
-                s_pop = _get_series_popularity(d)
+                s_pop = variety_round.get_series_popularity(d)
                 f_pop = d.get("popularity") or INT_INF
                 _base_s_cd, _ = get_cooldown_for_popularity(s_pop, effective_difficulty_range, groups)
                 _, _base_f_cd = get_cooldown_for_popularity(f_pop, effective_difficulty_range, groups)
@@ -1661,7 +1571,7 @@ def _select_speculative_track(snap):
                 f_limit = int(_base_f_cd * f_limit_mod)
 
                 if inf_settings.get("tag_cooldown") and recent_tags_union and tag_cooldown_failures < max_tag_tries:
-                    selected_tags = set(_get_tags(d))
+                    selected_tags = set(information_popup.get_tags(d))
                     if selected_tags & recent_tags_union:
                         tag_failed_files.append(selected_file)
                         selected_file = None
@@ -1673,7 +1583,7 @@ def _select_speculative_track(snap):
                         continue
 
                 if s_limit > 1 or f_limit > 1:
-                    series = _series_list(d)
+                    series = metadata_display.series_list(d)
                     file_boost = get_boost_multiplier(d.get("season", "Fall 2000"))
                     series_boost = get_series_boost_multiplier(series, cache=series_boost_cache)
                     d_mal = d.get("mal")
@@ -1682,23 +1592,23 @@ def _select_speculative_track(snap):
                     f_break = max(_min_f_limit * f_limit_mod, f_limit / file_boost)
                     s_thresh = max(_min_s_limit * s_limit_mod, s_limit / series_boost)
                     cooldown_count = 0
-                    selected_base_f = _play_name_key(selected_file)
+                    selected_base_f = metadata_display._play_name_key(selected_file)
 
                     for f in reversed(playlist_history):
                         is_l = f.startswith("[L]")
                         cooldown_count += 0.25 if is_l else 1
-                        clean_f = _get_clean_filename(f)
+                        clean_f = entry_paths.get_clean_filename(f)
                         if not snap_light_mode and is_l and clean_f not in current_session_lightning:
                             continue
                         if cooldown_count >= f_break:
                             break
                         if clean_f not in _hist_entry_cache:
-                            f_d = _get_metadata(clean_f)
+                            f_d = metadata_fetch.get_metadata(clean_f)
                             _hist_entry_cache[clean_f] = (
-                                _play_name_key(clean_f),
+                                metadata_display._play_name_key(clean_f),
                                 f_d.get("mal"),
                                 f_d.get("slug"),
-                                _series_set(f_d),
+                                metadata_display.series_set(f_d),
                             )
                         _base_f, _f_mal, _f_slug, _f_series = _hist_entry_cache[clean_f]
                         if (clean_f == selected_file or _base_f == selected_base_f
@@ -1739,7 +1649,7 @@ def fill_speculative_tail(n=None):
     if len(playlist["speculative_tail"]) >= n:
         return
     if _spec_pick_running:
-        _root.after(30, lambda: fill_speculative_tail(n))
+        state.widgets.root.after(30, lambda: fill_speculative_tail(n))
         return
 
     snap = _build_spec_snapshot()
@@ -1762,9 +1672,9 @@ def fill_speculative_tail(n=None):
                 if final_spec_order > playlist.get("spec_order", 0):
                     playlist["spec_order"] = final_spec_order
             if len(playlist.get("speculative_tail", [])) < n:
-                _root.after(5, lambda: fill_speculative_tail(n))
+                state.widgets.root.after(5, lambda: fill_speculative_tail(n))
 
-        _root.after(0, _on_main)
+        state.widgets.root.after(0, _on_main)
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -1780,16 +1690,16 @@ def _promote_or_generate_next():
         next_playlist_order()
         playlist["playlist"].append(promoted)
         if playlist["current_index"] == -1:
-            _update_current_index(0)
+            transport.update_current_index(0)
         else:
-            _update_current_index()
+            transport.update_current_index()
         _notify_playlist_list_updated()
-        _prefetch_next_themes()
-        _root.after(50, lambda: fill_speculative_tail())
+        cache_download.prefetch_next_themes()
+        state.widgets.root.after(50, lambda: fill_speculative_tail())
     else:
         _threaded_generate_next()
         playlist.pop("spec_order", None)
-        _root.after(50, lambda: fill_speculative_tail())
+        state.widgets.root.after(50, lambda: fill_speculative_tail())
 
 
 def _threaded_generate_next():
@@ -1810,15 +1720,15 @@ def _threaded_generate_next():
             if result:
                 playlist["playlist"].append(result)
                 if playlist["current_index"] == -1:
-                    _update_current_index(0)
+                    transport.update_current_index(0)
                 else:
-                    _update_current_index()
+                    transport.update_current_index()
                 _notify_playlist_list_updated()
-                _prefetch_next_themes()
+                cache_download.prefetch_next_themes()
             else:
                 get_next_infinite_track()
 
-        _root.after(0, _apply)
+        state.widgets.root.after(0, _apply)
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -1883,7 +1793,7 @@ def create_virtual_groups_for_random(sorted_groups):
     virtual_groups = [[], [], []]
     for file in all_files_flat:
         clean_file = file.replace("[EXTRA]", "")
-        metadata = _get_metadata(clean_file)
+        metadata = metadata_fetch.get_metadata(clean_file)
         popularity = metadata.get("popularity") or float('inf')
 
         if popularity <= 250:
@@ -1896,9 +1806,9 @@ def create_virtual_groups_for_random(sorted_groups):
     structured_virtual_groups = []
     for i, virtual_group in enumerate(virtual_groups):
         def get_year(entry):
-            meta = _get_metadata(entry.replace("[EXTRA]", ""))
+            meta = metadata_fetch.get_metadata(entry.replace("[EXTRA]", ""))
             if meta and meta.get("aired"):
-                season = _aired_to_season_year(meta.get("aired"), False)
+                season = metadata_fetch.aired_to_season_year(meta.get("aired"), False)
             else:
                 season = meta.get("season", "9999")[-4:] if meta else "9999"
             return int(season[-4:])
@@ -1931,7 +1841,7 @@ def compute_cooldowns(groups, refetch=False):
             all_files = [f for subgroup in group for f in subgroup]
             unique_files = set(f.replace("[EXTRA]", "") for f in all_files)
             file_count = len(unique_files)
-            unique_series = set(_series_cache_key(_get_metadata(f.replace("[EXTRA]", ""))) for f in all_files)
+            unique_series = set(metadata_display.series_cache_key(metadata_fetch.get_metadata(f.replace("[EXTRA]", ""))) for f in all_files)
             series_count = len(unique_series)
 
             base_s_cd = series_count
@@ -1953,11 +1863,11 @@ def compute_cooldowns(groups, refetch=False):
 
 def save():
     playlist = state.metadata.playlist
-    save_playlist(playlist, playlist["current_index"], _root)
+    save_playlist(playlist, playlist["current_index"], state.widgets.root)
 
 
 def save_as():
-    save_playlist_as(_root)
+    save_playlist_as(state.widgets.root)
 
 
 def _write_playlist(name):
@@ -1972,8 +1882,8 @@ def _write_playlist(name):
             playlist_to_save["infinite_settings"]
         )
     utils._atomic_json_write(filename, playlist_to_save, indent=4)
-    _update_playlist_name(name)
-    _save_config()
+    transport.update_playlist_name(name)
+    config_io.save_config()
     print(f"Playlist saved as {filename}")
 
 
@@ -1995,7 +1905,7 @@ def save_playlist_as(parent=None):
     if not name:
         return
     elif name.lower() == "missing artists":
-        _check_missing_artists()
+        check_missing_artists()
         return
     playlist["name"] = name
     _write_playlist(name)
@@ -2015,22 +1925,22 @@ def _load_playlist_by_name(name: str, save_first: bool = False) -> bool:
     data = utils.convert_infinity_markers(data)
     state.metadata.playlist.clear()
     state.metadata.playlist.update(data)
-    _update_playlist_name()
+    transport.update_playlist_name()
     print(f"Loaded playlist: {name}")
     playlist_loaded = True
     playlist = state.metadata.playlist
     if playlist.get("infinite"):
         refresh_pop_time_groups(False)
     if name.lower() == "missing artists":
-        _check_missing_artists()
-    _update_current_index()
-    _save_config()
+        check_missing_artists()
+    transport.update_current_index()
+    config_io.save_config()
     return True
 
 
 def load_playlist(index):
     """Loads a saved playlist from JSON."""
-    list_loaded = _get_list_loaded()
+    list_loaded = state.lists.list_loaded
     if list_loaded == "load_playlist":
         playlists = get_playlists_dict(exclude_system=True)
     elif list_loaded == "load_system_playlist":
@@ -2046,7 +1956,7 @@ def load_playlist(index):
     confirm_save_playlist("loading a new playlist")
     if not _load_playlist_by_name(name):
         return None
-    list_loaded = _get_list_loaded()
+    list_loaded = state.lists.list_loaded
     if list_loaded == "load_playlist":
         load(True)
     elif list_loaded == "load_system_playlist":
@@ -2061,8 +1971,8 @@ def load(update=False):
         if playlist["name"] == value:
             selected = key
             break
-    _show_list(
-        "load_playlist", _right_column, playlists, get_playlist_name,
+    lists.show_list(
+        "load_playlist", state.widgets.right_column, playlists, get_playlist_name,
         load_playlist, selected, update, delete_playlist, title="LOAD PLAYLIST",
     )
 
@@ -2075,8 +1985,8 @@ def load_system_playlist(update=False):
         if playlist["name"] == value:
             selected = key
             break
-    _show_list(
-        "load_system_playlist", _right_column, playlists, get_playlist_name,
+    lists.show_list(
+        "load_system_playlist", state.widgets.right_column, playlists, get_playlist_name,
         load_playlist, selected, update, delete_playlist, title="SYSTEM PLAYLISTS",
     )
 
@@ -2089,8 +1999,8 @@ def delete(update=False):
         if playlist["name"] == value:
             selected = key
             break
-    _show_list(
-        "delete_playlist", _right_column, playlists, get_playlist_name,
+    lists.show_list(
+        "delete_playlist", state.widgets.right_column, playlists, get_playlist_name,
         delete_playlist, selected, update, title="DELETE PLAYLIST",
     )
 
@@ -2102,7 +2012,7 @@ def get_mergeable_playlists():
     for _, name in playlists.items():
         if current_name and name == current_name:
             continue
-        data = _get_saved_playlist(name)
+        data = playlist_marks.get_playlist(name)
         if data.get("infinite"):
             continue
         mergeable.append(name)
@@ -2116,8 +2026,8 @@ def merge_playlist(update=False):
     if not playlists:
         messagebox.showinfo("Merge Playlist", "No non-infinite playlists available to merge.")
         return
-    _show_list(
-        "merge_playlist", _right_column, playlists, get_playlist_name,
+    lists.show_list(
+        "merge_playlist", state.widgets.right_column, playlists, get_playlist_name,
         merge_playlist_select, -1, update, title="MERGE INTO PLAYLIST",
     )
 
@@ -2128,7 +2038,7 @@ def merge_playlist_select(index):
     if index not in playlists:
         return
     name = playlists[index]
-    data = _get_saved_playlist(name)
+    data = playlist_marks.get_playlist(name)
     if data.get("infinite"):
         return
     confirm = messagebox.askyesno("Merge Playlist",
@@ -2145,15 +2055,15 @@ def merge_playlist_select(index):
             added += 1
     if added > 0:
         playlist_changed = True
-        _save_config()
-        _update_current_index(save=False)
+        config_io.save_config()
+        transport.update_current_index(save=False)
         merge_playlist(True)
     messagebox.showinfo("Merge Playlist", f"Added {added} new theme(s) from '{name}'.")
 
 
 def delete_playlist(index):
     """Deletes a playlist by index after confirmation."""
-    list_loaded = _get_list_loaded()
+    list_loaded = state.lists.list_loaded
     if list_loaded == "load_playlist":
         playlists = get_playlists_dict(exclude_system=True)
     elif list_loaded == "load_system_playlist":
@@ -2185,7 +2095,7 @@ def delete_playlist(index):
         print(f"Error deleting playlist: {e}")
         return
 
-    list_loaded = _get_list_loaded()
+    list_loaded = state.lists.list_loaded
     if list_loaded == "load_playlist":
         load(True)
     elif list_loaded == "load_system_playlist":
@@ -2208,9 +2118,9 @@ def delete_file_by_filename(filename):
                                    f"Are you sure you want to delete this file?\n\n{filename}")
     if confirm:
         try:
-            _stop()
+            transport.stop()
 
-            file_data = _get_file_metadata_by_name(filename)
+            file_data = metadata_fetch.get_file_metadata_by_name(filename)
 
             os.remove(filepath)
             print(f"Deleted file: {filename}")
@@ -2219,7 +2129,7 @@ def delete_file_by_filename(filename):
 
             file_metadata = state.metadata.file_metadata
             metadata_updated = False
-            if file_data and not _is_animethemes_stream_file(filename):
+            if file_data and not cache_download.is_animethemes_stream_file(filename):
                 mal_id = file_data.get("mal")
                 slug = file_data.get("slug")
                 version = str(file_data.get("version")) if file_data.get("version") is not None else "null"
@@ -2236,12 +2146,12 @@ def delete_file_by_filename(filename):
                             del themes[slug]
 
             if metadata_updated:
-                _build_filename_to_mal_map()
-                _save_metadata()
+                metadata_fetch.build_filename_to_mal_map()
+                metadata_io.save_metadata()
 
             currently_playing = state.playback.currently_playing
             if currently_playing and currently_playing.get("filename") == filename:
-                _root.after(100, lambda: _update_extra_metadata())
+                state.widgets.root.after(100, lambda: metadata_panel.update_extra_metadata())
 
         except Exception as e:
             messagebox.showerror("Error", f"Could not delete file:\n{e}")
@@ -2312,7 +2222,7 @@ def rename_file_by_filename(filename):
 
     currently_playing = state.playback.currently_playing
     if currently_playing.get("filename") == filename:
-        _stop()
+        transport.stop()
 
     try:
         os.rename(filepath, new_filepath)
@@ -2322,7 +2232,7 @@ def rename_file_by_filename(filename):
         directory_files[new_filename] = new_filepath
         invalidate_deduplicated_cache()
 
-        file_data = _get_file_metadata_by_name(filename)
+        file_data = metadata_fetch.get_file_metadata_by_name(filename)
         if file_data:
             mal_id = file_data.get("mal")
             slug = file_data.get("slug")
@@ -2334,7 +2244,7 @@ def rename_file_by_filename(filename):
                     if filename in themes[slug][version]:
                         themes[slug][version][new_filename] = themes[slug][version][filename]
                         del themes[slug][version][filename]
-                        _build_filename_to_mal_map()
+                        metadata_fetch.build_filename_to_mal_map()
 
         playlist = state.metadata.playlist
         if playlist and playlist.get("playlist"):
@@ -2351,11 +2261,11 @@ def rename_file_by_filename(filename):
                 prefix = "[L]" if old_entry.startswith("[L]") else ""
                 currently_playing["playlist_entry"] = prefix + new_filename
 
-        _save_metadata()
-        _save_config()
+        metadata_io.save_metadata()
+        config_io.save_config()
 
         if currently_playing.get("filename") == new_filename:
-            _update_metadata()
+            metadata_panel.update_metadata()
         print(f"Renamed '{filename}' to '{new_filename}'")
 
     except Exception as e:
@@ -2402,7 +2312,7 @@ def edit_file_volume_by_filename(filename):
     if not confirm:
         return
 
-    _stop()
+    transport.stop()
     base, ext = os.path.splitext(filepath)
     temp_filepath = f"{base}_temp_volume{ext}"
 
@@ -2491,7 +2401,7 @@ def convert_file_format_by_filename(filename):
     if not confirm:
         return
 
-    _stop()
+    transport.stop()
 
     try:
         if output_format in ['mp4', 'mov']:
@@ -2594,7 +2504,7 @@ def convert_file_format_by_filename(filename):
                     invalidate_deduplicated_cache()
 
                     file_metadata = state.metadata.file_metadata
-                    file_data = _get_file_metadata_by_name(filename)
+                    file_data = metadata_fetch.get_file_metadata_by_name(filename)
                     if file_data:
                         mal_id = file_data.get("mal")
                         slug = file_data.get("slug")
@@ -2606,7 +2516,7 @@ def convert_file_format_by_filename(filename):
                                 if filename in themes[slug][version]:
                                     themes[slug][version][new_filename] = themes[slug][version][filename]
                                     del themes[slug][version][filename]
-                                    _build_filename_to_mal_map()
+                                    metadata_fetch.build_filename_to_mal_map()
 
                     playlist = state.metadata.playlist
                     if playlist and playlist.get("playlist"):
@@ -2614,8 +2524,8 @@ def convert_file_format_by_filename(filename):
                             if playlist_file == filename:
                                 playlist["playlist"][i] = new_filename
 
-                    _save_metadata()
-                    _save_config()
+                    metadata_io.save_metadata()
+                    config_io.save_config()
 
                     messagebox.showinfo("File Replaced",
                                        f"Original file has been replaced with the converted version.\n"
@@ -2649,13 +2559,13 @@ def convert_file_format_by_filename(filename):
 
 def _cut_video_at_time(filename, cut_mode):
     """Shared helper to cut video before or after current time using FFmpeg."""
-    if not _player.get_media():
+    if not state.widgets.player.get_media():
         error_title = "Cut Before" if cut_mode == "before" else "Cut After"
         messagebox.showerror(error_title,
                              "No video is currently loaded. Please load a video first.")
         return
 
-    current_time_ms = _player.get_time()
+    current_time_ms = state.widgets.player.get_time()
     if current_time_ms <= 0:
         error_title = "Cut Before" if cut_mode == "before" else "Cut After"
         messagebox.showerror(error_title, "Cannot determine current playback time.")
@@ -2840,7 +2750,7 @@ def _cut_video_at_time(filename, cut_mode):
 
             if replace:
                 try:
-                    _stop()
+                    transport.stop()
                     os.remove(filepath)
                     os.rename(cut_filepath, filepath)
                     messagebox.showinfo("File Replaced",
@@ -2891,7 +2801,7 @@ def get_series_totals(refetch=True, check_all=True):
     if refetch or not series_totals:
         series_counter = Counter()
         for filename in check_list:
-            data = _get_metadata(filename)
+            data = metadata_fetch.get_metadata(filename)
             series = data.get("series") or data.get("title", "Unknown")
             if isinstance(series, list):
                 for s in series:
@@ -2911,7 +2821,7 @@ filter_popup = None
 
 def load_filters(update=False):
     filters = get_all_filters()
-    _show_list("load_filters", _right_column, filters, get_filter_name, load_filter, -1, update, delete_filter, title="LOAD FILTER")
+    lists.show_list("load_filters", state.widgets.right_column, filters, get_filter_name, load_filter, -1, update, delete_filter, title="LOAD FILTER")
 
 
 def get_filter_name(key, value):
@@ -2932,14 +2842,14 @@ def load_filter(index):
         playlist["filter"] = filters
         print("Applied Filters:", filters)
         refresh_pop_time_groups()
-        _save_config()
+        config_io.save_config()
     else:
         filter_playlist(filters)
 
 
 def delete_filters(update=False):
     filters = get_all_filters()
-    _show_list("delete_filters", _right_column, filters, get_filter_name, delete_filter, -1, update, title="DELETE FILTER")
+    lists.show_list("delete_filters", state.widgets.right_column, filters, get_filter_name, delete_filter, -1, update, title="DELETE FILTER")
 
 
 def delete_filter(index):
@@ -2959,7 +2869,7 @@ def delete_filter(index):
     except Exception as e:
         print(f"Error deleting filter: {e}")
         return
-    list_loaded = _get_list_loaded()
+    list_loaded = state.lists.list_loaded
     if list_loaded == "load_filters":
         load_filters(True)
     elif list_loaded == "delete_filters":
@@ -3029,7 +2939,7 @@ def show_filter_popup():
     popup_width = 550
     popup_height = 700
     filter_popup = popup
-    popout_controls = _get_popout_controls()
+    popout_controls = popout_window.popout_controls
     if popout_controls and popout_controls.winfo_exists():
         popup.update_idletasks()
         x = popout_controls.winfo_x()
@@ -3223,7 +3133,7 @@ def show_filter_popup():
             playlist["filter"] = f
             print("Applied Filters:", f)
             refresh_pop_time_groups()
-            _save_config()
+            config_io.save_config()
         else:
             filter_playlist(f)
         popup.destroy()
@@ -3255,7 +3165,7 @@ def show_filter_popup():
 def get_all_seasons(playlis):
     seasons = set()
     for file in playlis:
-        data = _get_metadata(file)
+        data = metadata_fetch.get_metadata(file)
         if data:
             season = data.get("season")
             if season:
@@ -3297,7 +3207,7 @@ def get_lowest_parameter(parameter, playlis=None):
         else:
             playlis = playlist["playlist"]
     for filename in playlis:
-        data = _get_metadata(filename)
+        data = metadata_fetch.get_metadata(filename)
         if data:
             item = data.get(parameter, lowest)
             if item and item < lowest:
@@ -3314,7 +3224,7 @@ def get_highest_parameter(parameter, playlis=None):
         else:
             playlis = playlist["playlist"]
     for filename in playlis:
-        data = _get_metadata(filename)
+        data = metadata_fetch.get_metadata(filename)
         if data:
             item = data.get(parameter, highest)
             if item and item > highest:
@@ -3325,7 +3235,7 @@ def get_highest_parameter(parameter, playlis=None):
 def get_all_artists(playlis):
     artists = []
     for filename in playlis:
-        data = _get_metadata(filename)
+        data = metadata_fetch.get_metadata(filename)
         if data:
             for song in data.get('songs', []):
                 for artist in song.get("artist", []):
@@ -3338,14 +3248,14 @@ def get_all_tags(playlis=None, game=True, double=False):
     tags = []
 
     def add_tag(anime):
-        if game or not _is_game(anime):
-            for tag in _get_tags(anime):
+        if game or not metadata_display.is_game(anime):
+            for tag in information_popup.get_tags(anime):
                 if double or tag not in tags:
                     tags.append(tag)
 
     if playlis:
         for f in playlis:
-            data = _get_metadata(f)
+            data = metadata_fetch.get_metadata(f)
             if data:
                 add_tag(data)
     else:
@@ -3357,8 +3267,8 @@ def get_all_tags(playlis=None, game=True, double=False):
 def get_all_studios(playlis, games=True, repeats=False):
     studios = []
     for filename in playlis:
-        data = _get_metadata(filename)
-        if data and (games or not _is_game(data)):
+        data = metadata_fetch.get_metadata(filename)
+        if data and (games or not metadata_display.is_game(data)):
             for studio in data.get('studios', []):
                 if studio not in studios or repeats:
                     studios.append(studio)
@@ -3471,7 +3381,7 @@ def filter_playlist(filters):
         if has_playlist_filter_exclude and filename in playlist_filter_exclude_files:
             continue
 
-        data = _get_metadata(filename)
+        data = metadata_fetch.get_metadata(filename)
         if not data:
             continue
 
@@ -3523,7 +3433,7 @@ def filter_playlist(filters):
                 continue
 
         if has_tags_include or has_tags_include_and or has_tags_exclude:
-            tags = set(_get_tags(data))
+            tags = set(information_popup.get_tags(data))
             if has_tags_include and tags.isdisjoint(filter_tags_include_set):
                 continue
             if has_tags_include_and and not filter_tags_include_and_set.issubset(tags):
@@ -3561,23 +3471,23 @@ def filter_playlist(filters):
                 overlap = source.get("overlap")
                 if needs_overlap_check and overlap == "Over":
                     if has_censors is None:
-                        has_censors = bool(_get_file_censors(filename))
+                        has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("OVERLAP (With Censors)" if has_censors else "OVERLAP (Without Censors)")
                 elif needs_transition_check and overlap == "Transition":
                     if has_censors is None:
-                        has_censors = bool(_get_file_censors(filename))
+                        has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("TRANSITION (With Censors)" if has_censors else "TRANSITION (Without Censors)")
                 if needs_spoiler_check and source.get("spoiler"):
                     if has_censors is None:
-                        has_censors = bool(_get_file_censors(filename))
+                        has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("SPOILER (With Censors)" if has_censors else "SPOILER (Without Censors)")
                 if needs_nsfw_check and source.get("nsfw"):
                     if has_censors is None:
-                        has_censors = bool(_get_file_censors(filename))
+                        has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("NSFW (With Censors)" if has_censors else "NSFW (Without Censors)")
-                if needs_movie_ed_check and _get_format(data) == "Movie" and "ED" in slug:
+                if needs_movie_ed_check and information_popup.get_format(data) == "Movie" and "ED" in slug:
                     if has_censors is None:
-                        has_censors = bool(_get_file_censors(filename))
+                        has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("MOVIE EDs (With Censors)" if has_censors else "MOVIE EDs (Without Censors)")
 
             if has_themes_exclude and not theme_flags.isdisjoint(themes_exclude_set):
@@ -3594,8 +3504,8 @@ def filter_playlist(filters):
     if not playlist.get("infinite"):
         playlist["playlist"] = filtered
         print("Applied Filters:", filters)
-        _show_playlist(True)
-        _update_current_index(0)
+        lists.show_playlist(True)
+        transport.update_current_index(0)
         messagebox.showinfo("Playlist Filtered", f"Playlist filtered to {len(playlist['playlist'])} videos.")
     return filtered
 
@@ -3611,7 +3521,7 @@ def build_best_duplicate_map(playlis):
         file_path = directory_files.get(file)
         if not file_path:
             continue
-        data = _get_metadata(file)
+        data = metadata_fetch.get_metadata(file)
         if not data:
             continue
         key = (data.get("mal"), data.get("slug"), extract_version(file))
@@ -3630,7 +3540,7 @@ def check_best_duplicate_theme(filename, data):
 
 
 def extract_version(filename):
-    version_str = _get_version_from_filename(filename)
+    version_str = metadata_fetch.get_version_from_filename(filename)
     if version_str:
         try:
             return int(version_str)
@@ -3649,7 +3559,7 @@ def build_version_index(playlis):
     global _lowest_version_map
     _lowest_version_map = {}
     for file in playlis:
-        data = _get_metadata(file)
+        data = metadata_fetch.get_metadata(file)
         if not data:
             continue
         mal = data.get("mal")
@@ -3691,7 +3601,7 @@ def sort_playlist(index):
     season_order = {"Winter": 1, "Spring": 2, "Summer": 3, "Fall": 4}
 
     def extract_season_data(filename):
-        metadata = _get_metadata(filename)
+        metadata = metadata_fetch.get_metadata(filename)
         season_str = metadata.get("season", "")
         if season_str:
             parts = season_str.split()
@@ -3700,18 +3610,18 @@ def sort_playlist(index):
         return (float("inf"), float("inf"))
 
     playlist["playlist"].sort(key=lambda filename: (
-        extract_season_data(_get_clean_filename(filename)) if key == "season" else
-        float(_get_metadata(_get_clean_filename(filename)).get(key, 0) or 0) if key in {"members", "score"} else
-        _get_metadata(_get_clean_filename(filename)).get(key, "").lower() if isinstance(_get_metadata(_get_clean_filename(filename)).get(key), str) else "",
+        extract_season_data(entry_paths.get_clean_filename(filename)) if key == "season" else
+        float(metadata_fetch.get_metadata(entry_paths.get_clean_filename(filename)).get(key, 0) or 0) if key in {"members", "score"} else
+        metadata_fetch.get_metadata(entry_paths.get_clean_filename(filename)).get(key, "").lower() if isinstance(metadata_fetch.get_metadata(entry_paths.get_clean_filename(filename)).get(key), str) else "",
         filename.lower()
     ), reverse=reverse)
-    _update_current_index(0)
-    _show_playlist()
-    _save_config()
+    transport.update_current_index(0)
+    lists.show_playlist()
+    config_io.save_config()
 
 
 def get_playlist_name(key, value):
-    data = _get_saved_playlist(value)
+    data = playlist_marks.get_playlist(value)
     if data.get("infinite"):
         return f"{value}[\u221e]"
     else:

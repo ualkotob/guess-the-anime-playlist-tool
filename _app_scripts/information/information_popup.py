@@ -10,7 +10,7 @@ window). The module also owns:
     pinned over the mpv window;
   - geometry helpers (``_get_mpv_window_rect``, ``_get_mpv_client_rect_logical``,
     ``_get_osd_video_rect``, ``_get_effective_video_rect``) — used by overlay
-    siblings via their own ``set_context`` injection;
+    siblings, which import this module and call them directly;
   - data-shaping helpers used both by the popup and by sibling modules:
     ``get_artist_themes_data``, ``get_studio_entries_data``, ``get_format``,
     ``get_episode_display``, ``_shorten_platform``, ``get_tags_string``,
@@ -18,61 +18,67 @@ window). The module also owns:
   - the ``animate_window`` helper kept here for parity with the original
     section (used by main's title-card and dialog animations).
 
-State staying in main (read from many places in main; written via ``_main``):
-  - ``title_info_only``, ``artist_info_display``, ``studio_info_display``,
-    ``season_info_display``, ``year_info_display`` — flags read in
-    update_popout_title_button_text logic, web-toggle pushes, keyboard
-    shortcuts, lightning round logic; see [[state-stays-with-its-readers]].
-  - ``_title_popup_intent`` — read by ``is_title_window_up`` (which is
-    re-exported), also written via ``_main``.
+Shared popup state lives on ``state.info_display``:
+  - ``title_info_only`` / ``artist_info_display`` / ``studio_info_display`` /
+    ``season_info_display`` / ``year_info_display`` — info-mode flags read by
+    web-toggle pushes, keyboard shortcuts, popout buttons, lightning logic.
+  - ``_title_popup_intent`` — read by ``is_title_window_up`` (re-exported).
 
-State owned here:
+State owned here (module-locals):
+  - ``_INFO_POPUP_ASS_OSD_ID`` — ASS osd-overlay id for the popup.
   - ``_title_popup_info_type_cache`` — last info_type, used by resize hook.
   - ``_mpv_tracked_windows`` and ``_mpv_tracker_*`` — tracker loop state.
   - ``_title_popup_last_mpv_size`` / ``_title_popup_anim_*`` — slide animation.
 
-External state read via ``_main`` (live attribute access on main module):
-  player, root, web_server, bonus, currently_playing, fixed_current_round,
-  anilist_metadata, anime_metadata, black_overlay, _blind_osd_color_cache,
-  _video_frame_active, _video_frame_zoom, _FRAME_PAN_Y, _tracked_overlay_windows,
-  OVERLAY_BACKGROUND_COLOR, OVERLAY_TEXT_COLOR, INVERSE_OVERLAY_TEXT_COLOR,
-  INVERSE_OVERLAY_BACKGROUND_COLOR, INT_INF, _INFO_POPUP_ASS_OSD_ID,
-  title_top_info_txt, plus utility functions (_set_blind_osd_alpha,
-  _color_str_to_ass_bgr, _get_ass_font, _osd_command, _refresh_popout_toggles,
-  _push_web_toggles, send_scoreboard_command, guess_extra, blind,
-  is_peek_active, toggle_peek, get_youtube_display_title, get_display_title,
-  format_slug, format_seconds, get_youtube_duration, check_favorited,
-  get_metadata, is_game, series_list, overall_theme_num_display, _safe_int,
-  get_filenames_from_artist, get_filenames_from_studio, get_base_title,
-  get_artists_string).
+Collaborators are reached by importing sibling modules directly (see imports
+below). ``_osd_command`` is a thin module-local wrapper around
+``state.widgets.player._p.command`` (mirrors the copy in main/censors).
+``title_top_info_txt`` is a SETTINGS_SCHEMA config scalar on
+``state.config``. No main context injection is needed.
 """
 from __future__ import annotations
+from core.game_state import state
 
 import math
 import re
 import time
 from datetime import datetime
 
+import _app_scripts.file.web_server.web_server as web_server
+import _app_scripts.bonus.bonus as bonus
+import _app_scripts.bonus.answers as bonus_answers
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.file.scoreboard_control as scoreboard_control
+import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
+import _app_scripts.queue_round.lightning_rounds.peek_dispatch as peek_dispatch
+import _app_scripts.queue_round.lightning_rounds.title_overlay as title_overlay
+import _app_scripts.playback.osd_text as osd_text
+import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.popout.popout_window as popout_window
+import _app_scripts.utils as utils
 
-# ---------------------------------------------------------------------------
-# Context — `_main` is the live main module; populated by set_context.
-# ---------------------------------------------------------------------------
-_main = None
+
+# ASS osd-overlay id for the anime info popup (was main's _INFO_POPUP_ASS_OSD_ID).
+_INFO_POPUP_ASS_OSD_ID = 59
 
 
-def set_context(*, main_module):
-    g = globals()
-    g['_main'] = main_module
+def _osd_command(*args):
+    """Send an osd-overlay command to the main player."""
+    try:
+        state.widgets.player._p.command(*args)
+    except Exception:
+        pass
 
 
 def toggle_auto_info_start():
-    _main.auto_info_start = not _main.auto_info_start
-    print("Auto Info Popup at start: " + str(_main.auto_info_start))
+    state.controls.auto_info_start = not state.controls.auto_info_start
+    print("Auto Info Popup at start: " + str(state.controls.auto_info_start))
 
 
 def toggle_auto_info_end():
-    _main.auto_info_end = not _main.auto_info_end
-    print("Auto Info Popup at end: " + str(_main.auto_info_end))
+    state.controls.auto_info_end = not state.controls.auto_info_end
+    print("Auto Info Popup at end: " + str(state.controls.auto_info_end))
 
 
 # ---------------------------------------------------------------------------
@@ -96,11 +102,11 @@ _title_popup_anim_args   = None   # (top_row, title_row, bottom_row, bg_color, f
 
 # ===========================================================================
 # Info popup toggles — cycle through title/artist/studio/season/year modes.
-# Boolean flags (title_info_only, artist_info_display, ...) live on _main so
-# the many reads scattered through main keep working without aliasing.
+# Boolean flags (title_info_only, artist_info_display, ...) live on
+# state.info_display, read across main and sibling modules.
 # ===========================================================================
 def toggle_info_popup():
-    if is_title_window_up() and (_main.title_info_only or _main.artist_info_display or _main.studio_info_display or _main.season_info_display or _main.year_info_display):
+    if is_title_window_up() and (state.info_display.title_info_only or state.info_display.artist_info_display or state.info_display.studio_info_display or state.info_display.season_info_display or state.info_display.year_info_display):
         toggle_title_popup(True)
     else:
         toggle_title_popup(not is_title_window_up())
@@ -108,15 +114,15 @@ def toggle_info_popup():
 
 def toggle_title_info_popup():
     # Cycle through different info display modes
-    if is_title_window_up() and not _main.title_info_only and not _main.artist_info_display and not _main.studio_info_display and not _main.season_info_display and not _main.year_info_display:
+    if is_title_window_up() and not state.info_display.title_info_only and not state.info_display.artist_info_display and not state.info_display.studio_info_display and not state.info_display.season_info_display and not state.info_display.year_info_display:
         toggle_artist_info_popup()
-    elif is_title_window_up() and _main.artist_info_display:
+    elif is_title_window_up() and state.info_display.artist_info_display:
         toggle_studio_info_popup()
-    elif is_title_window_up() and _main.studio_info_display:
+    elif is_title_window_up() and state.info_display.studio_info_display:
         toggle_season_info_popup()
-    elif is_title_window_up() and _main.season_info_display:
+    elif is_title_window_up() and state.info_display.season_info_display:
         toggle_year_info_popup()
-    elif is_title_window_up() and _main.year_info_display:
+    elif is_title_window_up() and state.info_display.year_info_display:
         toggle_title_popup(True)
     else:
         # If popup is down or showing title only, toggle it
@@ -124,7 +130,7 @@ def toggle_title_info_popup():
 
 
 def toggle_artist_info_popup():
-    if _main.artist_info_display:
+    if state.info_display.artist_info_display:
         toggle_title_popup(True)
     else:
         toggle_title_popup(True, info_type="artist")
@@ -134,25 +140,25 @@ def update_popout_title_button_text(show=None):
     """Refresh toggle-state colours for info/title/artist/studio/season/year popup
     buttons in the popout.  The old single-cycling button pattern is replaced by
     separate buttons for each popup action, so we just call _refresh_popout_toggles."""
-    _main._refresh_popout_toggles()
+    popout_window._refresh_popout_toggles()
 
 
 def toggle_studio_info_popup():
-    if _main.studio_info_display:
+    if state.info_display.studio_info_display:
         toggle_title_popup(True)
     else:
         toggle_title_popup(True, info_type="studio")
 
 
 def toggle_season_info_popup():
-    if _main.season_info_display:
+    if state.info_display.season_info_display:
         toggle_title_popup(True)
     else:
         toggle_title_popup(True, info_type="season")
 
 
 def toggle_year_info_popup():
-    if _main.year_info_display:
+    if state.info_display.year_info_display:
         toggle_title_popup(True)
     else:
         toggle_title_popup(True, info_type="year")
@@ -256,15 +262,15 @@ def get_artist_themes_data(artist_name, current_filename=None, max_display=None,
         except (TypeError, ValueError):
             return float("inf")
 
-    same_artists = _main.get_filenames_from_artist(artist_name)
+    same_artists = metadata_display.get_filenames_from_artist(artist_name)
 
     # Group themes by anime and collect popularity
     anime_themes = {}  # {anime_title: {"themes": [theme_list], "popularity": popularity_val}}
     for f in same_artists:
         if include_current or current_filename is None or f != current_filename:
-            f_data = _main.get_metadata(f)
+            f_data = metadata_fetch.get_metadata(f)
             if f_data:
-                anime_title = _main.get_display_title(f_data)
+                anime_title = metadata_display.get_display_title(f_data)
                 theme_slug = f_data.get("slug", "")
                 popularity = f_data.get("popularity", 999999)
 
@@ -332,9 +338,9 @@ def get_studio_entries_data(studio_name, current_filename=None, max_display=None
 
     current_title = None
     if not include_current and current_filename:
-        _cur_data = _main.get_metadata(current_filename)
+        _cur_data = metadata_fetch.get_metadata(current_filename)
         if _cur_data:
-            current_title = _main.get_display_title(_cur_data)
+            current_title = metadata_display.get_display_title(_cur_data)
 
     def _extract_year(_d):
         for _v in (_d.get("season"), _d.get("aired"), _d.get("release")):
@@ -345,20 +351,20 @@ def get_studio_entries_data(studio_name, current_filename=None, max_display=None
                 return _m.group(0)
         return None
 
-    same_studio = _main.get_filenames_from_studio(studio_name)
+    same_studio = metadata_display.get_filenames_from_studio(studio_name)
     unique_titles = []
     unique_shows = []  # [title, popularity, series, year]
     for f in same_studio:
-        d = _main.get_metadata(f)
+        d = metadata_fetch.get_metadata(f)
         if not d:
             continue
-        t = _main.get_display_title(d)
+        t = metadata_display.get_display_title(d)
         if current_title and t == current_title:
             continue
         if t not in unique_titles:
             _raw_pop = d.get("popularity", None)
-            popularity = _raw_pop if (_raw_pop is not None and _raw_pop != _main.INT_INF) else None
-            series = _main.series_list(d)
+            popularity = _raw_pop if (_raw_pop is not None and _raw_pop != float('inf')) else None
+            series = metadata_display.series_list(d)
             year = _extract_year(d)
             unique_shows.append([t, popularity, series, year])
             unique_titles.append(t)
@@ -446,7 +452,7 @@ def _get_mpv_window_rect():
     Falls back to (0, 0, screen_w, screen_h) if the window handle is unavailable."""
     try:
         import ctypes, ctypes.wintypes
-        hwnd = int(_main.player._p.window_id or 0)
+        hwnd = int(state.widgets.player._p.window_id or 0)
         if hwnd:
             # GetClientRect gives dimensions relative to the client origin (always 0,0)
             client_rect = ctypes.wintypes.RECT()
@@ -462,8 +468,8 @@ def _get_mpv_window_rect():
                 return pt.x, pt.y, w, h
     except Exception:
         pass
-    sw = _main.root.winfo_screenwidth()
-    sh = _main.root.winfo_screenheight()
+    sw = state.widgets.root.winfo_screenwidth()
+    sh = state.widgets.root.winfo_screenheight()
     return 0, 0, sw, sh
 
 
@@ -475,13 +481,13 @@ def _get_mpv_client_rect_logical():
     Falls back to (0, 0, screen_w, screen_h) when the HWND is unavailable."""
     try:
         import ctypes, ctypes.wintypes
-        hwnd = int(_main.player._p.window_id or 0)
+        hwnd = int(state.widgets.player._p.window_id or 0)
         if hwnd:
             try:
                 dpi = ctypes.windll.shcore.GetDpiForWindow(hwnd)
                 scale = dpi / 96.0
             except Exception:
-                scale = _main.root.winfo_fpixels('1i') / 96.0
+                scale = state.widgets.root.winfo_fpixels('1i') / 96.0
             client = ctypes.wintypes.RECT()
             ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(client))
             w_phys = client.right - client.left
@@ -495,7 +501,7 @@ def _get_mpv_client_rect_logical():
                         round(w_phys / scale), round(h_phys / scale))
     except Exception:
         pass
-    return 0, 0, _main.root.winfo_screenwidth(), _main.root.winfo_screenheight()
+    return 0, 0, state.widgets.root.winfo_screenwidth(), state.widgets.root.winfo_screenheight()
 
 
 def _mpv_tracker_poll():
@@ -525,15 +531,7 @@ def _mpv_tracker_poll():
                 info["on_rect_change"](*rect)
             except Exception:
                 pass
-    # Re-lift keep_topmost windows every poll.
-    # First lift image overlay windows (from _do_overlay_tracker), then keep_topmost
-    # windows on top of them so the title popup always wins z-order.
-    for win in list(_main._tracked_overlay_windows):
-        try:
-            if win.winfo_exists():
-                win.lift()
-        except Exception:
-            pass
+    # Re-lift keep_topmost windows every poll so the title popup always wins z-order.
     for name in list(_mpv_tracked_windows):
         info = _mpv_tracked_windows.get(name)
         if not info or not info.get("keep_topmost"):
@@ -550,7 +548,7 @@ def _mpv_tracker_poll():
     try:
         import ctypes
         fg_hwnd = ctypes.windll.user32.GetForegroundWindow()
-        mpv_hwnd = int(_main.player._p.window_id or 0)
+        mpv_hwnd = int(state.widgets.player._p.window_id or 0)
         mpv_fg = bool(mpv_hwnd and fg_hwnd == mpv_hwnd)
     except Exception:
         mpv_fg = False
@@ -568,14 +566,14 @@ def _mpv_tracker_poll():
             except Exception:
                 pass
     _mpv_tracker_last_fg = mpv_fg
-    _mpv_tracker_id = _main.root.after(150, _mpv_tracker_poll)
+    _mpv_tracker_id = state.widgets.root.after(150, _mpv_tracker_poll)
 
 
 def _register_mpv_tracked_window(name, window, on_rect_change, keep_topmost=False, lift_on_focus=False):
     global _mpv_tracker_id
     _mpv_tracked_windows[name] = {"window": window, "on_rect_change": on_rect_change, "keep_topmost": keep_topmost, "lift_on_focus": lift_on_focus}
     if _mpv_tracker_id is None:
-        _mpv_tracker_id = _main.root.after(150, _mpv_tracker_poll)
+        _mpv_tracker_id = state.widgets.root.after(150, _mpv_tracker_poll)
 
 
 def _unregister_mpv_tracked_window(name):
@@ -598,14 +596,14 @@ def _get_osd_video_rect():
     Returns all zeros if OSD is not ready.
     """
     try:
-        osd_w = int(_main.player._p.osd_width or 0)
-        osd_h = int(_main.player._p.osd_height or 0)
+        osd_w = int(state.widgets.player._p.osd_width or 0)
+        osd_h = int(state.widgets.player._p.osd_height or 0)
     except Exception:
         return 0, 0, 0, 0, 0, 0
     if not osd_w or not osd_h:
         return 0, 0, 0, 0, 0, 0
     try:
-        vw, vh = _main.player.video_get_size(0)
+        vw, vh = state.widgets.player.video_get_size(0)
     except Exception:
         vw, vh = 0, 0
     if vw and vh:
@@ -653,7 +651,7 @@ def _hide_title_popup_osd():
     _title_popup_slide_cancel()
     _title_popup_anim_state = None
     try:
-        _main._osd_command('osd-overlay', _main._INFO_POPUP_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+        _osd_command('osd-overlay', _INFO_POPUP_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
     except Exception:
         pass
 
@@ -669,8 +667,8 @@ def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_
     y_offset > 0 shifts the box downward (used for slide-out below the screen).
     """
     try:
-        osd_w = int(_main.player._p.osd_width or 0)
-        osd_h = int(_main.player._p.osd_height or 0)
+        osd_w = int(state.widgets.player._p.osd_width or 0)
+        osd_h = int(state.widgets.player._p.osd_height or 0)
     except Exception:
         return
     if not osd_w or not osd_h:
@@ -694,7 +692,7 @@ def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_
 
     def _measure_w(text_block, fs):
         """Max rendered pixel width of any line in text_block at the given fs."""
-        fnt = _main._get_ass_font(fs)
+        fnt = osd_text._get_ass_font(fs)
         max_w = 0
         for line in text_block.split('\n'):
             if not line:
@@ -739,8 +737,8 @@ def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_
     by = osd_h - margin - box_h + y_offset
     cx = osd_w // 2   # horizontal center for \an8 anchored text
 
-    bg_bgr = _main._color_str_to_ass_bgr(bg_color)
-    fg_bgr = _main._color_str_to_ass_bgr(fg_color)
+    bg_bgr = osd_text._color_str_to_ass_bgr(bg_color)
+    fg_bgr = osd_text._color_str_to_ass_bgr(fg_color)
 
     def _esc(text):
         """Escape ASS control chars and convert Python newlines to ASS hard newlines."""
@@ -780,7 +778,7 @@ def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_
         )
 
     try:
-        _main._osd_command('osd-overlay', _main._INFO_POPUP_ASS_OSD_ID, 'ass-events',
+        _osd_command('osd-overlay', _INFO_POPUP_ASS_OSD_ID, 'ass-events',
                      "\n".join(events), osd_w, osd_h, 4, 'no')
     except Exception as e:
         print(f"Info popup OSD error: {e}")
@@ -791,7 +789,7 @@ def _title_popup_slide_cancel():
     global _title_popup_anim_after
     if _title_popup_anim_after is not None:
         try:
-            _main.root.after_cancel(_title_popup_anim_after)
+            state.widgets.root.after_cancel(_title_popup_anim_after)
         except Exception:
             pass
         _title_popup_anim_after = None
@@ -804,7 +802,7 @@ def _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color):
     _title_popup_anim_state = 'in'
     _title_popup_anim_args  = (top_row, title_row, bottom_row, bg_color, fg_color)
     try:
-        osd_h = int(_main.player._p.osd_height or 0)
+        osd_h = int(state.widgets.player._p.osd_height or 0)
     except Exception:
         osd_h = 0
     duration = 0.10   # seconds
@@ -820,7 +818,7 @@ def _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color):
         y_offset = int((osd_h if osd_h else 400) * (1.0 - t) + bounce)
         _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset)
         if t < 1.0:
-            _title_popup_anim_after = _main.root.after(poll, _step)
+            _title_popup_anim_after = state.widgets.root.after(poll, _step)
         else:
             _title_popup_anim_after  = None
             _title_popup_anim_state  = None
@@ -840,7 +838,7 @@ def _title_popup_slide_out():
     _title_popup_anim_state = 'out'
     top_row, title_row, bottom_row, bg_color, fg_color = _title_popup_anim_args
     try:
-        osd_h = int(_main.player._p.osd_height or 0)
+        osd_h = int(state.widgets.player._p.osd_height or 0)
     except Exception:
         osd_h = 0
     duration = 0.10
@@ -855,18 +853,18 @@ def _title_popup_slide_out():
         y_offset = int((osd_h if osd_h else 400) * t)
         _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset)
         if t < 1.0:
-            _title_popup_anim_after = _main.root.after(poll, _step)
+            _title_popup_anim_after = state.widgets.root.after(poll, _step)
         else:
             _title_popup_anim_after  = None
             _title_popup_anim_state  = None
             _hide_title_popup_osd()
 
-    _title_popup_anim_after = _main.root.after(0, _step)
+    _title_popup_anim_after = state.widgets.root.after(0, _step)
 
 
 def _title_popup_on_mpv_rect(mx, my, mw, mh):
     global _title_popup_last_mpv_size
-    if not _main._title_popup_intent:
+    if not state.info_display._title_popup_intent:
         return
     if (mw, mh) != _title_popup_last_mpv_size:
         # mpv window resized — instant redraw with new OSD dimensions, no animation
@@ -880,35 +878,35 @@ def _title_popup_on_mpv_rect(mx, my, mw, mh):
 
 
 def is_title_window_up():
-    return _main._title_popup_intent
+    return state.info_display._title_popup_intent
 
 
 def toggle_title_popup(show, info_type=None, instant=False):
     """Creates or destroys the title popup at the bottom middle of the screen."""
     global _title_popup_info_type_cache, _title_popup_last_mpv_size
     if show:
-        _already_up = _main._title_popup_intent  # True when switching info type while popup is already visible
+        _already_up = state.info_display._title_popup_intent  # True when switching info type while popup is already visible
         _title_popup_info_type_cache = info_type
-        _main.title_info_only = info_type == "title_only"
-        _main.artist_info_display = info_type == "artist"
-        _main.studio_info_display = info_type == "studio"
-        _main.season_info_display = info_type == "season"
-        _main.year_info_display = info_type == "year"
-        _main._title_popup_intent = True
-        _main._push_web_toggles()
+        state.info_display.title_info_only = info_type == "title_only"
+        state.info_display.artist_info_display = info_type == "artist"
+        state.info_display.studio_info_display = info_type == "studio"
+        state.info_display.season_info_display = info_type == "season"
+        state.info_display.year_info_display = info_type == "year"
+        state.info_display._title_popup_intent = True
+        bonus_answers._push_web_toggles()
         update_popout_title_button_text(show)
-        if not _main.title_info_only:
-            _main.web_server.set_info_public(True)
+        if not state.info_display.title_info_only:
+            web_server.set_info_public(True)
     else:
-        _main.title_info_only = False
-        _main.artist_info_display = False
-        _main.studio_info_display = False
-        _main.season_info_display = False
-        _main.year_info_display = False
-        _main._title_popup_intent = False
-        _main._push_web_toggles()
+        state.info_display.title_info_only = False
+        state.info_display.artist_info_display = False
+        state.info_display.studio_info_display = False
+        state.info_display.season_info_display = False
+        state.info_display.year_info_display = False
+        state.info_display._title_popup_intent = False
+        bonus_answers._push_web_toggles()
         update_popout_title_button_text(show)
-        _main.web_server.set_info_public(False)
+        web_server.set_info_public(False)
         _unregister_mpv_tracked_window("title_popup")
         if instant:
             _hide_title_popup_osd()
@@ -916,28 +914,28 @@ def toggle_title_popup(show, info_type=None, instant=False):
             _title_popup_slide_out()
         return
 
-    if _main.bonus.guessing_extra == "buzzer":
-        if _main.web_server.is_running():
-            _main.web_server.control_buzzer("reset")
-            if not _main.web_server.buzzer_is_locked():
-                _main.web_server.control_buzzer("lock")
-        _main.send_scoreboard_command("[CLEAR_SUBMITTED]")
-    elif _main.bonus.guessing_extra:
-        _main.guess_extra(_main.bonus.guessing_extra)
+    if bonus.guessing_extra == "buzzer":
+        if web_server.is_running():
+            web_server.control_buzzer("reset")
+            if not web_server.buzzer_is_locked():
+                web_server.control_buzzer("lock")
+        scoreboard_control.send_command("[CLEAR_SUBMITTED]")
+    elif bonus.guessing_extra:
+        bonus.guess_extra(bonus.guessing_extra)
 
     from _app_scripts.playback import blind_screen
     if blind_screen.black_overlay:
         blind_screen.blind()
-    if _main.is_peek_active():
-        _main.toggle_peek(False)
+    if peek_dispatch.is_peek_active():
+        peek_dispatch.toggle_peek(False)
 
     top_row = ""
     title_row = ""
     bottom_row = ""
-    bg_color = _main.OVERLAY_BACKGROUND_COLOR
-    fg_color = _main.OVERLAY_TEXT_COLOR
-    data = _main.currently_playing.get("data")
-    fixed_current_round = _main.fixed_current_round
+    bg_color = state.colors.OVERLAY_BACKGROUND_COLOR
+    fg_color = state.colors.OVERLAY_TEXT_COLOR
+    data = state.playback.currently_playing.get("data")
+    fixed_current_round = state.lightning.fixed_current_round
     _use_clip_as_song = bool(
         fixed_current_round and
         fixed_current_round.get("type") in ("ost", "clip") and
@@ -953,8 +951,8 @@ def toggle_title_popup(show, info_type=None, instant=False):
         ]
         data = dict(data, songs=_patched_songs)
     if data:
-        if _main.currently_playing.get("type") == "youtube":
-            title = _main.get_youtube_display_title(data)
+        if state.playback.currently_playing.get("type") == "youtube":
+            title = youtube_ui.get_youtube_display_title(data)
             full_title = data.get("title")
             if full_title == title:
                 full_title = ""
@@ -965,23 +963,23 @@ def toggle_title_popup(show, info_type=None, instant=False):
             likes = f"{data.get("like_count"):,}"
             channel = data.get("name")
             subscribers = f"{data.get("subscriber_count"):,}"
-            duration = str(_main.format_seconds(_main.get_youtube_duration(data))) + " mins"
-            fg_color = _main.INVERSE_OVERLAY_TEXT_COLOR
-            bg_color = _main.INVERSE_OVERLAY_BACKGROUND_COLOR
+            duration = str(utils.format_seconds(youtube_ui.get_youtube_duration(data))) + " mins"
+            fg_color = state.colors.INVERSE_OVERLAY_TEXT_COLOR
+            bg_color = state.colors.INVERSE_OVERLAY_BACKGROUND_COLOR
 
             top_row = f"Uploaded by {channel} ({subscribers} subscribers)"
             title_row = title
             bottom_row = f"{full_title}Views: {views} | Likes: {likes} | {uploaded} | {duration}"
         else:
             japanese_title = data.get("title")
-            title = _main.get_display_title(data)
-            theme = _main.format_slug(data.get("slug"))
+            title = metadata_display.get_display_title(data)
+            theme = utils.format_slug(data.get("slug"))
             version_num = data.get("version")
             if version_num and version_num not in ["null", "1"]:
                 version_num = f"v{version_num}"
             else:
                 version_num = ""
-            if _main.check_favorited(_main.currently_playing.get("filename", "")):
+            if playlist_marks.check_favorited(state.playback.currently_playing.get("filename", "")):
                 marks = "❤"
             else:
                 marks = ""
@@ -990,7 +988,7 @@ def toggle_title_popup(show, info_type=None, instant=False):
             if len(song_title) > 40:
                 song_title = song_title[:37] + "…"
             song = f"{song_title} by {song_artist}" if song_title else song_artist
-            if _main.is_game(data):
+            if metadata_display.is_game(data):
                 aired = data.get("release")
                 bg_color = "Dark Red"
                 fg_color = "white"
@@ -1011,7 +1009,7 @@ def toggle_title_popup(show, info_type=None, instant=False):
             if data.get("platforms"):
                 episodes = ", ".join(_shorten_platform(p) for p in data.get("platforms"))
                 if data.get("reviews"):
-                    _reviews_num = _main._safe_int(data.get("reviews", 0), 0)
+                    _reviews_num = metadata_display._safe_int(data.get("reviews", 0), 0)
                     members = f"Reviews: {_reviews_num:,}"
                 else:
                     members = ""
@@ -1021,16 +1019,16 @@ def toggle_title_popup(show, info_type=None, instant=False):
                     score = ""
             else:
                 episodes = get_episode_display(data)
-                _members_num = _main._safe_int(data.get("members", 0), 0)
+                _members_num = metadata_display._safe_int(data.get("members", 0), 0)
                 _pop_display = data.get("popularity") or "N/A"
                 members = f"MAL Members: {_members_num:,} (#{_pop_display})"
                 score = f"MAL Score: {data.get("score")} (#{data.get("rank")})"
             if info_type != "title_only":
                 title_row = title
                 if _use_clip_as_song:
-                    top_row = f"{theme}{version_num}{_main.overall_theme_num_display(_main.currently_playing.get('filename'))} | {song} | {aired}"
+                    top_row = f"{theme}{version_num}{metadata_display.overall_theme_num_display(state.playback.currently_playing.get('filename'))} | {song} | {aired}"
                 else:
-                    top_row = f"{marks}{theme}{version_num}{_main.overall_theme_num_display(_main.currently_playing.get('filename'))} | {song} | {aired}"
+                    top_row = f"{marks}{theme}{version_num}{metadata_display.overall_theme_num_display(state.playback.currently_playing.get('filename'))} | {song} | {aired}"
 
                 if info_type == "artist":
                     artists = get_song_string(data, type="artist")
@@ -1038,7 +1036,7 @@ def toggle_title_popup(show, info_type=None, instant=False):
                     artist_max = (33 // artists_num) - 2
                     for artist in artists:
                         # Use helper function to get artist themes data
-                        artist_data = get_artist_themes_data(artist, _main.currently_playing.get("filename"), max_display=artist_max)
+                        artist_data = get_artist_themes_data(artist, state.playback.currently_playing.get("filename"), max_display=artist_max)
 
                         if artist_data["themes"]:
                             artist_themes_lines = []
@@ -1060,7 +1058,7 @@ def toggle_title_popup(show, info_type=None, instant=False):
                     studios_num = len(data.get("studios", [])) or 1
                     studio_max = (33 // studios_num) - 2
                     for _studio_name in data.get("studios", []):
-                        studio_data = get_studio_entries_data(_studio_name, _main.currently_playing.get("filename"), max_display=studio_max)
+                        studio_data = get_studio_entries_data(_studio_name, state.playback.currently_playing.get("filename"), max_display=studio_max)
                         if studio_data["entries"]:
                             studio_entries_string = "\n".join(studio_data["entries"])
                             top_row = f"All {studio_data['header_type']} by {_studio_name}:\n{studio_entries_string}\n\n{top_row}"
@@ -1071,12 +1069,12 @@ def toggle_title_popup(show, info_type=None, instant=False):
                     if season:
                         # Get all anime from same season and format from anilist_metadata, sorted by AniList score ranking
                         ranked_anime = []
-                        for anilist_id, anilist_data in _main.anilist_metadata.items():
+                        for anilist_id, anilist_data in state.metadata.anilist_metadata.items():
                             mal_id = anilist_data.get("mal_id")
                             if not mal_id:
                                 continue
 
-                            anime_data = _main.anime_metadata.get(str(mal_id), {})
+                            anime_data = state.metadata.anime_metadata.get(str(mal_id), {})
                             file_season = anime_data.get("season")
 
                             anilist_format = anilist_data.get("format", "")
@@ -1086,11 +1084,11 @@ def toggle_title_popup(show, info_type=None, instant=False):
                                 continue
 
                             t = anime_data.get("eng_title") or anilist_data.get("title") or anime_data.get("title", "Unknown")
-                            popularity_rank = anilist_data.get("popularity_rank_season", _main.INT_INF)
+                            popularity_rank = anilist_data.get("popularity_rank_season", float('inf'))
                             _anime_score = anilist_data.get("score")
                             ranked_anime.append((t, popularity_rank, _anime_score))
 
-                        ranked_anime = [(t, rank, s) for t, rank, s in ranked_anime if rank != _main.INT_INF]
+                        ranked_anime = [(t, rank, s) for t, rank, s in ranked_anime if rank != float('inf')]
                         ranked_anime.sort(key=lambda x: x[1])
 
                         season_titles = [f"{rank}. {t} ({s}%)" if s else f"{rank}. {t}" for t, rank, s in ranked_anime[:30]]
@@ -1104,12 +1102,12 @@ def toggle_title_popup(show, info_type=None, instant=False):
                     year = season[-4:] if len(season) >= 4 else ""
                     if year and year.isdigit():
                         all_anime = []
-                        for anilist_id, anilist_data in _main.anilist_metadata.items():
+                        for anilist_id, anilist_data in state.metadata.anilist_metadata.items():
                             mal_id = anilist_data.get("mal_id")
                             if not mal_id:
                                 continue
 
-                            anime_data = _main.anime_metadata.get(str(mal_id), {})
+                            anime_data = state.metadata.anime_metadata.get(str(mal_id), {})
                             file_season = anime_data.get("season", "")
 
                             anilist_format = anilist_data.get("format", "")
@@ -1119,11 +1117,11 @@ def toggle_title_popup(show, info_type=None, instant=False):
                                 continue
 
                             t = anime_data.get("eng_title") or anilist_data.get("title") or anime_data.get("title", "Unknown")
-                            popularity_rank = anilist_data.get("popularity_rank_year", _main.INT_INF)
+                            popularity_rank = anilist_data.get("popularity_rank_year", float('inf'))
                             _anime_score = anilist_data.get("score")
                             all_anime.append((t, popularity_rank, _anime_score))
 
-                        all_anime = [(t, rank, s) for t, rank, s in all_anime if rank != _main.INT_INF]
+                        all_anime = [(t, rank, s) for t, rank, s in all_anime if rank != float('inf')]
                         all_anime.sort(key=lambda x: x[1])
 
                         year_titles = [f"{rank}. {t} ({s}%)" if s else f"{rank}. {t}" for t, rank, s in all_anime[:30]]
@@ -1140,8 +1138,8 @@ def toggle_title_popup(show, info_type=None, instant=False):
 
                 anilist_row_string = ""
                 anilist_id = data.get("anilist")
-                if anilist_id and str(anilist_id) in _main.anilist_metadata:
-                    anilist_data = _main.anilist_metadata[str(anilist_id)]
+                if anilist_id and str(anilist_id) in state.metadata.anilist_metadata:
+                    anilist_data = state.metadata.anilist_metadata[str(anilist_id)]
                     anilist_score = anilist_data.get("score")
                     anilist_popularity = anilist_data.get("popularity")
 
@@ -1179,14 +1177,14 @@ def toggle_title_popup(show, info_type=None, instant=False):
 
                 bottom_row = f"{middle_row_string}{anilist_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
             else:
-                title_row = _main.get_base_title()
-                japanese_title = _main.get_base_title(title=japanese_title)
-                if _main.title_top_info_txt:
-                    top_row = _main.title_top_info_txt
+                title_row = title_overlay.get_base_title()
+                japanese_title = title_overlay.get_base_title(title=japanese_title)
+                if state.config.title_top_info_txt:
+                    top_row = state.config.title_top_info_txt
                 if japanese_title != title:
                     bottom_row = f"{japanese_title}"
     else:
-        title_row = _main.currently_playing.get("filename", "No Media Playing").split(".")[0]
+        title_row = state.playback.currently_playing.get("filename", "No Media Playing").split(".")[0]
 
     _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color) if not _already_up else _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, 0)
     _mx, _my, _mw, _mh = _get_mpv_window_rect()
@@ -1200,8 +1198,8 @@ def toggle_title_popup(show, info_type=None, instant=False):
 def get_format(data):
     """Get the format from AniList metadata, replacing underscores with spaces. Falls back to anime metadata format."""
     anilist_id = data.get("anilist")
-    if anilist_id and str(anilist_id) in _main.anilist_metadata:
-        anilist_data = _main.anilist_metadata[str(anilist_id)]
+    if anilist_id and str(anilist_id) in state.metadata.anilist_metadata:
+        anilist_data = state.metadata.anilist_metadata[str(anilist_id)]
         anilist_format = anilist_data.get("format")
         if anilist_format == "TV_SHORT":
             return "TV Short"
@@ -1217,7 +1215,7 @@ def get_episode_display(data, suffix=" Episodes"):
     episodes = data.get("episodes")
     if episodes:
         return f"{episodes}{suffix}" if suffix else str(episodes)
-    return "N/A" if _main.is_game(data) else "Airing"
+    return "N/A" if metadata_display.is_game(data) else "Airing"
 
 
 def _shorten_platform(name):
@@ -1255,9 +1253,9 @@ def get_song_string(data, type=None, totals=False, artist_limit=3):
         if theme.get("slug") == data.get("slug"):
             if type:
                 if type == "artist_string":
-                    return _main.get_artists_string(theme.get("artist"), total=totals, limit=artist_limit)
+                    return metadata_fetch.get_artists_string(theme.get("artist"), total=totals, limit=artist_limit)
                 else:
                     return theme.get(type)
             else:
-                return (theme.get("title", "N/A") or "N/A") + " by " + _main.get_artists_string(theme.get("artist"), total=totals, limit=artist_limit)
+                return (theme.get("title", "N/A") or "N/A") + " by " + metadata_fetch.get_artists_string(theme.get("artist"), total=totals, limit=artist_limit)
     return ""

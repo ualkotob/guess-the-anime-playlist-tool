@@ -4,10 +4,10 @@ All paths are relative to the application root directory. The main entry point
 (`guess_the_anime.py`) performs `os.chdir(...)` to that directory at startup,
 so relative paths resolve correctly throughout the running process.
 
-`_app_scripts/*` modules that need to work independently of cwd build their
-own absolute paths via `_ROOT_DIR` and receive paths from the main file via
-their `set_context()` / `update_settings()` calls — they intentionally do not
-import from this module to keep them loosely coupled.
+`_app_scripts/*` modules that need these paths import the constants directly from
+this module — it is dependency-free, so importing it introduces no cycles. A few
+modules that must work independently of cwd build their own absolute paths via a
+local `_ROOT_DIR` instead.
 """
 
 # --- Metadata files ---------------------------------------------------------

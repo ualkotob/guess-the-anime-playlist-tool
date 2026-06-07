@@ -5,12 +5,13 @@ the (uncensored) video duration, pauses on each in turn, then plays the full
 clip for the answer phase.
 """
 from __future__ import annotations
+from core.game_state import state
+from _app_scripts.playback import osd_text, music, coming_up_ui, blind_screen
+from _app_scripts.playback import progress_bar as progress_bar_ops
+from _app_scripts.toggles import censors
+from _app_scripts.information import information_popup
 
 import random
-
-
-# Live reference to the main module; populated by lightning_manager.set_context.
-_main = None
 
 
 # ---------------------------------------------------------------------------
@@ -25,18 +26,18 @@ frame_light_round_pause = False
 
 def get_frame_light_round_frames():
     frames = []
-    if _main.fixed_lightning_round_playlist_data and _main.fixed_current_round:
+    if state.lightning.fixed_lightning_round_playlist_data and state.lightning.fixed_current_round:
         for f in range(4):
-            frames.append(_main.fixed_current_round.get('frame'+str(f+1)))
+            frames.append(state.lightning.fixed_current_round.get('frame'+str(f+1)))
         return frames
     buffer = 5
-    video_length_ms = _main.player.get_length()
-    total_length = video_length_ms - ((buffer + _main.light_round_answer_length + 1) * 1000)
+    video_length_ms = state.widgets.player.get_length()
+    total_length = video_length_ms - ((buffer + state.lightning.light_round_answer_length + 1) * 1000)
     start_time_ms = buffer * 1000
     end_time_ms = start_time_ms + total_length
 
     # Get file censors and build list of valid time ranges (excluding skip censors)
-    file_censors = _main.get_file_censors(_main.currently_playing.get('filename'))
+    file_censors = censors.get_file_censors(state.playback.currently_playing.get('filename'))
 
     # Build list of valid time ranges by excluding skip censors
     valid_ranges = []
@@ -135,64 +136,64 @@ def get_frame_light_round_frames():
 def setup_frame_light_round():
     from _app_scripts.queue_round.lightning_rounds import lightning_manager
     global frame_light_round_started, frame_light_round_frames, frame_light_round_frame_index, frame_light_round_frame_time, frame_light_round_pause
-    _main.toggle_coming_up_popup(False, "Lightning Round")
+    coming_up_ui.toggle_coming_up_popup(False, "Lightning Round")
     frame_light_round_started = True
-    _main.player.pause()
+    state.widgets.player.pause()
     frame_light_round_frames = get_frame_light_round_frames()
     frame_light_round_frame_index = -1
     frame_light_round_frame_time = 5000
     frame_light_round_pause = False
-    _main.play_background_music(True)
+    music.play_background_music(True)
     lightning_manager.update_light_round_number()
-    if _main.lightning_mode_settings.get("_misc_settings", {}).get("framed_video"):
-        _main.root.after(300, _main.set_video_frame, True)
+    if state.playback.lightning_mode_settings.get("_misc_settings", {}).get("framed_video"):
+        state.widgets.root.after(300, blind_screen.set_video_frame, True)
     # Increased delay to give video more time to load before attempting first frame
-    _main.root.after(1000, update_frame_light_round, _main.currently_playing.get('filename'))
-    _main.root.after(1300, _main.set_black_screen, False)
+    state.widgets.root.after(1000, update_frame_light_round, state.playback.currently_playing.get('filename'))
+    state.widgets.root.after(1300, blind_screen.set_black_screen, False)
 
 
 def update_frame_light_round(currently_playing_filename):
     from _app_scripts.queue_round.lightning_rounds import lightning_manager
     global frame_light_round_frame_index, frame_light_round_frame_time
 
-    if not frame_light_round_started or _main.currently_playing.get('filename') != currently_playing_filename:
+    if not frame_light_round_started or state.playback.currently_playing.get('filename') != currently_playing_filename:
         return
 
-    show_frame_length = (_main.light_round_length/4)*1000
+    show_frame_length = (state.lightning.light_round_length/4)*1000
     if not frame_light_round_pause:
-        if not _main.player.is_playing():
+        if not state.widgets.player.is_playing():
             if frame_light_round_frames and 0 <= frame_light_round_frame_index < len(frame_light_round_frames):
                 time = int(frame_light_round_frames[frame_light_round_frame_index]*1000)
-                length = _main.player.get_length()
-                _main.apply_censors(time/1000,length/1000)
-        frame_light_round_frame_time = frame_light_round_frame_time + _main.SEEK_POLLING
+                length = state.widgets.player.get_length()
+                censors.apply_censors(time/1000,length/1000)
+        frame_light_round_frame_time = frame_light_round_frame_time + state.seek.SEEK_POLLING
         if frame_light_round_frame_index < 4:
-            _main.play_background_music(True)
-            if _main.player.is_playing():
-                _main.player.pause()
+            music.play_background_music(True)
+            if state.widgets.player.is_playing():
+                state.widgets.player.pause()
         else:
-            _main.player.play()
+            state.widgets.player.play()
     else:
-        _main.play_background_music(False)
-        if _main.player.is_playing():
-            _main.player.pause()
+        music.play_background_music(False)
+        if state.widgets.player.is_playing():
+            state.widgets.player.pause()
     if frame_light_round_frame_index == 4:
         start_str = "next"
-        if not _main.light_mode or (_main.fixed_lightning_round_playlist_data and _main.fixed_lightning_round_playlist_data.get("current_index") == _main.fixed_lightning_round_playlist_data.get("round_count") - 1):
+        if not state.lightning.light_mode or (state.lightning.fixed_lightning_round_playlist_data and state.lightning.fixed_lightning_round_playlist_data.get("current_index") == state.lightning.fixed_lightning_round_playlist_data.get("round_count") - 1):
             start_str = "end"
-        _main.set_countdown(start_str + " in..." + str(round(((_main.light_round_answer_length*1000)-frame_light_round_frame_time)/1000)))
-        if frame_light_round_frame_time >= _main.light_round_answer_length*1000:
+        osd_text.set_countdown(start_str + " in..." + str(round(((state.lightning.light_round_answer_length*1000)-frame_light_round_frame_time)/1000)))
+        if frame_light_round_frame_time >= state.lightning.light_round_answer_length*1000:
             lightning_manager.light_round_transition()
             return
     else:
         if frame_light_round_frame_index > -1:
-            _main.set_countdown(int(((_main.light_round_length*1000)-((show_frame_length*frame_light_round_frame_index)+frame_light_round_frame_time))/1000))
+            osd_text.set_countdown(int(((state.lightning.light_round_length*1000)-((show_frame_length*frame_light_round_frame_index)+frame_light_round_frame_time))/1000))
         if frame_light_round_frame_time >= show_frame_length:
             # Check if video is loaded before attempting to show next frame
-            length = _main.player.get_length()
+            length = state.widgets.player.get_length()
             if length <= 0:
                 # Video not loaded yet, wait for next cycle without incrementing frame
-                _main.root.after(_main.SEEK_POLLING, update_frame_light_round, currently_playing_filename)
+                state.widgets.root.after(state.seek.SEEK_POLLING, update_frame_light_round, currently_playing_filename)
                 return
 
             frame_light_round_frame_index = frame_light_round_frame_index + 1
@@ -201,27 +202,27 @@ def update_frame_light_round(currently_playing_filename):
                 if frame_light_round_frame_index == 0:
                     frame_light_round_frame_time = -1000
                 time = int(frame_light_round_frames[frame_light_round_frame_index]*1000)
-                _main.apply_censors(time/1000, length/1000)
+                censors.apply_censors(time/1000, length/1000)
 
                 # Attempt to set time with retry limit to avoid infinite loop
                 max_attempts = 20
                 for attempt in range(max_attempts):
-                    _main.player.set_time(time)
-                    _main.root.update()  # Process pending events
-                    if abs(_main.player.get_time() - time) < 100:  # Within 100ms is close enough
+                    state.widgets.player.set_time(time)
+                    state.widgets.root.update()  # Process pending events
+                    if abs(state.widgets.player.get_time() - time) < 100:  # Within 100ms is close enough
                         break
 
                 # Ensure player stays paused after seeking
-                if _main.player.is_playing():
-                    _main.player.pause()
+                if state.widgets.player.is_playing():
+                    state.widgets.player.pause()
 
-                _main.update_progress_bar(time, length, _main.currently_playing.get("filename"))
-                _main.bottom_info(str(frame_light_round_frame_index+1) + "/" + str(len(frame_light_round_frames)))
-            elif not _main.is_title_window_up():
+                progress_bar_ops.update_progress_bar(time, length, state.playback.currently_playing.get("filename"))
+                osd_text.bottom_info(str(frame_light_round_frame_index+1) + "/" + str(len(frame_light_round_frames)))
+            elif not information_popup.is_title_window_up():
                 frame_light_round_frame_time = 0
-                _main.player.play()
-                _main.toggle_title_popup(True)
-                _main.bottom_info()
-                _main.play_background_music(False)
+                state.widgets.player.play()
+                information_popup.toggle_title_popup(True)
+                osd_text.bottom_info()
+                music.play_background_music(False)
 
-    _main.root.after(_main.SEEK_POLLING, update_frame_light_round, currently_playing_filename)
+    state.widgets.root.after(state.seek.SEEK_POLLING, update_frame_light_round, currently_playing_filename)

@@ -6,21 +6,21 @@ filter what modes are viable for a given theme. ``queue_next_lightning_mode``
 in :mod:`lightning_manager` calls into this module when variety mode is on.
 """
 from __future__ import annotations
+from core.game_state import state
 
 import random
 
 from _app_scripts import utils
 from _app_scripts.playback import streaming
+from _app_scripts.file.metadata import metadata_fetch, metadata_display
+from _app_scripts.information import information_popup
 from _app_scripts.queue_round.lightning_rounds import (
     character_parts_overlay,
     cover_image_overlay,
     episode_overlay,
     lightning_settings,
+    title_overlay,
 )
-
-
-# Live reference to the main module; populated by lightning_manager.set_context.
-_main = None
 
 
 # ---------------------------------------------------------------------------
@@ -49,34 +49,34 @@ is_slug_op = utils.is_slug_op
 # Recent-history tracking — used by variety's no_repeat_limit cooldown.
 # ---------------------------------------------------------------------------
 def append_lightning_history():
-    data = _main.currently_playing.get("data", {})
-    mode_limits = _main.lightning_mode_settings.get(_main.light_mode, {}).get("variety", {}).get("cooldown")
+    data = state.playback.currently_playing.get("data", {})
+    mode_limits = state.playback.lightning_mode_settings.get(state.lightning.light_mode, {}).get("variety", {}).get("cooldown")
     if mode_limits and mode_limits.get("no_repeat_limit", 0) > 0:
-        if "c." in _main.light_mode:
-            append = _main.character_round_answer[0]
-        elif _main.light_mode == "title":
-            append = _main.get_base_title()
+        if "c." in state.lightning.light_mode:
+            append = state.lightning.character_round_answer[0]
+        elif state.lightning.light_mode == "title":
+            append = title_overlay.get_base_title()
         else:
             append = data.get("mal")
         if append:
-            history_by_mode = _main.playlist.get("lightning_history")
+            history_by_mode = state.metadata.playlist.get("lightning_history")
             if not isinstance(history_by_mode, dict):
                 history_by_mode = {}
-                _main.playlist["lightning_history"] = history_by_mode
-            history_by_mode.setdefault(_main.light_mode, []).append(append)
-            while len(history_by_mode[_main.light_mode]) > mode_limits.get("no_repeat_limit"):
-                history_by_mode[_main.light_mode].pop(0)
+                state.metadata.playlist["lightning_history"] = history_by_mode
+            history_by_mode.setdefault(state.lightning.light_mode, []).append(append)
+            while len(history_by_mode[state.lightning.light_mode]) > mode_limits.get("no_repeat_limit"):
+                history_by_mode[state.lightning.light_mode].pop(0)
 
 
 def check_recent_history(mode, data=None):
     from _app_scripts.queue_round.lightning_rounds import lightning_manager
     if not data:
-        data = _main.currently_playing.get("data", {})
-    mode_limits = _main.lightning_mode_settings.get(mode, {}).get("variety", {}).get("cooldown")
+        data = state.playback.currently_playing.get("data", {})
+    mode_limits = state.playback.lightning_mode_settings.get(mode, {}).get("variety", {}).get("cooldown")
     if mode_limits and mode_limits.get("no_repeat_limit"):
         if "c." in mode:
-            data = _main.currently_playing.get("data", {})
-            history = _main.playlist.get("lightning_history", {}).get(mode, [])
+            data = state.playback.currently_playing.get("data", {})
+            history = state.metadata.playlist.get("lightning_history", {}).get(mode, [])
             valid_types = lightning_manager.get_char_types_by_popularity(data, mode)
             for char in data.get("characters", []):
                 role = char[0]
@@ -85,12 +85,12 @@ def check_recent_history(mode, data=None):
                     return False  # Found a character not in history
             return True  # All valid characters are in history
         elif mode == "title":
-            append_check = _main.get_base_title(data)
+            append_check = title_overlay.get_base_title(data)
         else:
             append_check = data.get("mal")
 
         if append_check:
-            return append_check in _main.playlist.get("lightning_history", {}).get(mode, [])
+            return append_check in state.metadata.playlist.get("lightning_history", {}).get(mode, [])
     return False
 
 
@@ -100,13 +100,13 @@ def get_series_popularity(data):
 
     if _series_popularity_cache is None:
         _series_popularity_cache = {}
-        for anime in _main.anime_metadata.values():
+        for anime in state.metadata.anime_metadata.values():
             pop = anime.get("popularity") or 10000
-            for s in _main.series_list(anime, fallback_title=False):
+            for s in metadata_display.series_list(anime, fallback_title=False):
                 if s not in _series_popularity_cache or pop < _series_popularity_cache[s]:
                     _series_popularity_cache[s] = pop
 
-    pops = [_series_popularity_cache[s] for s in _main.series_list(data, fallback_title=False) if s in _series_popularity_cache]
+    pops = [_series_popularity_cache[s] for s in metadata_display.series_list(data, fallback_title=False) if s in _series_popularity_cache]
     return min(pops) if pops else (data.get("popularity") or 10000)
 
 
@@ -119,25 +119,25 @@ def set_variety_light_mode(queue=None, excluded_modes=[]):
     global last_round, variety_light_mode_enabled, last_variety_forced
 
     forced = False
-    if not queue and lightning_manager.lightning_queue and lightning_manager.lightning_queue[0] == _main.currently_playing.get("filename"):
+    if not queue and lightning_manager.lightning_queue and lightning_manager.lightning_queue[0] == state.playback.currently_playing.get("filename"):
         next_round = lightning_manager.lightning_queue[1]
     else:
         if queue:
-            data = _main.get_metadata(queue)
+            data = metadata_fetch.get_metadata(queue)
         else:
-            data = _main.currently_playing.get('data', {})
+            data = state.playback.currently_playing.get('data', {})
         popularity = ((data.get('popularity') or 3000) + get_series_popularity(data)) / 2
 
         is_op = is_slug_op(data.get('slug', ""))
 
-        variety_settings = _main.lightning_mode_settings.get("variety", {})
+        variety_settings = state.playback.lightning_mode_settings.get("variety", {})
         popularity_limit = variety_settings.get("popularity_limit", True)
         series_mode_limit = variety_settings.get("series_mode_limit", True)
         mode_weight = variety_settings.get("mode_weight", True)
         mode_cooldowns = variety_settings.get("mode_cooldowns", True)
 
         round_options = []
-        for rnd_name, rnd_data in _main.lightning_mode_settings.items():
+        for rnd_name, rnd_data in state.playback.lightning_mode_settings.items():
             v_data = rnd_data.get("variety", {})
             if v_data and v_data["enabled"] and rnd_name not in excluded_modes:
                 pop_limit = v_data.get("popularity", {})
@@ -161,7 +161,7 @@ def set_variety_light_mode(queue=None, excluded_modes=[]):
         # Apply cooldown filtering
         forced_options = []
         forced_max_pop_limit = 3000
-        for rnd_name, rnd_data in _main.lightning_mode_settings.items():
+        for rnd_name, rnd_data in state.playback.lightning_mode_settings.items():
             v_data = rnd_data.get("variety", {})
             cd = v_data.get("cooldown", {})
             min_cooldown = cd.get("min_gap", 0)
@@ -169,12 +169,12 @@ def set_variety_light_mode(queue=None, excluded_modes=[]):
             if not mode_cooldowns:
                 min_cooldown = 0
                 max_cooldown = 10000
-            max_popularity_limit = cd.get("popularity_force_threshold") or _main.INT_INF
+            max_popularity_limit = cd.get("popularity_force_threshold") or float('inf')
             if isinstance(max_popularity_limit, dict):
                 if is_op:
-                    max_popularity_limit = max_popularity_limit.get("op") or _main.INT_INF
+                    max_popularity_limit = max_popularity_limit.get("op") or float('inf')
                 else:
-                    max_popularity_limit = max_popularity_limit.get("ed") or _main.INT_INF
+                    max_popularity_limit = max_popularity_limit.get("ed") or float('inf')
             if rnd_name in round_options:
                 count = variety_mode_cooldown_counts.get(rnd_name, 0)
                 if (series_mode_limit and check_recent_history(rnd_name, data)) or count < min_cooldown:
@@ -203,7 +203,7 @@ def set_variety_light_mode(queue=None, excluded_modes=[]):
             return next_round
 
     # Update cooldown counters
-    for rnd_name in _main.lightning_mode_settings:
+    for rnd_name in state.playback.lightning_mode_settings:
         if rnd_name == next_round:
             variety_mode_cooldown_counts[rnd_name] = 0
         else:
@@ -226,31 +226,31 @@ def has_lightning_mode_info(data, round_type):
     """Returns True if the given round_type has enough info for the file's data."""
     from _app_scripts.queue_round.lightning_rounds import lightning_manager, trivia_round
     if round_type == "clues":
-        return len(_main.get_tags(data)) >= 3
+        return len(information_popup.get_tags(data)) >= 3
     elif round_type == "song":
-        return _main.get_song_string(data, "artist_string") != "N/A"
+        return information_popup.get_song_string(data, "artist_string") != "N/A"
     elif round_type == "synopsis":
         return len((data.get("synopsis") or "").split()) > 40
     elif round_type == "title":
-        return len(_main.get_base_title(data).replace(" ", "")) >= 7
+        return len(title_overlay.get_base_title(data).replace(" ", "")) >= 7
     elif round_type == "characters":
         return len(data.get("characters", [])) >= 4
     elif round_type == "cover":
         return bool(data.get("cover"))
     elif round_type == "image":
-        return _main.fixed_lightning_queue or _main.fixed_lightning_round_playlist_data or (_main.SERPAPI_KEY and not cover_image_overlay.serpapi_limited)
+        return state.lightning.fixed_lightning_queue or state.lightning.fixed_lightning_round_playlist_data or (state.config.SERPAPI_KEY and not cover_image_overlay.serpapi_limited)
     elif round_type == "tags":
         return len(data.get("tags", [])) >= 10
     elif round_type == "episodes":
         return len(data.get("episode_info", [])) >= 6 and episode_overlay.check_valid_episodes(data)
     elif round_type == "clip":
-        return not _main.is_game(data) and not ((streaming.youtube_api_limited or not _main.YOUTUBE_API_KEY) and not data.get("trailer"))
+        return not metadata_display.is_game(data) and not ((streaming.youtube_api_limited or not state.config.YOUTUBE_API_KEY) and not data.get("trailer"))
     elif round_type == "ost":
-        return not (streaming.youtube_api_limited or not _main.YOUTUBE_API_KEY)
+        return not (streaming.youtube_api_limited or not state.config.YOUTUBE_API_KEY)
     elif round_type == "trivia":
-        return data.get("trivia") or (_main.OPENAI_API_KEY and (int(data.get("season", "9999")[-4:]) <= trivia_round.gpt_cutoff_year or len((data.get("synopsis") or "").split()) > 40))
+        return data.get("trivia") or (state.config.OPENAI_API_KEY and (int(data.get("season", "9999")[-4:]) <= trivia_round.gpt_cutoff_year or len((data.get("synopsis") or "").split()) > 40))
     elif round_type == "emoji":
-        return bool(data.get("emojis")) or _main.OPENAI_API_KEY
+        return bool(data.get("emojis")) or state.config.OPENAI_API_KEY
     elif round_type == "names":
         return len(data.get("characters", [])) >= 6
     elif round_type in ["c. reveal", "c. profile", "c. name"]:

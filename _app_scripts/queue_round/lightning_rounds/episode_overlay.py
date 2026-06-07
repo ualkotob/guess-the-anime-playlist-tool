@@ -25,6 +25,8 @@ import re
 import random
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
+from . import title_overlay
 
 
 # ---------------------------------------------------------------------------
@@ -40,34 +42,9 @@ light_name_overlay    = False  # True while showing character names (colour-by-r
 _EPISODE_ASS_OSD_ID = 55  # unique ID for osd-overlay (ASS-based) episode title grid
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_osd_command          = None
-_color_str_to_ass_bgr = None
-_ass_wrap_text        = None
-_get_base_title       = None
-_get_fixed_current_round = lambda: None
-_get_overlay_text_color = lambda: '#ffffff'
-_get_overlay_background_color = lambda: '#000000'
-
-
-def set_context(*, osd_command, color_str_to_ass_bgr, ass_wrap_text, get_base_title,
-                get_fixed_current_round, get_overlay_text_color,
-                get_overlay_background_color):
-    g = globals()
-    g['_osd_command'] = osd_command
-    g['_color_str_to_ass_bgr'] = color_str_to_ass_bgr
-    g['_ass_wrap_text'] = ass_wrap_text
-    g['_get_base_title'] = get_base_title
-    g['_get_fixed_current_round'] = get_fixed_current_round
-    g['_get_overlay_text_color'] = get_overlay_text_color
-    g['_get_overlay_background_color'] = get_overlay_background_color
-
-
 def set_light_episodes():
     global light_episode_names
-    fixed_current_round = _get_fixed_current_round()
+    fixed_current_round = state.lightning.fixed_current_round
     currently_playing = state.playback.currently_playing
 
     episode_names = []
@@ -81,7 +58,7 @@ def set_light_episodes():
         return
     data = currently_playing.get("data")
     episodes = data.get("episode_info", []) if data else []
-    base_title = _get_base_title().lower()
+    base_title = title_overlay.get_base_title().lower()
     title_words = set(re.findall(r'\w+', base_title))  # Break base title into words
 
     if not data or not episodes:
@@ -130,7 +107,7 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
     if destroy:
         episode_overlay_boxes.clear()
         try:
-            _osd_command('osd-overlay', _EPISODE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _EPISODE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         return
@@ -180,11 +157,11 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
     bg_alpha  = "19"  # ~90% opaque
     base_fs = max(10, round(55 * modifier * 1.6))
 
-    OVERLAY_TEXT_COLOR = _get_overlay_text_color()
-    OVERLAY_BACKGROUND_COLOR = _get_overlay_background_color()
-    text_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
-    bg_bgr   = _color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
-    bord_bgr = _color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+    OVERLAY_TEXT_COLOR = state.colors.OVERLAY_TEXT_COLOR
+    OVERLAY_BACKGROUND_COLOR = state.colors.OVERLAY_BACKGROUND_COLOR
+    text_bgr = osd_text._color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
+    bg_bgr   = osd_text._color_str_to_ass_bgr(OVERLAY_BACKGROUND_COLOR)
+    bord_bgr = osd_text._color_str_to_ass_bgr(OVERLAY_TEXT_COLOR)
 
     lines_payload = []
     for i, ep in enumerate(selected_episodes):
@@ -195,8 +172,8 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
             _color_key = ep[0]
             title = ep[1]
             _bg_color = {"a": '#374151', "s": '#065F46', "m": '#1E3A8A'}.get(_color_key, '#374151')
-            _bg_bgr   = _color_str_to_ass_bgr(_bg_color)
-            _text_bgr = _color_str_to_ass_bgr("white")
+            _bg_bgr   = osd_text._color_str_to_ass_bgr(_bg_color)
+            _text_bgr = osd_text._color_str_to_ass_bgr("white")
 
         col = i % columns
         row = i // columns
@@ -210,10 +187,10 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
 
         # Shrink font until text fits in ≤3 wrapped lines
         fs = base_fs
-        text_lines = _ass_wrap_text(str(title), fs, text_area_w)
+        text_lines = osd_text._ass_wrap_text(str(title), fs, text_area_w)
         while fs > 10 and len(text_lines) > 3:
             fs -= 1
-            text_lines = _ass_wrap_text(str(title), fs, text_area_w)
+            text_lines = osd_text._ass_wrap_text(str(title), fs, text_area_w)
         ass_text = '\\N'.join(text_lines)
 
         # Border rect
@@ -243,7 +220,7 @@ def toggle_episode_overlay(num_episodes=6, destroy=False):
 
     ass_payload = '\n'.join(lines_payload)
     try:
-        _osd_command('osd-overlay', _EPISODE_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _EPISODE_ASS_OSD_ID, 'ass-events',
                           ass_payload, osd_w, osd_h, 3, 'no')
     except Exception as e:
         print(f"Episode overlay OSD error: {e}")

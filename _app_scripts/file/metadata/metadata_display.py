@@ -7,41 +7,30 @@ The module owns the right-column/middle-column metadata display logic, the
 across the app for resolving theme filenames, series grouping, and per-anime
 metadata.
 
-Pattern: this module uses live attribute access on the main module via the
-``_main`` reference (populated by ``set_context``). Most state read here lives
-on main; we never copy it.
+Pattern: this module reaches its collaborators by importing sibling modules
+directly, including the playback hub ``transport.play_video``. Shared state
+lives on the ``state`` container; we never copy it.
 
-State staying in main (read by sibling modules through getter callbacks bound
-to main's attributes — see [[state-stays-with-its-readers]]):
-  - ``updating_metadata``        — bool, async-update lock; read by
-                                    ``metadata_fetch``.
+``updating_metadata`` (bool async-update lock) lives in
+``state.controls.updating_metadata``; this module reads/writes it directly.
+
+State that lives in ``state.metadata_panel``:
   - ``selected_extra_metadata``  — str, panel tab selector; read by
                                     ``metadata_panel``, ``streaming``.
   - ``show_spoiler_tags``        — bool, tag-spoiler toggle; read by
                                     ``metadata_panel``.
-  - ``reroll_button``            — widget ref written by
-                                    ``update_up_next_display``; held on
-                                    main so the GC keeps it alive.
-  - ``current_list_title``       — str, right-column header text; written
-                                    by ``clear_metadata`` and read in many
-                                    places in main.
 
-External state read via ``_main``: left_column, middle_column, right_column,
-right_top, popout_up_next, popout_show_metadata, popout_show_up_next, root,
-list_loaded, list_set_loaded, _insert_list_title_row, refresh_current_list,
-is_docked, scl, show_field_themes, reroll_next, is_reroll_valid,
-load_image_from_url, currently_playing, playlist, file_metadata,
-anime_metadata, directory_files, get_metadata, get_file_metadata_by_name,
-get_file_censors, get_cached_deduplicated_files, check_favorited, check_new,
-check_tagged, check_blind_mark, check_peek_mark, check_mute_peek_mark,
-metadata_panel, variety_round, lightning_manager, search_ops, web_server,
-youtube_queue, get_youtube_metadata_by_filename, get_youtube_display_title,
-get_youtube_duration, is_youtube_file, fixed_lightning_queue,
-fixed_lightning_round_playlist_data, get_format, get_artists_string,
-get_clean_filename, format_seconds, format_slug, get_version_from_filename,
-play_video, is_animethemes_stream_file.
+State on ``state.widgets``:
+  - ``reroll_button``            — widget ref created/destroyed here (its only
+                                    reader/writer); held on state so the GC
+                                    keeps it alive.
+
+``current_list_title`` (right-column header text) lives in
+``state.lists.current_list_title``.
 """
 from __future__ import annotations
+from core.game_state import state
+from ...ui.scaling import scl
 
 import os
 import re
@@ -52,17 +41,26 @@ import tkinter as tk
 from tkinter import messagebox
 
 from _app_scripts.file.metadata import metadata_fetch
+from _app_scripts.file.metadata import metadata_panel
+from _app_scripts.popout import popout_window
+import _app_scripts.file.web_server.web_server as web_server
+import _app_scripts.queue_round.youtube.youtube_control as youtube_control
+import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
+import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_manager
+import _app_scripts.queue_round.lightning_rounds.variety_round as variety_round
+import _app_scripts.information.information_popup as information_popup
+import _app_scripts.playback.cache_download as cache_download
+import _app_scripts.playback.image_loader as image_loader
+import _app_scripts.playback.transport as transport
+import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.entry_paths as entry_paths
+import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.search.search as search_ops
+import _app_scripts.ui.windowing as windowing
+import _app_scripts.ui.lists as lists
+import _app_scripts.toggles.censors as censors
+import _app_scripts.utils as utils
 
-
-# ---------------------------------------------------------------------------
-# Context — `_main` is the live main module; populated by set_context.
-# ---------------------------------------------------------------------------
-_main = None
-
-
-def set_context(*, main_module):
-    g = globals()
-    g['_main'] = main_module
 
 
 # ---------------------------------------------------------------------------
@@ -73,13 +71,13 @@ LISTS_TO_CLOSE = ['load_playlist', 'merge_playlist', 'load_system_playlist', 'de
 
 def clear_metadata():
     """Function to clear metadata fields"""
-    _main.left_column.delete(1.0, tk.END)
-    _main.middle_column.delete(1.0, tk.END)
-    if not _main.list_loaded or _main.list_loaded in LISTS_TO_CLOSE:
-        _main.list_set_loaded(None)
-        _main.right_column.delete(1.0, tk.END)
-        _main.current_list_title = ""
-        _main._insert_list_title_row(_main.right_column)
+    state.widgets.left_column.delete(1.0, tk.END)
+    state.widgets.middle_column.delete(1.0, tk.END)
+    if not state.lists.list_loaded or state.lists.list_loaded in LISTS_TO_CLOSE:
+        lists.list_set_loaded(None)
+        state.widgets.right_column.delete(1.0, tk.END)
+        state.lists.current_list_title = ""
+        lists._insert_list_title_row(state.widgets.right_column)
 
 def open_mal_page(mal_id):
     url = f"https://myanimelist.net/anime/{mal_id}"
@@ -106,13 +104,13 @@ def reset_metadata(filename = None):
     toggleColumnEdit(True)
     clear_metadata()
     if filename is None:
-        filename = _main.currently_playing.get('filename')
-    _main.left_column.insert(tk.END, "FILE: ", "bold")
-    _main.left_column.insert(tk.END, f"{filename}", "white")
+        filename = state.playback.currently_playing.get('filename')
+    state.widgets.left_column.insert(tk.END, "FILE: ", "bold")
+    state.widgets.left_column.insert(tk.END, f"{filename}", "white")
     if "[MAL]" not in filename and "[ID]" not in filename and "[IGDB]" not in filename:
-        if _main.currently_playing.get("type") == "youtube":
-            _main.left_column.window_create(tk.END, window=tk.Button(_main.left_column, text="[YT]", borderwidth=0, pady=0, command=lambda: webbrowser.open(_main.currently_playing.get("data").get("url")), bg="black", fg="white"))
-    _main.left_column.insert(tk.END, "\n\n", "blank")
+        if state.playback.currently_playing.get("type") == "youtube":
+            state.widgets.left_column.window_create(tk.END, window=tk.Button(state.widgets.left_column, text="[YT]", borderwidth=0, pady=0, command=lambda: webbrowser.open(state.playback.currently_playing.get("data").get("url")), bg="black", fg="white"))
+    state.widgets.left_column.insert(tk.END, "\n\n", "blank")
  
 def _play_name_key(f):
     """Normalise a filename for play-count matching.
@@ -133,9 +131,9 @@ def _build_web_series_themes(data, playing_filename):
     # Pre-build a play-count map keyed by normalised filename (cheap dict lookup per theme)
     _play_counts = {}
     _play_last = {}
-    if _main.playlist.get("infinite"):
-        _pl = _main.playlist.get("playlist", [])
-        _cur_idx = _main.playlist.get("current_index", 0)
+    if state.metadata.playlist.get("infinite"):
+        _pl = state.metadata.playlist.get("playlist", [])
+        _cur_idx = state.metadata.playlist.get("current_index", 0)
         _played = _pl[:_cur_idx + 1]
         for _i, _item in enumerate(_played):
             _f = _item[3:] if _item.startswith("[L]") else _item
@@ -149,7 +147,7 @@ def _build_web_series_themes(data, playing_filename):
 
         # Include local-only slugs that aren't in the fetched songs list
         known_slugs = {t.get("slug") for t in theme_list}
-        fm_entry = _main.file_metadata.get(mal_key, {})
+        fm_entry = state.metadata.file_metadata.get(mal_key, {})
         for slug_key in fm_entry.get("themes", {}):
             if slug_key not in known_slugs:
                 s = slug_key[:2].upper()
@@ -191,7 +189,7 @@ def _build_web_series_themes(data, playing_filename):
                         if is_playing_theme and v_fn:
                             try:
                                 actual_v_num = v_num if v_num is not None else 1
-                                is_playing_ver = (int(_main.get_version_from_filename(playing_filename)) == actual_v_num)
+                                is_playing_ver = (int(metadata_fetch.get_version_from_filename(playing_filename)) == actual_v_num)
                             except (TypeError, ValueError):
                                 is_playing_ver = (v_fn == playing_filename)
 
@@ -202,7 +200,7 @@ def _build_web_series_themes(data, playing_filename):
                             "filename": v_fn,
                             "plays": _play_counts.get(_play_name_key(v_fn), 0) if v_fn else 0,
                             "plays_ago": (_cur_idx - _play_last[_play_name_key(v_fn)]) if v_fn and _play_name_key(v_fn) in _play_last and _play_last[_play_name_key(v_fn)] < _cur_idx else None,
-                            "favorited": bool(_main.check_favorited(v_fn)) if v_fn else False,
+                            "favorited": bool(playlist_marks.check_favorited(v_fn)) if v_fn else False,
                             "file_props": get_file_props_label(v_fn) if v_fn else "",
                             "is_playing": bool(is_playing_ver),
                         })
@@ -215,9 +213,9 @@ def _build_web_series_themes(data, playing_filename):
                     "filename": fn,
                     "plays": _play_counts.get(_play_name_key(fn), 0) if fn else 0,
                     "plays_ago": (_cur_idx - _play_last[_play_name_key(fn)]) if fn and _play_name_key(fn) in _play_last and _play_last[_play_name_key(fn)] < _cur_idx else None,
-                    "favorited": bool(_main.check_favorited(fn)) if fn else False,
+                    "favorited": bool(playlist_marks.check_favorited(fn)) if fn else False,
                     "artists": _th_artists,
-                    "artists_str": _main.get_artists_string(_th_artists, total=False),
+                    "artists_str": metadata_fetch.get_artists_string(_th_artists, total=False),
                     "is_playing": bool(is_playing_theme),
                     "special": bool(theme.get("special")),
                     "versions": serialized_versions,
@@ -234,7 +232,7 @@ def _build_web_series_themes(data, playing_filename):
             "igdb_id": anime_dict.get("igdb"),
             "igdb_slug": anime_dict.get("igdb_slug"),
             "title": get_display_title(anime_dict),
-            "format": _main.get_format(anime_dict),
+            "format": information_popup.get_format(anime_dict),
             "season": anime_dict.get("season"),
             "is_playing_anime": bool(is_playing_anime),
             "sections": sections_out,
@@ -257,7 +255,7 @@ def _build_played_series_map(played, cur_idx):
     series_map = {}   # series_name -> {'count': int, 'last_idx': int}
     for _i, _item in enumerate(played):
         _f = _item[3:] if _item.startswith("[L]") else _item
-        _md = _main.get_metadata(_f)
+        _md = metadata_fetch.get_metadata(_f)
         if not _md:
             continue
         for _s in series_set(_md):
@@ -309,7 +307,7 @@ def _calc_plays_info(filename, data, pl, cur_idx):
             _cf = _clean(_item)
             if _play_name_key(_cf) == _cur_key:
                 continue  # already seeded above
-            _fd = _main.get_metadata(_cf)
+            _fd = metadata_fetch.get_metadata(_cf)
             if not _fd:
                 continue
             if _cur_series_set & series_set(_fd):
@@ -340,21 +338,21 @@ def _fmt_plays(p):
 
 def update_metadata_queue(index):
     """Function to update metadata display asynchronously"""
-    if _main.updating_metadata:
-        _main.root.after(100, update_metadata_queue, index)
-    elif index == _main.playlist["current_index"]:
-        _main.updating_metadata = True
-        threading.Thread(target=_main.update_metadata, daemon=True).start()
+    if state.controls.updating_metadata:
+        state.widgets.root.after(100, update_metadata_queue, index)
+    elif index == state.metadata.playlist["current_index"]:
+        state.controls.updating_metadata = True
+        threading.Thread(target=metadata_panel.update_metadata, daemon=True).start()
 
 
 
 def toggle_spoiler_tags():
-    _main.show_spoiler_tags = not _main.show_spoiler_tags
-    _main.update_extra_metadata()
+    state.metadata_panel.show_spoiler_tags = not state.metadata_panel.show_spoiler_tags
+    metadata_panel.update_extra_metadata()
 
 def select_extra_metadata(extra_metadata):
-    _main.selected_extra_metadata = extra_metadata
-    _main.update_extra_metadata()
+    state.metadata_panel.selected_extra_metadata = extra_metadata
+    metadata_panel.update_extra_metadata()
 
 def open_image_popup(url, title="Image"):
     """Display any image URL in a centered popup. Can be called directly."""
@@ -365,7 +363,7 @@ def open_image_popup(url, title="Image"):
         popup = tk.Toplevel()
         popup.title(title)
         popup.configure(bg="black")
-        tk_img = _main.load_image_from_url(url, size=(600, 800))
+        tk_img = image_loader.load_image_from_url(url, size=(600, 800))
         if tk_img:
             label = tk.Label(popup, image=tk_img, bg="black")
             label.image = tk_img
@@ -390,14 +388,14 @@ def create_cover_popup(title, cover_url):
 
 
 def up_next_text():
-    update_up_next_display(_main.right_top)
-    if _main.popout_up_next and _main.popout_show_metadata:
-        update_up_next_display(_main.popout_up_next)
+    update_up_next_display(state.widgets.right_top)
+    if popout_window.popout_up_next and state.popout.show_metadata:
+        update_up_next_display(popout_window.popout_up_next)
     # Refresh list display to adjust button count based on right_top content
-    if _main.list_loaded:
+    if state.lists.list_loaded:
         # Small delay to ensure text widget is fully updated
-        _main.root.after(10, _main.refresh_current_list)
-    if _main.web_server.is_running():
+        state.widgets.root.after(10, lists.refresh_current_list)
+    if web_server.is_running():
         try:
             _push_web_up_next()
         except Exception:
@@ -406,48 +404,48 @@ def up_next_text():
 
 def _push_web_up_next():
     """Compute up-next data and push to web host clients."""
-    fixed_data = _main.fixed_lightning_round_playlist_data or _main.fixed_lightning_queue
+    fixed_data = state.lightning.fixed_lightning_round_playlist_data or state.lightning.fixed_lightning_queue
     fixed_rounds = fixed_data.get("rounds", []) if fixed_data else []
     fixed_current_index = fixed_data.get("current_index", -1) if fixed_data else -1
     fixed_coming_up = fixed_data and (fixed_current_index + 1) < len(fixed_rounds)
 
-    has_next = _main.youtube_queue or _main.search_ops.search_queue or fixed_coming_up or _main.playlist["current_index"] + 1 < len(_main.playlist["playlist"])
+    has_next = state.playback.youtube_queue or search_ops.search_queue or fixed_coming_up or state.metadata.playlist["current_index"] + 1 < len(state.metadata.playlist["playlist"])
     if not has_next:
-        _main.web_server.push_up_next({"end_of_playlist": True})
+        web_server.push_up_next({"end_of_playlist": True})
         return
 
     mode_label = ""
     try:
-        if _main.youtube_queue:
-            playlist_entry = _main.youtube_queue.get("filename")
-        elif _main.search_ops.search_queue:
-            playlist_entry = _main.search_ops.search_queue
+        if state.playback.youtube_queue:
+            playlist_entry = state.playback.youtube_queue.get("filename")
+        elif search_ops.search_queue:
+            playlist_entry = search_ops.search_queue
         elif fixed_coming_up:
             next_round = fixed_rounds[fixed_current_index + 1]
             playlist_entry = next_round.get("theme")
             mode_label = f"[{next_round.get('type', '').upper()}]"
         else:
-            playlist_entry = _main.playlist["playlist"][_main.playlist["current_index"] + 1]
+            playlist_entry = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"] + 1]
 
-        next_filename = _main.get_clean_filename(playlist_entry)
+        next_filename = entry_paths.get_clean_filename(playlist_entry)
 
-        if _main.youtube_queue or _main.is_youtube_file(next_filename):
-            yt_data = _main.youtube_queue or _main.get_youtube_metadata_by_filename(next_filename) or {}
-            yt_title = _main.get_youtube_display_title(yt_data) or next_filename
-            yt_duration = _main.format_seconds(_main.get_youtube_duration(yt_data)) if yt_data else ""
+        if state.playback.youtube_queue or youtube_control.is_youtube_file(next_filename):
+            yt_data = state.playback.youtube_queue or youtube_control.get_youtube_metadata_by_filename(next_filename) or {}
+            yt_title = youtube_ui.get_youtube_display_title(yt_data) or next_filename
+            yt_duration = utils.format_seconds(youtube_ui.get_youtube_duration(yt_data)) if yt_data else ""
             detail = f"Duration: {yt_duration}" if yt_duration else ""
-            _main.web_server.push_up_next({"title": yt_title, "detail": detail, "mode_label": mode_label})
+            web_server.push_up_next({"title": yt_title, "detail": detail, "mode_label": mode_label})
         else:
-            d = _main.get_metadata(next_filename)
+            d = metadata_fetch.get_metadata(next_filename)
             title = get_display_title(d)
-            slug = _main.format_slug(d.get("slug", ""))
+            slug = utils.format_slug(d.get("slug", ""))
             version_num = d.get("version")
             if version_num and version_num not in ["1", "null"]:
                 version_num = f"v{version_num}"
             else:
                 version_num = ""
-            if _main.lightning_manager.lightning_queue and _main.lightning_manager.lightning_queue[0] == next_filename and _main.variety_round.variety_light_mode_enabled:
-                mode_label = mode_label or f"[{_main.lightning_manager.lightning_queue[1].upper()}]"
+            if lightning_manager.lightning_queue and lightning_manager.lightning_queue[0] == next_filename and variety_round.variety_light_mode_enabled:
+                mode_label = mode_label or f"[{lightning_manager.lightning_queue[1].upper()}]"
             _members_num = _safe_int(d.get('members', 0), 0)
             members = f"{_members_num:,}"
             popularity = f"#{d.get('popularity')}" if d.get('popularity') else ""
@@ -457,26 +455,26 @@ def _push_web_up_next():
                 detail_parts.append(f"{members} ({popularity})" if popularity else members)
             if season:
                 detail_parts.append(season)
-            _main.web_server.push_up_next({
+            web_server.push_up_next({
                 "title": title,
                 "marks": get_file_marks(next_filename),
                 "detail": " | ".join(detail_parts),
                 "mode_label": mode_label,
-                "reroll": _main.is_reroll_valid(),
+                "reroll": playlist_ops.is_reroll_valid(),
             })
     except Exception:
-        _main.web_server.push_up_next({})
+        web_server.push_up_next({})
 
 def update_up_next_display(widget, clear=False):
     widget.config(state=tk.NORMAL, wrap="word")
     widget.delete(1.0, tk.END)
-    if not _main.popout_show_metadata:
+    if not state.popout.show_metadata:
         widget.config(height=0)
         widget.config(state=tk.DISABLED)
         return
-    is_popout = widget == _main.popout_up_next
+    is_popout = widget == popout_window.popout_up_next
     PLACEHOLDER_TEXT = "NEXT: CLICK TO SHOW/HIDE"
-    if is_popout and not _main.popout_show_up_next:
+    if is_popout and not state.popout.show_up_next:
         widget.config(height=1)
         widget.insert(tk.END, PLACEHOLDER_TEXT, "center")
         widget.config(state=tk.DISABLED)
@@ -488,55 +486,55 @@ def update_up_next_display(widget, clear=False):
         return
     widget.config(height=0)
     if not clear:
-        if not _main.is_docked() or is_popout:
-            if not (_main.fixed_lightning_round_playlist_data or _main.fixed_lightning_queue) or _main.youtube_queue or _main.search_ops.search_queue:
+        if not windowing.is_docked() or is_popout:
+            if not (state.lightning.fixed_lightning_round_playlist_data or state.lightning.fixed_lightning_queue) or state.playback.youtube_queue or search_ops.search_queue:
                 next_filename = None
-                if _main.playlist["current_index"] + 1 < len(_main.playlist["playlist"]):
-                    playlist_entry = _main.playlist["playlist"][_main.playlist["current_index"] + 1]
-                    next_filename = _main.get_clean_filename(playlist_entry)
-                if next_filename and _main.is_reroll_valid():
-                    _main.reroll_button = tk.Button(
+                if state.metadata.playlist["current_index"] + 1 < len(state.metadata.playlist["playlist"]):
+                    playlist_entry = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"] + 1]
+                    next_filename = entry_paths.get_clean_filename(playlist_entry)
+                if next_filename and playlist_ops.is_reroll_valid():
+                    state.widgets.reroll_button = tk.Button(
                             widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
-                            pady=0, command=_main.reroll_next, bg="black", fg="white"
+                            pady=0, command=playlist_ops.reroll_next, bg="black", fg="white"
                         )
                     if not is_popout:
                         widget.window_create(
                             tk.END,
-                            window=_main.reroll_button
+                            window=state.widgets.reroll_button
                         )
                 else:
-                    _main.reroll_button = None
+                    state.widgets.reroll_button = None
             if not is_popout:
                 widget.insert(tk.END, "NEXT: ", "bold")
 
             next_up_text = "End of playlist"
-            fixed_data = _main.fixed_lightning_round_playlist_data or _main.fixed_lightning_queue
+            fixed_data = state.lightning.fixed_lightning_round_playlist_data or state.lightning.fixed_lightning_queue
             fixed_rounds = fixed_data.get("rounds", []) if fixed_data else []
             fixed_current_index = fixed_data.get("current_index", -1) if fixed_data else -1
             fixed_coming_up = fixed_data and (fixed_current_index + 1) < len(fixed_rounds)
-            if _main.youtube_queue or _main.search_ops.search_queue or fixed_coming_up or _main.playlist["current_index"] + 1 < len(_main.playlist["playlist"]):
+            if state.playback.youtube_queue or search_ops.search_queue or fixed_coming_up or state.metadata.playlist["current_index"] + 1 < len(state.metadata.playlist["playlist"]):
                 try:
-                    if _main.youtube_queue:
-                        playlist_entry = _main.youtube_queue.get("filename")
-                    elif _main.search_ops.search_queue:
-                        playlist_entry = _main.search_ops.search_queue
+                    if state.playback.youtube_queue:
+                        playlist_entry = state.playback.youtube_queue.get("filename")
+                    elif search_ops.search_queue:
+                        playlist_entry = search_ops.search_queue
                     elif fixed_coming_up:
                         next_round = fixed_rounds[fixed_current_index + 1]
                         playlist_entry = next_round.get("theme")
                         next_mode = next_round.get("type")
                         widget.insert(tk.END, f"[{next_mode.upper()}] ", "white")
                     else:
-                        playlist_entry = _main.playlist["playlist"][_main.playlist["current_index"] + 1]
-                    next_filename = _main.get_clean_filename(playlist_entry)
-                    if _main.youtube_queue or _main.is_youtube_file(next_filename):
-                        youtube_data = _main.youtube_queue or _main.get_youtube_metadata_by_filename(next_filename) or {}
-                        yt_title = _main.get_youtube_display_title(youtube_data) or next_filename
-                        yt_duration = _main.format_seconds(_main.get_youtube_duration(youtube_data)) if youtube_data else ""
+                        playlist_entry = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"] + 1]
+                    next_filename = entry_paths.get_clean_filename(playlist_entry)
+                    if state.playback.youtube_queue or youtube_control.is_youtube_file(next_filename):
+                        youtube_data = state.playback.youtube_queue or youtube_control.get_youtube_metadata_by_filename(next_filename) or {}
+                        yt_title = youtube_ui.get_youtube_display_title(youtube_data) or next_filename
+                        yt_duration = utils.format_seconds(youtube_ui.get_youtube_duration(youtube_data)) if youtube_data else ""
                         next_up_text = f"{yt_title}"
                         if yt_duration:
                             next_up_text += f"\nDuration: {yt_duration}"
                     else:
-                        next_up_data = _main.get_metadata(next_filename)
+                        next_up_data = metadata_fetch.get_metadata(next_filename)
                         version_num = next_up_data.get("version")
                         if version_num and version_num not in ["1", "null"]:
                             version_num = f"v{version_num}"
@@ -545,24 +543,24 @@ def update_up_next_display(widget, clear=False):
                         title = get_display_title(next_up_data)
                         if is_popout and len(title) > 35:
                             title = title[:32] + "..."
-                        if _main.lightning_manager.lightning_queue and _main.lightning_manager.lightning_queue[0] == next_filename and _main.variety_round.variety_light_mode_enabled:
-                            widget.insert(tk.END, f"[{_main.lightning_manager.lightning_queue[1].upper()}] ", "white")
+                        if lightning_manager.lightning_queue and lightning_manager.lightning_queue[0] == next_filename and variety_round.variety_light_mode_enabled:
+                            widget.insert(tk.END, f"[{lightning_manager.lightning_queue[1].upper()}] ", "white")
                         _members_num = _safe_int(next_up_data.get('members', 0), 0)
                         next_up_text = (
                             f"{get_file_marks(next_filename)}{title}\n"
-                            f"{_main.format_slug(next_up_data.get('slug'))}{version_num} | {_members_num:,} "
+                            f"{utils.format_slug(next_up_data.get('slug'))}{version_num} | {_members_num:,} "
                             f"(#{next_up_data.get('popularity')}) | {next_up_data.get('season')}"
                         )
                     if is_popout:
                         next_up_text = f"NEXT: {next_up_text.replace("\n", " - ")}"
                 except Exception:
-                    if _main.youtube_queue:
-                        next_up_text = _main.youtube_queue.get("filename")
-                    elif _main.search_ops.search_queue:
-                        next_up_text = _main.search_ops.search_queue
+                    if state.playback.youtube_queue:
+                        next_up_text = state.playback.youtube_queue.get("filename")
+                    elif search_ops.search_queue:
+                        next_up_text = search_ops.search_queue
                     else:
-                        playlist_entry = _main.playlist["playlist"][_main.playlist["current_index"] + 1]
-                        next_up_text = _main.get_clean_filename(playlist_entry)
+                        playlist_entry = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"] + 1]
+                        next_up_text = entry_paths.get_clean_filename(playlist_entry)
             widget.insert(tk.END, f"{next_up_text}", "white")
             adjust_up_next_height(widget, is_popout)
             widget.config(state=tk.DISABLED)
@@ -608,7 +606,7 @@ def _safe_int(value, default=0):
         return default
 
 def is_game(data):
-    return _main.get_format(data) == "Game" or _main.get_format(data) == "Visual Novel" or data.get("platforms")
+    return information_popup.get_format(data) == "Game" or information_popup.get_format(data) == "Visual Novel" or data.get("platforms")
 
 def add_field_total_button(column, group, blank = True, show_count=True, button_text=None, title=None):
     count = len(group)
@@ -618,7 +616,7 @@ def add_field_total_button(column, group, blank = True, show_count=True, button_
                 button_text = f"[{count}]"
             else:
                 button_text = "▶"
-        btn = tk.Button(column, text=button_text, borderwidth=0, pady=0, command=lambda: _main.show_field_themes(group=group, title=title), bg="black", fg="white", font=("Arial", _main.scl(11), "bold"))
+        btn = tk.Button(column, text=button_text, borderwidth=0, pady=0, command=lambda: lists.show_field_themes(group=group, title=title), bg="black", fg="white", font=("Arial", scl(11), "bold"))
         column.window_create(tk.END, window=btn)
     if blank:
         column.insert(tk.END, "\n\n", "blank")
@@ -657,11 +655,11 @@ def series_cache_key(data):
 def get_all_matching_field(field, match):
     filenames = []
     match_set = set(match) if isinstance(match, list) else None
-    for filename in _main.directory_files:
-        file_data = _main.get_metadata(filename)
+    for filename in state.metadata.directory_files:
+        file_data = metadata_fetch.get_metadata(filename)
         if file_data:
             if field == "type":
-                file_field = _main.get_format(file_data)
+                file_field = information_popup.get_format(file_data)
                 if file_field and file_field == match:
                     filenames.append(filename)
             elif field == "series" and match_set:
@@ -681,7 +679,7 @@ def get_all_theme_from_series(data):
 
     # Step 1: Find all anime sharing at least one series
     related_anime = []
-    for anime_id, anime in _main.anime_metadata.items():
+    for anime_id, anime in state.metadata.anime_metadata.items():
         if series_set(anime, fallback_title=False) & target_set:
             related_anime.append((anime_id, anime))
 
@@ -692,7 +690,7 @@ def get_all_theme_from_series(data):
 
     def _filename_title_norm(anime_id):
         """Return a normalised title extracted from the first filename for this entry."""
-        fm = _main.file_metadata.get(str(anime_id), {})
+        fm = state.metadata.file_metadata.get(str(anime_id), {})
         for _slug, _versions in fm.get("themes", {}).items():
             for _vk, _files in _versions.items():
                 for fn in _files:
@@ -749,7 +747,7 @@ def get_all_theme_from_series(data):
 
 def get_overall_theme_number(filename):
     """Returns the overall opening/ending number across the series based on the filename."""
-    data = _main.get_metadata(filename)
+    data = metadata_fetch.get_metadata(filename)
     if not data or is_game(data):
         return None
     
@@ -766,7 +764,7 @@ def get_overall_theme_number(filename):
 
     if not target_series:
         # Standalone anime — calculate within this anime's own songs only
-        _solo_anime = _main.anime_metadata.get(str(mal_id)) or _main.anime_metadata.get(mal_id)
+        _solo_anime = state.metadata.anime_metadata.get(str(mal_id)) or state.metadata.anime_metadata.get(mal_id)
         if not _solo_anime:
             return None
         related_anime = [(mal_id, _solo_anime)]
@@ -790,7 +788,7 @@ def get_overall_theme_number(filename):
         theme_gap = 0
         anime_title = clean_title(anime.get("title"))
         anime_display_title = clean_title(get_display_title(anime))
-        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes")) and _main.get_format(data) == _main.get_format(anime)):
+        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes")) and information_popup.get_format(data) == information_popup.get_format(anime)):
             if not base_title or not display_base_title:
                 if anime_title in data.get("title"):
                     base_title = anime_title
@@ -842,8 +840,8 @@ def has_same_start(s1, s2, length=3):
 
 def get_filenames_from_artist(match):
     filenames = []
-    for filename in _main.get_cached_deduplicated_files():
-        file_data = _main.get_metadata(filename)
+    for filename in playlist_ops.get_cached_deduplicated_files():
+        file_data = metadata_fetch.get_metadata(filename)
         if file_data:
             for theme in file_data.get("songs", []) or []:
                 if file_data.get("slug") == theme.get("slug"):
@@ -855,8 +853,8 @@ def get_filenames_from_artist(match):
 
 def get_filenames_from_studio(match):
     filenames = []
-    for filename in _main.get_cached_deduplicated_files():
-        file_data = _main.get_metadata(filename)
+    for filename in playlist_ops.get_cached_deduplicated_files():
+        file_data = metadata_fetch.get_metadata(filename)
         if file_data:
             for studio in file_data.get("studios", []) or []:
                 if studio == match:
@@ -891,7 +889,7 @@ def add_single_data_line(column, data, title, get, blank = True, title_font="bol
 
 def overall_theme_num_display(filename):
     overall_num = get_overall_theme_number(filename)
-    data = _main.get_metadata(filename)
+    data = metadata_fetch.get_metadata(filename)
     if overall_num and str(overall_num) not in data.get("slug"):
         return " (" + str(overall_num) + ")"
     else:
@@ -899,7 +897,7 @@ def overall_theme_num_display(filename):
 
 def get_file_props_label(filename):
     """Build a compact property label for a theme file showing resolution, source, NC, Lyrics."""
-    fp = (_main.get_file_metadata_by_name(filename) or {}).get("file_properties", {})
+    fp = (metadata_fetch.get_file_metadata_by_name(filename) or {}).get("file_properties", {})
     parts = []
     res = fp.get("resolution")
     if res:
@@ -928,17 +926,17 @@ def _get_version_flags(obj):
 
 def get_file_marks(filename):
     marks = ""
-    if _main.check_new(filename):
+    if playlist_marks.check_new(filename):
         marks = marks + "-NEW- "
-    if _main.check_favorited(filename):
+    if playlist_marks.check_favorited(filename):
         marks = marks + "❤"
-    if _main.check_tagged(filename):
+    if playlist_marks.check_tagged(filename):
         marks = marks + "❌"
-    if _main.check_blind_mark(filename):
+    if playlist_marks.check_blind_mark(filename):
         marks = marks + "👁"
-    if _main.check_peek_mark(filename):
+    if playlist_marks.check_peek_mark(filename):
         marks = marks + "👀"
-    if _main.check_mute_peek_mark(filename):
+    if playlist_marks.check_mute_peek_mark(filename):
         marks = marks + "🔇"
     return marks
 
@@ -954,19 +952,19 @@ def prioritize_theme_files(filenames):
         return filenames[0]
     
     # Prioritize local files over streamable ones
-    local_files = [f for f in filenames if f in _main.directory_files]
+    local_files = [f for f in filenames if f in state.metadata.directory_files]
     if local_files:
         filenames = local_files
     
     # Prioritize files with censors
-    files_with_censors = [f for f in filenames if _main.get_file_censors(f)]
+    files_with_censors = [f for f in filenames if censors.get_file_censors(f)]
     if files_with_censors:
         filenames = files_with_censors
     
     # Collect files with their properties
     files_with_props = []
     for f in filenames:
-        file_data = _main.get_file_metadata_by_name(f)
+        file_data = metadata_fetch.get_file_metadata_by_name(f)
         if not file_data:
             files_with_props.append((f, {}))
             continue
@@ -994,7 +992,7 @@ def _collect_theme_filenames(mal_id, slug, version=None, need_version=False):
     duplicates if a file is registered under multiple version_str keys).
     """
     mal_id_str = str(mal_id)
-    anime_entry = _main.file_metadata.get(mal_id_str)
+    anime_entry = state.metadata.file_metadata.get(mal_id_str)
     if not anime_entry:
         return []
     themes = anime_entry.get("themes", {})
@@ -1006,7 +1004,7 @@ def _collect_theme_filenames(mal_id, slug, version=None, need_version=False):
         # Always include "null"-versioned files (local files with no explicit version tag)
         if version_str == "null":
             for filename in files_dict.keys():
-                if filename in _main.directory_files or _main.is_animethemes_stream_file(filename):
+                if filename in state.metadata.directory_files or cache_download.is_animethemes_stream_file(filename):
                     found_filenames.append(filename)
             continue
         file_version = int(version_str) if version_str.isdigit() else None
@@ -1019,7 +1017,7 @@ def _collect_theme_filenames(mal_id, slug, version=None, need_version=False):
             if not (version == 1 and version_str == "1"):
                 continue
         for filename in files_dict.keys():
-            if filename in _main.directory_files or _main.is_animethemes_stream_file(filename):
+            if filename in state.metadata.directory_files or cache_download.is_animethemes_stream_file(filename):
                 found_filenames.append(filename)
     return found_filenames
 
@@ -1042,12 +1040,12 @@ def get_theme_filenames(mal_id, slug, version=None, need_version=False):
     found_filenames = list(dict.fromkeys(_collect_theme_filenames(mal_id, slug, version, need_version)))
     if not found_filenames:
         return []
-    local_files = [f for f in found_filenames if f in _main.directory_files]
+    local_files = [f for f in found_filenames if f in state.metadata.directory_files]
     if local_files:
         found_filenames = local_files
     files_with_props = []
     for f in found_filenames:
-        file_data = _main.get_file_metadata_by_name(f)
+        file_data = metadata_fetch.get_file_metadata_by_name(f)
         props = file_data.get("file_properties", {}) if file_data else {}
         files_with_props.append((f, props))
     def sort_key(item):
@@ -1062,17 +1060,17 @@ def get_theme_filenames(mal_id, slug, version=None, need_version=False):
     return [f for f, _ in files_with_props]
 
 def play_video_from_filename(filename):
-    _main.search_ops.search_queue = filename
-    _main.play_video()
+    search_ops.search_queue = filename
+    transport.play_video()
 
 def toggleColumnEdit(toggle):
     if toggle:
         # Allow editing
-        _main.left_column.config(state=tk.NORMAL, wrap="word")
-        _main.middle_column.config(state=tk.NORMAL, wrap="word")
-        _main.right_column.config(state=tk.NORMAL, wrap="word")
+        state.widgets.left_column.config(state=tk.NORMAL, wrap="word")
+        state.widgets.middle_column.config(state=tk.NORMAL, wrap="word")
+        state.widgets.right_column.config(state=tk.NORMAL, wrap="word")
     else:
         # Do not allow editing
-        _main.left_column.config(state=tk.DISABLED, wrap="word")
-        _main.middle_column.config(state=tk.DISABLED, wrap="word")
-        _main.right_column.config(state=tk.DISABLED, wrap="word")
+        state.widgets.left_column.config(state=tk.DISABLED, wrap="word")
+        state.widgets.middle_column.config(state=tk.DISABLED, wrap="word")
+        state.widgets.right_column.config(state=tk.DISABLED, wrap="word")

@@ -30,6 +30,16 @@ from tkinter import messagebox, simpledialog
 import requests
 
 from core.game_state import state
+import _app_scripts.utils as utils
+import _app_scripts.data.metadata_io as metadata_io
+import _app_scripts.playlists.entry_paths as entry_paths
+import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.playback.ffmpeg_check as ffmpeg_check
+import _app_scripts.directory.scan as directory_scan
+import _app_scripts.queue_round.youtube.youtube_control as youtube_control
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.file.metadata.metadata_panel as metadata_panel
+import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_manager
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -790,97 +800,17 @@ def get_external_site_id(anime_themes, site):
     return None
 
 
-# ── Injected context (set by set_context() at startup) ────────────────────────
-
-# NOTE: metadata-cluster dicts (file_metadata, anilist_metadata, anime_metadata,
-# anidb_metadata, ai_metadata, anime_metadata_overrides, directory_files,
-# playlist) and playback dicts (currently_playing) are read directly from
-# `state.metadata.*` and `state.playback.*` — no getters needed.
-
-_get_directory               = None
-_get_light_mode              = None
-_get_updating_metadata       = None
-_get_variety_light_mode      = None
-_get_auto_refresh_toggle     = None
-
-# Live main-module reference; used by toggle_auto_auto_refresh which rebinds
-# main.auto_refresh_toggle.
-_main = None
-
-_set_cached_pop_time_group   = None
-_set_series_cooldowns_cache  = None
-
-deep_merge                   = None
-estimate_manual_popularity   = None
-estimate_manual_rank         = None
-extract_youtube_id_from_trailer = None
-get_clean_filename           = None
-get_file_path                = None
-get_filenames_from_artist    = None
-is_ffmpeg_available          = None
-queue_next_lightning_mode    = None
-save_metadata                = None
-scan_directory               = None
-toggle_theme                 = None
-update_metadata              = None
-update_metadata_queue        = None
-
-ANILIST_METADATA_FILE        = ""
-REVIEW_MODIFIER              = 1
-
-
-def set_context(
-    get_directory, get_light_mode, get_updating_metadata,
-    get_variety_light_mode, get_auto_refresh_toggle,
-    set_cached_pop_time_group, set_series_cooldowns_cache,
-    deep_merge_fn, estimate_manual_popularity_fn, estimate_manual_rank_fn,
-    extract_youtube_id_from_trailer_fn, get_clean_filename_fn,
-    get_file_path_fn, get_filenames_from_artist_fn, is_ffmpeg_available_fn,
-    queue_next_lightning_mode_fn, save_metadata_fn, scan_directory_fn,
-    toggle_theme_fn, update_metadata_fn, update_metadata_queue_fn,
-    anilist_metadata_file, review_modifier,
-    main_module=None,
-):
-    global _get_directory, _get_light_mode, _get_updating_metadata
-    global _main
-    global _get_variety_light_mode, _get_auto_refresh_toggle
-    global _set_cached_pop_time_group, _set_series_cooldowns_cache
-    global deep_merge, estimate_manual_popularity, estimate_manual_rank
-    global extract_youtube_id_from_trailer, get_clean_filename, get_file_path
-    global get_filenames_from_artist, is_ffmpeg_available, queue_next_lightning_mode
-    global save_metadata, scan_directory, toggle_theme, update_metadata, update_metadata_queue
-    global ANILIST_METADATA_FILE, REVIEW_MODIFIER
-
-    _get_directory                = get_directory
-    _get_light_mode               = get_light_mode
-    _get_updating_metadata        = get_updating_metadata
-    _get_variety_light_mode       = get_variety_light_mode
-    _get_auto_refresh_toggle      = get_auto_refresh_toggle
-    _set_cached_pop_time_group    = set_cached_pop_time_group
-    _set_series_cooldowns_cache   = set_series_cooldowns_cache
-    deep_merge                    = deep_merge_fn
-    estimate_manual_popularity    = estimate_manual_popularity_fn
-    estimate_manual_rank          = estimate_manual_rank_fn
-    extract_youtube_id_from_trailer = extract_youtube_id_from_trailer_fn
-    get_clean_filename            = get_clean_filename_fn
-    get_file_path                 = get_file_path_fn
-    get_filenames_from_artist     = get_filenames_from_artist_fn
-    is_ffmpeg_available           = is_ffmpeg_available_fn
-    queue_next_lightning_mode     = queue_next_lightning_mode_fn
-    save_metadata                 = save_metadata_fn
-    scan_directory                = scan_directory_fn
-    toggle_theme                  = toggle_theme_fn
-    update_metadata               = update_metadata_fn
-    update_metadata_queue         = update_metadata_queue_fn
-    ANILIST_METADATA_FILE         = anilist_metadata_file
-    REVIEW_MODIFIER               = review_modifier
-    if main_module is not None:
-        _main = main_module
+# NOTE: sibling helpers (deep_merge, save_metadata, update_metadata, …) are called
+# directly via their owning modules (utils/metadata_io/metadata_panel/…), imported
+# at module top. metadata-cluster dicts (file_metadata, anilist_metadata,
+# anime_metadata, anidb_metadata, ai_metadata, anime_metadata_overrides,
+# directory_files, playlist) and playback dicts (currently_playing) are read
+# directly from `state.metadata.*` and `state.playback.*` — no getters needed.
 
 
 def toggle_auto_auto_refresh():
-    _main.auto_refresh_toggle = not _main.auto_refresh_toggle
-    print("Auto refresh metadata: " + str(_main.auto_refresh_toggle))
+    state.controls.auto_refresh_toggle = not state.controls.auto_refresh_toggle
+    print("Auto refresh metadata: " + str(state.controls.auto_refresh_toggle))
 
 
 # ── State moved from guess_the_anime.py ─────────────────────────────────────
@@ -894,8 +824,8 @@ def pre_fetch_metadata():
     for i in range(state.metadata.playlist["current_index"]-1, state.metadata.playlist["current_index"]+3):
         playlist_entry = state.metadata.playlist["playlist"][i] if i >= 0 and i < len(state.metadata.playlist["playlist"]) else None
         if playlist_entry and i != state.metadata.playlist["current_index"]:
-            filename = get_clean_filename(playlist_entry)
-            filepath = get_file_path(playlist_entry)
+            filename = entry_paths.get_clean_filename(playlist_entry)
+            filepath = entry_paths.get_file_path(playlist_entry)
             if fetching_metadata.get(filename) is None and filepath and os.path.exists(filepath):
                 get_metadata(filename, refresh=True, fetch=True)
 
@@ -948,6 +878,8 @@ def build_filename_to_mal_map():
 
 def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     global fetched_metadata
+    # Lazy import: variety_round imports metadata_fetch, so a module-level import would cycle.
+    import _app_scripts.queue_round.lightning_rounds.variety_round as variety_round
 
     if not filename:
         return {}
@@ -970,21 +902,21 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     ai_data = state.metadata.ai_metadata.get(mal_id, {}) if mal_id else {}
     re_queue_lightning_mode = False
     if anime_data and "-[ID]" not in filename and mal_id:
-        if refresh and mal_id not in fetched_metadata and (refresh_all or (_get_auto_refresh_toggle() and fetch)):
+        if refresh and mal_id not in fetched_metadata and (refresh_all or (state.controls.auto_refresh_toggle and fetch)):
             fetched_metadata.add(mal_id)
             refresh_jikan_data(mal_id, anime_data)
-            if _get_light_mode():
+            if state.lightning.light_mode:
                 re_queue_lightning_mode = True
-        if refresh and fetch and anidb_id and (anidb_id not in state.metadata.anidb_metadata or _get_auto_refresh_toggle()) and not anidb_cooldown and (_get_variety_light_mode() or _get_light_mode() in ['characters', 'tags', 'episodes', 'names'] or (_get_light_mode() and "c." in _get_light_mode())):
+        if refresh and fetch and anidb_id and (anidb_id not in state.metadata.anidb_metadata or state.controls.auto_refresh_toggle) and not anidb_cooldown and (variety_round.variety_light_mode_enabled or state.lightning.light_mode in ['characters', 'tags', 'episodes', 'names'] or (state.lightning.light_mode and "c." in state.lightning.light_mode)):
             refresh_anidb_data(anidb_id, anime_data)
             re_queue_lightning_mode = True
-        if refresh and fetch and anilist_id and _get_auto_refresh_toggle() and str(anilist_id) in state.metadata.anilist_metadata:
+        if refresh and fetch and anilist_id and state.controls.auto_refresh_toggle and str(anilist_id) in state.metadata.anilist_metadata:
             # Refresh AniList metadata when auto refresh is enabled
             try:
                 _, anilist_data = fetch_anilist_metadata(anilist_id=anilist_id)
                 if anilist_data:
                     state.metadata.anilist_metadata[str(anilist_id)] = anilist_data
-                    save_metadata()
+                    metadata_io.save_metadata()
             except Exception as e:
                 print(f" [AniList auto-refresh ✗: {e}]", end="")
 
@@ -994,7 +926,7 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
         result["igdb"] = file_data["igdb"]
     _metadata_cache[filename] = result
     if re_queue_lightning_mode:
-        queue_next_lightning_mode()
+        lightning_manager.queue_next_lightning_mode()
     return result
 
 
@@ -1077,7 +1009,7 @@ def extract_video_file_properties(filename):
     if not filepath or not os.path.exists(filepath):
         return {}
     
-    if not is_ffmpeg_available():
+    if not ffmpeg_check.is_ffmpeg_available():
         return {}
     
     try:
@@ -1125,7 +1057,7 @@ def refetch_metadata():
     if state.playback.currently_playing and state.playback.currently_playing.get('type') == 'theme':
         filename = state.playback.currently_playing.get('filename')
     else:
-        playlist_entry = get_clean_filename(state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]])
+        playlist_entry = entry_paths.get_clean_filename(state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]])
         filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
     fetch_metadata(filename, True)
 
@@ -1165,7 +1097,7 @@ fetching_metadata = {}
 def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False):
     global anidb_cooldown, anidb_delay
     if filename is None:
-        playlist_entry = get_clean_filename(state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]])
+        playlist_entry = entry_paths.get_clean_filename(state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]])
         filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
         refetch = True
 
@@ -1188,7 +1120,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             # Get override-applied anime_data
             anime_data = dict(anime_data)
             if mal_id in state.metadata.anime_metadata_overrides:
-                deep_merge(anime_data, state.metadata.anime_metadata_overrides[mal_id])
+                utils.deep_merge(anime_data, state.metadata.anime_metadata_overrides[mal_id])
             
             data = {
                 "mal": mal_id,
@@ -1201,7 +1133,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             
             if state.playback.currently_playing.get('filename') == filename:
                 state.playback.currently_playing["data"] = data
-                update_metadata()
+                metadata_panel.update_metadata()
             
             print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
             return data
@@ -1263,16 +1195,16 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                     anime_data.setdefault("series", [])
                 # Compute derived fields
                 if anime_data.get("reviews"):
-                    anime_data["members"] = anime_data["reviews"] * REVIEW_MODIFIER
-                anime_data["popularity"] = estimate_manual_popularity(anime_data.get("members"))
-                anime_data["rank"] = estimate_manual_rank(anime_data.get("score"))
+                    anime_data["members"] = anime_data["reviews"] * metadata_io.REVIEW_MODIFIER
+                anime_data["popularity"] = metadata_io.estimate_manual_popularity(anime_data.get("members"))
+                anime_data["rank"] = metadata_io.estimate_manual_rank(anime_data.get("score"))
                 if anime_data.get("release"):
                     anime_data["aired"] = anime_data["release"]
                     anime_data["season"] = aired_to_season_year(anime_data["release"])
                 state.metadata.anime_metadata[igdb_key] = anime_data
                 igdb_entry["name"] = anime_data.get("title")
                 if not batch_mode:
-                    save_metadata()
+                    metadata_io.save_metadata()
             else:
                 if not anime_data:
                     anime_data = {
@@ -1309,7 +1241,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
 
         reorder_file_metadata_entry(igdb_key)
         if not batch_mode:
-            save_metadata()
+            metadata_io.save_metadata()
             build_filename_to_mal_map()
         else:
             if igdb_key in state.metadata.file_metadata:
@@ -1326,11 +1258,11 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         data.update(anime_data)
         if state.playback.currently_playing.get("filename") == filename:
             state.playback.currently_playing["data"] = data
-            # Do NOT call update_metadata() directly — let the already-queued thread pick up
+            # Do NOT call metadata_panel.update_metadata() directly — let the already-queued thread pick up
             # the newly-set data. A direct call here races with the queued thread and causes
             # Tkinter deadlocks when the two threads manipulate widgets concurrently.
-            if not _get_updating_metadata():
-                update_metadata_queue(state.metadata.playlist["current_index"])
+            if not state.controls.updating_metadata:
+                metadata_display.update_metadata_queue(state.metadata.playlist["current_index"])
         print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
         fetching_metadata.pop(filename, None)
         return data
@@ -1532,7 +1464,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                     "demographics":get_name_list(jikan_data, "demographics"),
                     "synopsis":jikan_data.get('synopsis', "N/A"),
                     "cover":jikan_data.get("images", {}).get("jpg", {}).get("large_image_url"),
-                    "trailer":extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
+                    "trailer":youtube_control.extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
                 }
                 if "N/A" in anime_data.get("season"):
                     if anime_themes.get("season"):
@@ -1640,7 +1572,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             state.metadata.anime_metadata[mal_id] = anime_data
         
         if not batch_mode:
-            save_metadata()
+            metadata_io.save_metadata()
         
         reorder_file_metadata_entry(mal_id)
         
@@ -1671,7 +1603,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         
         if not batch_mode:
             # Save all metadata is persisted
-            save_metadata()
+            metadata_io.save_metadata()
         
         # Now get the anime_data with overrides applied
         anime_data = state.metadata.anime_metadata.get(mal_id, {})
@@ -1679,8 +1611,8 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         if mal_id in state.metadata.anime_metadata_overrides:
             # Create a fresh copy of anime_data to avoid reference issues
             anime_data = dict(anime_data)
-            # Apply overrides directly using deep_merge on our local copy  
-            deep_merge(anime_data, state.metadata.anime_metadata_overrides[mal_id])
+            # Apply overrides directly using utils.deep_merge on our local copy  
+            utils.deep_merge(anime_data, state.metadata.anime_metadata_overrides[mal_id])
         
         # This needs to use the override-applied anime_data
         data = {
@@ -1699,8 +1631,8 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         
         if state.playback.currently_playing.get('filename') == filename:
             state.playback.currently_playing["data"] = data
-            if not _get_updating_metadata():
-                update_metadata_queue(state.metadata.playlist["current_index"])
+            if not state.controls.updating_metadata:
+                metadata_display.update_metadata_queue(state.metadata.playlist["current_index"])
         
         print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
         return data
@@ -1843,9 +1775,9 @@ def refresh_jikan_data(mal_id, data, label=""):
         data["demographics"] = get_name_list(jikan_data, "demographics")
         data["synopsis"] = jikan_data.get("synopsis", "N/A")
         data["cover"] = jikan_data.get("images", {}).get("jpg", {}).get("large_image_url")
-        data["trailer"] = extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
+        data["trailer"] = youtube_control.extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
         
-        save_metadata()
+        metadata_io.save_metadata()
         print(f"\r{label}Refreshing Jikan data for {data['title']}...COMPLETE")
     else:
         _reason = f" ({last_jikan_error})" if last_jikan_error else ""
@@ -1880,7 +1812,7 @@ def refresh_anidb_data(anidb_id, data, label=""):
             else:
                 state.metadata.anidb_metadata[anidb_id] = anidb_entry
                 
-            save_metadata()
+            metadata_io.save_metadata()
             anidb_delay = 5
             print(f"\r{label}{fetch_string} aniDB data for {data['title']}...COMPLETE")
     else:
@@ -1903,7 +1835,7 @@ def get_artists_string(artists, total = False, limit=None):
             else:
                 artists_string = artists_string + ", " + artist
             if total:
-                artist_count = len(get_filenames_from_artist(artist))
+                artist_count = len(metadata_display.get_filenames_from_artist(artist))
                 if artist_count > 1:
                     artists_string = f"{artists_string} [{artist_count}]"
             
@@ -1913,13 +1845,15 @@ def get_artists_string(artists, total = False, limit=None):
 anidb_delay = 0
 
 def fetch_all_metadata(delay=0):
-    """Fetches missing metadata for the entire _get_directory(), spacing out API calls."""
+    """Fetches missing metadata for the entire directory, spacing out API calls."""
     confirm = messagebox.askyesno("Fetch All Missing Metadata", "Are you sure you want to fetch all missing metadata?")
     if not confirm:
         return  # User canceled
-    scan_directory()
-    _set_cached_pop_time_group(None)
-    _set_series_cooldowns_cache(None)
+    directory_scan.scan_directory()
+    # Lazy import: playlist imports metadata_fetch, so a module-level import
+    # here would create a cycle.
+    import _app_scripts.playlists.playlist as playlist_ops
+    playlist_ops.reset_infinite_caches()
     def fetch_all_metadata_worker():
         global anidb_delay
         total_checked = 0
@@ -2006,13 +1940,13 @@ def fetch_all_metadata(delay=0):
                 try:
                     fetch_metadata(filename, label=f"[{total_fetched+1}/{total_missing}]", batch_mode=True)  # Call your existing metadata function
                     if save_new_theme:
-                        toggle_theme("New Themes", filename=filename, quiet=True)
+                        playlist_marks.toggle_theme("New Themes", filename=filename, quiet=True)
                     total_fetched += 1
                     files_since_last_save += 1
                     
                     # Periodic save every BATCH_SAVE_INTERVAL files
                     if files_since_last_save >= BATCH_SAVE_INTERVAL:
-                        save_metadata()
+                        metadata_io.save_metadata()
                         build_filename_to_mal_map()
                         files_since_last_save = 0
                 except Exception as e:
@@ -2053,7 +1987,7 @@ def fetch_all_metadata(delay=0):
                             print(f"✓ ({anilist_data.get('title', 'Unknown')})")
             
                             # Save all metadata after fetching
-                            save_metadata()
+                            metadata_io.save_metadata()
                         else:
                             print("✗ Failed")
                         total_fetched += 1
@@ -2065,7 +1999,7 @@ def fetch_all_metadata(delay=0):
 
         # After all fetching is done, save any remaining unsaved changes
         if total_fetched > 0 and files_since_last_save > 0:
-            save_metadata()
+            metadata_io.save_metadata()
             build_filename_to_mal_map()
         elif total_fetched > 0:
             if not filename_to_mal:
@@ -2080,7 +2014,7 @@ def fetch_all_metadata(delay=0):
 
 
 def refresh_all_anilist_metadata(delay=2):
-    """Refreshes all AniList metadata for files in the _get_directory(), spacing out API calls."""
+    """Refreshes all AniList metadata for files in the directory, spacing out API calls."""
     confirm = messagebox.askyesno("Refresh All AniList Metadata", "Are you sure you want to refresh all AniList metadata for files in your directory?")
     if not confirm:
         return  # User canceled
@@ -2139,7 +2073,7 @@ def refresh_all_anilist_metadata(delay=2):
         total_refreshed = 0
         total_failed = 0
         
-        print(f"Found {total_to_refresh} AniList entries to refresh from your _get_directory() files...")
+        print(f"Found {total_to_refresh} AniList entries to refresh from your directory files...")
         
         for anilist_id in sorted(anilist_ids_in_directory):
             try:
@@ -2159,7 +2093,7 @@ def refresh_all_anilist_metadata(delay=2):
                 time.sleep(delay)
         
         # Save metadata
-        save_metadata()
+        metadata_io.save_metadata()
         
         print(f"\nAniList metadata refresh complete! - Refreshed: {total_refreshed}/{total_to_refresh} - Failed: {total_failed}")
 
@@ -2233,7 +2167,7 @@ def refresh_all_metadata(delay=1):
         total_to_refresh = len(entries_to_refresh)
         total_refreshed = 0
         
-        print(f"Found {total_to_refresh} entries to refresh from your _get_directory() files...")
+        print(f"Found {total_to_refresh} entries to refresh from your directory files...")
         
         for mal_id, data in entries_to_refresh:
             try:
@@ -2292,7 +2226,7 @@ def refresh_all_igdb_metadata():
                 failed += 1
                 time.sleep(0.5)
 
-        save_metadata()
+        metadata_io.save_metadata()
         build_filename_to_mal_map()
         print(f"\nIGDB refresh complete! Refreshed: {refreshed}/{total}, Failed: {failed}")
         messagebox.showinfo("IGDB Refresh Complete", f"Refreshed {refreshed}/{total} IGDB entries.\nFailed: {failed}")

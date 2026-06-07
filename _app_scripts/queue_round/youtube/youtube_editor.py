@@ -1,5 +1,4 @@
-# _app_scripts/youtube_editor.py
-# YouTube Video Manager window - extracted from guess_the_anime.py (Step 26).
+# YouTube Video Manager window.
 import os
 import re
 import shutil
@@ -15,33 +14,14 @@ from core.game_state import state
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
 import _app_scripts.toggles.censors as censors
 import _app_scripts.bonus.bonus_template_editor as bonus_template_editor
+import _app_scripts.playback.ffmpeg_check as ffmpeg_check
+import _app_scripts.playback.transport as transport
+import _app_scripts.ui.windowing as windowing
 
-# ---------------------------------------------------------------------------
-# Injected context (populated by set_context() at startup)
-# ---------------------------------------------------------------------------
-_get_window_position_and_setup = None
-_get_projected_player_time = None
-_play_video = None
-_set_youtube_queue = None
-_get_ffmpeg_available = None
-_root = None
-BACKGROUND_COLOR = "gray12"
+BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
 
 # Module-private window state (was a main-file global)
 youtube_editor_window = None
-
-
-def set_context(*, get_window_position_and_setup, get_projected_player_time, play_video,
-                set_youtube_queue, get_ffmpeg_available, root, background_color):
-    global _get_window_position_and_setup, _get_projected_player_time, _play_video
-    global _set_youtube_queue, _get_ffmpeg_available, _root, BACKGROUND_COLOR
-    _get_window_position_and_setup = get_window_position_and_setup
-    _get_projected_player_time = get_projected_player_time
-    _play_video = play_video
-    _set_youtube_queue = set_youtube_queue
-    _get_ffmpeg_available = get_ffmpeg_available
-    _root = root
-    BACKGROUND_COLOR = background_color
 
 
 def open_youtube_editor():
@@ -68,7 +48,7 @@ def open_youtube_editor():
         youtube_editor_window = tk.Toplevel()
         youtube_editor_window.title("YouTube Video Manager")
         youtube_editor_window.configure(bg=BACKGROUND_COLOR)
-        _get_window_position_and_setup(youtube_editor_window)
+        windowing.get_window_position_and_setup(youtube_editor_window)
         youtube_editor_window.protocol("WM_DELETE_WINDOW", youtube_editor_close)
     
     font_big = ("Arial", 14)
@@ -181,7 +161,7 @@ def open_youtube_editor():
             end_var = tk.StringVar(value=str(video.get("end", 0) or video.get("duration")))
 
             def set_now(var):
-                var.set(int(_get_projected_player_time() / 1000))
+                var.set(int(state.seek.projected_player_time / 1000))
 
             # Start time (Entry + NOW + REFRESH)
             start_frame = tk.Frame(youtube_editor_window, bg=BACKGROUND_COLOR)
@@ -223,8 +203,8 @@ def open_youtube_editor():
             # Define play/stream function
             def play_youtube_video(vid):
                 save_all()
-                _set_youtube_queue(youtube_control.get_youtube_metadata_from_index(key_id=vid))
-                _play_video()
+                state.playback.youtube_queue = youtube_control.get_youtube_metadata_from_index(key_id=vid)
+                transport.play_video()
 
             def archive_this(vid=video_id):
                 video = youtube_metadata["videos"][vid]
@@ -330,10 +310,10 @@ def open_youtube_editor():
 
             youtube_control.save_youtube_metadata()
             save_youtube_button.configure(text="SAVED!")
-            _root.after(300, lambda: save_youtube_button.configure(text="SAVE ALL"))
+            state.widgets.root.after(300, lambda: save_youtube_button.configure(text="SAVE ALL"))
 
         def add_video_by_url():
-            if not _get_ffmpeg_available():
+            if not ffmpeg_check.ffmpeg_available:
                 messagebox.showerror("FFmpeg Not Found", "FFmpeg is required to add YouTube videos. Please ensure FFmpeg is installed and accessible in your system PATH.")
                 return
             add_video_button.configure(text="ADDING...(PLEASE WAIT)")
@@ -411,7 +391,7 @@ def open_youtube_editor():
             archive_window.title("Archived YouTube Videos")
             archive_window.configure(bg=BACKGROUND_COLOR)
             archive_window.geometry("950x600")
-            _get_window_position_and_setup(archive_window)
+            windowing.get_window_position_and_setup(archive_window)
 
             # Scrollable frame setup
             canvas = tk.Canvas(archive_window, bg=BACKGROUND_COLOR, highlightthickness=0)

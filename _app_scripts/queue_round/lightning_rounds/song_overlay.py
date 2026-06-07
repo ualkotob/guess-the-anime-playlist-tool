@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import math
 import random
+import time
 
 from PIL import Image, ImageDraw
 
 from core.game_state import state
+from _app_scripts import utils
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -35,41 +38,18 @@ _song_note_px_cache = {}                # px → PIL font
 _song_last_flags = {"show_title": True, "show_artist": True, "show_theme": True, "show_music": True}
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-currently_playing: dict = {}
-_format_slug = None
-_get_song_string = None
-_get_ass_font = None
-_wall_time = None
-_get_overlay_background_color = lambda: 'black'
-_get_overlay_text_color = lambda: 'white'
-
-
-def set_context(*, currently_playing, format_slug, get_song_string,
-                get_ass_font, wall_time,
-                get_overlay_background_color, get_overlay_text_color):
-    g = globals()
-    g['currently_playing'] = currently_playing
-    g['_format_slug'] = format_slug
-    g['_get_song_string'] = get_song_string
-    g['_get_ass_font'] = get_ass_font
-    g['_wall_time'] = wall_time
-    g['_get_overlay_background_color'] = get_overlay_background_color
-    g['_get_overlay_text_color'] = get_overlay_text_color
-
-
 def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
     """Render the static song boxes (theme / title / artist) to a full OSD RGBA canvas."""
+    # Lazy import: information_popup is a higher layer than this overlay.
+    from ...information import information_popup
     root = state.widgets.root
     modifier = min(osd_w / 2560, osd_h / 1440)
     def fs(pt): return max(6, round(pt * modifier))
 
     try:
-        r16, g16, b16 = root.winfo_rgb(_get_overlay_background_color())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_BACKGROUND_COLOR)
         bg_r, bg_g, bg_b = r16 >> 8, g16 >> 8, b16 >> 8
-        r16, g16, b16 = root.winfo_rgb(_get_overlay_text_color())
+        r16, g16, b16 = root.winfo_rgb(state.colors.OVERLAY_TEXT_COLOR)
         fg_r, fg_g, fg_b = r16 >> 8, g16 >> 8, b16 >> 8
     except Exception:
         bg_r, bg_g, bg_b = 0, 0, 0
@@ -84,11 +64,11 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
     max_inner_w = round(osd_w * 0.72)
     cx = osd_w // 2
 
-    data         = currently_playing.get("data", {})
-    slug         = _format_slug(data.get("slug"))
-    song_title   = _get_song_string(data, "title")
-    artist_str   = _get_song_string(data, "artist_string")
-    theme_label  = _format_slug(slug).upper()
+    data         = state.playback.currently_playing.get("data", {})
+    slug         = utils.format_slug(data.get("slug"))
+    song_title   = information_popup.get_song_string(data, "title")
+    artist_str   = information_popup.get_song_string(data, "artist_string")
+    theme_label  = utils.format_slug(slug).upper()
 
     canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
     draw   = ImageDraw.Draw(canvas)
@@ -108,7 +88,7 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
         return "…", draw.textbbox((0, 0), "…", font=font)
 
     def draw_box(header, body, y_top, hdr_fs_pt, body_fs_pt, body_fs_min_pt, measure_only=False):
-        hdr_font = _get_ass_font(fs(hdr_fs_pt), bold=True)
+        hdr_font = osd_text._get_ass_font(fs(hdr_fs_pt), bold=True)
         if not hdr_font:
             return
         # Header measurement
@@ -123,7 +103,7 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
             bfs     = fs(body_fs_pt)
             bfs_min = fs(body_fs_min_pt)
             while bfs >= bfs_min:
-                bf = _get_ass_font(bfs, bold=True)
+                bf = osd_text._get_ass_font(bfs, bold=True)
                 if bf:
                     b = draw.textbbox((0, 0), body, font=bf)
                     if b[2] - b[0] <= max_inner_w:
@@ -133,7 +113,7 @@ def _draw_song_base(show_title, show_artist, show_theme, osd_w, osd_h):
                         break
                 bfs = max(bfs_min, bfs - 2)
             if body_font is None:
-                body_font = _get_ass_font(bfs_min, bold=True)
+                body_font = osd_text._get_ass_font(bfs_min, bold=True)
                 if body_font:
                     body, bb = truncate_fit(body, body_font, max_inner_w)
                     bw, bh = bb[2] - bb[0], bb[3] - bb[1]
@@ -246,7 +226,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
     _song_note_color[0] = (random.randint(100, 255),
                            random.randint(100, 255),
                            random.randint(100, 255), 255)
-    _song_anim_start = [_wall_time()]
+    _song_anim_start = [time.time()]
 
     def _song_step():
         global _song_img_overlay, _song_anim_after
@@ -280,7 +260,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
             modifier   = min(osd_w / 2560, osd_h / 1440)
             base_note  = max(20, round(160 * modifier))
             max_note   = max(24, round(200 * modifier))
-            elapsed    = _wall_time() - _song_anim_start[0]
+            elapsed    = time.time() - _song_anim_start[0]
             if not player.is_playing():
                 _song_anim_start[0] += 0.05  # freeze elapsed while paused
             # ~1.5 second period for a full pulse cycle
@@ -295,7 +275,7 @@ def toggle_song_overlay(show_title=True, show_artist=True, show_theme=True, show
                         break
                     except Exception:
                         pass
-                _song_note_px_cache[px] = font or _get_ass_font(px, bold=False)
+                _song_note_px_cache[px] = font or osd_text._get_ass_font(px, bold=False)
             note_font = _song_note_px_cache[px]
             if note_font:
                 draw       = ImageDraw.Draw(canvas)

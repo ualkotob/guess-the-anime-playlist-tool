@@ -1,8 +1,7 @@
-"""
-_app_scripts/auto_update.py — Auto-update functionality extracted from guess_the_anime.py.
+"""Auto-update functionality.
 
-Call set_context(root, github_repo, app_version, position_window_fn) once at startup
-after the tkinter root window exists.
+Reads the app version + GitHub repo from core.app_meta, the root window from
+state.widgets, and window positioning from windowing.
 """
 
 import os
@@ -15,44 +14,14 @@ from tkinter import messagebox, ttk
 
 import requests
 
-# ---------------------------------------------------------------------------
-# Module state — populated via set_context()
-# ---------------------------------------------------------------------------
-
-_root = None
-_github_repo = ""
-_app_version = ""
-_position_window = None  # Callable: get_window_position_and_setup(win, **kwargs)
-
-
-def set_context(root, github_repo, app_version, position_window_fn=None):
-    """Inject runtime context required by the update UI functions.
-
-    Args:
-        root: The application's tkinter root window.
-        github_repo: GitHub repo slug, e.g. "user/repo".
-        app_version: Current application version string, e.g. "19.2".
-        position_window_fn: Optional callable matching the signature of
-            get_window_position_and_setup(window, offset_x, offset_y).
-    """
-    global _root, _github_repo, _app_version, _position_window
-    _root = root
-    _github_repo = github_repo
-    _app_version = app_version
-    _position_window = position_window_fn
+from core.app_meta import APP_VERSION, GITHUB_REPO
+from core.game_state import state
+import _app_scripts.ui.windowing as windowing
 
 
 def _setup_window(window, offset_x=0, offset_y=0):
     """Position *window* relative to the root window."""
-    if _position_window is not None:
-        _position_window(window, offset_x=offset_x, offset_y=offset_y)
-    elif _root is not None:
-        _root.update_idletasks()
-        x = _root.winfo_x() + offset_x
-        y = _root.winfo_y() + offset_y
-        window.geometry(f"+{x}+{y}")
-        window.lift()
-        window.focus_force()
+    windowing.get_window_position_and_setup(window, offset_x=offset_x, offset_y=offset_y)
 
 
 # ---------------------------------------------------------------------------
@@ -62,25 +31,25 @@ def _setup_window(window, offset_x=0, offset_y=0):
 def check_for_updates():
     """Check GitHub releases for newer version."""
     try:
-        api_url = f"https://api.github.com/repos/{_github_repo}/releases/latest"
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
         response = requests.get(api_url, timeout=10)
 
         if response.status_code == 200:
             release_data = response.json()
             latest_version = release_data.get("tag_name", "").lstrip("v")  # Remove 'v' prefix if present
 
-            if compare_versions(latest_version, _app_version):
+            if compare_versions(latest_version, APP_VERSION):
                 return {
                     "update_available": True,
                     "latest_version": latest_version,
-                    "current_version": _app_version,
+                    "current_version": APP_VERSION,
                     "release_data": release_data
                 }
             else:
                 return {
                     "update_available": False,
                     "latest_version": latest_version,
-                    "current_version": _app_version
+                    "current_version": APP_VERSION
                 }
         else:
             return {"error": f"Failed to check for updates: HTTP {response.status_code}"}
@@ -121,6 +90,21 @@ def cleanup_old_update_exes():
         print(f"cleanup_old_update_exes error: {e}")
 
 
+def cleanup_updater_files():
+    """Remove leftover updater.exe / updater.log files from previous updates.
+
+    Paths are relative to the cwd, which main sets to the app root at startup.
+    """
+    files_to_clean = ["updater.exe", "updater.log"]
+    for filename in files_to_clean:
+        if os.path.exists(filename):
+            try:
+                os.remove(filename)
+                print(f"Cleaned up: {filename}")
+            except Exception as e:
+                print(f"Could not clean up {filename}: {e}")
+
+
 def _download_update(update_info):
     """Download the new exe from GitHub releases and exit, prompting user to run it.
 
@@ -154,7 +138,7 @@ def _download_update(update_info):
     prog_win.geometry("380x110")
     prog_win.configure(bg="black")
     prog_win.resizable(False, False)
-    prog_win.transient(_root)
+    prog_win.transient(state.widgets.root)
     prog_win.grab_set()
     _setup_window(prog_win, offset_x=100, offset_y=100)
 
@@ -212,7 +196,7 @@ def _download_update(update_info):
                             f"  {new_exe_name}\n\n"
                             f"Please close this window and run {new_exe_name} to complete the update.\n"
                             f"The old exe will be removed automatically on first launch.")
-        _root.destroy()
+        state.widgets.root.destroy()
 
     threading.Thread(target=do_download, daemon=True).start()
 
@@ -246,10 +230,10 @@ def _show_update_dialog(update_info):
 def open_github_releases():
     """Open the GitHub releases page in the default browser."""
     try:
-        releases_url = f"https://github.com/{_github_repo}/releases"
+        releases_url = f"https://github.com/{GITHUB_REPO}/releases"
         webbrowser.open(releases_url)
     except Exception:
-        releases_url = f"https://github.com/{_github_repo}/releases"
+        releases_url = f"https://github.com/{GITHUB_REPO}/releases"
         messagebox.showerror("Browser Error",
                              f"Could not open browser automatically.\n\n"
                              f"Please manually visit:\n{releases_url}")
@@ -266,7 +250,7 @@ def check_for_updates_on_startup():
                 return
 
             if update_info.get("update_available"):
-                _root.after(0, lambda: _show_update_dialog(update_info))
+                state.widgets.root.after(0, lambda: _show_update_dialog(update_info))
 
         except Exception as e:
             print(f"Startup update check failed: {str(e)}")

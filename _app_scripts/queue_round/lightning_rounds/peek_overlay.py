@@ -15,6 +15,8 @@ top-level import cycle).
 """
 from __future__ import annotations
 
+import _app_scripts.playback.osd_text as osd_text
+
 
 # ---------------------------------------------------------------------------
 # Module state — `peek_overlay1`/`peek_overlay2` are read externally by main
@@ -24,19 +26,6 @@ peek_overlay1     = None  # sentinel — True while peek panels are active
 peek_overlay2     = None  # sentinel — second panel, kept symmetric with overlay1
 peeking           = False
 _PEEK_ASS_OSD_ID  = 50    # unique ID for osd-overlay (ASS-based) peek panels
-
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_osd_command = None
-_get_effective_video_rect = None
-
-
-def set_context(*, osd_command, get_effective_video_rect):
-    g = globals()
-    g['_osd_command'] = osd_command
-    g['_get_effective_video_rect'] = get_effective_video_rect
 
 
 def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
@@ -57,7 +46,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
 
     if destroy:
         try:
-            _osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         from . import peek_dispatch
@@ -75,7 +64,8 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
     if peek_overlay2 is None:
         peek_overlay2 = True
 
-    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_effective_video_rect()
+    import _app_scripts.information.information_popup as information_popup
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = information_popup._get_effective_video_rect()
     if not osd_w or not vid_w:
         return
 
@@ -137,7 +127,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
 
     if not shapes:
         try:
-            _osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         return
@@ -150,7 +140,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
     )
 
     try:
-        _osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _PEEK_ASS_OSD_ID, 'ass-events',
                      ass_payload, osd_w, osd_h, 0, 'no')
     except Exception as e:
         print(f"Peek OSD (ASS) error: {e}")

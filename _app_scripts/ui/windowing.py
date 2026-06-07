@@ -1,19 +1,14 @@
 """Window positioning helpers shared by Tk popup modules."""
 
-_ctx = {}
-
-
-def set_context(*, root, animate_window):
-    _ctx.clear()
-    _ctx.update(
-        root=root,
-        animate_window=animate_window,
-    )
+from core.game_state import state
 
 
 def move_root_to_bottom(toggle=True):
     """Move the Tk root window to the bottom-center of the screen."""
-    root = _ctx["root"]
+    # Lazy import: windowing is a low-level UI helper pulled in by many of the
+    # popup modules that information_popup imports, so reach it at call time.
+    import _app_scripts.information.information_popup as information_popup
+    root = state.widgets.root
     root.update_idletasks()
 
     screen_width = root.winfo_screenwidth()
@@ -29,19 +24,19 @@ def move_root_to_bottom(toggle=True):
     x_position = int(max(0, x_position))
 
     if not toggle:
-        root.after(1, lambda: _ctx["animate_window"](root, x_position, screen_height))
+        root.after(1, lambda: information_popup.animate_window(root, x_position, screen_height))
     else:
         root.geometry(f"+{x_position}+{screen_height}")
-        root.after(10, lambda: _ctx["animate_window"](root, x_position, y_position - 30))
+        root.after(10, lambda: information_popup.animate_window(root, x_position, y_position - 30))
 
 
 def is_docked():
-    return _ctx["root"].attributes("-topmost")
+    return state.widgets.root.attributes("-topmost")
 
 
 def popup_menu(menu, x, y):
     """Show a tk.Menu at (x, y), keeping it visible while the player is docked."""
-    root = _ctx["root"]
+    root = state.widgets.root
     docked = is_docked()
     if docked:
         root.attributes("-topmost", False)
@@ -55,7 +50,7 @@ def popup_menu(menu, x, y):
 
 def get_window_position_and_setup(window=None, set_topmost_if_docked=True, offset_x=0, offset_y=0):
     """Return root position and optionally place/configure a child window."""
-    root = _ctx["root"]
+    root = state.widgets.root
     root.update_idletasks()
     x = root.winfo_x() + offset_x
     y = root.winfo_y() + offset_y

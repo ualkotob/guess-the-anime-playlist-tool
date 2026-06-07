@@ -16,6 +16,7 @@ underlying objects without needing module qualification.
 from __future__ import annotations
 
 from core.game_state import state
+from _app_scripts.playback import osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -31,17 +32,22 @@ _filter_vf_last_progress = [0.0]   # mutable box so widen/narrow can read/write 
 _filter_zoom_offset     = [0.0, 0.0]  # [ox, oy] crop centre offset in [-0.5, 0.5] for zoom_filter
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_bottom_info = None
-_get_character_round_answer = lambda: None
+def get_zoom_state():
+    """Return (zoom_factor, offset_x, offset_y) while a zoom filter is visibly
+    magnifying the frame (factor > 1.005), else None.  Read by censors to keep
+    censor boxes tracking the zoomed video."""
+    if filter_vf_active and _filter_vf_variant == 'zoom':
+        z = round(1 + 14 * (1 - _filter_vf_last_progress[0]), 4)
+        if z > 1.005:
+            return (z, _filter_zoom_offset[0], _filter_zoom_offset[1])
+    return None
 
 
-def set_context(*, bottom_info, get_character_round_answer):
-    g = globals()
-    g['_bottom_info'] = bottom_info
-    g['_get_character_round_answer'] = get_character_round_answer
+def get_filter_state():
+    """Return (variant, progress) while any vf filter peek is active, else None."""
+    if filter_vf_active:
+        return (_filter_vf_variant, _filter_vf_last_progress[0])
+    return None
 
 
 def _filter_intensity_label(variant, progress):
@@ -63,9 +69,9 @@ def _filter_intensity_label(variant, progress):
 def _update_filter_intensity_bottom_label(variant, progress):
     lightning_mode_settings = state.playback.lightning_mode_settings
     _bottom_font_size = 80 if lightning_mode_settings.get("_misc_settings", {}).get("framed_video") else 40
-    _bottom_info(_filter_intensity_label(variant, progress),
+    osd_text.bottom_info(_filter_intensity_label(variant, progress),
                  size=_bottom_font_size,
-                 inverse=_get_character_round_answer())
+                 inverse=state.lightning.character_round_answer)
 
 
 def toggle_filter_vf(variant=None, progress=0, destroy=False):
@@ -83,7 +89,7 @@ def toggle_filter_vf(variant=None, progress=0, destroy=False):
         _filter_vf_last_progress[0] = 0.0
         _filter_zoom_offset[0] = 0.0
         _filter_zoom_offset[1] = 0.0
-        _bottom_info()  # clear blur/pixelize/zoom intensity label
+        osd_text.bottom_info()  # clear blur/pixelize/zoom intensity label
         try:
             player._p.command('vf', 'set', '')
         except Exception:

@@ -1,10 +1,7 @@
-"""
-_app_scripts/cache_download.py — AnimThemes file download and local cache management.
+"""AnimThemes file download and local cache management.
 
-Owns all download state and the periodic UI-update polling loop that was previously
-scattered through the main module.
-
-Call set_context() once at startup and update_settings() from load_config().
+Owns all download state and the periodic UI-update polling loop. Runtime cache
+settings are read directly off state.config / core.app_meta at call time.
 """
 
 import json
@@ -18,6 +15,14 @@ from tkinter import ttk
 import requests
 
 from core.game_state import state
+from core.app_meta import APP_VERSION
+from core.paths import THEMES_CACHE_FOLDER, CACHE_METADATA_FILE
+import _app_scripts.search.search as search_ops
+import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.playlists.entry_paths as entry_paths
+import _app_scripts.file.metadata.metadata_panel as metadata_panel
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.playback.transport as transport
 
 # ---------------------------------------------------------------------------
 # Module-level state (moved from main globals)
@@ -31,77 +36,18 @@ download_ui_update_pending = False
 pending_play_queue      = {}   # {filename: {playlist_entry, fullscreen, start_time, timeout}}
 download_progress       = {}   # {filename: {downloaded_mb, total_mb, popup, progress_bar, status_label}}
 
-# ---------------------------------------------------------------------------
-# Context / settings (populated via set_context / update_settings)
-# ---------------------------------------------------------------------------
-
-_root                             = None
-_cache_metadata_file              = None
-_themes_cache_folder              = None
-# directory_files / playlist are read directly from state.metadata.*
-_get_directory                    = None   # callable() -> str
-_get_metadata                     = None   # callable(filename) -> dict
-_get_clean_filename               = None   # callable(entry) -> str
-_is_animethemes_file              = None   # callable(filename) -> bool
-_get_fixed_lightning              = None   # callable() -> (queue, playlist_data)
-_show_playlist                    = None   # callable(update=True)
-_update_extra_metadata            = None   # callable()
-_up_next_text                     = None   # callable()
-_play_filename                    = None   # callable(playlist_entry, fullscreen)
-_play_filename_streaming_fallback = None   # callable(playlist_entry, fullscreen)
-_get_list_loaded                  = None   # callable() -> str
-_get_search_queue                 = None   # callable() -> str | None
-
-_themes_cache_size    = 500    # MB — updated by update_settings()
-_auto_download_themes = False  # updated by update_settings()
-_app_version          = "1.0"  # updated by update_settings()
+# Runtime-configurable settings are read directly at call time:
+#   state.config.themes_cache_size / state.config.auto_download_themes, and
+#   APP_VERSION (core.app_meta). directory / directory_files / playlist come off
+#   state.config / state.metadata.*; play_filename / streaming-fallback are on the
+#   transport sibling.
 
 
-def set_context(
-    root,
-    cache_metadata_file,
-    themes_cache_folder,
-    get_directory,
-    get_metadata,
-    get_clean_filename,
-    is_animethemes_file,
-    get_fixed_lightning,
-    show_playlist_fn,
-    update_extra_metadata_fn,
-    up_next_text_fn,
-    play_filename_fn,
-    play_filename_streaming_fallback_fn,
-    get_list_loaded,
-    get_search_queue=None,
-):
-    global _root, _cache_metadata_file, _themes_cache_folder
-    global _get_directory, _get_metadata, _get_clean_filename, _is_animethemes_file
-    global _get_fixed_lightning, _show_playlist, _update_extra_metadata
-    global _up_next_text, _play_filename, _play_filename_streaming_fallback
-    global _get_list_loaded, _get_search_queue
-    _root                             = root
-    _cache_metadata_file              = cache_metadata_file
-    _themes_cache_folder              = themes_cache_folder
-    _get_directory                    = get_directory
-    _get_metadata                     = get_metadata
-    _get_clean_filename               = get_clean_filename
-    _is_animethemes_file              = is_animethemes_file
-    _get_fixed_lightning              = get_fixed_lightning
-    _show_playlist                    = show_playlist_fn
-    _update_extra_metadata            = update_extra_metadata_fn
-    _up_next_text                     = up_next_text_fn
-    _play_filename                    = play_filename_fn
-    _play_filename_streaming_fallback = play_filename_streaming_fallback_fn
-    _get_list_loaded                  = get_list_loaded
-    _get_search_queue                 = get_search_queue
-
-
-def update_settings(themes_cache_size=500, auto_download_themes=False, app_version="1.0"):
-    """Sync runtime-configurable settings into the module.  Call from load_config()."""
-    global _themes_cache_size, _auto_download_themes, _app_version
-    _themes_cache_size    = themes_cache_size
-    _auto_download_themes = auto_download_themes
-    _app_version          = app_version
+def _show_playlist(update=True):
+    # Lazy import: ui.lists imports cache_download, so a module-level import
+    # here would be a circular dependency.
+    from ..ui import lists
+    lists.show_playlist(update)
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +74,8 @@ def get_animethemes_stream_url(filename):
 def load_cache_metadata():
     global cache_metadata
     try:
-        if os.path.exists(_cache_metadata_file):
-            with open(_cache_metadata_file, "r", encoding="utf-8") as f:
+        if os.path.exists(CACHE_METADATA_FILE):
+            with open(CACHE_METADATA_FILE, "r", encoding="utf-8") as f:
                 cache_metadata = json.load(f)
         else:
             cache_metadata = {}
@@ -140,8 +86,8 @@ def load_cache_metadata():
 
 def save_cache_metadata():
     try:
-        os.makedirs(os.path.dirname(_cache_metadata_file), exist_ok=True)
-        with open(_cache_metadata_file, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(CACHE_METADATA_FILE), exist_ok=True)
+        with open(CACHE_METADATA_FILE, "w", encoding="utf-8") as f:
             json.dump(cache_metadata, f, indent=2)
     except Exception as e:
         print(f"Error saving cache metadata: {e}")
@@ -153,11 +99,11 @@ def get_cached_file_path(filename):
     """Return full path to a cached file, or None if not cached."""
     if filename in cache_metadata:
         rel_path = cache_metadata[filename].get("path", filename)
-        cache_path = os.path.join(_themes_cache_folder, rel_path)
+        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
         if os.path.exists(cache_path):
             return cache_path
     # Fallback: flat legacy structure
-    cache_path = os.path.join(_themes_cache_folder, filename)
+    cache_path = os.path.join(THEMES_CACHE_FOLDER, filename)
     if os.path.exists(cache_path):
         return cache_path
     return None
@@ -177,7 +123,7 @@ def evict_cache_for_size(needed_size_bytes):
     Returns True when enough space was freed.
     """
     current_size = sum(m.get("size", 0) for m in cache_metadata.values())
-    cache_limit_bytes = _themes_cache_size * 1024 * 1024
+    cache_limit_bytes = state.config.themes_cache_size * 1024 * 1024
 
     if current_size + needed_size_bytes <= cache_limit_bytes:
         return True
@@ -201,14 +147,14 @@ def evict_cache_for_size(needed_size_bytes):
             break
         fn = file_info["filename"]
         rel_path = cache_metadata.get(fn, {}).get("path", fn)
-        cache_path = os.path.join(_themes_cache_folder, rel_path)
+        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
         try:
             if os.path.exists(cache_path):
                 os.remove(cache_path)
                 # Clean up empty parent dirs
                 cache_dir = os.path.dirname(cache_path)
                 try:
-                    while cache_dir != _themes_cache_folder and os.path.exists(cache_dir):
+                    while cache_dir != THEMES_CACHE_FOLDER and os.path.exists(cache_dir):
                         if not os.listdir(cache_dir):
                             os.rmdir(cache_dir)
                             cache_dir = os.path.dirname(cache_dir)
@@ -238,7 +184,7 @@ def _download_animethemes_file_to_path(filename, dest_path, progress_callback=No
         url = get_animethemes_stream_url(filename)
         headers = {
             "User-Agent": (
-                f"GuessTheAnime/{_app_version} "
+                f"GuessTheAnime/{APP_VERSION} "
                 "(https://github.com/ualkotob/guess-the-anime-playlist-tool)"
             )
         }
@@ -276,10 +222,10 @@ def create_download_popup(filename):
 
     Returns a dict with popup widget refs.
     """
-    popup = tk.Toplevel(_root)
+    popup = tk.Toplevel(state.widgets.root)
     popup.overrideredirect(True)
     popup.attributes("-topmost", True)
-    popup.transient(_root)
+    popup.transient(state.widgets.root)
 
     bg_color    = "#1e1e1e"
     fg_color    = "white"
@@ -398,7 +344,7 @@ def retry_download(filename):
             download_to_cache(filename, silent=False)
             print(f"Retrying download: {filename}")
 
-        _root.after(500, start_retry)
+        state.widgets.root.after(500, start_retry)
     else:
         download_cancel_flags.pop(filename, None)
         # Close existing popup
@@ -479,7 +425,7 @@ def download_to_cache(filename, silent=False):
     def do_cache_download():
         global downloads_completed, download_ui_update_pending
         try:
-            data       = _get_metadata(filename)
+            data       = metadata_fetch.get_metadata(filename)
             season_str = data.get("season", "")
             if season_str and season_str != "N/A":
                 parts  = season_str.split()
@@ -488,14 +434,14 @@ def download_to_cache(filename, silent=False):
             else:
                 season = year = "Unknown"
 
-            directory    = _get_directory()
-            to_directory = _auto_download_themes and bool(directory)
+            directory    = state.config.directory
+            to_directory = state.config.auto_download_themes and bool(directory)
             if to_directory:
                 dest_path = os.path.join(directory, year, season, filename)
                 rel_path  = None
             else:
                 rel_path  = os.path.join(year, season, filename)
-                dest_path = os.path.join(_themes_cache_folder, rel_path)
+                dest_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
             last_percent = [-1]
@@ -545,7 +491,7 @@ def download_to_cache(filename, silent=False):
 
             if to_directory:
                 state.metadata.directory_files[filename] = dest_path
-                _root.after(100, lambda: _show_playlist(True))
+                state.widgets.root.after(100, lambda: _show_playlist(True))
             else:
                 evict_cache_for_size(actual_size)
                 cache_metadata[filename] = {
@@ -572,7 +518,7 @@ def download_to_cache(filename, silent=False):
                 popup_ref = download_progress[filename].get("popup")
                 if popup_ref:
                     try:
-                        _root.after(0, popup_ref.destroy)
+                        state.widgets.root.after(0, popup_ref.destroy)
                     except Exception:
                         pass
                 del download_progress[filename]
@@ -601,7 +547,7 @@ def download_animethemes_file(filename, button=None):
     def do_download():
         try:
             update_button("Starting...")
-            data       = _get_metadata(filename)
+            data       = metadata_fetch.get_metadata(filename)
             season_str = data.get("season", "")
             if season_str and season_str != "N/A":
                 parts  = season_str.split()
@@ -610,7 +556,7 @@ def download_animethemes_file(filename, button=None):
             else:
                 season = year = "Unknown"
 
-            directory = _get_directory()
+            directory = state.config.directory
             dest_dir  = os.path.join(directory, year, season) if directory else os.path.join(year, season)
             os.makedirs(dest_dir, exist_ok=True)
             dest_path = os.path.join(dest_dir, filename)
@@ -633,11 +579,11 @@ def download_animethemes_file(filename, button=None):
             update_button(f"✓ {mb:.1f} MB")
             print(f"Downloaded {filename} to {dest_path}")
 
-            if _get_list_loaded() == "playlist":
-                _root.after(100, lambda: _show_playlist(True))
+            if state.lists.list_loaded == "playlist":
+                state.widgets.root.after(100, lambda: _show_playlist(True))
             cp = state.playback.currently_playing
             if cp and cp.get("filename") == filename:
-                _root.after(100, _update_extra_metadata)
+                state.widgets.root.after(100, metadata_panel.update_extra_metadata)
 
         except Exception as e:
             update_button("Error")
@@ -668,7 +614,7 @@ def move_cached_file_to_directory(filename, button=None):
                 messagebox.showerror("Error", f"File not found in cache: {filename}")
                 return
 
-            data       = _get_metadata(filename)
+            data       = metadata_fetch.get_metadata(filename)
             season_str = data.get("season", "")
             if season_str and season_str != "N/A":
                 parts  = season_str.split()
@@ -677,7 +623,7 @@ def move_cached_file_to_directory(filename, button=None):
             else:
                 season = year = "Unknown"
 
-            directory = _get_directory()
+            directory = state.config.directory
             dest_dir  = os.path.join(directory, year, season) if directory else os.path.join(year, season)
             os.makedirs(dest_dir, exist_ok=True)
             dest_path = os.path.join(dest_dir, filename)
@@ -687,7 +633,7 @@ def move_cached_file_to_directory(filename, button=None):
             # Clean up empty cache directories
             cache_dir = os.path.dirname(cached_path)
             try:
-                while cache_dir != _themes_cache_folder and os.path.exists(cache_dir):
+                while cache_dir != THEMES_CACHE_FOLDER and os.path.exists(cache_dir):
                     if not os.listdir(cache_dir):
                         os.rmdir(cache_dir)
                         cache_dir = os.path.dirname(cache_dir)
@@ -706,11 +652,11 @@ def move_cached_file_to_directory(filename, button=None):
             update_button(f"✓ {mb:.1f} MB")
             print(f"Moved {filename} from cache to {dest_path}")
 
-            if _get_list_loaded() == "playlist":
-                _root.after(100, lambda: _show_playlist(True))
+            if state.lists.list_loaded == "playlist":
+                state.widgets.root.after(100, lambda: _show_playlist(True))
             cp = state.playback.currently_playing
             if cp and cp.get("filename") == filename:
-                _root.after(100, _update_extra_metadata)
+                state.widgets.root.after(100, metadata_panel.update_extra_metadata)
 
         except Exception as e:
             update_button("Error")
@@ -828,21 +774,20 @@ def prefetch_next_themes():
 
     upcoming = []
     # search_queue plays before the playlist next, so prefetch it first
-    if _get_search_queue:
-        sq = _get_search_queue()
-        if sq:
-            upcoming.append(_get_clean_filename(sq))
+    sq = search_ops.search_queue
+    if sq:
+        upcoming.append(entry_paths.get_clean_filename(sq))
     for i in range(1, MAX_LOOKAHEAD + 1):
         next_idx = (current_idx + i) % len(playlist_items)
-        upcoming.append(_get_clean_filename(playlist_items[next_idx]))
+        upcoming.append(entry_paths.get_clean_filename(playlist_items[next_idx]))
     for tail_entry in playlist.get("speculative_tail", []):
-        upcoming.append(_get_clean_filename(tail_entry))
+        upcoming.append(entry_paths.get_clean_filename(tail_entry))
 
     new_started = 0
     for fn in upcoming:
         if new_started >= MAX_NEW_DOWNLOADS:
             break
-        if not _is_animethemes_file(fn):
+        if not is_animethemes_stream_file(fn):
             continue
         if fn in active_downloads:
             continue
@@ -852,7 +797,7 @@ def prefetch_next_themes():
         new_started += 1
 
     # Also prefetch from fixed lightning round queue
-    fq, fpd = _get_fixed_lightning()
+    fq, fpd = state.lightning.fixed_lightning_queue, state.lightning.fixed_lightning_round_playlist_data
     source_data = fpd if fpd else fq
     if source_data:
         next_idx = source_data.get("current_index", 0) + 1 if fpd else 0
@@ -863,7 +808,7 @@ def prefetch_next_themes():
         )
         if next_idx < len(rounds):
             next_fn = rounds[next_idx].get("theme")
-            if (next_fn and _is_animethemes_file(next_fn)
+            if (next_fn and is_animethemes_stream_file(next_fn)
                     and not check_file_availability(next_fn)):
                 download_to_cache(next_fn, silent=True)
 
@@ -883,7 +828,7 @@ def check_download_ui_updates():
     if download_ui_update_pending:
         download_ui_update_pending = False
         try:
-            _up_next_text()
+            metadata_display.up_next_text()
         except Exception:
             pass
 
@@ -909,10 +854,10 @@ def check_download_ui_updates():
         elapsed = time.time() - play_info["start_time"]
         if fn not in active_downloads:
             completed.append(fn)
-            _root.after(
+            state.widgets.root.after(
                 100,
                 lambda pe=play_info["playlist_entry"], fs=play_info["fullscreen"]:
-                    _play_filename(pe, fs),
+                    transport.play_filename(pe, fs),
             )
         elif elapsed > play_info["timeout"]:
             print(
@@ -927,13 +872,13 @@ def check_download_ui_updates():
                 else {"filename": fn}
             )
             streaming_entry["_stream_url"] = stream_url
-            _root.after(
+            state.widgets.root.after(
                 100,
                 lambda pe=streaming_entry, fs=play_info["fullscreen"]:
-                    _play_filename_streaming_fallback(pe, fs),
+                    transport.play_filename_streaming_fallback(pe, fs),
             )
 
     for fn in completed:
         pending_play_queue.pop(fn, None)
 
-    _root.after(500, check_download_ui_updates)
+    state.widgets.root.after(500, check_download_ui_updates)

@@ -12,6 +12,7 @@ so that floating text (z=3) correctly renders on top.
 from __future__ import annotations
 
 from core.game_state import state
+import _app_scripts.playback.osd_text as osd_text
 
 
 # ---------------------------------------------------------------------------
@@ -24,23 +25,11 @@ last_edge_block_percent = 100   # last block_percent (for retry after OSD ready)
 _EDGE_ASS_OSD_ID = 55  # unique ID for osd-overlay (ASS-based) edge panel
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_osd_command              = None
-_get_effective_video_rect = None
-
-
-def set_context(*, osd_command, get_effective_video_rect):
-    g = globals()
-    g['_osd_command']              = osd_command
-    g['_get_effective_video_rect'] = get_effective_video_rect
-
-
 def _draw_edge_osd(block_percent):
     """Draw a solid center box covering the video interior using ASS vectors."""
     try:
-        osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_effective_video_rect()
+        import _app_scripts.information.information_popup as information_popup
+        osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = information_popup._get_effective_video_rect()
         if not osd_w or not vid_w:
             return
         visible_pct = 100 - block_percent
@@ -48,7 +37,7 @@ def _draw_edge_osd(block_percent):
         box_w = max(0, vid_w - margin * 2)
         box_h = max(0, vid_h - margin * 2)
         if not box_w or not box_h:
-            _osd_command('osd-overlay', _EDGE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _EDGE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
             return
         bx = vid_x + margin
         by = vid_y + margin
@@ -59,7 +48,7 @@ def _draw_edge_osd(block_percent):
             f"m {bx} {by} l {bx2} {by} {bx2} {by2} {bx} {by2}"
             "{\\p0}"
         )
-        _osd_command('osd-overlay', _EDGE_ASS_OSD_ID, 'ass-events',
+        osd_text.osd_command('osd-overlay', _EDGE_ASS_OSD_ID, 'ass-events',
                      ass_payload, osd_w, osd_h, 0, 'no')
     except Exception as e:
         print(f"Edge OSD (ASS) error: {e}")
@@ -79,7 +68,7 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
                 pass
             edge_overlay_after_id = None
         try:
-            _osd_command('osd-overlay', _EDGE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
+            osd_text.osd_command('osd-overlay', _EDGE_ASS_OSD_ID, 'none', '', 0, 0, 0, 'no')
         except Exception:
             pass
         edge_overlay_box = None
@@ -87,7 +76,8 @@ def toggle_edge_overlay(block_percent=100, destroy=False):
 
     block_percent = max(0, min(100, block_percent))
 
-    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = _get_effective_video_rect()
+    import _app_scripts.information.information_popup as information_popup
+    osd_w, osd_h, vid_x, vid_y, vid_w, vid_h = information_popup._get_effective_video_rect()
     if not osd_w or not vid_w:
         if edge_overlay_after_id:
             try:

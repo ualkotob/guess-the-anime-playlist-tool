@@ -2,25 +2,32 @@
 
 Owns the pynput on_press/on_release/on_mouse_* handlers and the in-flight
 mouse-drag animation state (grow overlay + zoom filter). Reads cross-cutting
-main state (disable_shortcuts, list_loaded, playlist, _shortcut_dispatch, etc.)
-and dispatches into main functions through the `_main` module reference.
-
-`disable_shortcuts` and `_shortcut_dispatch` stay in main because many other
-sites read/build them; this module reads them live via `_main.X`.
+state (`disable_shortcuts` from state.controls; list_loaded, playlist, etc.)
+directly from `state`; sibling collaborators are imported directly. The
+playback-hub fns (seek_to/stop/play_pause/play_next/play_previous) are called on
+the `transport` sibling directly. The runtime dispatch table
+(built by `menu_builder.rebuild_shortcut_dispatch`) lives in
+`state.shortcuts.dispatch`.
 """
 
 import tkinter as tk
+from core.game_state import state
 from pynput import keyboard, mouse
 
 import _app_scripts.file.modal_guard as modal_guard
+from _app_scripts.popout import popout_window
 from _app_scripts.queue_round.lightning_rounds import (
     grow_overlay,
     peek_overlay,
     edge_overlay,
     filter_overlay,
+    peek_dispatch,
 )
-
-_main = None
+from _app_scripts.search import search as search_ops
+from _app_scripts.playlists import playlist as playlist_ops
+from _app_scripts.playback import blind_screen, transport
+from _app_scripts.information import information_popup
+from _app_scripts.ui import lists, menu_builder
 
 # Mouse-drag animation state (owned here; grow_overlay resets via direct attr
 # write — see grow_overlay.toggle_grow_overlay destroy path).
@@ -31,18 +38,12 @@ target_mouse_position = None
 animation_after_id = None
 zoom_filter_animation_after_id = None
 
-
-def set_context(*, main_module):
-    global _main
-    _main = main_module
-
-
 def toggle_disable_shortcuts():
-    _main.disable_shortcuts = not _main.disable_shortcuts
-    print("Keyboard Shortcuts Disabled: " + str(_main.disable_shortcuts))
+    state.controls.disable_shortcuts = not state.controls.disable_shortcuts
+    print("Keyboard Shortcuts Disabled: " + str(state.controls.disable_shortcuts))
     # Close the search list if open so typed text doesn't trigger a search
-    if _main.list_loaded in ["search", "search_add"]:
-        _main._close_list(_main.right_column)
+    if state.lists.list_loaded in ["search", "search_add"]:
+        lists._close_list(state.widgets.right_column)
 
 
 def _is_blocked_text_entry():
@@ -52,7 +53,7 @@ def _is_blocked_text_entry():
     mode (list_loaded == 'search') is only active when no Entry is focused.
     Must be called from the main Tkinter thread."""
     try:
-        focused = _main.root.focus_get()
+        focused = state.widgets.root.focus_get()
         return focused is not None and isinstance(focused, tk.Entry)
     except Exception:
         return False
@@ -65,34 +66,34 @@ def on_press(key):
                 return
             if _is_blocked_text_entry():
                 return
-            if _main.disable_shortcuts:
+            if state.controls.disable_shortcuts:
                 pass
             elif grow_overlay.grow_overlay_boxes:
                 move_amount = 10  # pixels per key press
                 if key == key.up:
-                    _main.move_grow_position(0, -move_amount)
+                    grow_overlay.move_grow_position(0, -move_amount)
                 elif key == key.down:
-                    _main.move_grow_position(0, move_amount)
+                    grow_overlay.move_grow_position(0, move_amount)
                 elif key == key.left:
-                    _main.move_grow_position(-move_amount, 0)
+                    grow_overlay.move_grow_position(-move_amount, 0)
                 elif key == key.right:
-                    _main.move_grow_position(move_amount, 0)
+                    grow_overlay.move_grow_position(move_amount, 0)
             elif key == key.up:
-                _main.list_move(-1)
+                lists.list_move(-1)
             elif key == key.down:
-                _main.list_move(1)
+                lists.list_move(1)
         except AttributeError:
             try:
-                if _main.list_loaded == "search":
+                if state.lists.list_loaded == "search":
                     pass
-                elif not _main.playlist.get("infinite", False) and (key.char == '-'):
-                    _main.player.set_time(_main.player.get_time() - 1000)
-                elif not _main.playlist.get("infinite", False) and (key.char == '+'):
-                    _main.player.set_time(_main.player.get_time() + 1000)
+                elif not state.metadata.playlist.get("infinite", False) and (key.char == '-'):
+                    state.widgets.player.set_time(state.widgets.player.get_time() - 1000)
+                elif not state.metadata.playlist.get("infinite", False) and (key.char == '+'):
+                    state.widgets.player.set_time(state.widgets.player.get_time() + 1000)
             except AttributeError as e:
                 print(f"Error: {e}")
     try:
-        _main.root.after(0, _handle)
+        state.widgets.root.after(0, _handle)
     except RuntimeError:
         pass
 
@@ -104,95 +105,95 @@ def on_release(key):
                 return
             if _is_blocked_text_entry():
                 return
-            if _main.popout_searching:
+            if popout_window.popout_searching:
                 pass
-            elif _main.disable_shortcuts:
+            elif state.controls.disable_shortcuts:
                 try:
-                    enable_key = _main.get_shortcut("enable_shortcuts")
+                    enable_key = menu_builder.get_shortcut("enable_shortcuts")
                     if enable_key and key.char == enable_key:
-                        cmd = _main._shortcut_dispatch.get(enable_key)
+                        cmd = state.shortcuts.dispatch.get(enable_key)
                         if cmd:
                             cmd()
                         else:
-                            _main.toggle_disable_shortcuts()  # fallback before dispatch is built
+                            toggle_disable_shortcuts()  # fallback before dispatch is built
                 except:
                     pass
-            elif _main.list_loaded in ["search", "search_add"]:
+            elif state.lists.list_loaded in ["search", "search_add"]:
                 if key == keyboard.Key.esc:
-                    _main.search(add=_main.playlist.get("infinite", False))
+                    search_ops.search(add=state.metadata.playlist.get("infinite", False))
                 elif key == keyboard.Key.backspace:
-                    if _main.search_ops.search_term != "":
-                        _main.search_ops.search_term = _main.search_ops.search_term[:-1]
-                    _main.search(True, add=_main.playlist.get("infinite", False))
+                    if search_ops.search_term != "":
+                        search_ops.search_term = search_ops.search_term[:-1]
+                    search_ops.search(True, add=state.metadata.playlist.get("infinite", False))
                 elif key == keyboard.Key.space:
-                    _main.search_ops.search_term = _main.search_ops.search_term + " "
-                    _main.search(True, add=_main.playlist.get("infinite", False))
+                    search_ops.search_term = search_ops.search_term + " "
+                    search_ops.search(True, add=state.metadata.playlist.get("infinite", False))
                 elif key == keyboard.Key.enter:
-                    _main.list_select()
-                    _main.search_ops.search_term = ""
-                    _main.list_unload(_main.right_column)
+                    lists.list_select()
+                    search_ops.search_term = ""
+                    lists.list_unload(state.widgets.right_column)
                 elif isinstance(key, keyboard.KeyCode) and key.char:
-                    _main.search_ops.search_term = _main.search_ops.search_term + key.char
-                    _main.search(True, add=_main.playlist.get("infinite", False))
+                    search_ops.search_term = search_ops.search_term + key.char
+                    search_ops.search(True, add=state.metadata.playlist.get("infinite", False))
             else:
                 if isinstance(key, keyboard.Key):
                     if not grow_overlay.grow_overlay_boxes:
                         if key == keyboard.Key.right:
-                            _main.play_next()
+                            transport.play_next()
                         elif key == keyboard.Key.left:
-                            _main.play_previous()
+                            transport.play_previous()
                     if key == keyboard.Key.space:
-                        _main.play_pause()
+                        transport.play_pause()
                     elif key == keyboard.Key.esc:
-                        _main.stop()
+                        transport.stop()
                     elif key == keyboard.Key.tab:
-                        _main.player.toggle_fullscreen()
+                        state.widgets.player.toggle_fullscreen()
                     elif key == keyboard.Key.backspace:
                         if (peek_overlay.peek_overlay1 or edge_overlay.edge_overlay_box or grow_overlay.grow_overlay_boxes or filter_overlay.filter_vf_active):
-                            _main.toggle_peek()
+                            peek_dispatch.toggle_peek()
                         else:
-                            _main.blind(True)
+                            blind_screen.blind(True)
                     elif key == keyboard.Key.enter:
-                        _main.list_select()
+                        lists.list_select()
                 elif isinstance(key, keyboard.KeyCode) and key.char:
                     # --- Registry-driven dispatch ---
                     # Covers all shortcuts defined in DEFAULT_SHORTCUTS (or user overrides).
                     # Context-sensitive and aliased keys are handled below.
-                    cmd = _main._shortcut_dispatch.get(key.char)
+                    cmd = state.shortcuts.dispatch.get(key.char)
                     if cmd:
-                        _main.root.after(0, cmd)
+                        state.widgets.root.after(0, cmd)
                     # --- 'i' has context-sensitive logic: shows info OR clears title popup ---
                     elif key.char == 'i':
-                        if _main.is_title_window_up() and (_main.artist_info_display or _main.studio_info_display):
-                            _main.toggle_title_popup(True)
+                        if information_popup.is_title_window_up() and (state.info_display.artist_info_display or state.info_display.studio_info_display):
+                            information_popup.toggle_title_popup(True)
                         else:
-                            _main.toggle_info_popup()
+                            information_popup.toggle_info_popup()
                     # --- '+' is a secondary alias for '=' (peek toggle), not in DEFAULT_SHORTCUTS ---
                     elif key.char == '+':
-                        _main.toggle_peek()
+                        peek_dispatch.toggle_peek()
                     # --- Digits: context-sensitive (list select vs seek position) ---
                     elif key.char.isdigit():
-                        if _main.list_loaded and _main.list_loaded != "playlist":
-                            _main.list_index = int(key.char) - 1
-                            _main.list_select()
+                        if state.lists.list_loaded and state.lists.list_loaded != "playlist":
+                            state.lists.list_index = int(key.char) - 1
+                            lists.list_select()
                         else:
-                            seek_value = _main.player.get_length() - ((_main.player.get_length() / 10) * (10 - int(key.char)))
-                            _main.seek_to(int(seek_value))
+                            seek_value = state.widgets.player.get_length() - ((state.widgets.player.get_length() / 10) * (10 - int(key.char)))
+                            transport.seek_to(int(seek_value))
                     # --- Infinite difficulty adjust (condition-gated, not suitable for registry) ---
-                    elif _main.playlist.get("infinite") and (key.char in ['<', ',']):
-                        if _main.playlist["difficulty"] > 0:
-                            _main.playlist["difficulty"] -= 1
-                            _main.difficulty_dropdown.current(_main.playlist["difficulty"])
-                            _main.select_difficulty()
-                    elif _main.playlist.get("infinite") and (key.char in ['>', '.']):
-                        if _main.playlist["difficulty"] < len(_main.difficulty_options) - 1:
-                            _main.playlist["difficulty"] += 1
-                            _main.difficulty_dropdown.current(_main.playlist["difficulty"])
-                            _main.select_difficulty()
+                    elif state.metadata.playlist.get("infinite") and (key.char in ['<', ',']):
+                        if state.metadata.playlist["difficulty"] > 0:
+                            state.metadata.playlist["difficulty"] -= 1
+                            state.playlist_ui.difficulty_dropdown.current(state.metadata.playlist["difficulty"])
+                            playlist_ops.select_difficulty()
+                    elif state.metadata.playlist.get("infinite") and (key.char in ['>', '.']):
+                        if state.metadata.playlist["difficulty"] < len(state.playlist_ui.difficulty_options) - 1:
+                            state.metadata.playlist["difficulty"] += 1
+                            state.playlist_ui.difficulty_dropdown.current(state.metadata.playlist["difficulty"])
+                            playlist_ops.select_difficulty()
         except AttributeError as e:
             print(f"Error: {e}")
     try:
-        _main.root.after(0, _handle)
+        state.widgets.root.after(0, _handle)
     except RuntimeError:
         pass
 
@@ -206,11 +207,11 @@ def smooth_move_zoom_filter_overlay():
     tx, ty = target_mouse_position
     # Normalise relative to the mpv player window so windowed mode works correctly
     try:
-        mx, my, mw, mh = _main._get_mpv_window_rect()
+        mx, my, mw, mh = information_popup._get_mpv_window_rect()
     except Exception:
-        mx, my, mw, mh = 0, 0, _main.root.winfo_screenwidth(), _main.root.winfo_screenheight()
+        mx, my, mw, mh = 0, 0, state.widgets.root.winfo_screenwidth(), state.widgets.root.winfo_screenheight()
     if mw <= 0 or mh <= 0:
-        mx, my, mw, mh = 0, 0, _main.root.winfo_screenwidth(), _main.root.winfo_screenheight()
+        mx, my, mw, mh = 0, 0, state.widgets.root.winfo_screenwidth(), state.widgets.root.winfo_screenheight()
     norm_x = (tx - mx) / mw - 0.5
     norm_y = (ty - my) / mh - 0.5
     norm_x = max(-0.45, min(0.45, norm_x))
@@ -221,12 +222,12 @@ def smooth_move_zoom_filter_overlay():
     # force cache miss so vf is actually updated
     filter_overlay._filter_vf_last = None
     try:
-        _main.toggle_filter_vf(filter_overlay._filter_vf_variant, filter_overlay._filter_vf_last_progress[0])
+        filter_overlay.toggle_filter_vf(filter_overlay._filter_vf_variant, filter_overlay._filter_vf_last_progress[0])
     except Exception:
         pass
     dist = ((norm_x - filter_overlay._filter_zoom_offset[0])**2 + (norm_y - filter_overlay._filter_zoom_offset[1])**2) ** 0.5
     if mouse_dragging_zoom_filter and dist > 0.003:
-        zoom_filter_animation_after_id = _main.root.after(16, smooth_move_zoom_filter_overlay)
+        zoom_filter_animation_after_id = state.widgets.root.after(16, smooth_move_zoom_filter_overlay)
     else:
         zoom_filter_animation_after_id = None
 
@@ -244,7 +245,7 @@ def smooth_move_grow_overlay():
 
     # Convert screen coordinates to OSD (mpv client area) coordinates
     try:
-        mpv_ox, mpv_oy, mpv_ow, mpv_oh = _main._get_mpv_window_rect()
+        mpv_ox, mpv_oy, mpv_ow, mpv_oh = information_popup._get_mpv_window_rect()
     except Exception:
         mpv_ox, mpv_oy = 0, 0
     osd_target_x = raw_target_x - mpv_ox
@@ -256,11 +257,11 @@ def smooth_move_grow_overlay():
 
     # Update position
     grow_overlay.grow_position = (int(new_x), int(new_y))
-    _main.toggle_grow_overlay(block_percent=grow_overlay.last_grow_block_percent, position=grow_overlay.grow_position)
+    grow_overlay.toggle_grow_overlay(block_percent=grow_overlay.last_grow_block_percent, position=grow_overlay.grow_position)
 
     distance = ((osd_target_x - new_x) ** 2 + (osd_target_y - new_y) ** 2) ** 0.5
     if mouse_dragging_grow_overlay and distance > 2:  # Stop when very close
-        animation_after_id = _main.root.after(16, smooth_move_grow_overlay)  # ~60 FPS
+        animation_after_id = state.widgets.root.after(16, smooth_move_grow_overlay)  # ~60 FPS
     else:
         animation_after_id = None
 
@@ -273,14 +274,14 @@ def on_mouse_click(x, y, button, pressed):
         if button == mouse.Button.left:
             mouse_left_pressed = True
             if grow_overlay.grow_overlay_boxes:
-                mx, my, mw, mh = _main._get_mpv_window_rect()
+                mx, my, mw, mh = information_popup._get_mpv_window_rect()
                 if mx <= x < mx + mw and my <= y < my + mh:
                     mouse_dragging_grow_overlay = True
                     target_mouse_position = (x, y)
                     if animation_after_id is None:
                         smooth_move_grow_overlay()
             elif filter_overlay.filter_vf_active and filter_overlay._filter_vf_variant == 'zoom':
-                mx, my, mw, mh = _main._get_mpv_window_rect()
+                mx, my, mw, mh = information_popup._get_mpv_window_rect()
                 if mx <= x < mx + mw and my <= y < my + mh:
                     mouse_dragging_zoom_filter = True
                     target_mouse_position = (x, y)
@@ -288,7 +289,7 @@ def on_mouse_click(x, y, button, pressed):
                         smooth_move_zoom_filter_overlay()
 
         elif button == mouse.Button.right:
-            _main.widen_peek()
+            peek_dispatch.widen_peek()
     else:
         if button == mouse.Button.left:
             mouse_left_pressed = False
@@ -297,15 +298,15 @@ def on_mouse_click(x, y, button, pressed):
             target_mouse_position = None
             # Cancel animation
             if animation_after_id:
-                _main.root.after_cancel(animation_after_id)
+                state.widgets.root.after_cancel(animation_after_id)
                 animation_after_id = None
-            if _main.last_seek_time:
-                seek_time = int(float(_main.last_seek_time)) * 1000
-                _main.seek_to(seek_time)
-                _main.last_seek_time = None
+            if state.seek.last_seek_time:
+                seek_time = int(float(state.seek.last_seek_time)) * 1000
+                transport.seek_to(seek_time)
+                state.seek.last_seek_time = None
                 def clear_last_seek_time():
-                    _main.last_seek_time = None
-                _main.root.after(100, clear_last_seek_time)
+                    state.seek.last_seek_time = None
+                state.widgets.root.after(100, clear_last_seek_time)
         # Add your mouse release handling logic here
 
 
@@ -315,13 +316,13 @@ def on_mouse_move(x, y):
 
     # If left mouse is pressed and we're dragging the grow overlay
     if mouse_dragging_grow_overlay and mouse_left_pressed:
-        mx, my, mw, mh = _main._get_mpv_window_rect()
+        mx, my, mw, mh = information_popup._get_mpv_window_rect()
         if mx <= x < mx + mw and my <= y < my + mh:
             target_mouse_position = (x, y)
             if animation_after_id is None:
                 smooth_move_grow_overlay()
     elif mouse_dragging_zoom_filter and mouse_left_pressed:
-        mx, my, mw, mh = _main._get_mpv_window_rect()
+        mx, my, mw, mh = information_popup._get_mpv_window_rect()
         if mx <= x < mx + mw and my <= y < my + mh:
             target_mouse_position = (x, y)
             if zoom_filter_animation_after_id is None:

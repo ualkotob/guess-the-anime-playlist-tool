@@ -8,14 +8,15 @@ broader round timing); this module owns the picker, the NSFW filter, and
 the live mismatch-state flags.
 """
 from __future__ import annotations
+from core.game_state import state
 
 import random
 
 from _app_scripts import utils
+from _app_scripts.file.metadata import metadata_fetch, metadata_display
+from _app_scripts.information import information_popup
+from _app_scripts.toggles import censors
 
-
-# Live reference to the main module; populated by lightning_manager.set_context.
-_main = None
 
 is_slug_op = utils.is_slug_op
 
@@ -45,9 +46,9 @@ def get_cached_sfw_themes():
         "ops":[],
         "eds":[]
     }
-    for filename in _main.directory_files:
+    for filename in state.metadata.directory_files:
         if not check_nsfw(filename):
-            data = _main.get_metadata(filename)
+            data = metadata_fetch.get_metadata(filename)
             if data:
                 if is_slug_op(data.get("slug")):
                     cached_sfw_themes["ops"].append(filename)
@@ -57,12 +58,12 @@ def get_cached_sfw_themes():
 
 def get_mismatched_theme():
     global mismatch_visuals
-    match_data = _main.currently_playing.get("data")
+    match_data = state.playback.currently_playing.get("data")
     if not match_data:
         return None
 
     is_op = is_slug_op(match_data.get("slug"))
-    match_series = _main.series_primary(match_data)
+    match_series = metadata_display.series_primary(match_data)
     match_season = match_data.get("season")  # e.g., "Fall 2020"
 
     # Convert season to year
@@ -79,19 +80,19 @@ def get_mismatched_theme():
         mal_id = data.get("mal")
         if not mal_id:
             return {}
-        fm = _main.file_metadata.get(str(mal_id)) or _main.file_metadata.get(mal_id)
+        fm = state.metadata.file_metadata.get(str(mal_id)) or state.metadata.file_metadata.get(mal_id)
         if not fm:
             return {}
         al_id = fm.get("anilist")
         if not al_id:
             return {}
-        al = _main.anilist_metadata.get(str(al_id))
+        al = state.metadata.anilist_metadata.get(str(al_id))
         if not al:
             return {}
         return {t["name"]: t.get("rank", 0) for t in al.get("tags", []) if t.get("name")}
 
     match_anilist_tags = get_anilist_tags(match_data)
-    match_basic_tags   = set(_main.get_tags(match_data))  # fallback when no AniList data
+    match_basic_tags   = set(information_popup.get_tags(match_data))  # fallback when no AniList data
 
     theme_pool = cached_sfw_themes["ops"] if is_op else cached_sfw_themes["eds"]
     if len(theme_pool) <= 1:
@@ -100,11 +101,11 @@ def get_mismatched_theme():
     candidates = []
 
     for filename in theme_pool:
-        file_data = _main.get_metadata(filename)
+        file_data = metadata_fetch.get_metadata(filename)
         if not file_data:
             continue
 
-        file_series = _main.series_primary(file_data)
+        file_series = metadata_display.series_primary(file_data)
         if file_series == match_series:
             continue  # skip same series
 
@@ -119,7 +120,7 @@ def get_mismatched_theme():
                 for name in match_anilist_tags if name in file_anilist_tags
             )
         else:
-            tag_score = len(match_basic_tags & set(_main.get_tags(file_data)))
+            tag_score = len(match_basic_tags & set(information_popup.get_tags(file_data)))
 
         year_score = 0
         if match_year and file_year:
@@ -137,10 +138,10 @@ def get_mismatched_theme():
         tries = 0
         while tries <= 10:
             filename = random.choice(theme_pool)
-            file_data = _main.get_metadata(filename)
-            file_series = _main.series_primary(file_data)
+            file_data = metadata_fetch.get_metadata(filename)
+            file_series = metadata_display.series_primary(file_data)
             if file_series != match_series:
-                mismatch_visuals = _main.get_display_title(file_data) + " " + _main.format_slug(file_data.get("slug"))
+                mismatch_visuals = metadata_display.get_display_title(file_data) + " " + utils.format_slug(file_data.get("slug"))
                 return filename
             tries += 1
         return None
@@ -150,17 +151,17 @@ def get_mismatched_theme():
     top_candidates = candidates[:5]
     score, chosen_filename, chosen_data = random.choice(top_candidates)
 
-    mismatch_visuals = _main.get_display_title(chosen_data) + " " + _main.format_slug(chosen_data.get("slug"))
+    mismatch_visuals = metadata_display.get_display_title(chosen_data) + " " + utils.format_slug(chosen_data.get("slug"))
     return chosen_filename
 
 
 def check_nsfw(filename):
-    for censor in _main.get_file_censors(filename):
+    for censor in censors.get_file_censors(filename):
         if censor.get("nsfw"):
             return True
-    data = _main.get_metadata(filename)
+    data = metadata_fetch.get_metadata(filename)
     if data:
-        theme = _main.get_song_by_slug(data, data.get("slug", ""))
+        theme = utils.get_song_by_slug(data, data.get("slug", ""))
         if theme.get("nsfw"):
             return True
     return False

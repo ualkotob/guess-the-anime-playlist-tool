@@ -10,7 +10,7 @@ Extracted from `guess_the_anime.py`.
 the lightning ticker, every PIXEL/REVEAL/BLUR/ZOOM reveal overlay, the
 cleanup answer-screen, and the background-music floating-text. Until
 lightning state migrates into ``core.game_state`` it lives in main and
-this module reads/writes it via ``main_globals['character_round_answer']``.
+this module reads/writes it via ``state.lightning.character_round_answer``.
 
 External readers/writers of module state (all qualified at the call
 sites in main):
@@ -19,9 +19,8 @@ sites in main):
   lightning ticker to decide whether the mpv image overlay needs a
   resize-after-OSD-known refresh.
 
-Reads via main_globals: ``character_round_answer``, ``light_mode``,
-``currently_playing``, ``playlist``, ``anilist_metadata``,
-``lightning_mode_settings``.
+Reads shared lightning, playback, playlist, and metadata state from
+``core.game_state.state``.
 
 Sibling module ``characters_overlay`` is imported lazily inside the
 functions that need its placeholder image fallback, to dodge a
@@ -36,6 +35,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
 from core.game_state import state
+from ...ui.scaling import scl
+from ...playback import image_loader
 
 
 # ---------------------------------------------------------------------------
@@ -43,25 +44,10 @@ from core.game_state import state
 # ---------------------------------------------------------------------------
 # ``character_round_answer`` deliberately stays in main (read by every
 # character-mode lightning round, not just *PARTS); this module reads
-# and writes it via ``main_globals['character_round_answer']`` until the
+# and writes it via ``state.lightning.character_round_answer`` until the
 # eventual lightning-state migration to ``core.game_state``.
 character_image_overlay           = None   # mpv image overlay object
 _character_image_overlay_source   = None   # last `character` arg, for re-resize
-
-
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_load_image_from_url = None
-_scl                 = None
-main_globals: dict   = {}
-
-
-def set_context(*, load_image_from_url, scl, main_globals):
-    g = globals()
-    g['_load_image_from_url'] = load_image_from_url
-    g['_scl']                 = scl
-    g['main_globals']         = main_globals
 
 
 # =============================================================================
@@ -107,7 +93,7 @@ def match_character_names(name1, name2):
 
 def get_anilist_character_description(character_name, anilist_id):
     """Get character description from AniList metadata."""
-    anilist_metadata = main_globals.get('anilist_metadata', {}) or {}
+    anilist_metadata = state.metadata.anilist_metadata
     if not anilist_id or str(anilist_id) not in anilist_metadata:
         return ""
 
@@ -188,9 +174,9 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
     # Lazy import to dodge circular sibling import.
     from _app_scripts.queue_round.lightning_rounds import characters_overlay
 
-    light_mode         = main_globals.get('light_mode')
-    currently_playing  = main_globals.get('currently_playing', {}) or {}
-    playlist           = main_globals.get('playlist', {}) or {}
+    light_mode         = state.lightning.light_mode
+    currently_playing  = state.playback.currently_playing
+    playlist           = state.metadata.playlist
 
     mode = mode or light_mode
 
@@ -201,7 +187,7 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
         if queue:
             return [name, img, gender, desc]
         else:
-            main_globals['character_round_answer'] = [name, img, gender, desc]
+            state.lightning.character_round_answer = [name, img, gender, desc]
             return img
 
     if not data or not data.get("characters"):
@@ -274,7 +260,7 @@ def get_character_round_image(types=['m'], min_desc_length=0, data=None, queue=F
             desc = clean_character_description(name, anilist_desc)
 
     # Try loading the image
-    tk_img = _load_image_from_url(chosen_url, size=None)
+    tk_img = image_loader.load_image_from_url(chosen_url, size=None)
     if not tk_img:
         return return_image(name, characters_overlay.characters_round_image_cache_default[0], gender, desc, queue=queue)
 
@@ -306,7 +292,7 @@ def _update_character_image_overlay():
     """Build and push the character image to the mpv OSD overlay."""
     global character_image_overlay
     player = state.widgets.player
-    lightning_mode_settings = main_globals.get('lightning_mode_settings', {}) or {}
+    lightning_mode_settings = state.playback.lightning_mode_settings
 
     character = _character_image_overlay_source
     if not character:
@@ -376,7 +362,7 @@ def _update_character_image_overlay():
     a = a.point(lambda x: int(x * 0.95))
     resized = Image.merge("RGBA", (r, g, b, a))
 
-    border = _scl(4)
+    border = scl(4)
     canvas = Image.new("RGBA", (osd_w, osd_h), (0, 0, 0, 0))
     cx = (osd_w - new_w) // 2
     cy = int((osd_h - new_h) // 2 - osd_h * 0.025)
@@ -473,7 +459,7 @@ def get_char_parts_round_character():
     """Selects one character matching given types and prepares 4 zoomed parts as separate images."""
     # Lazy import to dodge circular sibling import.
     from _app_scripts.queue_round.lightning_rounds import characters_overlay
-    character_round_answer = main_globals.get('character_round_answer')
+    character_round_answer = state.lightning.character_round_answer
     # Generate zoomed-in pieces and store them
     characters_overlay.characters_round_characters = generate_weighted_zoomed_parts(character_round_answer[1])
 
@@ -487,7 +473,7 @@ def has_char_descriptions(characters, length, types=None, anilist_id=None):
     Returns True if any character in the list has a description
     of at least the given length (from AniDB or AniList).
     """
-    anilist_metadata = main_globals.get('anilist_metadata', {}) or {}
+    anilist_metadata = state.metadata.anilist_metadata
 
     # First check AniDB descriptions
     for char in characters:

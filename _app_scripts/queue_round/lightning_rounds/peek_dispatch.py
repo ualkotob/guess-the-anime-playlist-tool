@@ -8,17 +8,16 @@ state (`peek_round_toggle`, `mute_peek_round_toggle`, `_queued_peek_variant`,
 `peek_light_direction`) and the `_PEEK_VARIANT_LABELS` table.
 
 Cross-module note: `gap_modifier` was previously read by `peek_overlay`
-via `main_globals['gap_modifier']`. After this extraction the dispatch
+through the broad main globals dict. After this extraction the dispatch
 owns it; `peek_overlay` now imports this module lazily and reads
 `peek_dispatch.gap_modifier` directly.
 
-Injected via set_context: ``send_scoreboard_command``, ``set_black_screen``,
-``refresh_popout_toggles``, ``toggle_blind_round``, ``toggle_coming_up_popup``,
-``toggle_mute``, ``main_globals`` (for ``blind_round_toggle``,
-``special_round_warning``, ``lightning_mode_settings``, ``light_mode``,
-``light_round_started`` reads and ``root.after`` scheduling). The live blind
-state is read directly from ``blind_screen.black_overlay`` (lazy sibling
-import) — it no longer lives in main's globals.
+Cross-module calls go directly to the owning sibling modules
+(``scoreboard_control``, ``progress_overlay``, ``coming_up_ui``,
+``popout_window``, ``audio_toggles`` at module level; ``blind_screen``
+lazily, since it imports this module back). Lightning settings/state come
+from ``core.game_state.state``. The live blind state is read directly from
+``blind_screen.black_overlay`` (lazy sibling import).
 """
 from __future__ import annotations
 
@@ -26,6 +25,11 @@ import random
 
 from core.game_state import state
 from . import peek_overlay, edge_overlay, grow_overlay, filter_overlay
+import _app_scripts.file.scoreboard_control as scoreboard_control
+import _app_scripts.playback.progress_overlay as progress_overlay
+import _app_scripts.playback.coming_up_ui as coming_up_ui
+import _app_scripts.popout.popout_window as popout_window
+import _app_scripts.toggles.audio_toggles as audio_toggles
 
 
 # ---------------------------------------------------------------------------
@@ -55,37 +59,10 @@ _PEEK_VARIANT_LABELS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Injected dependencies (populated by set_context)
-# ---------------------------------------------------------------------------
-_send_scoreboard_command  = None
-_set_black_screen         = None
-_set_progress_overlay     = None
-_refresh_popout_toggles   = None
-_toggle_blind_round       = None
-_toggle_coming_up_popup   = None
-_toggle_mute              = None
-main_globals: dict = {}
-
-
-def set_context(*, send_scoreboard_command, set_black_screen, set_progress_overlay,
-                refresh_popout_toggles, toggle_blind_round,
-                toggle_coming_up_popup, toggle_mute, main_globals):
-    g = globals()
-    g['_send_scoreboard_command'] = send_scoreboard_command
-    g['_set_black_screen']        = set_black_screen
-    g['_set_progress_overlay']    = set_progress_overlay
-    g['_refresh_popout_toggles']  = refresh_popout_toggles
-    g['_toggle_blind_round']      = toggle_blind_round
-    g['_toggle_coming_up_popup']  = toggle_coming_up_popup
-    g['_toggle_mute']             = toggle_mute
-    g['main_globals']             = main_globals
-
-
 def get_next_peek_mode():
     global available_peek_modes, last_peek_mode
 
-    lightning_mode_settings = main_globals.get('lightning_mode_settings', {}) or {}
+    lightning_mode_settings = state.playback.lightning_mode_settings
     if not available_peek_modes:
         all_variants = []
         available_variants = []
@@ -113,7 +90,7 @@ def _activate_peek_variant(peek_mode):
     _had_existing = bool(peek_overlay.peek_overlay1 or edge_overlay.edge_overlay_box
                          or grow_overlay.grow_overlay_boxes or filter_overlay.filter_vf_active)
     gap_modifier = 0
-    _send_scoreboard_command("hide")
+    scoreboard_control.send_command("hide")
     # Activate the new variant first to avoid a visible gap
     if peek_mode == 'edge':
         edge_overlay.toggle_edge_overlay(block_percent=99)
@@ -147,10 +124,10 @@ def _activate_peek_variant(peek_mode):
         # remove the manual-blind progress overlay (the animated music-note bar),
         # which set_black_screen(False) alone does not destroy.
         def _drop_blind():
-            _set_black_screen(False)
-            _set_progress_overlay(destroy=True)
+            blind_screen.set_black_screen(False)
+            progress_overlay.set_progress_overlay(destroy=True)
         state.widgets.root.after(100, _drop_blind)
-    _refresh_popout_toggles()
+    popout_window._refresh_popout_toggles()
 
 
 def is_peek_active():
@@ -167,12 +144,12 @@ def toggle_peek(toggle=None):
 
 
 def destroy_peek():
-    _send_scoreboard_command("show")
+    scoreboard_control.send_command("show")
     peek_overlay.toggle_peek_overlay(destroy=True)
     edge_overlay.toggle_edge_overlay(destroy=True)
     grow_overlay.toggle_grow_overlay(destroy=True)
     filter_overlay.toggle_filter_vf(destroy=True)
-    _toggle_mute(False)
+    audio_toggles.toggle_mute(False)
 
 
 def toggle_peek_round():
@@ -181,13 +158,13 @@ def toggle_peek_round():
     peek_round_toggle = not peek_round_toggle
     if peek_round_toggle:
         if blind_screen.blind_round_toggle:
-            _toggle_blind_round()
+            blind_screen.toggle_blind_round()
         if mute_peek_round_toggle:
             toggle_mute_peek_round()
-        if main_globals.get('special_round_warning'):
-            _toggle_coming_up_popup(True, "Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nNormal rules apply.", queue=True)
+        if state.config.special_round_warning:
+            coming_up_ui.toggle_coming_up_popup(True, "Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nNormal rules apply.", queue=True)
     else:
-        _toggle_coming_up_popup(False, "Reveal Round")
+        coming_up_ui.toggle_coming_up_popup(False, "Reveal Round")
 
 
 def toggle_mute_peek_round():
@@ -198,11 +175,11 @@ def toggle_mute_peek_round():
         if peek_round_toggle:
             toggle_peek_round()
         if blind_screen.blind_round_toggle:
-            _toggle_blind_round()
-        if main_globals.get('special_round_warning'):
-            _toggle_coming_up_popup(True, "Mute Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nAudio will also be muted.\nNormal rules apply.", queue=True)
+            blind_screen.toggle_blind_round()
+        if state.config.special_round_warning:
+            coming_up_ui.toggle_coming_up_popup(True, "Mute Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nAudio will also be muted.\nNormal rules apply.", queue=True)
     else:
-        _toggle_coming_up_popup(False, "Mute Reveal Round")
+        coming_up_ui.toggle_coming_up_popup(False, "Mute Reveal Round")
 
 
 def _queue_peek_variant(variant, mute=False):
@@ -215,10 +192,10 @@ def _queue_peek_variant(variant, mute=False):
         if not peek_round_toggle:
             toggle_peek_round()
     # Override the generic popup with a variant-specific title and description
-    if main_globals.get('special_round_warning'):
+    if state.config.special_round_warning:
         _, label, tooltip = _PEEK_VARIANT_LABELS.get(variant, ('', variant.title(), ''))
         mute_suffix = "\nAudio will also be muted." if mute else ""
-        _toggle_coming_up_popup(
+        coming_up_ui.toggle_coming_up_popup(
             True,
             f"Reveal Round: {label}",
             f"Guess the anime from a partially obscured visual.\n{tooltip}{mute_suffix}\nNormal rules apply.",
@@ -232,13 +209,13 @@ def _queue_peek_random(mute=False):
     if mute:
         if not mute_peek_round_toggle:
             toggle_mute_peek_round()
-        elif main_globals.get('special_round_warning'):
-            _toggle_coming_up_popup(True, "Mute Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nAudio will also be muted.\nNormal rules apply.", queue=True)
+        elif state.config.special_round_warning:
+            coming_up_ui.toggle_coming_up_popup(True, "Mute Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nAudio will also be muted.\nNormal rules apply.", queue=True)
     else:
         if not peek_round_toggle:
             toggle_peek_round()
-        elif main_globals.get('special_round_warning'):
-            _toggle_coming_up_popup(True, "Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nNormal rules apply.", queue=True)
+        elif state.config.special_round_warning:
+            coming_up_ui.toggle_coming_up_popup(True, "Reveal Round", "Guess the anime from a partially obscured visual.\nThe reveal style varies each round.\nNormal rules apply.", queue=True)
 
 
 def narrow_peek():
@@ -271,7 +248,7 @@ def widen_peek():
 
 
 def get_peek_gap(data):
-    if main_globals.get('light_mode') == 'reveal' or main_globals.get('light_round_started'):
+    if state.lightning.light_mode == 'reveal' or state.lightning.light_round_started:
         gap = (1 + min(9, (data.get('popularity') or 3000)/100))
     else:
         gap = 1
