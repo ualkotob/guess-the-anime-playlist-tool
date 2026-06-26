@@ -282,7 +282,7 @@ def handle_dropped_files(files, event=None):
             # If show_playlist function doesn't exist, try other display functions
             try:
                 lists.show_list("playlist", None, None, None, None, None, update=True)
-            except:
+            except Exception:
                 print("Could not refresh playlist display")
 
     # Clear hover state after drop

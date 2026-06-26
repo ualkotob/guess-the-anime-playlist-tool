@@ -8,6 +8,7 @@ overlay modules directly.
 
 from core.game_state import state
 from core.app_meta import WINDOW_TITLE
+from core.app_logging import log_exception
 import _app_scripts.toggles.censors as censors
 
 import _app_scripts.toggles.audio_toggles as audio_toggles
@@ -45,8 +46,9 @@ import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.playback.music as music
 import _app_scripts.playback.osd_text as osd_text
 import _app_scripts.queue_round.lightning_rounds.peek_dispatch as peek_dispatch
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.infinite as infinite
 import _app_scripts.playback.progress_bar as progress_bar_ops
 import _app_scripts.playback.progress_overlay as progress_overlay_ops
 import _app_scripts.queue_round.lightning_rounds.peek_overlay as peek_overlay
@@ -187,7 +189,7 @@ def skip_to_lightning_answer():
                 information_popup.toggle_title_popup(True)
                 return True
         except Exception:
-            pass
+            log_exception("skip_to_lightning_answer: frame-round answer skip failed")
     if state.lightning.light_round_started and state.lightning.light_round_start_time is not None:
         try:
             if state.lightning.light_blind_one_second_count:
@@ -212,6 +214,7 @@ def skip_to_lightning_answer():
             return True
         except Exception as e:
             print(f"[DBG skip_to_lightning_answer] exception: {e}")
+            log_exception("skip_to_lightning_answer: lightning answer seek failed")
     return False
 
 
@@ -236,7 +239,7 @@ def update_current_index(value = None, save = True):
         _plmb = state.widgets.playlist_menu_button
         if _plmb:
             if state.metadata.playlist.get("infinite", False):
-                out_of = playlist_ops.total_infinite_files - len(playlist_ops.cached_skipped_themes)
+                out_of = infinite.total_infinite_files - len(infinite.cached_skipped_themes)
                 counter = f"\u221e/{out_of}"
             else:
                 out_of = len(state.metadata.playlist["playlist"])
@@ -268,7 +271,7 @@ def update_current_index(value = None, save = True):
                 fixed_index = state.lightning.fixed_lightning_round_playlist_data.get("current_index", 0)
                 web_server.push_playlist_info(len(fixed_rounds), fixed_index, counter=(f'{fixed_index+1}/{len(fixed_rounds)}' if fixed_rounds else '0/0'), label=state.lightning.fixed_lightning_round_playlist_data.get('name') or 'Fixed Playlist')
             elif state.metadata.playlist.get('infinite', False):
-                out_of = playlist_ops.total_infinite_files - len(playlist_ops.cached_skipped_themes)
+                out_of = infinite.total_infinite_files - len(infinite.cached_skipped_themes)
                 web_server.push_playlist_info(-1, -1, counter=f'\u221e/{out_of}', label=state.metadata.playlist.get('name') or 'Playlist')
             else:
                 out_of = len(state.metadata.playlist['playlist'])
@@ -307,7 +310,7 @@ def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"
         session_end.toggle_end_message()
 
     if state.metadata.playlist["current_index"] < len(state.metadata.playlist["playlist"]) and index + 1 >= len(state.metadata.playlist["playlist"]) and not state.playback.youtube_queue and not search_ops.search_queue and not state.lightning.fixed_lightning_queue:
-        playlist_ops._promote_or_generate_next()
+        infinite._promote_or_generate_next()
     
     if state.lightning.fixed_lightning_queue or state.lightning.fixed_lightning_round_playlist_data:
         if state.lightning.fixed_lightning_queue and (not state.lightning.fixed_lightning_round_playlist_data or (state.lightning.fixed_lightning_round_playlist_data.get("name") != state.lightning.fixed_lightning_queue.get("name"))):
@@ -787,7 +790,7 @@ def play_next():
         play_video(state.metadata.playlist["current_index"])
     else:
         if state.metadata.playlist["current_index"] + 1 >= len(state.metadata.playlist["playlist"]):
-            playlist_ops._promote_or_generate_next()
+            infinite._promote_or_generate_next()
         if state.metadata.playlist["current_index"] + 1 < len(state.metadata.playlist["playlist"]):
             play_video(state.metadata.playlist["current_index"] + 1)
 

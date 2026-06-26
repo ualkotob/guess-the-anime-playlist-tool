@@ -13,13 +13,14 @@ drag/highlight tracking, …); the right_column_* header widgets live on
 
 import os
 from core.game_state import state
+from core.event_bus import events
 from .scaling import scl
 import tkinter as tk
 from tkinter import messagebox
 
 import _app_scripts.search.search as search_ops
 import _app_scripts.playlists.entry_paths as entry_paths
-import _app_scripts.playlists.marks as marks
+import _app_scripts.theme.marks as marks
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.file.metadata.metadata_panel as metadata_panel
@@ -201,7 +202,7 @@ def get_title(key, value):
                 display_name = "❌" + display_name
         return display_name
         
-    except:
+    except Exception:
         filename = entry_paths.get_clean_filename(value)
         is_lightning = value.startswith("[L]")
         lightning_icon = "⚡" if is_lightning else ""
@@ -265,7 +266,7 @@ def get_fixed_round_title(key, round_data):
     try:
         data = metadata_fetch.get_metadata(theme, fetch=False)
         title = metadata_display.get_display_title(data)
-    except:
+    except Exception:
         title = theme
     
     # Get icon from light_modes dictionary
@@ -556,7 +557,7 @@ def create_persistent_list_buttons(column, target_count=None):
     for btn in state.lists.persistent_buttons:
         try:
             btn.destroy()
-        except:
+        except Exception:
             pass
     
     state.lists.persistent_buttons = []
@@ -868,7 +869,7 @@ def list_unload(column):
         for btn in state.lists.persistent_buttons:
             try:
                 btn.destroy()
-            except:
+            except Exception:
                 pass
         state.lists.persistent_buttons = []
     
@@ -1367,3 +1368,21 @@ def refresh_list_on_resize():
             show_list(temp_loaded, state.widgets.right_column, state.lists.current_list_content,
                       state.lists.current_list_name_func, state.lists.list_func,
                       state.lists.current_list_selected, update=True, title=state.lists.current_list_title)
+
+
+# ---------------------------------------------------------------------------
+# Event subscriptions
+# ---------------------------------------------------------------------------
+
+def _on_playlist_changed(_payload=None):
+    """Refresh the right-column list view when the live playlist changes,
+    but only while the playlist list (not a system/filter list) is shown.
+    Published by playlist_ops._notify_playlist_list_updated()."""
+    if state.lists.list_loaded == "playlist":
+        playlist = state.metadata.playlist
+        state.lists.current_list_content = convert_playlist_to_dict(playlist["playlist"])
+        state.lists.current_list_selected = playlist["current_index"]
+        refresh_current_list()
+
+
+events.subscribe("playlist_changed", _on_playlist_changed)

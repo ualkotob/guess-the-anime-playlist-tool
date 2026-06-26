@@ -106,7 +106,7 @@ def _draw_frame_border_osd():
     outer = f"m {ox} {oy} l {ox+ow} {oy} {ox+ow} {oy+oh} {ox} {oy+oh}"
     inner = f"m {new_x} {new_y} l {new_x} {new_y+new_h} {new_x+new_w} {new_y+new_h} {new_x+new_w} {new_y}"
     ass_ring = (
-        f"{{\\an7\\pos(0,0)\\1c&HFFFFFF&\\1a&H00&\\bord0\\shad0\\p1}}"
+        "{\\an7\\pos(0,0)\\1c&HFFFFFF&\\1a&H00&\\bord0\\shad0\\p1}"
         + outer + " " + inner + "{\\p0}"
     )
     try:

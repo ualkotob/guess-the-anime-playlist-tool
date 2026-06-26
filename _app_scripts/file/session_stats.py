@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from tkinter import messagebox
 
+from core.app_logging import log_exception
 from _app_scripts.file import scoreboard_control
 from _app_scripts import utils
 from _app_scripts.file.web_server import web_server
@@ -105,7 +106,7 @@ def get_top_series_from_session(session_entries):
     return top_series_name, count
 
 
-def get_top_artist_from_session(session_entries):
+def get_top_artists_from_session(session_entries, max_tied=6):
     artist_counts = {}
     unique_themes = set()
 
@@ -125,17 +126,24 @@ def get_top_artist_from_session(session_entries):
                                     artist_counts[artist] = artist_counts.get(artist, 0) + 1
 
     top_artists = [(artist, count) for artist, count in artist_counts.items() if count > 1]
-    top_artists.sort(key=lambda x: x[1], reverse=True)
+    top_artists.sort(key=lambda x: (-x[1], x[0].casefold()))
     if not top_artists:
-        return None, 0
+        return [], 0
 
     top_count = top_artists[0][1]
     tied_artists = [artist for artist, count in top_artists if count == top_count]
-    if len(tied_artists) != 1:
+    if len(tied_artists) > max_tied:
+        return [], 0
+
+    return tied_artists, top_count
+
+
+def get_top_artist_from_session(session_entries):
+    top_artists, count = get_top_artists_from_session(session_entries)
+    if len(top_artists) != 1:
         return None, 0
 
-    top_artist, count = top_artists[0]
-    return top_artist, count
+    return top_artists[0], count
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +246,11 @@ def generate_session_stats(data=None):
     if top_series_name:
         stats_lines.append(f"Most Played Series: {top_series_name} ({top_series_count})")
 
-    top_artist, top_artist_count = get_top_artist_from_session(data)
-    if top_artist:
-        stats_lines.append(f"Most Played Artist: {top_artist} ({top_artist_count})")
+    top_artists, top_artist_count = get_top_artists_from_session(data)
+    if top_artists:
+        header = "Most Played Artist" if len(top_artists) == 1 else "Most Played Artists"
+        stats_lines.append(f"{header}:")
+        stats_lines.extend(f"{artist} ({top_artist_count})" for artist in top_artists)
 
     scoreboard_entries = [entry for entry in data if entry.get("type") == "scoreboard_score"]
     if scoreboard_entries:
@@ -396,7 +406,7 @@ def create_new_session():
             if os.path.exists(_sc_path):
                 open(_sc_path, "w").close()
         except Exception:
-            pass
+            log_exception("create_new_session: failed to clear score_changes.json")
 
 
 def load_recent_session():
@@ -547,6 +557,13 @@ def reset_session_history(confirm=True):
 
     session_data = []
     session_start_time = datetime.now().strftime('%Y-%m-%d_%H-%M')
+
+    json_path = os.path.join("sessions", "current_session.json")
+    try:
+        if os.path.exists(json_path):
+            os.remove(json_path)
+    except Exception:
+        log_exception("reset_session_history: failed to delete current_session.json")
 
     _sc_path = os.path.join('scoreboard_data', 'score_changes.json')
     if os.path.exists(_sc_path):

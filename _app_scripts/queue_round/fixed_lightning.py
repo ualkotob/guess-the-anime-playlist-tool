@@ -1426,7 +1426,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         val = float(e.get() or 0)
                         e.delete(0, tk.END)
                         e.insert(0, str(int(val + 1)))
-                    except:
+                    except Exception:
                         pass
 
                 def decrement_duration(e=entry):
@@ -1434,7 +1434,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         val = float(e.get() or 0)
                         e.delete(0, tk.END)
                         e.insert(0, str(max(0, int(val - 1))))
-                    except:
+                    except Exception:
                         pass
 
                 def set_to_default(e=entry, d=default_duration):
@@ -1463,7 +1463,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         duration = max(0, round(now - start))
                         e.delete(0, tk.END)
                         e.insert(0, str(duration))
-                    except:
+                    except Exception:
                         pass
 
                 plus_btn.config(command=increment_duration)
@@ -1502,7 +1502,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         val = int(e.get() or 0)
                         e.delete(0, tk.END)
                         e.insert(0, str(val + 1))
-                    except:
+                    except Exception:
                         pass
 
                 def decrement_integer(e=entry):
@@ -1510,7 +1510,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         val = int(e.get() or 0)
                         e.delete(0, tk.END)
                         e.insert(0, str(val - 1))
-                    except:
+                    except Exception:
                         pass
 
                 def set_to_default(e=entry, d=default_value):
@@ -1549,7 +1549,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         val = float(e.get() or 0)
                         e.delete(0, tk.END)
                         e.insert(0, f"{val + step:.1f}")
-                    except:
+                    except Exception:
                         pass
 
                 def decrement_time(step=0.1, e=entry):
@@ -1557,7 +1557,7 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         val = float(e.get() or 0)
                         e.delete(0, tk.END)
                         e.insert(0, f"{max(0, val - step):.1f}")
-                    except:
+                    except Exception:
                         pass
 
                 def set_now(e=entry):
@@ -1566,14 +1566,14 @@ def open_round_field_editor(round_info, round_index, refresh_callback, parent_wi
                         if current_time > 0:
                             e.delete(0, tk.END)
                             e.insert(0, f"{current_time:.1f}")
-                    except:
+                    except Exception:
                         pass
 
                 def set_to_time(e=entry):
                     try:
                         time_val = float(e.get() or 0)
                         state.widgets.player.set_time(round(time_val * 1000))  # Convert seconds to ms
-                    except:
+                    except Exception:
                         pass
 
                 plus_btn.config(command=increment_time)

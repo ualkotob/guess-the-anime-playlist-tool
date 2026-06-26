@@ -21,7 +21,10 @@ import _app_scripts.bonus.bonus as bonus
 import _app_scripts.bonus.buzz as buzz
 import _app_scripts.bonus.answers as bonus_answers
 import _app_scripts.playlists.playlist as playlist_ops
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.playlists.infinite as infinite
+import _app_scripts.playlists.playlist_io as playlist_io
+import _app_scripts.playlists.filters as playlist_filters
+import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.directory.stats as stats_ops
 import _app_scripts.search.search as search_ops
@@ -79,6 +82,57 @@ def _on_skip_grant_changed(name):
         scoreboard_control.send_command("[SKIP_GRANT_CLEAR]")
 
 
+def _on_buzzer_lock_changed(name, locked):
+    if locked:
+        scoreboard_control.send_command(f"[BUZZER_LOCK]{name}")
+    else:
+        scoreboard_control.send_command(f"[BUZZER_UNLOCK]{name}")
+
+
+def _team_assignments_path():
+    return os.path.join('scoreboard_data', 'web_team_assignments.json')
+
+
+def _load_team_assignments():
+    path = _team_assignments_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_team_assignment(name, team_name):
+    teams = _load_team_assignments()
+    if team_name:
+        teams[name] = team_name
+    else:
+        teams.pop(name, None)
+    path = _team_assignments_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(teams, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error saving web team assignment: {e}")
+
+
+def _rename_team_assignment(old_name, new_name):
+    teams = _load_team_assignments()
+    if old_name not in teams or new_name in teams:
+        return
+    teams[new_name] = teams.pop(old_name)
+    path = _team_assignments_path()
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(teams, f, indent=2, ensure_ascii=False)
+    except OSError as e:
+        print(f"Error renaming web team assignment: {e}")
+
+
 def wire_web_server():
     """Register every web-server provider/callback. Called once at startup."""
     web_server.set_titles_provider(web_search.get_all_anime_titles)
@@ -87,6 +141,7 @@ def wire_web_server():
     web_server.set_host_action_callback(_handle_host_action)
     web_server.set_buzz_callback(buzz._play_buzz_sound)
     web_server.set_skip_grant_callback(_on_skip_grant_changed)
+    web_server.set_buzzer_lock_callback(_on_buzzer_lock_changed)
 
 
 def _handle_host_action(action: str, data: dict):
@@ -107,7 +162,7 @@ def _handle_host_action(action: str, data: dict):
             items = state.metadata.playlist.get("playlist", [])
             current_index = state.metadata.playlist.get("current_index", -1)
             if state.metadata.playlist.get("infinite", False):
-                out_of = playlist_ops.total_infinite_files - len(playlist_ops.cached_skipped_themes)
+                out_of = infinite.total_infinite_files - len(infinite.cached_skipped_themes)
                 counter = f'∞/{out_of}'
             else:
                 out_of = len(items)
@@ -282,7 +337,24 @@ def _handle_host_action(action: str, data: dict):
             target = str(data.get('name', '')).strip()
             all_pl = playlist_ops.get_playlists_dict()
             if target and target in all_pl.values():
-                playlist_ops._load_playlist_by_name(target, save_first=bool(data.get('save_first')))
+                playlist_io._load_playlist_by_name(target, save_first=bool(data.get('save_first')))
+        elif action == 'get_filter_list':
+            saved_filters = playlist_filters.get_all_filters()
+            names = sorted(
+                [f.get('name') for f in saved_filters.values() if f.get('name')],
+                key=str.lower,
+            )
+            web_server.push_filter_list(names, to_sid=data.get('_sid'))
+        elif action == 'select_filter':
+            target = str(data.get('name', '')).strip()
+            if target and playlist_filters.apply_saved_filter(target, notify=False):
+                source = _get_web_playlist_source()
+                web_server.push_playlist_info(
+                    len(source['items']),
+                    source['current_index'],
+                    counter=source['counter'],
+                    label=source['label'],
+                )
         elif action == 'get_lightning_presets_list':
             presets_state = state.settings_presets
             presets = sorted(presets_state.saved_lightning_mode_settings.keys())
@@ -397,7 +469,7 @@ def _handle_host_action(action: str, data: dict):
                             try:
                                 sn, yr = s.split()
                                 return (int(yr), {'Winter':0,'Spring':1,'Summer':2,'Fall':3}.get(sn, 4))
-                            except: return (9999, 4)
+                            except Exception: return (9999, 4)
                         groups_raw = [(s, d[s]) for s in sorted(d, key=_sk, reverse=True)]
                     elif _base == 'year':
                         d = {}
@@ -703,7 +775,7 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'set_difficulty':
             val = data.get('value')
             if val is not None:
-                playlist_ops._set_difficulty_from_menu(max(0, min(5, int(val))))
+                infinite._set_difficulty_from_menu(max(0, min(5, int(val))))
                 bonus_answers._push_web_toggles()
         elif action == 'set_auto_bonus':
             val = str(data.get('value', '')).strip() or None
@@ -742,6 +814,7 @@ def _handle_host_action(action: str, data: dict):
             new_name = str(data.get('new_name', '')).strip()
             if old_name and new_name:
                 scoreboard_control.send_command(f"[PLAYER_RENAME][OLD]{old_name}[NEW]{new_name}")
+                _rename_team_assignment(old_name, new_name)
         elif action == 'sc_set_prefs':
             cfg_path = os.path.join('scoreboard_data', 'scoreboard_config.json')
             if os.path.exists(cfg_path):
@@ -783,6 +856,7 @@ def _handle_host_action(action: str, data: dict):
             name      = str(data.get('name', '')).strip()
             team_name = str(data.get('team', '')).strip()
             if name:
+                _save_team_assignment(name, team_name)
                 scoreboard_control.send_command(f"[PLAYER_SET_TEAM][NAME]{name}[TEAM]{team_name}")
         elif action == 'get_teams':
             scoreboard_control.send_command("[GET_TEAM_NAMES]")

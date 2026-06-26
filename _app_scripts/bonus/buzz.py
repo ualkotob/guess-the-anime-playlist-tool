@@ -251,6 +251,7 @@ _buzz_preset_index = 1  # default: Double Ding
 BUZZ_TOAST_MAX_ALPHA = 0.9
 _buzz_toast_wins = []   # list of dicts: {win, base_y, cx, h}
 
+
 def _show_buzz_toast(rank, name):
     """Show a rising, fading toast on-screen when a player buzzes in. Multiple stack upward smoothly."""
     try:

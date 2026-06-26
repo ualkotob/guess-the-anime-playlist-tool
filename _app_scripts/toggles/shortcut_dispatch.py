@@ -24,7 +24,7 @@ from _app_scripts.queue_round.lightning_rounds import (
     peek_dispatch,
 )
 from _app_scripts.search import search as search_ops
-from _app_scripts.playlists import playlist as playlist_ops
+from _app_scripts.playlists import infinite as infinite
 from _app_scripts.playback import blind_screen, transport
 from _app_scripts.information import information_popup
 from _app_scripts.ui import lists, menu_builder
@@ -116,7 +116,7 @@ def on_release(key):
                             cmd()
                         else:
                             toggle_disable_shortcuts()  # fallback before dispatch is built
-                except:
+                except Exception:
                     pass
             elif state.lists.list_loaded in ["search", "search_add"]:
                 if key == keyboard.Key.esc:
@@ -184,12 +184,12 @@ def on_release(key):
                         if state.metadata.playlist["difficulty"] > 0:
                             state.metadata.playlist["difficulty"] -= 1
                             state.playlist_ui.difficulty_dropdown.current(state.metadata.playlist["difficulty"])
-                            playlist_ops.select_difficulty()
+                            infinite.select_difficulty()
                     elif state.metadata.playlist.get("infinite") and (key.char in ['>', '.']):
                         if state.metadata.playlist["difficulty"] < len(state.playlist_ui.difficulty_options) - 1:
                             state.metadata.playlist["difficulty"] += 1
                             state.playlist_ui.difficulty_dropdown.current(state.metadata.playlist["difficulty"])
-                            playlist_ops.select_difficulty()
+                            infinite.select_difficulty()
         except AttributeError as e:
             print(f"Error: {e}")
     try:
@@ -332,3 +332,28 @@ def on_mouse_move(x, y):
 def on_mouse_scroll(x, y, dx, dy):
     """Handle mouse scroll events."""
     # Add your scroll handling logic here
+
+
+# Module-level refs keep the pynput listener threads alive for the app's lifetime.
+keyboard_listener = None
+mouse_listener = None
+
+
+def start_listeners():
+    """Create and start the global pynput keyboard + mouse listeners.
+
+    Called once at startup from guess_the_anime.py. The listeners run in their
+    own threads and dispatch to the on_press/on_release/on_mouse_* handlers in
+    this module.
+    """
+    global keyboard_listener, mouse_listener
+    keyboard_listener = keyboard.Listener(
+        on_press=on_press,
+        on_release=on_release)
+    keyboard_listener.start()
+
+    mouse_listener = mouse.Listener(
+        on_click=on_mouse_click,
+        on_move=on_mouse_move,
+        on_scroll=on_mouse_scroll)
+    mouse_listener.start()

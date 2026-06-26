@@ -20,7 +20,7 @@ from core.game_state import state
 import _app_scripts.playback.osd_text as osd_text
 
 
-# ASS osd-overlay layer id for the bottom censor bar (was in main's OSD-ID block).
+# ASS osd-overlay layer id for the bottom censor bar.
 _OUTER_EDGE_ASS_OSD_ID = 54
 
 

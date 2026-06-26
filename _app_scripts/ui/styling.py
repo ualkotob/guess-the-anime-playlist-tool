@@ -16,6 +16,19 @@ from tkinter import ttk
 from _app_scripts.ui.scaling import scl
 
 
+def init_combobox_theme():
+    """Set the base ttk theme to clam and apply the dark combobox styling.
+
+    Called once at startup, after the root window exists and before the widget
+    tree is built (so clam-borrowed elements like the list scrollbar resolve).
+    `theme_use('clam')` sets the per-interpreter base theme; `configure_style()`
+    layers the dark "Black.TCombobox" style on top.
+    """
+    style = ttk.Style()
+    style.theme_use('clam')
+    configure_style()
+
+
 def configure_style():
     """Apply the dark combobox styling for the "Black.TCombobox" ttk style."""
     style = ttk.Style()

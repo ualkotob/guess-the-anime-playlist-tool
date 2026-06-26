@@ -22,6 +22,7 @@ import _app_scripts.file.web_server.web_server as web_server
 import _app_scripts.file.scoreboard_control as scoreboard_control
 import _app_scripts.toggles.audio_toggles as audio_toggles
 import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.infinite as infinite
 import _app_scripts.bonus.bonus as bonus
 import _app_scripts.queue_round.lightning_rounds.lightning_settings as lightning_settings
 import _app_scripts.queue_round.lightning_rounds.trivia_round as trivia_round
@@ -263,7 +264,7 @@ def save_config():
     utils._save_settings_presets(LIGHTNING_SETTINGS_FOLDER, presets.saved_lightning_mode_settings,
                                  lightning_settings.lightning_mode_settings_default, update_fn=lightning_settings.update_lightning_mode_settings)
     utils._save_settings_presets(INFINITE_SETTINGS_FOLDER, presets.saved_infinite_settings,
-                                 playlist_ops.INFINITE_SETTINGS_DEFAULT, convert_inf=True)
+                                 infinite.INFINITE_SETTINGS_DEFAULT, convert_inf=True)
     utils._save_settings_presets(BONUS_SETTINGS_FOLDER, presets.saved_bonus_settings, bonus.BONUS_SETTINGS_DEFAULT)
 
     config = {
@@ -301,7 +302,7 @@ def save_config():
     # Convert infinities and diff infinite_settings against defaults before saving
     if state.metadata.playlist.get("infinite_settings"):
         config["playlist"] = copy.deepcopy(state.metadata.playlist)
-        inf_diff = utils.compute_settings_diff(playlist_ops.INFINITE_SETTINGS_DEFAULT, config["playlist"]["infinite_settings"]) or {}
+        inf_diff = utils.compute_settings_diff(infinite.INFINITE_SETTINGS_DEFAULT, config["playlist"]["infinite_settings"]) or {}
         config["playlist"]["infinite_settings"] = utils.convert_infinities_to_markers(inf_diff)
 
     transport.update_current_index(save=False)
@@ -339,7 +340,7 @@ def load_config():
                         else:
                             result[k] = copy.deepcopy(v)
                     return result
-                state.metadata.playlist["infinite_settings"] = _deep_merge(playlist_ops.INFINITE_SETTINGS_DEFAULT, state.metadata.playlist["infinite_settings"])
+                state.metadata.playlist["infinite_settings"] = _deep_merge(infinite.INFINITE_SETTINGS_DEFAULT, state.metadata.playlist["infinite_settings"])
             if "background_track_history" not in state.metadata.playlist:
                 state.metadata.playlist["background_track_history"] = []
             utils._migrate_theme_flags(state.metadata.playlist.get("filter", {}))
@@ -378,15 +379,18 @@ def load_config():
             try:
                 audio_toggles.set_volume(state.controls.volume_level)
             except Exception:
-                pass
+                log_exception("load_config: failed to apply saved volume level")
             if presets.selected_light_mode_settings and presets.selected_light_mode_settings in presets.saved_lightning_mode_settings:
                 # A named template is selected — load it (overrides the inline saved settings)
                 state.playback.lightning_mode_settings.clear()
                 state.playback.lightning_mode_settings.update(lightning_settings.update_lightning_mode_settings(presets.saved_lightning_mode_settings[presets.selected_light_mode_settings]))
 
             if presets.selected_infinite_settings and presets.selected_infinite_settings in presets.saved_infinite_settings:
-                state.config.infinite_settings.clear()
-                state.config.infinite_settings.update(utils.sync_with_default(copy.deepcopy(presets.saved_infinite_settings[presets.selected_infinite_settings]), playlist_ops.INFINITE_SETTINGS_DEFAULT))
+                # Apply the named preset to the global template that
+                # get_infinite_settings() falls back to when the current
+                # playlist has no stored settings of its own.
+                infinite.infinite_settings.clear()
+                infinite.infinite_settings.update(utils.sync_with_default(copy.deepcopy(presets.saved_infinite_settings[presets.selected_infinite_settings]), infinite.INFINITE_SETTINGS_DEFAULT))
 
             if state.config.OPENAI_API_KEY:
                 trivia_round.set_openai_client_key(state.config.OPENAI_API_KEY)
@@ -395,7 +399,7 @@ def load_config():
                 transport.update_playlist_name()
                 transport.update_current_index()
             except Exception:
-                pass
+                log_exception("load_config: failed to refresh playlist name/index display")
             state.colors.OVERLAY_COLOR_OPTIONS = config.get("color_options", ["black", "white"])
             state.colors.INVERSE_OVERLAY_BACKGROUND_COLOR = config.get("text_color", "white")
             state.colors.INVERSE_OVERLAY_TEXT_COLOR = config.get("back_color", "black")

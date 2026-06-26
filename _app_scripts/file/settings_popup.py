@@ -11,7 +11,7 @@ import _app_scripts.file.web_server.web_server as web_server
 
 BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
 
-# Module-private window state (was a main-file global)
+# Module-private window state
 settings_window = None
 
 

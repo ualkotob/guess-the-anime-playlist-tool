@@ -3,21 +3,15 @@
 #             by Ramun Flame
 # =========================================
 
-from core.app_meta import WINDOW_TITLE
-
 import os
 import sys
 import copy
-import tkinter as tk
-import tkinterdnd2 as tkdnd
 import threading
-from tkinter import messagebox, simpledialog, ttk, StringVar
-from pynput import keyboard, mouse
+from tkinter import messagebox, simpledialog
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pygame.pkgdata")
 import pyautogui
-import subprocess
 import _app_scripts.file.app_close as app_close
 import _app_scripts.file.scoreboard_control as scoreboard_control
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
@@ -31,20 +25,20 @@ import _app_scripts.playback.image_loader as image_loader
 import _app_scripts.toggles.audio_toggles as audio_toggles
 import _app_scripts.file.session_stats as session_stats
 import _app_scripts.playlists.playlist as playlist_ops
-import _app_scripts.playlists.marks as playlist_marks
-import _app_scripts.search.search as search_ops
-import _app_scripts.popout.popout_window as popout_window
+import _app_scripts.playlists.playlist_sources as playlist_sources
+import _app_scripts.playlists.filters as playlist_filters
+import _app_scripts.theme.marks as playlist_marks
+import _app_scripts.search.search as search_ops          # noqa: F401 — imported for startup load order
+import _app_scripts.popout.popout_window as popout_window  # noqa: F401 — imported for startup load order
 import _app_scripts.file.web_server.web_host_actions as web_host_actions
-import _app_scripts.queue_round.lightning_rounds.ost_overlay as ost_overlay
+import _app_scripts.queue_round.lightning_rounds.ost_overlay as ost_overlay  # noqa: F401 — imported for startup load order
 import _app_scripts.queue_round.lightning_rounds.characters_overlay as characters_overlay
-import _app_scripts.queue_round.lightning_rounds.lightning_settings as lightning_settings
+import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_manager
 import _app_scripts.file.modal_guard as modal_guard
 import _app_scripts.playback.mpv_bootstrap as mpv_bootstrap
 import _app_scripts.playback.ffmpeg_check as ffmpeg_check
 
 os.chdir(os.path.dirname(os.path.abspath(sys.argv[0])))
-
-from core import app_icon
 
 modal_guard.install_modal_dialog_guard(messagebox, simpledialog)
 mpv = mpv_bootstrap.load_mpv_module()
@@ -60,8 +54,6 @@ player = mpv_player_setup.create_player(mpv)
 
 # Populate ffmpeg_check's cached availability flag for ffmpeg_check.is_ffmpeg_available().
 ffmpeg_check.check_ffmpeg_availability()
-
-import _app_scripts.ui.drag_and_drop as drag_and_drop
 
 # =========================================
 #       *GLOBAL VARIABLES/CONSTANTS
@@ -125,15 +117,13 @@ import _app_scripts.playback.dock_player as dock_player_mod
 import _app_scripts.ui.lists as lists
 import _app_scripts.ui.main_window as main_window
 
-popout_buttons_by_name = {}
-state.playback.popout_buttons_by_name = popout_buttons_by_name
-
 # =========================================
 #                 *GUI SETUP
 # =========================================
 
 config_io._migrate_old_file_structure()
 config_io._migrate_playlist_names()
+playlist_filters.ensure_default_infinite_filter_saved()
 config_io.load_config()
 
 # Initialize themes cache
@@ -144,57 +134,18 @@ scoreboard_control.ensure_example_rules_file()
 if not os.path.isabs(state.config.directory) and not os.path.exists(state.config.directory):
     os.makedirs(state.config.directory, exist_ok=True)
 
-BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
-
-try:
-    root = tkdnd.Tk()
-except ImportError:
-    root = tk.Tk()
-except Exception:
-    root = tk.Tk()
-
-ROOT_MIN_HEIGHT = 540
-root.title(WINDOW_TITLE)
-root.geometry(f"{scl(1200, "UI")}x{scl(ROOT_MIN_HEIGHT, "UI")}")
-root.minsize(scl(900, "UI"), scl(ROOT_MIN_HEIGHT, "UI"))  # Set minimum window size to prevent controls squishing
-root.configure(bg=BACKGROUND_COLOR)  # Set background color to black
+root, first_row_frame = main_window.create_root_window()
 cache_download.load_cache_metadata()
-
-app_icon.set_app_icon(root)
-# root.resizable(False, False)
-
-def setup_main_window_drag_drop():
-    try:
-        drag_and_drop.enable_drag_and_drop(root, drag_and_drop.handle_dropped_files)
-    except Exception as e:
-        print(f"Could not enable drag-and-drop on main window: {e}")
-
-root.after(500, setup_main_window_drag_drop)
-
-# First row
-first_row_frame = tk.Frame(root, bg=BACKGROUND_COLOR)
-first_row_frame.pack(pady=(0, 0), fill="x", anchor="w")
-first_row_border = tk.Frame(root, bg="gray30", height=1)
-first_row_border.pack(fill="x")
 
 import _app_scripts.directory.scan as directory_scan
 # Sizes fonts via scl() at import — must come after the screen size is set above.
 import _app_scripts.ui.menu_builder as menu_builder
 
-# Lightning Round mode options + display-string→key mapping.
-state.lightning_ui.light_mode_options = [
-    (key, f"{mode['icon']} {key.upper()}")
-    for key, mode in lightning_settings.light_modes.items()
-    if key != "variety"
-]
-state.lightning_ui.title_to_key = {display: key for key, display in state.lightning_ui.light_mode_options}
-state.lightning_ui.selected_mode = StringVar(value=state.lightning_ui.light_mode_options[0][1])  # default to first display string
+# Lightning Round dropdown options + display-string→key mapping + selected var.
+lightning_manager.init_lightning_ui()
 
-style = ttk.Style()
-style.theme_use('clam')
 from _app_scripts.ui import styling
-configure_style = styling.configure_style  # dark Black.TCombobox style
-configure_style()
+styling.init_combobox_theme()  # base clam theme + dark Black.TCombobox style
 
 # Three info columns + right-column list UI (header, scrollbar, bindings, tags).
 main_window.build_columns(root)
@@ -213,16 +164,7 @@ from _app_scripts.toggles import shortcut_dispatch
 #                *STARTUP
 # =========================================
 
-keyboard_listener = keyboard.Listener(
-    on_press=shortcut_dispatch.on_press,
-    on_release=shortcut_dispatch.on_release)
-keyboard_listener.start()
-
-mouse_listener = mouse.Listener(
-    on_click=shortcut_dispatch.on_mouse_click,
-    on_move=shortcut_dispatch.on_mouse_move,
-    on_scroll=shortcut_dispatch.on_mouse_scroll)
-mouse_listener.start()
+shortcut_dispatch.start_listeners()
 
 transport.update_playlist_name()
 transport.update_current_index()
@@ -233,18 +175,8 @@ root.after(3000, updates_io.check_for_metadata_updates)
 root.after(3000, updates_io.check_for_censor_updates)
 
 bonus_answers._start_web_server()
-if state.config.LAUNCH_SCOREBOARD_ON_STARTUP and scoreboard_control.AVAILABLE and not scoreboard_control.is_running():
-    if os.path.isfile("scoreboard.exe"):
-        subprocess.Popen(["scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-    elif os.path.isfile("universal_scoreboard.exe"):
-        subprocess.Popen(["universal_scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-    elif not getattr(sys, 'frozen', False):
-        # Only use sys.executable as a Python interpreter when NOT running as a
-        # compiled exe — if frozen, sys.executable is this app, not Python.
-        if os.path.isfile("scoreboard.py"):
-            subprocess.Popen([sys.executable, "scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
-        elif os.path.isfile("universal_scoreboard.py"):
-            subprocess.Popen([sys.executable, "universal_scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+if state.config.LAUNCH_SCOREBOARD_ON_STARTUP and scoreboard_control.AVAILABLE:
+    scoreboard_control.launch_on_startup()
 web_host_actions.wire_web_server()
 directory_scan.scan_directory(True)
 menu_builder.create_first_row_buttons()
@@ -261,7 +193,7 @@ root.after(1000, transport.update_seek_bar)
 root.after(1000, audio_toggles.set_volume, state.controls.volume_level)
 root.after(1000, auto_update.cleanup_old_update_exes)
 root.after(3000, auto_update.check_for_updates_on_startup)
-root.after(1000, playlist_ops.update_living_playlists)
+root.after(1000, playlist_sources.update_living_playlists)
 root.after(500, cache_download.check_download_ui_updates)
 
 root.protocol("WM_DELETE_WINDOW", app_close.on_app_close)

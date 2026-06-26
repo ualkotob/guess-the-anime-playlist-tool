@@ -27,7 +27,7 @@ from . import drag_and_drop
 from ..playback import cache_download
 from ..playback import dock_player
 from ..file import tooltip
-import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.infinite as infinite
 import _app_scripts.search.search as search_ops
 
 # Fonts mirrored from main (fixed values, matching the duplicate-constant
@@ -561,7 +561,7 @@ def create_first_row_buttons():
         _open_toolbar_menu("playlist", state.widgets.playlist_menu_button, "playlist")
 
     if state.metadata.playlist.get("infinite", False):
-        _pl_out_of = playlist_ops.total_infinite_files - len(playlist_ops.cached_skipped_themes)
+        _pl_out_of = infinite.total_infinite_files - len(infinite.cached_skipped_themes)
         _pl_counter = f"\u221e/{_pl_out_of}"
     else:
         _pl_counter = f"{state.metadata.playlist['current_index']+1}/{len(state.metadata.playlist['playlist'])}"
@@ -638,7 +638,7 @@ def create_first_row_buttons():
                                 style="Black.TCombobox",
                                 font=ROOT_FONT)
         # Not packed/displayed — difficulty is selected via PLAYLIST▾ menu
-        state.playlist_ui.difficulty_dropdown.bind("<<ComboboxSelected>>", playlist_ops.select_difficulty)
+        state.playlist_ui.difficulty_dropdown.bind("<<ComboboxSelected>>", infinite.select_difficulty)
 
         if state.playback.popout_buttons_by_name.get("DIFFICULTY DROPDOWN"):
             state.playback.popout_buttons_by_name.get("DIFFICULTY DROPDOWN").grid()

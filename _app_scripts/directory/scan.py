@@ -44,7 +44,8 @@ def scan_directory(queue=False):
         config_io.save_config()
         mismatch_round.get_cached_sfw_themes()
         if state.metadata.playlist.get("infinite", False):
-            playlist.get_pop_time_groups(refetch=True)
+            import _app_scripts.playlists.infinite as infinite
+            infinite.get_pop_time_groups(refetch=True)
             transport.update_current_index()
         print(f"\rScanning Directory....COMPLETE ({len(directory_files)} files)")
     if queue:

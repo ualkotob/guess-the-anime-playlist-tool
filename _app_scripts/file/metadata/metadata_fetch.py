@@ -33,7 +33,7 @@ from core.game_state import state
 import _app_scripts.utils as utils
 import _app_scripts.data.metadata_io as metadata_io
 import _app_scripts.playlists.entry_paths as entry_paths
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.playback.ffmpeg_check as ffmpeg_check
 import _app_scripts.directory.scan as directory_scan
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
@@ -813,10 +813,10 @@ def toggle_auto_auto_refresh():
     print("Auto refresh metadata: " + str(state.controls.auto_refresh_toggle))
 
 
-# ── State moved from guess_the_anime.py ─────────────────────────────────────
+# ── State ───────────────────────────────────────────────────────────────────
 
 
-# ── Orchestration functions (moved from guess_the_anime.py) ─────────────────
+# ── Orchestration functions ─────────────────────────────────────────────────
 
 
 
@@ -995,7 +995,7 @@ def get_version_from_filename(filename):
             version_part = parts[1].split(".")[0]
             if "v" in version_part:
                 return version_part.split("v")[1] if len(version_part.split("v")) > 1 else None
-    except:
+    except Exception:
         pass
     
     return None
@@ -1325,7 +1325,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             anilist_id = anilist_id or get_external_site_id(anime_themes, "AniList")
             try:
                 file = anime_themes.get("animethemes",[{}])[0].get("animethemeentries",[{}])[0].get("videos",[{}])[0].get("basename")
-            except:
+            except Exception:
                 file = None
             if file:
                 anime_themes = fetch_animethemes_metadata(file) or anime_themes
@@ -1850,10 +1850,10 @@ def fetch_all_metadata(delay=0):
     if not confirm:
         return  # User canceled
     directory_scan.scan_directory()
-    # Lazy import: playlist imports metadata_fetch, so a module-level import
+    # Lazy import: infinite imports metadata_fetch, so a module-level import
     # here would create a cycle.
-    import _app_scripts.playlists.playlist as playlist_ops
-    playlist_ops.reset_infinite_caches()
+    import _app_scripts.playlists.infinite as infinite
+    infinite.reset_infinite_caches()
     def fetch_all_metadata_worker():
         global anidb_delay
         total_checked = 0

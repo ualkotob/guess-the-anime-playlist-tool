@@ -8,14 +8,60 @@ builder references stay local.
 
 import tkinter as tk
 from tkinter import ttk, font
+import tkinterdnd2 as tkdnd
 
 from core.game_state import state
+from core.app_meta import WINDOW_TITLE
+from core import app_icon
 from _app_scripts.ui.scaling import scl
 from _app_scripts.ui import styling
 import _app_scripts.ui.lists as lists
+import _app_scripts.ui.drag_and_drop as drag_and_drop
 import _app_scripts.playback.transport as transport
 import _app_scripts.toggles.audio_toggles as audio_toggles
 import _app_scripts.toggles.autoplay as autoplay_toggles
+
+
+def create_root_window():
+    """Create and configure the top-level app window and the first-row toolbar host.
+
+    Returns (root, first_row_frame); the caller publishes both onto state.widgets.
+    Uses tkinterdnd2's Tk subclass for native file-drop support, falling back to a
+    plain tk.Tk() if it is unavailable. Drag-and-drop is wired on a 500ms delay so
+    the window is realized first.
+    """
+    BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
+
+    try:
+        root = tkdnd.Tk()
+    except ImportError:
+        root = tk.Tk()
+    except Exception:
+        root = tk.Tk()
+
+    ROOT_MIN_HEIGHT = 540
+    root.title(WINDOW_TITLE)
+    root.geometry(f"{scl(1200, 'UI')}x{scl(ROOT_MIN_HEIGHT, 'UI')}")
+    root.minsize(scl(900, "UI"), scl(ROOT_MIN_HEIGHT, "UI"))  # prevent controls squishing
+    root.configure(bg=BACKGROUND_COLOR)
+
+    app_icon.set_app_icon(root)
+
+    def setup_main_window_drag_drop():
+        try:
+            drag_and_drop.enable_drag_and_drop(root, drag_and_drop.handle_dropped_files)
+        except Exception as e:
+            print(f"Could not enable drag-and-drop on main window: {e}")
+
+    root.after(500, setup_main_window_drag_drop)
+
+    # First row (toolbar host) + its thin bottom border
+    first_row_frame = tk.Frame(root, bg=BACKGROUND_COLOR)
+    first_row_frame.pack(pady=(0, 0), fill="x", anchor="w")
+    first_row_border = tk.Frame(root, bg="gray30", height=1)
+    first_row_border.pack(fill="x")
+
+    return root, first_row_frame
 
 
 def build_columns(root):

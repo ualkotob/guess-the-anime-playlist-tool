@@ -1,11 +1,10 @@
-# _app_scripts/stats_ops.py
-# Stats display operations extracted from playlist_ops.py
+# Stats display operations.
 import re
 import threading
 
 from core.game_state import state
 import _app_scripts.playlists.playlist as playlist_ops
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.information.information_popup as information_popup

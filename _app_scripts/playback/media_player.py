@@ -8,6 +8,8 @@ owns the property observers and event callbacks, and the player instance lives
 on state.widgets.player.
 """
 
+from core.app_logging import log_exception
+
 
 class MediaPlayer:
     """
@@ -171,7 +173,8 @@ class MediaPlayer:
             try:
                 self._p.play(str(path_or_none))
             except Exception:
-                pass
+                # A failed load means silence on stage — make sure it's traceable.
+                log_exception("mpv failed to load media: %s", path_or_none)
 
     def get_media(self):
         """Return the currently loaded path string (compat shim)."""

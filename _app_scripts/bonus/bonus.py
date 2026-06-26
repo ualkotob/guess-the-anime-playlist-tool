@@ -22,7 +22,7 @@ from _app_scripts.file.web_server import web_server
 from _app_scripts import utils
 from core.game_state import state
 import _app_scripts.playback.coming_up_ui as coming_up_ui
-import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.filters as filters
 import _app_scripts.playback.osd_text as osd_text
 import _app_scripts.file.scoreboard_control as scoreboard_control
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
@@ -45,17 +45,18 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 BONUS_SETTINGS_DEFAULT = {
-    "year":       {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True, "show_in_menu": True},
-    "members":    {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.10, "included_in_random": True, "show_in_menu": True},
-    "popularity": {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.05, "included_in_random": True, "show_in_menu": True},
-    "score":      {"points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True, "show_in_menu": True},
-    "multiple":   {"points": 2.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
-    "studio":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
-    "artist":     {"points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
-    "song":       {"points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
-    "tags":       {"points_per_tag": 1.0, "lightning_points_per_tag": 1.0, "included_in_random": True, "show_in_menu": True},
-    "characters": {"num_correct": 1, "points_per_correct": 1.0, "lightning_points_per_correct": 1.0, "scale": 1.0, "included_in_random": False, "show_in_menu": True},
-    "freeform":   {"points": 1.0, "lightning_points": 1.0, "included_in_random": False, "show_in_menu": True},
+    "_global":    {"popup": True, "suppress_popup_when_top_info": True},
+    "year":       {"popup": True, "points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True, "show_in_menu": True},
+    "members":    {"popup": True, "points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.10, "included_in_random": True, "show_in_menu": True},
+    "popularity": {"popup": True, "points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "exact_pct": 0.05, "included_in_random": True, "show_in_menu": True},
+    "score":      {"popup": True, "points_close": 1.0, "points_exact": 2.0, "lightning_points_close": 1.0, "lightning_points_exact": 2.0, "included_in_random": True, "show_in_menu": True},
+    "multiple":   {"popup": True, "points": 2.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "studio":     {"popup": True, "points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "artist":     {"popup": True, "points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "song":       {"popup": True, "points": 1.0, "lightning_points": 1.0, "included_in_random": True, "show_in_menu": True},
+    "tags":       {"popup": True, "points_per_tag": 1.0, "lightning_points_per_tag": 1.0, "included_in_random": True, "show_in_menu": True},
+    "characters": {"popup": True, "num_correct": 1, "points_per_correct": 1.0, "lightning_points_per_correct": 1.0, "scale": 1.0, "included_in_random": False, "show_in_menu": True},
+    "freeform":   {"popup": True, "points": 1.0, "lightning_points": 1.0, "included_in_random": False, "show_in_menu": True},
     "buzzer":     {"popup": False, "player_buzz_popup": True, "sound": True, "sound_volume": 1.0, "included_in_random": False, "show_in_menu": True,
                    "player_buzz_popup_properties": {
                        "max_alpha": 0.9,
@@ -160,6 +161,31 @@ def _fmt_pt(v):
     n = int(v) if v == int(v) else v
     return f"{n} PT" if v <= 1 else f"{n} PTs"
 
+def _bonus_popup_enabled(bonus_type):
+    bonus_settings = state.playback.bonus_settings
+    if bonus_type == "buzzer":
+        return bonus_settings.get("buzzer", BONUS_SETTINGS_DEFAULT["buzzer"]).get("popup", False)
+
+    global_settings = bonus_settings.get("_global", BONUS_SETTINGS_DEFAULT["_global"])
+    if not global_settings.get("popup", True):
+        return False
+    if (
+        global_settings.get("suppress_popup_when_top_info", True)
+        and state.lightning.light_mode
+        and osd_text.is_top_info_visible()
+    ):
+        return False
+
+    default_settings = BONUS_SETTINGS_DEFAULT.get(bonus_type, {})
+    return bonus_settings.get(bonus_type, default_settings).get("popup", True)
+
+
+def _toggle_bonus_popup(bonus_type, title, details="", image=None, up_next=False, queue=False):
+    if _bonus_popup_enabled(bonus_type):
+        coming_up_ui.toggle_coming_up_popup(True, title, details, image, up_next=up_next, queue=queue)
+    else:
+        coming_up_ui.toggle_coming_up_popup(False)
+
 
 def setup_for_youtube(questions):
     """Reset YouTube bonus template state for a new video or after saving.
@@ -229,7 +255,7 @@ def guess_extra(extra=None):
             _bs_year = bonus_settings.get("year", BONUS_SETTINGS_DEFAULT["year"])
             _bs_pt_close = _bs_year["lightning_points_close" if _is_light_mode else "points_close"]
             _bs_pt_exact = _bs_year["lightning_points_exact" if _is_light_mode else "points_exact"]
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                                 ROUND_PREFIX + "Guess The Year",
                                 ("Only 1 guess per person, no repeats.\n"
                                 f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
@@ -257,7 +283,7 @@ def guess_extra(extra=None):
             _bs_pt_close = _bs_members["lightning_points_close" if _is_light_mode else "points_close"]
             _bs_pt_exact = _bs_members["lightning_points_exact" if _is_light_mode else "points_exact"]
             _exact_pct = int(_bs_members.get("exact_pct", 0.10) * 100)
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                                 ROUND_PREFIX + "Guess The Members",
                                 ("Members are users who added the anime to their list on MyAnimeList.\n"
                                  "EG: Death Note has over 4 million. Only 1 guess per person, no repeats.\n"
@@ -284,10 +310,10 @@ def guess_extra(extra=None):
             _bs_pt_close = _bs_pop["lightning_points_close" if _is_light_mode else "points_close"]
             _bs_pt_exact = _bs_pop["lightning_points_exact" if _is_light_mode else "points_exact"]
             _exact_pct = int(_bs_pop.get("exact_pct", 0.10) * 100)
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                                 ROUND_PREFIX + "Guess The Popularity Rank",
                                 ("The rank is based on users who added the anime to their list on MyAnimeList.\n"
-                                 f"Ranks range from {playlist_ops.get_lowest_parameter('popularity')} to {playlist_ops.get_highest_parameter('popularity')}. "
+                                 f"Ranks range from {filters.get_lowest_parameter('popularity')} to {filters.get_highest_parameter('popularity')}. "
                                  "Only 1 guess per person, no repeats.\n"
                                 f"+{_fmt_pt(_bs_pt_close)} for closest guess. "
                                 f"+{_fmt_pt(_bs_pt_exact)} if your guess is within ±{_exact_pct}% of correct."),
@@ -295,13 +321,13 @@ def guess_extra(extra=None):
             web_server.push_question("Guess The Popularity Rank",
                                      "Only 1 guess per person, no repeats.",
                                      rank_slider={"initial": 1000,
-                                              "min": 1, "max": playlist_ops.get_highest_parameter('popularity') or 9999})
+                                              "min": 1, "max": filters.get_highest_parameter('popularity') or 9999})
             _bonus_correct_answer = (currently_playing.get("data") or {}).get("popularity")
         elif guessing_extra == "score":
             _bs_score = bonus_settings.get("score", BONUS_SETTINGS_DEFAULT["score"])
             _bs_pt_close = _bs_score["lightning_points_close" if _is_light_mode else "points_close"]
             _bs_pt_exact = _bs_score["lightning_points_exact" if _is_light_mode else "points_exact"]
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                                 ROUND_PREFIX + "Guess The Score",
                                 ("Scores taken from MyAnimeList and range from 0.0 to 10.0.\n"
                                  "Only 1 guess per person, no repeats.\n"
@@ -324,7 +350,7 @@ def guess_extra(extra=None):
             tags_array = utils.split_array(random_tags)
             _bs_tags = bonus_settings.get("tags", BONUS_SETTINGS_DEFAULT["tags"])
             _bs_pt_tag = _bs_tags["lightning_points_per_tag" if _is_light_mode else "points_per_tag"]
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                                 ROUND_PREFIX + "Guess The " + tags_label,
                                 (f"Pick up to {num_correct} tags. +{_fmt_pt(_bs_pt_tag)} per correct, -{_fmt_pt(_bs_pt_tag)} per wrong.\n\n"
                                 "[" + "] [".join(tags_array[0]) + "]\n[" + "] [".join(tags_array[1])) + "]",
@@ -340,7 +366,7 @@ def guess_extra(extra=None):
             titles = get_random_titles()
             _bs_multiple = bonus_settings.get("multiple", BONUS_SETTINGS_DEFAULT["multiple"])
             _multiple_pt = _bs_multiple["lightning_points" if _is_light_mode else "points"]
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                                 ROUND_PREFIX + "Guess The Anime",
                                 (f"Only one guess. +{_fmt_pt(_multiple_pt)} if correct.\n\n"
                                 f"[A] {titles[0]}\n[B] {titles[1]}\n"
@@ -356,7 +382,7 @@ def guess_extra(extra=None):
                                               BONUS_SETTINGS_DEFAULT["characters"]["lightning_points_per_correct" if _is_light_mode else "points_per_correct"]))
             _char_word = "character" if _bs_num_correct == 1 else "characters"
             _char_verb = "is" if _bs_num_correct == 1 else "are"
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                                 ROUND_PREFIX + f"Guess The {_char_word.title()}",
                                 f"{_bs_num_correct} out of 6 characters {_char_verb} from this anime.\n" +
                                 (f"+{_fmt_pt(_bs_pt_char)} if correct." if _bs_num_correct == 1 else f"+{_fmt_pt(_bs_pt_char)} per correct character."),
@@ -389,7 +415,7 @@ def guess_extra(extra=None):
             correct_studio = studios[0] if studios else "Unknown"
 
             # Weighted list: studios can repeat, so big studios are more likely
-            weighted_studios = [s for s in playlist_ops.get_all_studios(state.metadata.directory_files, False, True) if s != correct_studio]
+            weighted_studios = [s for s in filters.get_all_studios(state.metadata.directory_files, False, True) if s != correct_studio]
 
             # Build unique distractors, weighted by frequency
             distractors = []
@@ -410,7 +436,7 @@ def guess_extra(extra=None):
 
             _bs_studio = bonus_settings.get("studio", BONUS_SETTINGS_DEFAULT["studio"])
             _bs_pt_studio = _bs_studio["lightning_points" if _is_light_mode else "points"]
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                 ROUND_PREFIX + "Guess The Studio",
                 (f"Which studio made this anime?\n"
                 f"Only one guess. +{_fmt_pt(_bs_pt_studio)} if correct.\n\n"
@@ -463,7 +489,7 @@ def guess_extra(extra=None):
 
             _bs_artist = bonus_settings.get("artist", BONUS_SETTINGS_DEFAULT["artist"])
             _bs_pt_artist = _bs_artist["lightning_points" if _is_light_mode else "points"]
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                 ROUND_PREFIX + "Guess The Artist/Band",
                 (f"Which artist/band performed this song in this anime?\n"
                 f"Only one guess. +{_fmt_pt(_bs_pt_artist)} if correct.\n\n"
@@ -529,7 +555,7 @@ def guess_extra(extra=None):
 
             _bs_song = bonus_settings.get("song", BONUS_SETTINGS_DEFAULT["song"])
             _bs_pt_song = _bs_song["lightning_points" if _is_light_mode else "points"]
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                 ROUND_PREFIX + "Guess The Song Title",
                 (f"Which song is played in this anime?\n"
                 f"Only one guess. +{_fmt_pt(_bs_pt_song)} if correct.\n\n"
@@ -562,14 +588,14 @@ def guess_extra(extra=None):
             web_server.push_question(_q_header, _q_text, choices=_q_choices)
             _bonus_correct_answer = _q_answer
         elif guessing_extra == "freeform":
-            coming_up_ui.toggle_coming_up_popup(True,
+            _toggle_bonus_popup(guessing_extra,
                 ROUND_PREFIX + "Free Form",
                 "Answer according to the prompt.",
                 up_next=False)
             web_server.push_question("Free Form", "Answer according to the prompt.", autocomplete="anime")
         elif guessing_extra == "buzzer":
             if state.playback.bonus_settings.get("buzzer", BONUS_SETTINGS_DEFAULT["buzzer"]).get("popup", False):
-                coming_up_ui.toggle_coming_up_popup(True,
+                _toggle_bonus_popup(guessing_extra,
                     ROUND_PREFIX + "Buzzer Enabled", "Buzz in to answer.",
                     up_next=False)
             else:
@@ -596,8 +622,8 @@ def get_random_tags():
     if data:
         tags = information_popup.get_tags(data)
         tags_len = len(tags)
-        all_tags = playlist_ops.get_all_tags(game=False, double=True)
-        all_tags_len = len(playlist_ops.get_all_tags(game=False))
+        all_tags = filters.get_all_tags(game=False, double=True)
+        all_tags_len = len(filters.get_all_tags(game=False))
         while len(tags) < 20 and len(tags) < tags_len * 4 and len(tags) != all_tags_len:
             random_tag = random.choice(all_tags)
             if random_tag not in tags:

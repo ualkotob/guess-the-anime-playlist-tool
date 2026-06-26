@@ -112,6 +112,29 @@ def open_scoreboard():
             return
 
 
+def launch_on_startup():
+    """Launch the scoreboard at app startup (no-op if already running).
+
+    Differs from open_scoreboard() on purpose: (a) it prefers the plain
+    scoreboard.exe/.py over the universal build, and (b) it only falls back to a
+    .py script when the app is not frozen — when frozen, sys.executable is this
+    app's exe, not a Python interpreter, so launching a script that way would
+    re-launch this program. Callers gate this on the LAUNCH_SCOREBOARD_ON_STARTUP
+    config flag and AVAILABLE.
+    """
+    if is_running():
+        return
+    if os.path.isfile("scoreboard.exe"):
+        subprocess.Popen(["scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif os.path.isfile("universal_scoreboard.exe"):
+        subprocess.Popen(["universal_scoreboard.exe"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    elif not getattr(sys, "frozen", False):
+        if os.path.isfile("scoreboard.py"):
+            subprocess.Popen([sys.executable, "scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+        elif os.path.isfile("universal_scoreboard.py"):
+            subprocess.Popen([sys.executable, "universal_scoreboard.py"], creationflags=subprocess.CREATE_NEW_CONSOLE)
+
+
 def send_colors(bg=None, text=None):
     """Send colour settings to the scoreboard.
 

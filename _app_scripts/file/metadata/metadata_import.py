@@ -172,7 +172,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
             if temp_dir and os.path.exists(temp_dir):
                 try:
                     shutil.rmtree(temp_dir)
-                except:
+                except Exception:
                     pass
 
         # Show results
@@ -207,7 +207,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
                         state.update_timestamps.metadata_last_updated = int(parsedate_to_datetime(last_modified).timestamp())
                     else:
                         state.update_timestamps.metadata_last_updated = int(time.time())
-                except:
+                except Exception:
                     state.update_timestamps.metadata_last_updated = int(time.time())
             config_io.save_config()
         elif errors:

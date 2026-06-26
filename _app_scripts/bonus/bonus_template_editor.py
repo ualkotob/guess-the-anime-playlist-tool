@@ -22,6 +22,7 @@ def open_youtube_bonus_template_editor(video_id):
 
     questions = list(youtube_control.load_bonus_template(video_id))
     selected_idx = [0]
+    refreshing_listbox = [False]
 
     font_big = ("Arial", 14)
     font_sm = ("Arial", 12)
@@ -92,6 +93,12 @@ def open_youtube_bonus_template_editor(video_id):
             choice_checked[idx].set(True)
             _apply_row_style(idx, True)
 
+    def focus_choice_entry(idx):
+        choice_entries[idx].focus_set()
+        choice_entries[idx].selection_range(0, tk.END)
+        choice_entries[idx].icursor(tk.END)
+        return "break"
+
     for j in range(MAX_CHOICES):
         row_bg = INCORRECT_ROW_BG
         row_f = tk.Frame(choices_frame, bg=row_bg, padx=1, pady=1)
@@ -102,6 +109,8 @@ def open_youtube_bonus_template_editor(video_id):
                        bg=e_bg, fg=fg, insertbackground=fg)
         ent.pack(side="left", fill="x", expand=True, padx=(0, 4))
         choice_entries.append(ent)
+        ent.bind("<Tab>", lambda _event, idx=j: focus_choice_entry((idx + 1) % MAX_CHOICES))
+        ent.bind("<Shift-Tab>", lambda _event, idx=j: focus_choice_entry((idx - 1) % MAX_CHOICES))
         init_bg_btn = "#662222"
         init_text = "INCORRECT"
         btn = tk.Button(row_f, text=init_text, font=font_sm, bg=init_bg_btn, fg=fg,
@@ -153,7 +162,17 @@ def open_youtube_bonus_template_editor(video_id):
     btn_frame = tk.Frame(right_frame, bg=bg)
     btn_frame.grid(row=r, column=0, columnspan=4, sticky="ew", pady=(12, 4))
 
+    def sort_questions(selected_question=None):
+        questions[:] = youtube_control.sort_bonus_template_questions(questions)
+        if selected_question in questions:
+            selected_idx[0] = questions.index(selected_question)
+        elif questions:
+            selected_idx[0] = min(selected_idx[0], len(questions) - 1)
+        else:
+            selected_idx[0] = 0
+
     def refresh_listbox():
+        refreshing_listbox[0] = True
         q_listbox.delete(0, tk.END)
         for i, q in enumerate(questions):
             label = f"{i + 1}. {q.get('question', '(empty)')[:28]}"
@@ -162,6 +181,7 @@ def open_youtube_bonus_template_editor(video_id):
             q_listbox.selection_clear(0, tk.END)
             q_listbox.selection_set(selected_idx[0])
             q_listbox.see(selected_idx[0])
+        refreshing_listbox[0] = False
 
     def load_to_form(idx):
         if 0 <= idx < len(questions):
@@ -210,25 +230,32 @@ def open_youtube_bonus_template_editor(video_id):
             }
 
     def on_listbox_select(event):
+        if refreshing_listbox[0]:
+            return
         sel = q_listbox.curselection()
         if sel and sel[0] != selected_idx[0]:
+            target_question = questions[sel[0]]
             save_form_to_questions()
-            selected_idx[0] = sel[0]
+            sort_questions(target_question)
+            refresh_listbox()
             load_to_form(selected_idx[0])
 
     q_listbox.bind("<<ListboxSelect>>", on_listbox_select)
 
     def add_question():
         save_form_to_questions()
-        questions.append({
+        if questions:
+            sort_questions(questions[selected_idx[0]])
+        new_question = {
             "question": "",
             "answer": "",
             "choices": [],
             "start_time": round(state.seek.projected_player_time / 1000, 1),
             "end_time": 0.0,
             "points": 1.0,
-        })
-        selected_idx[0] = len(questions) - 1
+        }
+        questions.append(new_question)
+        sort_questions(new_question)
         refresh_listbox()
         load_to_form(selected_idx[0])
 
@@ -239,6 +266,7 @@ def open_youtube_bonus_template_editor(video_id):
             return
         del questions[selected_idx[0]]
         selected_idx[0] = max(0, selected_idx[0] - 1)
+        sort_questions()
         refresh_listbox()
         load_to_form(selected_idx[0])
 
@@ -266,15 +294,18 @@ def open_youtube_bonus_template_editor(video_id):
         else:
             new_q = {"header": "Bonus Question", "question": "", "answer": "", "choices": [], "start_time": 0.0, "end_time": 0.0, "points": 1.0}
         questions.append(new_q)
-        selected_idx[0] = len(questions) - 1
+        sort_questions(new_q)
         refresh_listbox()
         load_to_form(selected_idx[0])
 
     def save_all():
         save_form_to_questions()
+        if questions:
+            sort_questions(questions[selected_idx[0]])
         youtube_control.save_bonus_template(video_id, questions)
         if state.playback.currently_playing.get("data", {}).get("url") == video_id:
             bonus.setup_for_youtube(list(questions))
+        refresh_listbox()
         save_btn.configure(text="SAVED!")
         top.after(600, lambda: save_btn.configure(text="SAVE"))
 
@@ -317,5 +348,6 @@ def open_youtube_bonus_template_editor(video_id):
             "end_time": 0.0,
             "points": 1.0,
         })
+    sort_questions()
     refresh_listbox()
     load_to_form(0)

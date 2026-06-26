@@ -6,7 +6,7 @@ from core.game_state import state
 import _app_scripts.bonus.bonus as bonus
 import _app_scripts.bonus.answers as bonus_answers
 import _app_scripts.queue_round.lightning_rounds.lightning_settings as lightning_settings
-import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.infinite as infinite
 import _app_scripts.file.generic_settings_editor as generic_settings_editor
 import _app_scripts.data.config_io as config_io
 import _app_scripts.utils as utils
@@ -31,18 +31,27 @@ def open_settings_editor():
 
 def open_infinite_settings_editor():
     """Open infinite playlist settings editor."""
-    active_settings = playlist_ops.get_infinite_settings()
+    # Edit a dict that the editor's in-place Apply actually persists:
+    # the playlist's own stored settings when it has them (saved with the
+    # playlist by config_io), otherwise the global template in infinite.py.
+    # get_infinite_settings() can't be used here — with stored settings it
+    # returns a fresh merged copy, so Apply's in-place write would be lost.
+    stored = state.metadata.playlist.get("infinite_settings")
+    if stored is not None:
+        active_settings = utils.fill_missing_defaults(stored, infinite.INFINITE_SETTINGS_DEFAULT)
+    else:
+        active_settings = infinite.infinite_settings
 
     def on_apply(new_settings, selected_name):
         state.settings_presets.selected_infinite_settings = selected_name
         if state.metadata.playlist.get("infinite", False):
-            playlist_ops.get_pop_time_groups(refetch=True)
-        playlist_ops.reset_infinite_caches()
+            infinite.get_pop_time_groups(refetch=True)
+        infinite.reset_infinite_caches()
 
     generic_settings_editor.open_generic_settings_editor(
         title="Infinite Playlist Settings Editor",
         current_settings_dict=active_settings,
-        default_settings_dict=playlist_ops.INFINITE_SETTINGS_DEFAULT,
+        default_settings_dict=infinite.INFINITE_SETTINGS_DEFAULT,
         saved_settings_dict=state.settings_presets.saved_infinite_settings,
         selected_setting_name=state.settings_presets.selected_infinite_settings,
         on_apply_callback=on_apply,

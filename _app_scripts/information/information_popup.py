@@ -54,12 +54,12 @@ import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
 import _app_scripts.queue_round.lightning_rounds.peek_dispatch as peek_dispatch
 import _app_scripts.queue_round.lightning_rounds.title_overlay as title_overlay
 import _app_scripts.playback.osd_text as osd_text
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.popout.popout_window as popout_window
 import _app_scripts.utils as utils
 
 
-# ASS osd-overlay id for the anime info popup (was main's _INFO_POPUP_ASS_OSD_ID).
+# ASS osd-overlay id for the anime info popup.
 _INFO_POPUP_ASS_OSD_ID = 59
 
 

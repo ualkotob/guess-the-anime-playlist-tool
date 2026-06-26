@@ -55,6 +55,7 @@ def _end_msg_build_canvas(y_top):
 
     modifier = min(osd_w / 2560, osd_h / 1440)
     pad = max(8,  round(25 * modifier))
+    vertical_pad = max(6, round(18 * modifier))
     gap = max(1,  round(5  * modifier))
     sep = max(1,  round(2  * modifier))
 
@@ -93,7 +94,7 @@ def _end_msg_build_canvas(y_top):
         time_txt += f" [{dur.seconds // 3600}h {(dur.seconds // 60) % 60}m]"
 
     top_series_name, top_series_count = session_stats.get_top_series_from_session(session_stats.session_data)
-    top_artist,      top_artist_count = session_stats.get_top_artist_from_session(session_stats.session_data)
+    top_artists,     top_artist_count = session_stats.get_top_artists_from_session(session_stats.session_data)
 
     # Row definitions: (kind, text, pt, bold)
     # kind: "msg" | "text" | "sep"
@@ -117,10 +118,18 @@ def _end_msg_build_canvas(y_top):
         rows.append(("sep",  None,          sep, False))
         rows.append(("text", "MOST PLAYED SERIES:", 35, True))
         rows.append(("text", f"{top_series_name} ({top_series_count})", 28, False))
-    if top_artist:
+    if top_artists:
         rows.append(("sep",  None,          sep, False))
-        rows.append(("text", "MOST PLAYED ARTIST:", 35, True))
-        rows.append(("text", f"{top_artist} ({top_artist_count})", 28, False))
+        artist_header = "MOST PLAYED ARTIST:" if len(top_artists) == 1 else "MOST PLAYED ARTISTS:"
+        rows.append(("text", artist_header, 35, True))
+        for artist in top_artists:
+            rows.append(("text", f"{artist} ({top_artist_count})", 28, False))
+
+    def _row_advance(index, kind, size):
+        # Large multi-line messages need less leading than the smaller stats rows.
+        if kind == "msg" and index + 1 < len(rows) and rows[index + 1][0] == "msg":
+            return round(size * 0.82) + gap
+        return size + gap
 
     # Measure widths to determine box width
     min_box_w  = round(osd_w * 0.28)
@@ -142,10 +151,10 @@ def _end_msg_build_canvas(y_top):
     H_SQUEEZE = 0.95  # 1.0 = no change; 0.80 = 80% width (noticeably condensed)
 
     # Measure total height
-    total_h = 2 * pad
-    for kind, text, pt, bold in rows:
+    total_h = 2 * vertical_pad
+    for index, (kind, text, pt, bold) in enumerate(rows):
         size = _fs(pt)
-        total_h += (size + gap) if kind == "sep" else (size + gap)
+        total_h += _row_advance(index, kind, size)
 
     squeezed_w = round(box_w * H_SQUEEZE)
     inverted_positions = state.config.inverted_positions
@@ -167,16 +176,15 @@ def _end_msg_build_canvas(y_top):
     sdraw  = ImageDraw.Draw(sprite)
     sdraw.rectangle([0, 0, box_w - 1, total_h - 1], fill=(bg_r, bg_g, bg_b, 210))
 
-    cy = pad
-    for kind, text, pt, bold in rows:
+    cy = vertical_pad
+    for index, (kind, text, pt, bold) in enumerate(rows):
         size = _fs(pt)
         if kind == "sep":
             sdraw.rectangle([pad, cy, box_w - pad - 1, cy + size - 1],
                             fill=(fg_r, fg_g, fg_b, 200))
-            cy += size + gap
+            cy += _row_advance(index, kind, size)
         else:
             fnt    = osd_text._get_ass_font(size, bold=bold, narrow=True)
-            line_h = size
             if text and fnt:
                 try:
                     tw = round(fnt.getlength(text))
@@ -184,7 +192,7 @@ def _end_msg_build_canvas(y_top):
                     tw = len(text) * size // 2
                 tx = (box_w - tw) // 2
                 sdraw.text((tx, cy), text, font=fnt, fill=(fg_r, fg_g, fg_b, 255))
-            cy += line_h + gap
+            cy += _row_advance(index, kind, size)
 
     # Store sprite on function so _end_msg_composite_canvas can reuse it
     # Squish horizontally — render was at full box_w for accurate font metrics

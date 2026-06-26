@@ -52,6 +52,11 @@ def top_info(value=None, size=80, width_max=0.7, inverse=False):
     set_floating_text("Top Info", value, position="top center", size=size, width_max=width_max, inverse=inverse)
 
 
+def is_top_info_visible():
+    """Return True when the shared top-center info label is currently drawn."""
+    return "Top Info" in floating_windows
+
+
 def _get_courier_font(px):
     """Return a PIL ImageFont for Courier New Bold at px pixels, cached."""
     if px not in _courier_font_cache:

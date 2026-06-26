@@ -308,7 +308,9 @@ def sync_with_default(saved, default):
     # Then, add missing keys and recurse into nested dicts
     for key, default_value in default.items():
         if key not in saved:
-            saved[key] = default_value
+            # Deep copy so the caller's dict never aliases the default's
+            # nested containers (in-place edits would corrupt the defaults).
+            saved[key] = copy.deepcopy(default_value)
         elif isinstance(default_value, dict) and isinstance(saved[key], dict):
             sync_with_default(saved[key], default_value)
         else:
@@ -316,6 +318,20 @@ def sync_with_default(saved, default):
             if not isinstance(saved[key], type(default_value)):
                 saved[key] = default_value
     return saved
+
+
+def fill_missing_defaults(target, default):
+    """Recursively add keys from `default` that are missing in `target`,
+    mutating `target` in place (deep-copied so nothing aliases the default).
+    Unlike sync_with_default it never removes extra keys or replaces values
+    whose type differs from the default's. Returns `target`.
+    """
+    for key, default_value in default.items():
+        if key not in target:
+            target[key] = copy.deepcopy(default_value)
+        elif isinstance(default_value, dict) and isinstance(target[key], dict):
+            fill_missing_defaults(target[key], default_value)
+    return target
 
 
 def compute_settings_diff(default, saved):

@@ -217,7 +217,6 @@ class GameState:
             # Non-schema config globals (config_io round-trips them by hand).
             host="",                        # persisted host identity (config round-trip)
             inverted_colors=False,          # legacy color-invert flag (loaded from config only)
-            infinite_settings={},           # active infinite-mode settings (config_io writes on named-preset load)
         )
         # Display cluster — screen geometry + UI-scaling toggle read by scl().
         # screen_* are set at startup from pyautogui.size(); scale_main_ui is a

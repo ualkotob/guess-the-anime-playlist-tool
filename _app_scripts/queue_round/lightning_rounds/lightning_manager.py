@@ -55,6 +55,29 @@ from _app_scripts.queue_round.lightning_rounds import ost_overlay
 from _app_scripts.ui import styling
 
 
+def init_lightning_ui():
+    """Build the lightning-round dropdown state read by the popout + menu.
+
+    Populates `state.lightning_ui` from `lightning_settings.light_modes`:
+    the (key, "icon KEY") display options (excluding "variety"), the
+    display→key reverse map, and the selected-mode Tk variable (defaulting to
+    the first display string). Called once at startup after the root window
+    exists (StringVar needs a default Tk root).
+    """
+    from tkinter import StringVar
+    state.lightning_ui.light_mode_options = [
+        (key, f"{mode['icon']} {key.upper()}")
+        for key, mode in lightning_settings.light_modes.items()
+        if key != "variety"
+    ]
+    state.lightning_ui.title_to_key = {
+        display: key for key, display in state.lightning_ui.light_mode_options
+    }
+    # default to first display string
+    state.lightning_ui.selected_mode = StringVar(
+        value=state.lightning_ui.light_mode_options[0][1])
+
+
 # ---------------------------------------------------------------------------
 # Reveal-effect dispatch (used by COVER/IMAGE/c.reveal rounds via
 # update_light_round's start-phase block)

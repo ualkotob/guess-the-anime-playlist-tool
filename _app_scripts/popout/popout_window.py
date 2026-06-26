@@ -11,7 +11,7 @@ import _app_scripts.ui.windowing as windowing
 import _app_scripts.ui.menu_builder as menu_builder
 import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.file.metadata.metadata_panel as metadata_panel
-import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.infinite as infinite
 import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_manager
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ def _w(name, value):
 
 
 # ---------------------------------------------------------------------------
-# Popout info-area toggles + button-state refresh (extracted from main).
+# Popout info-area toggles + button-state refresh.
 # popout_show_* flags live in state.popout; popout widgets are this module's own globals.
 # ---------------------------------------------------------------------------
 def toggle_show_popout_currently_playing():
@@ -596,7 +596,7 @@ def create_popout_controls(title="Popout Controls"):
                     dd = popout_buttons_by_name.get("DIFFICULTY DROPDOWN")
                     if dd:
                         difficulty_dropdown.set(dd.get())
-                        playlist_ops.select_difficulty()
+                        infinite.select_difficulty()
                     _w.selection_clear()
                     _w.icursor(tk.END)
                 w.bind("<<ComboboxSelected>>", _on_diff_change)

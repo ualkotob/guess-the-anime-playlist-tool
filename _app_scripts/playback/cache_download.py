@@ -15,6 +15,7 @@ from tkinter import ttk
 import requests
 
 from core.game_state import state
+from core.app_logging import log_warning
 from core.app_meta import APP_VERSION
 from core.paths import THEMES_CACHE_FOLDER, CACHE_METADATA_FILE
 import _app_scripts.search.search as search_ops
@@ -25,7 +26,7 @@ import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.playback.transport as transport
 
 # ---------------------------------------------------------------------------
-# Module-level state (moved from main globals)
+# Module-level state
 # ---------------------------------------------------------------------------
 
 active_downloads        = {}   # {filename: thread_object}
@@ -475,7 +476,8 @@ def download_to_cache(filename, silent=False):
                     try:
                         os.remove(dest_path)
                     except Exception:
-                        pass
+                        # A leftover partial file could later be mistaken for a valid theme.
+                        log_warning("Could not remove cancelled partial download: %s", dest_path)
                 if not silent:
                     print(f"\rDownload cancelled: {filename}" + " " * 30)
                 return

@@ -9,7 +9,7 @@ from core.game_state import state
 import _app_scripts.utils as utils
 from ..ui import windowing
 
-# Module-private window state (was a main-file global)
+# Module-private window state
 generic_settings_editor_window = None
 
 

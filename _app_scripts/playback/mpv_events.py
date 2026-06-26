@@ -18,7 +18,7 @@ from _app_scripts.queue_round.lightning_rounds import (
     filter_overlay, edge_overlay, peek_overlay, grow_overlay,
 )
 
-# --- module-owned state (formerly main-level locals in the player try-block) ---
+# --- module-owned state ---
 _idle_stop_after_id = None
 _mpv_wndproc_refs = {}     # hwnd → (new_proc, original_proc); keeps ctypes objects alive
 _mpv_click_queue = queue.Queue()   # thread-safe click signals from mpv wndproc → main thread

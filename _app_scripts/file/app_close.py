@@ -2,8 +2,7 @@
 
 `on_app_close()` is the single app-shutdown entry point, reached both from the
 root window's WM_DELETE_WINDOW protocol (wired in _main) and the menu registry's
-EXIT button. It reads every collaborator off `state` / sibling modules directly,
-so it needs no set_context injection.
+EXIT button. It reads every collaborator off `state` / sibling modules directly.
 """
 
 from core.game_state import state

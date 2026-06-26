@@ -53,8 +53,9 @@ import _app_scripts.playback.cache_download as cache_download
 import _app_scripts.playback.image_loader as image_loader
 import _app_scripts.playback.transport as transport
 import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.infinite as infinite
 import _app_scripts.playlists.entry_paths as entry_paths
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.search.search as search_ops
 import _app_scripts.ui.windowing as windowing
 import _app_scripts.ui.lists as lists
@@ -460,7 +461,7 @@ def _push_web_up_next():
                 "marks": get_file_marks(next_filename),
                 "detail": " | ".join(detail_parts),
                 "mode_label": mode_label,
-                "reroll": playlist_ops.is_reroll_valid(),
+                "reroll": infinite.is_reroll_valid(),
             })
     except Exception:
         web_server.push_up_next({})
@@ -492,10 +493,10 @@ def update_up_next_display(widget, clear=False):
                 if state.metadata.playlist["current_index"] + 1 < len(state.metadata.playlist["playlist"]):
                     playlist_entry = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"] + 1]
                     next_filename = entry_paths.get_clean_filename(playlist_entry)
-                if next_filename and playlist_ops.is_reroll_valid():
+                if next_filename and infinite.is_reroll_valid():
                     state.widgets.reroll_button = tk.Button(
                             widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
-                            pady=0, command=playlist_ops.reroll_next, bg="black", fg="white"
+                            pady=0, command=infinite.reroll_next, bg="black", fg="white"
                         )
                     if not is_popout:
                         widget.window_create(

@@ -1,5 +1,4 @@
-# _app_scripts/search_ops.py
-# Theme search operations extracted from playlist_ops.py
+# Theme search operations.
 import re
 import threading
 

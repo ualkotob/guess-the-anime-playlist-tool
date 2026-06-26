@@ -36,8 +36,13 @@ import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.queue_round.lightning_rounds.peek_dispatch as peek_dispatch
 import _app_scripts.queue_round.lightning_rounds.peek_overlay as peek_overlay
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.playlists.playlist as playlist_ops
+import _app_scripts.playlists.infinite as infinite
+import _app_scripts.playlists.filters as filters
+import _app_scripts.playlists.playlist_io as playlist_io
+import _app_scripts.theme.media_ops as media_ops
+import _app_scripts.playlists.playlist_sources as playlist_sources
 import _app_scripts.popout.popout_window as popout_window
 import _app_scripts.playback.progress_bar as progress_bar_ops
 import _app_scripts.file.scoreboard_control as scoreboard_control
@@ -268,10 +273,10 @@ def get_menu_registry():
               "tooltip": "Creates a playlist from an AniList user's anime list.",
               "submenu": [
                   {"id": "create_anilist_local", "label": "Local Files Only",
-                   "command": lambda: playlist_ops.generate_anilist_playlist(include_non_local=False),
+                   "command": lambda: playlist_sources.generate_anilist_playlist(include_non_local=False),
                    "tooltip": "Match only themes that are stored locally in your directory."},
                   {"id": "create_anilist_stream", "icon": STREAM_ICON, "label": "Include Streaming Themes",
-                   "command": lambda: playlist_ops.generate_anilist_playlist(include_non_local=True),
+                   "command": lambda: playlist_sources.generate_anilist_playlist(include_non_local=True),
                    "tooltip": "Include non-local themes from metadata that will be streamed from AnimeThemes."},
               ]},
              {"id": "create_animethemes", "label": "From AnimeThemes Playlist",
@@ -280,10 +285,10 @@ def get_menu_registry():
                           "URL format: https://animethemes.moe/playlist/hashid"),
               "submenu": [
                   {"id": "create_animethemes_local", "label": "Local Files Only",
-                   "command": lambda: playlist_ops.generate_animethemes_playlist(include_non_local=False),
+                   "command": lambda: playlist_sources.generate_animethemes_playlist(include_non_local=False),
                    "tooltip": "Match only themes that are stored locally in your directory."},
                   {"id": "create_animethemes_stream", "icon": STREAM_ICON, "label": "Include Streaming Themes",
-                   "command": lambda: playlist_ops.generate_animethemes_playlist(include_non_local=True),
+                   "command": lambda: playlist_sources.generate_animethemes_playlist(include_non_local=True),
                    "tooltip": "Include non-local themes from metadata that will be streamed from AnimeThemes."},
               ]},
              {"id": "create_session_log", "label": "From Session Log",
@@ -291,7 +296,7 @@ def get_menu_registry():
               "tooltip": ("Creates a playlist by matching themes from a saved session log file.\n\n"
                           "Session .txt files are stored in the sessions/ folder.\n"
                           "Themes are matched against your local files/metadata using title and slug."),
-              "command": playlist_ops.generate_session_log_playlist},
+              "command": playlist_sources.generate_session_log_playlist},
              "---",
              {"id": "empty_playlist", "label": "Empty Playlist",
               "button_label": "EMPTY", "command": playlist_ops.empty_playlist,
@@ -312,40 +317,40 @@ def get_menu_registry():
                      "There is a confirmation dialogue after selecting.")},
         "---",
         {"id": "save_playlist", "label": "Save Playlist",
-         "button_label": "SAVE", "command": playlist_ops.save,
+         "button_label": "SAVE", "command": playlist_io.save,
          "tooltip": ("Save the current playlist to its existing file in the playlists/ folder.\n\n"
                      "The current index is also saved so you can resume where you left off.")},
         {"id": "save_playlist_as", "label": "Save Playlist As",
-         "button_label": "SAVE AS", "command": playlist_ops.save_as,
+         "button_label": "SAVE AS", "command": playlist_io.save_as,
          "tooltip": ("Save the current playlist under a new name.\n\n"
                      "You will be prompted for a name. Entering an existing name will overwrite it.\n"
                      "The current index is also saved so you can resume where you left off.")},
         {"id": "load_playlist", "label": "Load Playlist",
-         "button_label": "LOAD", "command": playlist_ops.load,
+         "button_label": "LOAD", "command": playlist_io.load,
          "tooltip": ("Load a saved playlist.\n\n"
                      "Won't interrupt the currently playing theme.")},
         {"id": "load_system_playlist", "icon": "📋", "label": "Load System Playlist",
-         "button_label": "SYSTEM LIST", "command": playlist_ops.load_system_playlist,
+         "button_label": "SYSTEM LIST", "command": playlist_io.load_system_playlist,
          "tooltip": "Load a system playlist: Tagged, Favorite, Blind, Reveal, Mute Reveal, New, or Missing Artists."},
         {"id": "merge_playlist", "icon": "➕", "label": "Merge Playlist",
-         "button_label": "MERGE", "command": playlist_ops.merge_playlist,
+         "button_label": "MERGE", "command": playlist_io.merge_playlist,
          "condition": lambda: not state.metadata.playlist.get("infinite", False),
          "tooltip": ("Merge another playlist into the current one.\n"
                      "Only non-infinite playlists are listed. Duplicates are skipped.")},
         {"id": "delete_playlist", "icon": "❌", "label": "Delete a Playlist",
-         "button_label": "DELETE", "command": playlist_ops.delete,
+         "button_label": "DELETE", "command": playlist_io.delete,
          "tooltip": "Select a playlist from the list to delete. You will be asked to confirm."},
         "---",
         {"label": "Filter Playlist", "icon": "",
          "submenu": [
              {"id": "filter_editor", "label": "Open Filter Editor",
-              "button_label": "FILTER", "command": playlist_ops.filters,
+              "button_label": "FILTER", "command": filters.filters,
               "tooltip": ("Open a window to create, apply, and save playlist filters.")},
              {"id": "load_filter", "icon": "💾", "label": "Load Saved Filter",
-              "button_label": "LOAD FILTER", "command": playlist_ops.load_filters,
+              "button_label": "LOAD FILTER", "command": filters.load_filters,
               "tooltip": "Apply a previously saved filter to the current playlist."},
              {"id": "delete_filter", "icon": "❌", "label": "Delete Saved Filter",
-              "button_label": "DEL FILTER", "command": playlist_ops.delete_filters,
+              "button_label": "DEL FILTER", "command": filters.delete_filters,
               "tooltip": "Delete a saved filter. You will be asked to confirm."},
          ]},
         "---",
@@ -418,7 +423,7 @@ def get_menu_registry():
          "condition": lambda: state.metadata.playlist.get("infinite", False),
          "options": state.playlist_ui.difficulty_options,
          "variable": lambda: state.metadata.playlist.get("difficulty", 2),
-         "command": playlist_ops._set_difficulty_from_menu},
+         "command": infinite._set_difficulty_from_menu},
         {"id": "infinite_settings", "icon": "🛠", "label": "Infinite Settings",
          "button_label": "INF. SETTINGS", "command": settings_actions.open_infinite_settings_editor,
          "condition": lambda: state.metadata.playlist.get("infinite", False),
@@ -798,31 +803,31 @@ def get_menu_registry():
          "tooltip": "File operations for the currently playing theme.",
          "submenu": [
              {"id": "open_folder", "icon": "📁", "label": "Open Folder",
-              "button_label": "OPEN FOLDER",  "command": lambda: playlist_ops.open_file_folder_by_filename(state.playback.currently_playing.get("filename", "")),
+              "button_label": "OPEN FOLDER",  "command": lambda: media_ops.open_file_folder_by_filename(state.playback.currently_playing.get("filename", "")),
               "condition": lambda: menu_builder._cp_is_local_file(),
               "tooltip": "Open the folder containing this file."},
              {"id": "cut_before", "icon": "✂️", "label": "Cut Before",
-              "button_label": "CUT BEFORE", "command": lambda: playlist_ops.cut_before_current_time(state.playback.currently_playing.get("filename", "")),
+              "button_label": "CUT BEFORE", "command": lambda: media_ops.cut_before_current_time(state.playback.currently_playing.get("filename", "")),
               "condition": lambda: ffmpeg_check.is_ffmpeg_available() and menu_builder._cp_is_local_file(),
               "tooltip": "Cut the file before the current playback position."},
              {"id": "cut_after", "icon": "✂️", "label": "Cut After",
-              "button_label": "CUT AFTER", "command": lambda: playlist_ops.cut_after_current_time(state.playback.currently_playing.get("filename", "")),
+              "button_label": "CUT AFTER", "command": lambda: media_ops.cut_after_current_time(state.playback.currently_playing.get("filename", "")),
               "condition": lambda: ffmpeg_check.is_ffmpeg_available() and menu_builder._cp_is_local_file(),
               "tooltip": "Cut the file after the current playback position."},
              {"id": "rename_theme", "icon": "✏️", "label": "Rename",
-              "button_label": "RENAME", "command": lambda: playlist_ops.rename_file_by_filename(state.playback.currently_playing.get("filename", "")),
+              "button_label": "RENAME", "command": lambda: media_ops.rename_file_by_filename(state.playback.currently_playing.get("filename", "")),
               "condition": lambda: menu_builder._cp_is_local_file(),
               "tooltip": "Rename the currently playing file."},
              {"id": "convert_theme", "icon": "🔄", "label": "Convert",
-              "button_label": "CONVERT", "command": lambda: playlist_ops.convert_file_format_by_filename(state.playback.currently_playing.get("filename", "")),
+              "button_label": "CONVERT", "command": lambda: media_ops.convert_file_format_by_filename(state.playback.currently_playing.get("filename", "")),
               "condition": lambda: ffmpeg_check.is_ffmpeg_available() and menu_builder._cp_is_local_file(),
               "tooltip": "Convert the file to a different format."},
              {"id": "edit_volume_theme","icon": "🔊", "label": "Edit Volume",
-              "button_label": "EDIT VOL", "command": lambda: playlist_ops.edit_file_volume_by_filename(state.playback.currently_playing.get("filename", "")),
+              "button_label": "EDIT VOL", "command": lambda: media_ops.edit_file_volume_by_filename(state.playback.currently_playing.get("filename", "")),
               "condition": lambda: ffmpeg_check.is_ffmpeg_available() and menu_builder._cp_is_local_file(),
               "tooltip": "Adjust the audio volume of this file."},
              {"id": "delete_theme_file","icon": "❌", "label": "Delete File",
-              "button_label": "DELETE FILE", "command": lambda: playlist_ops.delete_file_by_filename(state.playback.currently_playing.get("filename", "")),
+              "button_label": "DELETE FILE", "command": lambda: media_ops.delete_file_by_filename(state.playback.currently_playing.get("filename", "")),
               "condition": lambda: menu_builder._cp_is_local_file(),
               "tooltip": "Permanently delete this file."},
          ]},
@@ -890,8 +895,8 @@ def get_menu_registry():
         {"id": "search_themes",     "label": "Search Themes",
          "shortcut": True, "command": lambda: search_ops.search(add=state.metadata.playlist.get("infinite", False)),
          "tooltip": "Open the theme search (shortcut-key mode)."},
-        {"id": "reroll_next", "icon": lambda: "🔄" if playlist_ops.is_reroll_valid() else "", "label": "Re-roll Next Track",
-         "button_label": lambda: "RE-ROLL" if playlist_ops.is_reroll_valid() else "", "shortcut": True, "command": playlist_ops.reroll_next,
+        {"id": "reroll_next", "icon": lambda: "🔄" if infinite.is_reroll_valid() else "", "label": "Re-roll Next Track",
+         "button_label": lambda: "RE-ROLL" if infinite.is_reroll_valid() else "", "shortcut": True, "command": infinite.reroll_next,
          "tooltip": "Re-fetch the next track in infinite mode (only at the penultimate position)."},
         {"id": "cycle_light_mode",  "label": "Cycle Lightning Mode",
          "button_label": "CYCLE LIGHT", "shortcut": True, "command": shortcut_actions.cycle_light_mode,
@@ -907,7 +912,7 @@ def get_menu_registry():
          "tooltip": "Cycle bonus questions: freeform → studio → song → artist."},
         # ── PLAYER CONTROLS (no toolbar button — popout / shortcuts only) ──
         {"id": "play_pause", "icon": "⏯",  "label": "Play/Pause",  "button_label": "PLAY/PAUSE",
-         "button_label": "PLAY/PAUSE", "shortcut": True, "command": transport.play_pause,  "tooltip": "Toggle play or pause."},
+         "shortcut": True, "command": transport.play_pause,  "tooltip": "Toggle play or pause."},
         {"id": "stop", "icon": "⏹", "label": "Stop", "button_label": "STOP",
          "shortcut": True, "command": transport.stop, "tooltip": "Stop playback."},
         {"id": "previous", "icon": "⏮", "label": "Previous","button_label": "PREVIOUS",

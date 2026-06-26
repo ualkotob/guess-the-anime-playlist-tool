@@ -20,7 +20,7 @@ import _app_scripts.ui.windowing as windowing
 
 BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
 
-# Module-private window state (was a main-file global)
+# Module-private window state
 youtube_editor_window = None
 
 
@@ -427,7 +427,7 @@ def open_youtube_editor():
                     try:
                         size_mb = os.path.getsize(filepath) / 1024 / 1024
                         size_label = f" ({size_mb:.1f} MB)"
-                    except:
+                    except Exception:
                         pass
 
                 row_frame = tk.Frame(scroll_frame, bg=BACKGROUND_COLOR)

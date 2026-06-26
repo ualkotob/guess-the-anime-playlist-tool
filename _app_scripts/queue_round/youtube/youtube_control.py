@@ -246,12 +246,23 @@ def save_youtube_censors(video_id, censors_list):
         json.dump(censors_list, f, indent=2, ensure_ascii=False)
 
 
+def _bonus_template_start_time(question):
+    try:
+        return float(question.get("start_time", 0.0))
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
+
+
+def sort_bonus_template_questions(questions):
+    return sorted(questions, key=_bonus_template_start_time)
+
+
 def load_bonus_template(video_id):
     path = get_bonus_template_path(video_id)
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
-                return json.load(f).get("questions", [])
+                return sort_bonus_template_questions(json.load(f).get("questions", []))
         except Exception:
             return []
     return []
@@ -261,7 +272,7 @@ def save_bonus_template(video_id, questions):
     os.makedirs(os.path.join(YOUTUBE_FOLDER, "bonus_templates"), exist_ok=True)
     path = get_bonus_template_path(video_id)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"questions": questions}, f, indent=2, ensure_ascii=False)
+        json.dump({"questions": sort_bonus_template_questions(questions)}, f, indent=2, ensure_ascii=False)
 
 
 # ── YT-cache path helpers ─────────────────────────────────────────────────────

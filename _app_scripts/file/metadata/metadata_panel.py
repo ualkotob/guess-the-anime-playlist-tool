@@ -22,7 +22,7 @@ import _app_scripts.playback.image_loader as image_loader
 import _app_scripts.ui.lists as lists
 import _app_scripts.data.metadata_io as metadata_io
 import _app_scripts.information.information_popup as information_popup
-import _app_scripts.playlists.marks as playlist_marks
+import _app_scripts.theme.marks as playlist_marks
 
 from _app_scripts.ui.scaling import scl
 
@@ -1006,9 +1006,35 @@ def _render_file_props(column, files, playing_f):
         else:
             is_playing = f == playing_f
             display_label = (props_label[0] + ">" + props_label[1:]) if is_playing else props_label
-            column.window_create(tk.END, window=tk.Button(column, text=display_label, borderwidth=0, pady=0,
-                command=lambda fi=f: metadata_display.play_video_from_filename(fi), bg="black", fg="white", relief="flat",
-                font=(None, scl(9, "UI"), "bold") if is_playing else (None, scl(9, "UI"))))
+            column.window_create(tk.END, window=_create_theme_play_button(
+                column,
+                f,
+                display_label,
+                relief="flat",
+                font=(None, scl(9, "UI"), "bold") if is_playing else (None, scl(9, "UI")),
+            ))
+
+def _refresh_current_theme_list():
+    data = state.playback.currently_playing.get("data")
+    if data:
+        update_series_song_information(data, data.get("mal"), rerender=True)
+
+def _create_theme_play_button(column, filename, text, **kwargs):
+    btn = tk.Button(
+        column,
+        text=text,
+        borderwidth=0,
+        pady=0,
+        command=lambda f=filename: metadata_display.play_video_from_filename(f),
+        bg="black",
+        fg="white",
+        **kwargs,
+    )
+    btn.bind(
+        "<Button-3>",
+        lambda event, f=filename: lists._theme_context_menu(f, _refresh_current_theme_list),
+    )
+    return btn
 
 def add_op_ed(theme, column, slug, title, mal_id):
     currently_playing = state.playback.currently_playing
@@ -1035,7 +1061,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
             filename = metadata_display.get_theme_filename(mal_id, theme_slug)
         # ▶ button or fallback
         if filename:
-            column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(filename), borderwidth=0, pady=0, command=lambda: metadata_display.play_video_from_filename(filename), bg="black", fg="white"))
+            column.window_create(tk.END, window=_create_theme_play_button(column, filename, get_filename_icon(filename)))
             column.insert(tk.END, metadata_display.get_file_marks(filename), format)
         else:
             column.insert(tk.END, no_file_icon, format)
@@ -1145,7 +1171,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
                     version_format = "highlight"
 
                 if version_filename:
-                    column.window_create(tk.END, window=tk.Button(column, text=get_filename_icon(version_filename), borderwidth=0, pady=0, command=lambda f=version_filename: metadata_display.play_video_from_filename(f), bg="black", fg="white"))
+                    column.window_create(tk.END, window=_create_theme_play_button(column, version_filename, get_filename_icon(version_filename)))
                     column.insert(tk.END, metadata_display.get_file_marks(version_filename), version_format)
                 else:
                     column.insert(tk.END, no_versions_icon, version_format)

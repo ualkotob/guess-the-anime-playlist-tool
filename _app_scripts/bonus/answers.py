@@ -13,6 +13,7 @@ The scoreboard senders are thin pass-throughs to `scoreboard_control`;
 
 import os
 import json
+import time
 from datetime import datetime
 from tkinter import messagebox
 
@@ -37,6 +38,97 @@ _scoreboard_colors_mtime = 0.0
 _scoreboard_scores_mtime = 0.0
 _scoreboard_teams_mtime = 0.0
 _last_pushed_scores_snapshot: dict = {}
+_sheet_team_assignments_cache = {"expires": 0.0, "data": {}}
+
+
+def _load_web_team_assignments():
+    path = os.path.join('scoreboard_data', 'web_team_assignments.json')
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _load_scoreboard_config():
+    path = os.path.join('scoreboard_data', 'scoreboard_config.json')
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _load_sheet_team_assignments(ttl_seconds=5.0):
+    now = time.monotonic()
+    if _sheet_team_assignments_cache["expires"] > now:
+        return dict(_sheet_team_assignments_cache["data"])
+
+    result = {}
+    try:
+        cfg = _load_scoreboard_config()
+        selected = (cfg.get('spreadsheet') or {}).get('selected') or {}
+        if selected.get('offline'):
+            return result
+        spreadsheet_id = str(selected.get('id') or '').strip()
+        if not spreadsheet_id:
+            return result
+        credentials_path = os.path.join('scoreboard_data', 'scoreboard_credentials.json')
+        if not os.path.exists(credentials_path):
+            return result
+
+        import gspread
+        gc = gspread.service_account(filename=credentials_path)
+        sheet = gc.open_by_key(spreadsheet_id).worksheet('Data')
+        rows = sheet.get('A:C')
+        if not rows:
+            return result
+        headers = [str(h or '').strip().lower() for h in rows[0]]
+        try:
+            player_idx = headers.index('player')
+            team_idx = headers.index('team')
+        except ValueError:
+            player_idx, team_idx = 0, 2
+        for row in rows[1:]:
+            if len(row) <= player_idx:
+                continue
+            name = str(row[player_idx] or '').strip()
+            team = str(row[team_idx] or '').strip() if len(row) > team_idx else ''
+            if name and team:
+                result[name] = team
+    except Exception as e:
+        print(f"Error reading spreadsheet team assignments: {e}")
+
+    _sheet_team_assignments_cache["data"] = dict(result)
+    _sheet_team_assignments_cache["expires"] = now + ttl_seconds
+    return result
+
+
+def _looks_like_scoreboard_team_id(value):
+    return str(value or '').strip().isdigit()
+
+
+def _apply_web_team_assignments(scores_data):
+    sheet_assignments = _load_sheet_team_assignments()
+    if not scores_data:
+        return scores_data
+    copied = dict(scores_data)
+    players = []
+    for player in copied.get('players', []) or []:
+        p = dict(player)
+        name = str(p.get('name', '') or '').strip()
+        sheet_team = str(sheet_assignments.get(name, '') or '').strip()
+        if sheet_team or _looks_like_scoreboard_team_id(p.get('team')):
+            p['team'] = sheet_team
+        players.append(p)
+    copied['players'] = players
+    return copied
 
 
 def _score_bonus_answers(answers, q_type, correct):
@@ -399,7 +491,7 @@ def _push_web_scores():
                     scores_data['name_font']      = str(style.get('score_font', {}).get('selected', 'Consolas'))
                 except Exception:
                     pass
-            web_server.push_scores(scores_data)
+            web_server.push_scores(_apply_web_team_assignments(scores_data))
     except Exception as e:
         print(f"Error pushing scores: {e}")
 
