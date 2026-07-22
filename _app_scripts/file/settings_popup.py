@@ -235,6 +235,26 @@ def show_settings_popup():
                 tooltip.ToolTip(entry, sg["tooltip"])
             _setting_vars[sg["key"]] = var
 
+    def _render_startup_group(parent):
+        """Render the three startup-check settings as one row of checkboxes."""
+        group = [s for s in config_io.SETTINGS_SCHEMA if s.get("group") == "startup_group"]
+        frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
+        frame.pack(fill="x", pady=5)
+        lbl = tk.Label(frame, text=group[0]["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
+        lbl.pack(side="left")
+        tooltip.ToolTip(lbl, "Which 'is something newer available?' checks run at startup.")
+        inputs = tk.Frame(frame, bg=BACKGROUND_COLOR)
+        inputs.pack(side="left", padx=(5, 0))
+        for sg in group:
+            var = tk.BooleanVar(value=_schema_val(sg))
+            cb = tk.Checkbutton(inputs, variable=var, text=sg["short_label"],
+                                bg=BACKGROUND_COLOR, fg="white", selectcolor="black",
+                                activebackground=BACKGROUND_COLOR, activeforeground="white")
+            cb.pack(side="left", padx=(0, 6))
+            if sg.get("tooltip"):
+                tooltip.ToolTip(cb, sg["tooltip"])
+            _setting_vars[sg["key"]] = var
+
     def _render_color_row(s, parent):
         """Render a color dropdown row with add/delete buttons."""
         frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
@@ -273,6 +293,7 @@ def show_settings_popup():
     # Collect visible rows first so we can split evenly
     _visible_rows = []
     _skip_group_seen = False
+    _startup_group_seen = False
     for s in config_io.SETTINGS_SCHEMA:
         if s.get("requires_ngrok") and not web_server.NGROK_AVAILABLE:
             continue
@@ -287,14 +308,24 @@ def show_settings_popup():
                 _visible_rows.append(("skip_group", None))
                 _skip_group_seen = True
             continue
+        if s.get("group") == "startup_group":
+            _startup_group_seen = True  # deferred: rendered last so it ends column 2
+            continue
         _visible_rows.append((s["type"], s))
 
-    # Split into two roughly equal columns
-    half = (len(_visible_rows) + 1) // 2
+    # Startup checks always render last, at the bottom of the right column.
+    if _startup_group_seen:
+        _visible_rows.append(("startup_group", None))
+
+    # Split into two roughly equal columns (right column gets the extra row,
+    # so the startup-checks row lands at the end of column 2)
+    half = len(_visible_rows) // 2
     for i, (t, s) in enumerate(_visible_rows):
         parent = col_left if i < half else col_right
         if t == "skip_group":
             _render_skip_group(parent)
+        elif t == "startup_group":
+            _render_startup_group(parent)
         elif t == "color":
             _render_color_row(s, parent)
         elif t == "rules_file":

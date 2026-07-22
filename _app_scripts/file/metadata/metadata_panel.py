@@ -793,7 +793,7 @@ def update_popout_currently_playling(data, clear=False):
             _members_num = metadata_display._safe_int(data.get("members", 0), 0)
             _pop_display = data.get("popularity") or "N/A"
             members = f"Members: {_members_num:,} (#{_pop_display})"
-            score = f"Score: {data.get("score")} (#{data.get("rank")})"
+            score = f"Score: {data.get("score") or "N/A"} (#{data.get("rank") or "N/A"})"
         if metadata_display.is_game(data):
             aired = data.get("release")
         elif is_youtube:

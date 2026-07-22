@@ -31,37 +31,75 @@ class MediaPlayer:
             self._p.command('keybind', 'CLOSE_WIN', 'stop')
         except Exception:
             pass
+        # Observer-backed property cache. Every direct property read is a
+        # synchronous round-trip into the libmpv core and can block the calling
+        # (Tk) thread whenever the core is busy (seek/load/buffering). The seek
+        # ticker reads these many times per 50ms tick, so hot-path getters serve
+        # these cached values instead; mpv's event thread keeps them fresh.
+        self._c_time_pos = None
+        self._c_duration = None
+        self._c_pause = True
+        self._c_core_idle = True
+        self._c_width = None
+        self._c_height = None
+        self._c_osd_width = 0
+        self._c_osd_height = 0
+        try:
+            self._p.observe_property('time-pos', self._on_time_pos)
+            self._p.observe_property('duration', self._on_duration)
+            self._p.observe_property('pause', self._on_pause)
+            self._p.observe_property('core-idle', self._on_core_idle)
+            self._p.observe_property('width', self._on_width)
+            self._p.observe_property('height', self._on_height)
+            self._p.observe_property('osd-width', self._on_osd_width)
+            self._p.observe_property('osd-height', self._on_osd_height)
+        except Exception:
+            log_exception("MediaPlayer: failed to register property-cache observers")
+
+    # ---- Property-cache observer callbacks (run on mpv's event thread) ----
+    def _on_time_pos(self, _name, value):   self._c_time_pos = value
+    def _on_duration(self, _name, value):   self._c_duration = value
+    def _on_pause(self, _name, value):      self._c_pause = bool(value)
+    def _on_core_idle(self, _name, value):  self._c_core_idle = bool(value)
+    def _on_width(self, _name, value):      self._c_width = value
+    def _on_height(self, _name, value):     self._c_height = value
+    def _on_osd_width(self, _name, value):  self._c_osd_width = int(value or 0)
+    def _on_osd_height(self, _name, value): self._c_osd_height = int(value or 0)
 
     # ---- Core playback ----
     def play(self):
         """Resume playback (does NOT load a new file)."""
         try:
+            self._c_pause = False  # optimistic; observer confirms shortly after
             self._p.pause = False
         except Exception:
             pass
 
     def pause(self):
         try:
+            self._c_pause = True  # optimistic; observer confirms shortly after
             self._p.pause = True
         except Exception:
             pass
 
     def stop(self):
         try:
+            self._c_time_pos = None  # optimistic; observers confirm shortly after
+            self._c_core_idle = True
             self._p.stop()
         except Exception:
             pass
 
     def is_playing(self) -> bool:
         try:
-            return (not self._p.pause) and (not self._p.core_idle) and (self._p.time_pos is not None)
+            return (not self._c_pause) and (not self._c_core_idle) and (self._c_time_pos is not None)
         except Exception:
             return False
 
     # ---- Time (all in milliseconds) ----
     def get_time_ms(self) -> int:
         try:
-            return max(0, int((self._p.time_pos or 0) * 1000))
+            return max(0, int((self._c_time_pos or 0) * 1000))
         except Exception:
             return 0
 
@@ -73,11 +111,11 @@ class MediaPlayer:
 
     def get_length_ms(self) -> int:
         try:
-            return max(0, int((self._p.duration or 0) * 1000))
+            return max(0, int((self._c_duration or 0) * 1000))
         except Exception:
             return 0
 
-    # ---- Time: compat shims (same unit — ms) ----
+    # ---- Time: compat shims (same unit â€” ms) ----
     def get_time(self) -> int:    return self.get_time_ms()
     def set_time(self, ms: int):  self.set_time_ms(ms)
     def get_length(self) -> int:  return self.get_length_ms()
@@ -136,7 +174,7 @@ class MediaPlayer:
     # ---- Video info ----
     def get_video_size(self) -> tuple:
         try:
-            w, h = self._p.width, self._p.height
+            w, h = self._c_width, self._c_height
             if w and h:
                 return (w, h)
         except Exception:
@@ -146,6 +184,10 @@ class MediaPlayer:
     def video_get_size(self, track=0) -> tuple:
         return self.get_video_size()
 
+    def get_osd_size(self) -> tuple:
+        """Return (osd_w, osd_h) from the observer cache — safe for per-tick use."""
+        return (self._c_osd_width, self._c_osd_height)
+
     # ---- Media loading ----
     def load(self, path: str, opts: list = None):
         """Load and play a file/URL. opts is ignored (mpv handles format detection)."""
@@ -153,10 +195,7 @@ class MediaPlayer:
 
     def unload(self):
         """Stop and clear current media."""
-        try:
-            self._p.stop()
-        except Exception:
-            pass
+        self.stop()
 
     def get_path(self) -> str:
         """Return the path/URL of the currently loaded file, or None."""
@@ -165,13 +204,24 @@ class MediaPlayer:
         except Exception:
             return None
 
-    def set_media(self, path_or_none):
-        """Load path/URL and start playing, or stop if None."""
+    def set_media(self, path_or_none, start_seconds=None):
+        """Load path/URL, optionally starting at a specific time, or stop."""
         if path_or_none is None:
             self.unload()
         else:
             try:
-                self._p.play(str(path_or_none))
+                # Optimistic cache reset: the previous file's time/duration must
+                # not leak into is_playing()/get_time() during the load window
+                # (matches the direct-read behavior, where both were None here).
+                self._c_time_pos = None
+                self._c_duration = None
+                if start_seconds is not None and start_seconds > 0:
+                    self._p.command(
+                        'loadfile', str(path_or_none), 'replace', '-1',
+                        f'start={start_seconds}'
+                    )
+                else:
+                    self._p.play(str(path_or_none))
             except Exception:
                 # A failed load means silence on stage — make sure it's traceable.
                 log_exception("mpv failed to load media: %s", path_or_none)

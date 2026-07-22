@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 import requests
 
@@ -83,16 +84,32 @@ def send_command(cmd):
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def is_running():
-    """Return True if the scoreboard is listening on port 5555."""
+_is_running_cache = [0.0, False]   # [monotonic timestamp, last result]
+_IS_RUNNING_TTL = 2.5              # seconds
+
+
+def is_running(max_age=_IS_RUNNING_TTL):
+    """Return True if the scoreboard is listening on port 5555.
+
+    The probe opens a real TCP connection, so the result is cached for a short
+    TTL — the web-toggle push calls this every second from the Tk main thread,
+    and an unanswered connect blocks for up to its 0.1s timeout each time.
+    Pass max_age=0 to force a fresh probe.
+    """
+    now = time.monotonic()
+    if max_age > 0 and (now - _is_running_cache[0]) < max_age:
+        return _is_running_cache[1]
     try:
         s = socket.socket()
         s.settimeout(0.1)
         s.connect(("localhost", 5555))
         s.close()
-        return True
+        result = True
     except (ConnectionRefusedError, OSError):
-        return False
+        result = False
+    _is_running_cache[0] = now
+    _is_running_cache[1] = result
+    return result
 
 
 def open_scoreboard():

@@ -77,6 +77,9 @@ class GameState:
             auto_info_end=False,            # persisted: auto-show info popup at round end
             auto_refresh_toggle=False,      # persisted: auto-refresh metadata on fetch
             auto_bonus_start=None,          # runtime: None=off, 'random' or a bonus type key=on
+            auto_reveal_start=None,         # runtime (not saved): None=off | 'auto' | 'blind' | 'reveal' | 'mute' — auto-queue a round each theme
+            auto_reveal_variant=None,       # runtime (not saved): None=random | a peek variant key — forced variant for auto-reveal
+            auto_reveal_seconds=0,          # runtime (not saved): 0=off (static) | int seconds — fade the reveal overlay fully off over this long
         )
         # Lightning cluster — scalar lightning-round state (reassignable;
         # single source of truth, no main-side mirror).
@@ -205,6 +208,9 @@ class GameState:
             auto_fetch_missing=False,       # auto-fetch metadata when missing during play
             special_round_warning=True,     # show warning before special rounds
             special_round_playlist=True,    # auto-queue special rounds from system marks
+            startup_check_updates=True,     # check GitHub for app updates on startup
+            startup_check_metadata=True,    # check for newer metadata package on startup
+            startup_check_censors=True,     # check for newer censors on startup
             end_session_txt="",             # custom end-session display text
             LAUNCH_SCOREBOARD_ON_STARTUP=False,
             AUTO_EXIT_SCOREBOARD=False,

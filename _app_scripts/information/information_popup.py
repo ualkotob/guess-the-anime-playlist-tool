@@ -596,8 +596,9 @@ def _get_osd_video_rect():
     Returns all zeros if OSD is not ready.
     """
     try:
-        osd_w = int(state.widgets.player._p.osd_width or 0)
-        osd_h = int(state.widgets.player._p.osd_height or 0)
+        # Cached (observer-fed) reads — this runs every seek-bar tick while a
+        # peek/slice overlay is active, so it must never round-trip into mpv.
+        osd_w, osd_h = state.widgets.player.get_osd_size()
     except Exception:
         return 0, 0, 0, 0, 0, 0
     if not osd_w or not osd_h:
@@ -1022,7 +1023,7 @@ def toggle_title_popup(show, info_type=None, instant=False):
                 _members_num = metadata_display._safe_int(data.get("members", 0), 0)
                 _pop_display = data.get("popularity") or "N/A"
                 members = f"MAL Members: {_members_num:,} (#{_pop_display})"
-                score = f"MAL Score: {data.get("score")} (#{data.get("rank")})"
+                score = f"MAL Score: {data.get("score") or "N/A"} (#{data.get("rank") or "N/A"})"
             if info_type != "title_only":
                 title_row = title
                 if _use_clip_as_song:

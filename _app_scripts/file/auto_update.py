@@ -239,6 +239,34 @@ def open_github_releases():
                              f"Please manually visit:\n{releases_url}")
 
 
+def manual_check_for_updates():
+    """Check for updates on demand (File menu) and always report the result.
+
+    Unlike the silent startup check, this reports even when the app is already
+    up to date or the check fails, so the user gets feedback either way. Runs
+    the network call in a background thread and reports on the main thread.
+    """
+    def background_check():
+        try:
+            update_info = check_for_updates()
+        except Exception as e:
+            update_info = {"error": f"Error checking for updates: {str(e)}"}
+
+        def report():
+            if update_info.get("error"):
+                messagebox.showerror("Update Check Failed", update_info["error"])
+            elif update_info.get("update_available"):
+                _show_update_dialog(update_info)
+            else:
+                messagebox.showinfo(
+                    "No Updates Available",
+                    f"You're on the latest version ({update_info.get('current_version', APP_VERSION)}).")
+
+        state.widgets.root.after(0, report)
+
+    threading.Thread(target=background_check, daemon=True).start()
+
+
 def check_for_updates_on_startup():
     """Check for updates on startup in a background thread to avoid blocking UI."""
     def background_check():

@@ -21,6 +21,7 @@ from core.paths import PLAYLISTS_FOLDER
 from _app_scripts import utils
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.playlists.playlist as playlist
+import _app_scripts.playback.cache_download as cache_download
 
 
 def get_anilist_matching_files(user_id, only_watched, include_non_local):
@@ -170,7 +171,7 @@ def generate_animethemes_playlist(include_non_local=None):
         messagebox.showerror("Error", f"Failed to fetch AnimeThemes playlist: {str(e)}")
 
 
-def generate_session_log_playlist():
+def generate_session_log_playlist(include_non_local=None):
     """Create a playlist by matching themes from a saved session log (.txt) file."""
     filepath = filedialog.askopenfilename(
         title="Open Session Log",
@@ -179,6 +180,12 @@ def generate_session_log_playlist():
     )
     if not filepath:
         return
+
+    if include_non_local is None:
+        include_non_local = messagebox.askyesno(
+            "Create Playlist: Include non-local files",
+            "Would you like to include non-local files from metadata(they will stream)?",
+        )
 
     anime_metadata = state.metadata.anime_metadata
     file_metadata = state.metadata.file_metadata
@@ -197,7 +204,12 @@ def generate_session_log_playlist():
         for slug, slug_data in mal_data.get("themes", {}).items():
             for version_data in slug_data.values():
                 for fname in version_data.keys():
-                    if fname in directory_files:
+                    is_local = fname in directory_files
+                    if is_local:
+                        # Local files take priority: keep them at the front so
+                        # candidates[0] resolves to a local file when one exists.
+                        mal_slug_to_files.setdefault((mal_id, slug), []).insert(0, fname)
+                    elif include_non_local and cache_download.is_animethemes_stream_file(fname):
                         mal_slug_to_files.setdefault((mal_id, slug), []).append(fname)
 
     def _unformat_slug(fmt):
@@ -250,7 +262,11 @@ def generate_session_log_playlist():
                         slug = body_stripped[sep + 3:].strip()
 
                 found = None
-                if filename_hint and filename_hint in directory_files:
+                if filename_hint and (
+                    filename_hint in directory_files
+                    or (include_non_local
+                        and cache_download.is_animethemes_stream_file(filename_hint))
+                ):
                     found = filename_hint
                 elif title is not None and slug:
                     for mal_id in title_to_mals.get(title.lower(), []):
@@ -274,15 +290,16 @@ def generate_session_log_playlist():
         for ul in unmatched_lines:
             print(f"  UNMATCHED: {ul}")
 
+    match_target = "files" if include_non_local else "local files"
     if not matched:
         messagebox.showwarning(
             "No Matches",
-            f"No matching local files found.\n"
+            f"No matching {match_target} found.\n"
             f"({total_lines} theme lines parsed, {unmatched} unmatched)",
         )
         return
 
-    msg = f"{len(matched)} of {total_lines} theme lines matched to local files."
+    msg = f"{len(matched)} of {total_lines} theme lines matched to {match_target}."
     if unmatched:
         msg += f"\n{unmatched} could not be matched."
     msg += "\n\nCreate playlist?"

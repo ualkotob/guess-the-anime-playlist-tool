@@ -12,8 +12,10 @@ module directly.
 
 import os
 import threading
+import time
 import tkinter as tk
 
+from core.app_logging import get_logger
 from core.game_state import state
 from _app_scripts.file.web_server import web_server
 from _app_scripts.ui.scaling import scl
@@ -408,7 +410,19 @@ def _play_buzz_sound(rank, name):
     _buz = state.playback.bonus_settings.get("buzzer", bonus_defaults["buzzer"])
     if name != 'Test':
         if _buz.get("player_buzz_popup", True):
-            state.widgets.root.after(0, lambda: _show_buzz_toast(rank, name))
+            # Measure how long the toast sat in Tk's queue waiting for the main
+            # loop — the host-side portion of perceived buzzer lag (network
+            # transit excluded). Logged so laggy sessions are diagnosable.
+            _received = time.monotonic()
+
+            def _toast_with_lag_check():
+                _waited = time.monotonic() - _received
+                if _waited >= 0.15:
+                    get_logger().warning(
+                        "buzz toast for '%s' waited %.2fs for the main loop", name, _waited)
+                _show_buzz_toast(rank, name)
+
+            state.widgets.root.after(0, _toast_with_lag_check)
     def _make_wav_segments(segments):
         import wave, struct, math, io, random
         rate = 44100

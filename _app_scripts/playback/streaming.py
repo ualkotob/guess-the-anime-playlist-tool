@@ -451,7 +451,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "Crunchyroll en Espa\u00f1ol", "Crunchyroll FR", "Crunchyroll India", "Crunchyroll DE", "WatchMojo", "Watch Mojo",
                     "AnimeVersa", "Crunchyroll en Espa\u00f1ol", "Netflix Jr.", "MWAMVEVO", "Tarkeus", "Gigguk", "ryuuarm", "Jent Watches",
                     "IGN Anime Club", "Albert Senpai", "AnimeSekaiStore", "ForgottenRelics", "Anuj Lama", "Garnt", " Watches",
-                    "ProfessorOtakuD2", "The Best Anime Here", "SuperGainsBros", "BennettTheSage",
+                    "ProfessorOtakuD2", "The Best Anime Here", "SuperGainsBros", "BennettTheSage", "janken", "rainsyru",
                 ]
                 ost_blacklisted_channels = [" - Topic"]
                 if not ost:

@@ -127,6 +127,16 @@ def save_metadata_atomic(filepath, data, encoding=None, ensure_ascii=True):
         raise e
 
 
+# gzip level 9 (the GzipFile default) spends multiple seconds compressing the
+# big stores (anilist/anidb) for a marginal size win over level 3 — and that
+# time is paid on the app-close flush and on the debounced background save. The
+# .gz is machine-read only (json.load ignores formatting), so we also drop the
+# indent=4 pretty-printing here: compact separators shrink the payload and the
+# serialize time. The human-readable plain .json (written above when it already
+# exists) keeps indent=4. Measured: full 5-store save ~4.0s -> ~1.3s.
+_METADATA_GZIP_LEVEL = 3
+
+
 def save_metadata_compressed(filepath, data, encoding='utf-8', ensure_ascii=True):
     """Save metadata with compressed version, and readable version only if it already exists."""
 
@@ -143,8 +153,8 @@ def save_metadata_compressed(filepath, data, encoding='utf-8', ensure_ascii=True
 
         try:
             # Use GzipFile to set the correct filename in gzip header
-            with gzip.GzipFile(filename=os.path.basename(filepath), fileobj=os.fdopen(fd, 'wb'), mode='wb') as gz_file:
-                json_str = json.dumps(data, ensure_ascii=ensure_ascii, indent=4)
+            with gzip.GzipFile(filename=os.path.basename(filepath), fileobj=os.fdopen(fd, 'wb'), mode='wb', compresslevel=_METADATA_GZIP_LEVEL) as gz_file:
+                json_str = json.dumps(data, ensure_ascii=ensure_ascii, separators=(',', ':'))
                 gz_file.write(json_str.encode(encoding))
             # Atomic rename
             os.replace(temp_path, filepath + '.gz')

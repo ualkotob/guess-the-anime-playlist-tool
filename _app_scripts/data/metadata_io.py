@@ -8,12 +8,15 @@ keep the same identity — see the note in load_metadata.
 Sibling metadata helpers (metadata_fetch, metadata_display) are imported
 directly.
 """
+import atexit
 import os
+import threading
 from core.game_state import state
 import json
 
 from _app_scripts import utils
 from _app_scripts.file.metadata import metadata_fetch, metadata_display
+from core.app_logging import log_exception
 from core.paths import (
     FILE_METADATA_FILE,
     FILE_METADATA_OVERRIDES_FILE,
@@ -33,19 +36,83 @@ load_metadata_compressed = utils.load_metadata_compressed
 deep_merge               = utils.deep_merge
 
 
-def save_metadata():
+# --- Debounced save machinery -------------------------------------------------
+# A full save serializes + gzips every metadata store (~140MB of JSON) and takes
+# multiple seconds; the json.dumps portion holds the GIL, which starves the Tk
+# main loop even when the save runs on a worker thread. Fetch paths call
+# save_metadata() after every successful fetch, so mid-session bursts used to
+# stall the UI repeatedly. Debouncing coalesces those bursts into one save.
+_SAVE_DEBOUNCE_SECONDS = 45.0
+_save_state_lock = threading.Lock()   # guards _save_timer/_save_pending
+_save_io_lock    = threading.Lock()   # serializes actual disk writes
+_save_timer      = None
+_save_pending    = False
+
+
+def save_metadata(immediate=False):
+    """Persist all metadata stores.
+
+    By default the save is debounced: the write happens on a background timer
+    thread up to _SAVE_DEBOUNCE_SECONDS later, and calls arriving in between are
+    coalesced into that one write. In-memory state is always current — only the
+    disk flush is deferred. Pass immediate=True to write synchronously (app
+    close / explicit flush).
+    """
+    global _save_timer, _save_pending
+    if immediate:
+        with _save_state_lock:
+            if _save_timer is not None:
+                _save_timer.cancel()
+                _save_timer = None
+            _save_pending = False
+        _do_save_metadata()
+        return
+    with _save_state_lock:
+        _save_pending = True
+        if _save_timer is None:
+            _save_timer = threading.Timer(_SAVE_DEBOUNCE_SECONDS, _run_pending_save)
+            _save_timer.daemon = True
+            _save_timer.start()
+
+
+def _run_pending_save():
+    global _save_timer, _save_pending
+    with _save_state_lock:
+        _save_timer = None
+        if not _save_pending:
+            return
+        _save_pending = False
+    try:
+        _do_save_metadata()
+    except Exception:
+        log_exception("debounced metadata save failed")
+
+
+def flush_pending_metadata_save():
+    """Write now if a debounced save is pending (called at app exit)."""
+    with _save_state_lock:
+        pending = _save_pending
+    if pending:
+        save_metadata(immediate=True)
+
+
+atexit.register(flush_pending_metadata_save)
+
+
+def _do_save_metadata():
     """Ensures the metadata folder exists before saving metadata files with atomic writes and compression."""
-    metadata_folder = os.path.dirname(FILE_METADATA_FILE)
-    if not os.path.exists(metadata_folder):
-        os.makedirs(metadata_folder)
+    with _save_io_lock:
+        metadata_folder = os.path.dirname(FILE_METADATA_FILE)
+        if not os.path.exists(metadata_folder):
+            os.makedirs(metadata_folder)
 
-    save_metadata_compressed(FILE_METADATA_FILE, state.metadata.file_metadata)
+        save_metadata_compressed(FILE_METADATA_FILE, state.metadata.file_metadata)
 
-    deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
-    save_metadata_compressed(ANIME_METADATA_FILE, state.metadata.anime_metadata)
-    save_metadata_compressed(ANIDB_METADATA_FILE, state.metadata.anidb_metadata)
-    save_metadata_compressed(AI_METADATA_FILE, state.metadata.ai_metadata, encoding="utf-8", ensure_ascii=False)
-    save_metadata_compressed(ANILIST_METADATA_FILE, state.metadata.anilist_metadata, encoding="utf-8", ensure_ascii=False)
+        deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
+        save_metadata_compressed(ANIME_METADATA_FILE, state.metadata.anime_metadata)
+        save_metadata_compressed(ANIDB_METADATA_FILE, state.metadata.anidb_metadata)
+        save_metadata_compressed(AI_METADATA_FILE, state.metadata.ai_metadata, encoding="utf-8", ensure_ascii=False)
+        save_metadata_compressed(ANILIST_METADATA_FILE, state.metadata.anilist_metadata, encoding="utf-8", ensure_ascii=False)
 
 
 def save_metadata_overrides():

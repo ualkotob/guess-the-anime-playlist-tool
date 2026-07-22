@@ -13,7 +13,6 @@ The scoreboard senders are thin pass-throughs to `scoreboard_control`;
 
 import os
 import json
-import time
 from datetime import datetime
 from tkinter import messagebox
 
@@ -38,7 +37,6 @@ _scoreboard_colors_mtime = 0.0
 _scoreboard_scores_mtime = 0.0
 _scoreboard_teams_mtime = 0.0
 _last_pushed_scores_snapshot: dict = {}
-_sheet_team_assignments_cache = {"expires": 0.0, "data": {}}
 
 
 def _load_web_team_assignments():
@@ -65,49 +63,13 @@ def _load_scoreboard_config():
         return {}
 
 
-def _load_sheet_team_assignments(ttl_seconds=5.0):
-    now = time.monotonic()
-    if _sheet_team_assignments_cache["expires"] > now:
-        return dict(_sheet_team_assignments_cache["data"])
-
-    result = {}
-    try:
-        cfg = _load_scoreboard_config()
-        selected = (cfg.get('spreadsheet') or {}).get('selected') or {}
-        if selected.get('offline'):
-            return result
-        spreadsheet_id = str(selected.get('id') or '').strip()
-        if not spreadsheet_id:
-            return result
-        credentials_path = os.path.join('scoreboard_data', 'scoreboard_credentials.json')
-        if not os.path.exists(credentials_path):
-            return result
-
-        import gspread
-        gc = gspread.service_account(filename=credentials_path)
-        sheet = gc.open_by_key(spreadsheet_id).worksheet('Data')
-        rows = sheet.get('A:C')
-        if not rows:
-            return result
-        headers = [str(h or '').strip().lower() for h in rows[0]]
-        try:
-            player_idx = headers.index('player')
-            team_idx = headers.index('team')
-        except ValueError:
-            player_idx, team_idx = 0, 2
-        for row in rows[1:]:
-            if len(row) <= player_idx:
-                continue
-            name = str(row[player_idx] or '').strip()
-            team = str(row[team_idx] or '').strip() if len(row) > team_idx else ''
-            if name and team:
-                result[name] = team
-    except Exception as e:
-        print(f"Error reading spreadsheet team assignments: {e}")
-
-    _sheet_team_assignments_cache["data"] = dict(result)
-    _sheet_team_assignments_cache["expires"] = now + ttl_seconds
-    return result
+# NOTE: the game app deliberately has NO direct Google Sheets access. The
+# scoreboard app owns the spreadsheet (config + credentials) and exports
+# everything the game needs as files in scoreboard_data/ (scores incl. per-
+# player team, colors, team names) plus port-5555 commands. A 2026-06-25
+# change briefly violated that boundary by fetching team assignments from the
+# sheet directly on the Tk main thread (~1s of HTTPS every 6s = session-long
+# UI stalls); teams now ride along in scoreboard_scores.json instead.
 
 
 def _looks_like_scoreboard_team_id(value):
@@ -115,17 +77,21 @@ def _looks_like_scoreboard_team_id(value):
 
 
 def _apply_web_team_assignments(scores_data):
-    sheet_assignments = _load_sheet_team_assignments()
+    """Sanitize per-player team values from the scoreboard's scores export.
+
+    Team names arrive in scoreboard_scores.json (the scoreboard exports its
+    sheet's TEAM column directly). Purely numeric values are scoreboard-
+    internal team IDs, not display names -- blank them rather than showing
+    digits on the web score panel.
+    """
     if not scores_data:
         return scores_data
     copied = dict(scores_data)
     players = []
     for player in copied.get('players', []) or []:
         p = dict(player)
-        name = str(p.get('name', '') or '').strip()
-        sheet_team = str(sheet_assignments.get(name, '') or '').strip()
-        if sheet_team or _looks_like_scoreboard_team_id(p.get('team')):
-            p['team'] = sheet_team
+        if _looks_like_scoreboard_team_id(p.get('team')):
+            p['team'] = ''
         players.append(p)
     copied['players'] = players
     return copied
@@ -489,6 +455,7 @@ def _push_web_scores():
                     scores_data['commit_delay']   = int(style.get('delta_commit_delay',   {}).get('selected', 1500))
                     scores_data['score_font']     = str(style.get('score_font', {}).get('selected', 'Consolas'))
                     scores_data['name_font']      = str(style.get('score_font', {}).get('selected', 'Consolas'))
+                    scores_data['player_sort']    = str(style.get('player_sort',        {}).get('selected', 'points'))
                 except Exception:
                     pass
             web_server.push_scores(_apply_web_team_assignments(scores_data))
@@ -547,6 +514,9 @@ def _push_web_toggles():
         "search_queued": bool(search_ops.search_queue),
         "difficulty":    state.metadata.playlist.get("difficulty", 2),
         "auto_bonus_start": state.controls.auto_bonus_start,
+        "auto_reveal_start": state.controls.auto_reveal_start or "",
+        "auto_reveal_variant": state.controls.auto_reveal_variant or "",
+        "auto_reveal_seconds": state.controls.auto_reveal_seconds,
         "active_bonus": bonus.guessing_extra,
         "end_session_popup": bool(session_end.end_message_window),
         "scoreboard_open": scoreboard_open,

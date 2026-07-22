@@ -238,10 +238,10 @@ TUTORIAL_CONTENT = [
                 ],
                 "subs": [
                     {
-                        "title": "Refresh Jikan (MAL) [🛠]",
+                        "title": "Refresh Tenrai (MAL) [🛠]",
                         "content": [
-                            ("h1", "Refresh Jikan (MAL) [🛠]"),
-                            ("p", "[WORK IN PROGRESS] Refresh Jikan (MAL) metadata — score and members — for files in your directory."),
+                            ("h1", "Refresh Tenrai (MAL) [🛠]"),
+                            ("p", "[WORK IN PROGRESS] Refresh Tenrai (MAL) metadata — score and members — for files in your directory."),
                         ],
                     },
                     {
@@ -1067,7 +1067,7 @@ TUTORIAL_CONTENT = [
                 "title": "Fetch Theme Data [🛠]",
                 "content": [
                     ("h1", "Fetch Theme Data [🛠]"),
-                    ("p", "[WORK IN PROGRESS] Fetch metadata for the currently playing theme from AnimeThemes, Jikan, AniList, and AniDB."),
+                    ("p", "[WORK IN PROGRESS] Fetch metadata for the currently playing theme from AnimeThemes, Tenrai, AniList, and AniDB."),
                 ],
             },
             {
@@ -1443,7 +1443,7 @@ TUTORIAL_CONTENT = [
                 "title": "Auto Refresh Metadata [🛠]",
                 "content": [
                     ("h1", "Auto Refresh Metadata [🛠]"),
-                    ("p", "[WORK IN PROGRESS] Toggle auto refreshing jikan metadata (score, members) as themes play — never refreshes the same anime twice per session."),
+                    ("p", "[WORK IN PROGRESS] Toggle auto refreshing Tenrai metadata (score, members) as themes play — never refreshes the same anime twice per session."),
                 ],
             },
             {

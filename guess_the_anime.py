@@ -155,6 +155,10 @@ state.widgets.root = root
 state.widgets.player = player
 state.widgets.first_row_frame = first_row_frame
 
+# Main-loop stall watchdog: logs any UI freeze >=250ms to logs/guess_the_anime.log.
+from core import ui_watchdog
+ui_watchdog.start(root)
+
 # Video controls row (volume box, transport buttons, seek bar).
 main_window.build_controls_row(root)
 
@@ -171,8 +175,10 @@ transport.update_current_index()
 youtube_control.load_youtube_metadata()
 metadata_io.load_metadata()
 updates_io.check_for_local_metadata_package()
-root.after(3000, updates_io.check_for_metadata_updates)
-root.after(3000, updates_io.check_for_censor_updates)
+if state.config.startup_check_metadata:
+    root.after(3000, updates_io.check_for_metadata_updates)
+if state.config.startup_check_censors:
+    root.after(3000, updates_io.check_for_censor_updates)
 
 bonus_answers._start_web_server()
 if state.config.LAUNCH_SCOREBOARD_ON_STARTUP and scoreboard_control.AVAILABLE:
@@ -192,7 +198,8 @@ root.after(1000, session_stats.create_new_session)
 root.after(1000, transport.update_seek_bar)
 root.after(1000, audio_toggles.set_volume, state.controls.volume_level)
 root.after(1000, auto_update.cleanup_old_update_exes)
-root.after(3000, auto_update.check_for_updates_on_startup)
+if state.config.startup_check_updates:
+    root.after(3000, auto_update.check_for_updates_on_startup)
 root.after(1000, playlist_sources.update_living_playlists)
 root.after(500, cache_download.check_download_ui_updates)
 

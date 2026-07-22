@@ -47,6 +47,12 @@ mute_peek_round_toggle = False
 _queued_peek_variant  = [None]  # [variant_name | None] — forced variant for next reveal round
 peek_light_direction  = None
 
+# Timed auto-reveal driver — when an auto-queued reveal round wants to fade its
+# overlay fully off over N seconds (the "Reveal after X seconds" option). Ticked
+# from the seek-bar loop via update_timed_reveal(); progress is derived from the
+# player position (like a lightning round) so it pauses/seeks with playback.
+_timed_reveal = {"active": False, "start": None, "length": 0}
+
 _PEEK_VARIANT_LABELS = {
     "blur":      ("🌫", "Blur",     "Gaussian blur — strong at the start, fades as the round progresses."),
     "edge":      ("◼",  "Edge",     "Blocks the middle of the screen, showing only the edges. Shrinks the blocked area over time."),
@@ -84,13 +90,23 @@ def get_next_peek_mode():
     return last_peek_mode
 
 
+def should_hide_scoreboard(peek_mode):
+    """Whether activating ``peek_mode`` should hide the scoreboard. Per-variant,
+    configured under reveal → ``hide_scoreboard`` (default: only 'edge' hides,
+    since its side blocks would otherwise cover the scoreboard column)."""
+    hide = state.playback.lightning_mode_settings.get("reveal", {}).get("hide_scoreboard", {})
+    return bool(hide.get(peek_mode, peek_mode == "edge"))
+
+
 def _activate_peek_variant(peek_mode):
     """Activate a specific peek variant by name."""
     global peek_modifier, gap_modifier
     _had_existing = bool(peek_overlay.peek_overlay1 or edge_overlay.edge_overlay_box
                          or grow_overlay.grow_overlay_boxes or filter_overlay.filter_vf_active)
     gap_modifier = 0
-    scoreboard_control.send_command("hide")
+    # Hiding is per-variant; send "show" for non-hiding variants so switching
+    # from a hiding variant (e.g. edge) restores the scoreboard mid-round.
+    scoreboard_control.send_command("hide" if should_hide_scoreboard(peek_mode) else "show")
     # Activate the new variant first to avoid a visible gap
     if peek_mode == 'edge':
         edge_overlay.toggle_edge_overlay(block_percent=99)
@@ -261,3 +277,127 @@ def choose_peek_direction():
     while new_dir == peek_light_direction:
         new_dir = random.choice(["right", "down"])
     peek_light_direction = new_dir
+
+
+def render_reveal_progress(progress, full_reveal=False):
+    """Re-render whichever reveal overlay is currently active at ``progress``
+    (0.0 = fully obscured → 1.0 = clear). Shared by the lightning ticker
+    (:func:`lightning_manager.update_light_round`) and the timed auto-reveal
+    driver below.
+
+    Lightning rounds pass ``full_reveal=False`` so edge/grow keep their
+    popularity-scaled cap (the answer phase does the final reveal). The timed
+    auto-reveal passes ``full_reveal=True`` so every variant animates all the
+    way to clear over the selected number of seconds.
+    """
+    progress = min(max(progress, 0.0), 1.0)
+    data = state.playback.currently_playing.get("data") or {}
+    if peek_overlay.peek_overlay1:
+        peek_overlay.toggle_peek_overlay(direction=peek_light_direction,
+                                         progress=progress * 100, gap=get_peek_gap(data))
+    elif edge_overlay.edge_overlay_box:
+        edge_max = 100 if full_reveal else max(15, min(70, (data.get('popularity') or 3000) / 12))
+        edge_overlay.toggle_edge_overlay(block_percent=100 - (edge_max * progress))
+    elif grow_overlay.grow_overlay_boxes:
+        grow_max = 100 if full_reveal else max(20, min(60, (data.get('popularity') or 3000) / 10))
+        grow_overlay.toggle_grow_overlay(block_percent=100 - (grow_max * progress),
+                                         position=grow_overlay.grow_position)
+    elif filter_overlay.filter_vf_active:
+        filter_overlay.toggle_filter_vf(filter_overlay._filter_vf_variant, progress)
+        filter_overlay._update_filter_intensity_bottom_label(filter_overlay._filter_vf_variant, progress)
+
+
+def set_auto_reveal(mode, variant=None, toggle=True):
+    """Select the auto-queued reveal round armed at the start of every theme.
+
+    ``mode``: None | 'reveal' | 'mute' | 'blind' | 'auto'; ``variant``: None
+    (random) or a peek variant key. With ``toggle=True`` (the desktop menu
+    default) re-selecting the currently active choice turns it off; with
+    ``toggle=False`` (e.g. the web host UI) the given value is set directly."""
+    if toggle and state.controls.auto_reveal_start == mode and state.controls.auto_reveal_variant == variant:
+        state.controls.auto_reveal_start = None
+        state.controls.auto_reveal_variant = None
+    else:
+        state.controls.auto_reveal_start = mode
+        state.controls.auto_reveal_variant = None if (not mode or mode in ("blind", "auto")) else variant
+
+
+def set_auto_reveal_seconds(seconds, toggle=True):
+    """Set the 'Reveal after X seconds' fade duration (0 = off/static). With
+    ``toggle=True`` (menu) re-selecting the active value turns it off; with
+    ``toggle=False`` (web) the value is set directly."""
+    state.controls.auto_reveal_seconds = 0 if (toggle and state.controls.auto_reveal_seconds == seconds) else seconds
+
+
+# Fallback popularity bands for 'auto' mode when no infinite difficulty_groups
+# are available. Popularity is a rank — lower = more popular = easier anime — so
+# easy themes get the toughest obfuscation and obscure ones the mildest,
+# balancing overall round difficulty. These match the app's default easy/medium
+# boundaries (INFINITE_SETTINGS_DEFAULT["difficulty_groups"] in infinite.py).
+AUTO_EASY_MAX_DEFAULT = 250       # <= this = easy (popular)        → Mute Reveal
+AUTO_MEDIUM_MAX_DEFAULT = 1000    # <= this = medium                → Blind
+                                  # above          = hard (obscure) → Reveal
+
+
+def _auto_reveal_bands():
+    """(easy_max, medium_max) popularity boundaries for 'auto' mode. Read from
+    the active playlist's infinite ``difficulty_groups`` so a customized infinite
+    playlist's bands are respected (``get_infinite_settings`` returns the
+    playlist's own settings or the global template); fall back to the defaults."""
+    try:
+        from _app_scripts.playlists import infinite
+        groups = infinite.get_infinite_settings().get("difficulty_groups", {})
+        easy_max = groups["easy"]["range"][1]
+        medium_max = groups["medium"]["range"][1]
+        if isinstance(easy_max, (int, float)) and isinstance(medium_max, (int, float)):
+            return easy_max, medium_max
+    except Exception:
+        pass
+    return AUTO_EASY_MAX_DEFAULT, AUTO_MEDIUM_MAX_DEFAULT
+
+
+def resolve_auto_reveal_mode(data):
+    """Map a theme's popularity to a round type for 'auto' mode: easy/popular →
+    'mute', medium → 'blind', hard/obscure (or unknown) → 'reveal'. Band
+    boundaries come from the active infinite playlist's difficulty_groups when
+    available (see :func:`_auto_reveal_bands`), else the app defaults."""
+    popularity = (data or {}).get("popularity")
+    if not isinstance(popularity, (int, float)):
+        popularity = 3000  # unknown popularity → treat as obscure/hard
+    easy_max, medium_max = _auto_reveal_bands()
+    if popularity <= easy_max:
+        return "mute"
+    if popularity <= medium_max:
+        return "blind"
+    return "reveal"
+
+
+def start_timed_reveal(seconds):
+    """Arm the timed fade for the reveal overlay just activated this round. The
+    fade origin is captured on the first tick so it tracks the new theme's
+    playback position rather than any stale reading from the previous round."""
+    _timed_reveal.update(active=bool(seconds), start=None, length=max(1, int(seconds)))
+
+
+def stop_timed_reveal():
+    """Disarm the timed fade. Called at every round start so a fade never leaks
+    into a later manual/instant reveal that didn't arm one."""
+    _timed_reveal["active"] = False
+
+
+def update_timed_reveal(time):
+    """Ticked ~20 Hz from the seek-bar loop. Fades the active reveal overlay off
+    over ``length`` seconds of playback, then tears the visuals down. No-op
+    unless a timed auto-reveal is armed and we're not inside a lightning round
+    (which drives its own reveal transition)."""
+    if not _timed_reveal["active"] or state.lightning.light_mode or not is_peek_active():
+        return
+    if _timed_reveal["start"] is None or time < _timed_reveal["start"]:
+        # Adopt the earliest observed position as the origin — robust to a stale
+        # first reading and to the user seeking backwards (which re-obscures).
+        _timed_reveal["start"] = time
+    progress = min(1.0, max(0.0, (time - _timed_reveal["start"]) / _timed_reveal["length"]))
+    render_reveal_progress(progress, full_reveal=True)
+    if progress >= 1.0:
+        _timed_reveal["active"] = False
+        destroy_peek()  # fully revealed — tear down the overlay and unmute (Mute Reveal rounds too)

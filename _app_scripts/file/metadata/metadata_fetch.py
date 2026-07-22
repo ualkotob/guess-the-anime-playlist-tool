@@ -8,7 +8,7 @@ guess_the_anime.py.  Nothing here reads or writes the main `metadata` /
 State owned by this module
 --------------------------
 animethemes_cache   – in-process cache keyed by filename slug
-last_jikan_error    – last error string from fetch_jikan_metadata (or None)
+last_tenrai_error    – last error string from fetch_tenrai_metadata (or None)
 _igdb_token_cache   – dict holding the cached Twitch/IGDB OAuth token
 _igdb_client_id     – IGDB credentials, injected via set_credentials()
 _igdb_client_secret
@@ -47,7 +47,10 @@ import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_
 
 animethemes_cache: dict = {}
 
-last_jikan_error = None
+last_tenrai_error = None
+_tenrai_request_lock = threading.Lock()
+_last_tenrai_request = 0.0
+_TENRAI_MIN_REQUEST_INTERVAL = 1 / 3  # Public tier: 3 requests/second.
 
 _igdb_token_cache: dict = {"token": None, "expires_at": 0}
 
@@ -128,35 +131,40 @@ def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
 
 
 # ---------------------------------------------------------------------------
-# Jikan (MyAnimeList)
+# Tenrai (MyAnimeList)
 # ---------------------------------------------------------------------------
 
-def fetch_jikan_metadata(mal_id):
-    global last_jikan_error
-    last_jikan_error = None
-    url = f"https://api.jikan.moe/v4/anime/{mal_id}/full"
+def fetch_tenrai_metadata(mal_id):
+    global last_tenrai_error, _last_tenrai_request
+    last_tenrai_error = None
+    url = f"https://api.tenrai.org/v1/anime/{mal_id}/full"
     try:
+        with _tenrai_request_lock:
+            wait_seconds = _TENRAI_MIN_REQUEST_INTERVAL - (time.monotonic() - _last_tenrai_request)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            _last_tenrai_request = time.monotonic()
         response = requests.get(url, timeout=12)
         if response.status_code == 200:
             data = response.json()
             if data.get("data"):
                 return data["data"]
-            last_jikan_error = f"Jikan returned 200 but no data payload for MAL {mal_id}"
+            last_tenrai_error = f"Tenrai returned 200 but no data payload for MAL {mal_id}"
             return None
 
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
-            last_jikan_error = f"Jikan rate-limited (429) for MAL {mal_id}" + (f", Retry-After={retry_after}s" if retry_after else "")
+            last_tenrai_error = f"Tenrai rate-limited (429) for MAL {mal_id}" + (f", Retry-After={retry_after}s" if retry_after else "")
         elif 500 <= response.status_code <= 599:
-            last_jikan_error = f"Jikan server error ({response.status_code}) for MAL {mal_id}"
+            last_tenrai_error = f"Tenrai server error ({response.status_code}) for MAL {mal_id}"
         else:
-            last_jikan_error = f"Jikan request failed ({response.status_code}) for MAL {mal_id}"
+            last_tenrai_error = f"Tenrai request failed ({response.status_code}) for MAL {mal_id}"
     except requests.exceptions.Timeout:
-        last_jikan_error = f"Jikan timeout for MAL {mal_id}"
+        last_tenrai_error = f"Tenrai timeout for MAL {mal_id}"
     except requests.exceptions.RequestException as e:
-        last_jikan_error = f"Jikan network error for MAL {mal_id}: {e}"
+        last_tenrai_error = f"Tenrai network error for MAL {mal_id}: {e}"
     except Exception as e:
-        last_jikan_error = f"Unexpected Jikan error for MAL {mal_id}: {e}"
+        last_tenrai_error = f"Unexpected Tenrai error for MAL {mal_id}: {e}"
 
     return None
 
@@ -904,7 +912,7 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     if anime_data and "-[ID]" not in filename and mal_id:
         if refresh and mal_id not in fetched_metadata and (refresh_all or (state.controls.auto_refresh_toggle and fetch)):
             fetched_metadata.add(mal_id)
-            refresh_jikan_data(mal_id, anime_data)
+            refresh_tenrai_data(mal_id, anime_data)
             if state.lightning.light_mode:
                 re_queue_lightning_mode = True
         if refresh and fetch and anidb_id and (anidb_id not in state.metadata.anidb_metadata or state.controls.auto_refresh_toggle) and not anidb_cooldown and (variety_round.variety_light_mode_enabled or state.lightning.light_mode in ['characters', 'tags', 'episodes', 'names'] or (state.lightning.light_mode and "c." in state.lightning.light_mode)):
@@ -1209,8 +1217,8 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                 if not anime_data:
                     anime_data = {
                         "title": "N/A", "synonyms": [], "series": [],
-                        "aired": "N/A", "season": "N/A", "score": "N/A",
-                        "rank": "N/A", "members": "N/A", "popularity": "N/A",
+                        "aired": "N/A", "season": "N/A", "score": None,
+                        "rank": None, "members": None, "popularity": None,
                         "type": "Game", "source": "N/A", "episodes": 1,
                         "studios": [], "genres": [], "themes": [], "demographics": [],
                         "platforms": [], "synopsis": "N/A", "cover": None, "trailer": None,
@@ -1442,29 +1450,29 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         
         # Cache invalidation now automatic via FileMetadataDict
         if refetch or not anime_data or not anime_data.get("title"):
-            jikan_data = fetch_jikan_metadata(mal_id)
-            if jikan_data:
+            tenrai_data = fetch_tenrai_metadata(mal_id)
+            if tenrai_data:
                 anime_data = {
-                    "title":jikan_data.get("title"),
-                    "eng_title":jikan_data.get("title_english", "N/A"),
-                    "synonyms":jikan_data.get("title_synonyms", []),
+                    "title":tenrai_data.get("title"),
+                    "eng_title":tenrai_data.get("title_english", "N/A"),
+                    "synonyms":tenrai_data.get("title_synonyms", []),
                     "series":get_name_list(anime_themes, "series"),
-                    "aired": jikan_data.get("aired", []).get("string"),
-                    "season":str(jikan_data.get("season") or "N/A") + " " + str(jikan_data.get("year") or "N/A"),
-                    "score":jikan_data.get("score", "N/A"),
-                    "rank":jikan_data.get("rank", "N/A"),
-                    "members":jikan_data.get("members", "N/A"),
-                    "popularity":jikan_data.get("popularity", "N/A"),
-                    "type":jikan_data.get("type", "N/A"),
-                    "source":jikan_data.get("source", "N/A"),
-                    "episodes":jikan_data.get("episodes", "N/A"),
-                    "studios":get_name_list(jikan_data, "studios"),
-                    "genres":get_name_list(jikan_data, "genres"),
-                    "themes":get_name_list(jikan_data, "themes"),
-                    "demographics":get_name_list(jikan_data, "demographics"),
-                    "synopsis":jikan_data.get('synopsis', "N/A"),
-                    "cover":jikan_data.get("images", {}).get("jpg", {}).get("large_image_url"),
-                    "trailer":youtube_control.extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
+                    "aired": tenrai_data.get("aired", []).get("string"),
+                    "season":str(tenrai_data.get("season") or "N/A") + " " + str(tenrai_data.get("year") or "N/A"),
+                    "score":tenrai_data.get("score"),
+                    "rank":tenrai_data.get("rank"),
+                    "members":tenrai_data.get("members"),
+                    "popularity":tenrai_data.get("popularity"),
+                    "type":tenrai_data.get("type", "N/A"),
+                    "source":tenrai_data.get("source", "N/A"),
+                    "episodes":tenrai_data.get("episodes", "N/A"),
+                    "studios":get_name_list(tenrai_data, "studios"),
+                    "genres":get_name_list(tenrai_data, "genres"),
+                    "themes":get_name_list(tenrai_data, "themes"),
+                    "demographics":get_name_list(tenrai_data, "demographics"),
+                    "synopsis":tenrai_data.get('synopsis', "N/A"),
+                    "cover":tenrai_data.get("images", {}).get("jpg", {}).get("large_image_url"),
+                    "trailer":youtube_control.extract_youtube_id_from_trailer(tenrai_data.get("trailer", {}))
                 }
                 if "N/A" in anime_data.get("season"):
                     if anime_themes.get("season"):
@@ -1486,10 +1494,10 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                         "series": get_name_list(anime_themes or {}, "series"),
                         "aired": "N/A",
                         "season": ((str((anime_themes or {}).get("season") or "N/A") + " " + str((anime_themes or {}).get("year") or "N/A")).strip()),
-                        "score": "N/A",
-                        "rank": "N/A",
-                        "members": "N/A",
-                        "popularity": "N/A",
+                        "score": None,
+                        "rank": None,
+                        "members": None,
+                        "popularity": None,
                         "type": (anime_themes or {}).get("media_format") or "N/A",
                         "source": "N/A",
                         "episodes": "N/A",
@@ -1504,8 +1512,8 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                     state.metadata.anime_metadata[mal_id] = anime_data
                     if anime_data.get("title") and mal_entry.get("name") in [None, "N/A", ""]:
                         mal_entry["name"] = anime_data.get("title")
-                _jikan_reason = f" ({last_jikan_error})" if last_jikan_error else ""
-                print(f" [META DBG] Jikan missing/unavailable for MAL {mal_id}{_jikan_reason}; using minimal AniThemes-derived metadata", end="")
+                _tenrai_reason = f" ({last_tenrai_error})" if last_tenrai_error else ""
+                print(f" [META DBG] Tenrai missing/unavailable for MAL {mal_id}{_tenrai_reason}; using minimal AniThemes-derived metadata", end="")
         anilist_fetched = False
         if not anilist_id and mal_id and (refetch or mal_id not in state.metadata.file_metadata or not state.metadata.file_metadata[mal_id].get("anilist")):
             # No AniList ID known yet — try to resolve it from the MAL ID
@@ -1752,36 +1760,36 @@ def get_filename_metadata(filename):
     return metadata
 
 
-def refresh_jikan_data(mal_id, data, label=""):
+def refresh_tenrai_data(mal_id, data, label=""):
     title = data.get('title', f"MAL ID: {mal_id}")
-    print(f"{label}Refreshing Jikan data for {title}...", end="", flush=True)
+    print(f"{label}Refreshing Tenrai data for {title}...", end="", flush=True)
     
-    jikan_data = fetch_jikan_metadata(mal_id)
-    if jikan_data:
-        data["title"] = jikan_data.get("title", "N/A")
-        data["eng_title"] = jikan_data.get("title_english", "N/A")
-        data["synonyms"] = jikan_data.get("title_synonyms", [])
-        data["aired"] = jikan_data.get("aired", []).get("string")
-        data["score"] = jikan_data.get("score", "N/A")
-        data["rank"] = jikan_data.get("rank", "N/A")
-        data["members"] = jikan_data.get("members", "N/A")
-        data["popularity"] = jikan_data.get("popularity", "N/A")
-        data["type"] = jikan_data.get("type", "N/A")
-        data["source"] = jikan_data.get("source", "N/A")
-        data["episodes"] = jikan_data.get("episodes", "N/A")
-        data["studios"] = get_name_list(jikan_data, "studios")
-        data["genres"] = get_name_list(jikan_data, "genres")
-        data["themes"] = get_name_list(jikan_data, "themes")
-        data["demographics"] = get_name_list(jikan_data, "demographics")
-        data["synopsis"] = jikan_data.get("synopsis", "N/A")
-        data["cover"] = jikan_data.get("images", {}).get("jpg", {}).get("large_image_url")
-        data["trailer"] = youtube_control.extract_youtube_id_from_trailer(jikan_data.get("trailer", {}))
+    tenrai_data = fetch_tenrai_metadata(mal_id)
+    if tenrai_data:
+        data["title"] = tenrai_data.get("title", "N/A")
+        data["eng_title"] = tenrai_data.get("title_english", "N/A")
+        data["synonyms"] = tenrai_data.get("title_synonyms", [])
+        data["aired"] = tenrai_data.get("aired", []).get("string")
+        data["score"] = tenrai_data.get("score")
+        data["rank"] = tenrai_data.get("rank")
+        data["members"] = tenrai_data.get("members")
+        data["popularity"] = tenrai_data.get("popularity")
+        data["type"] = tenrai_data.get("type", "N/A")
+        data["source"] = tenrai_data.get("source", "N/A")
+        data["episodes"] = tenrai_data.get("episodes", "N/A")
+        data["studios"] = get_name_list(tenrai_data, "studios")
+        data["genres"] = get_name_list(tenrai_data, "genres")
+        data["themes"] = get_name_list(tenrai_data, "themes")
+        data["demographics"] = get_name_list(tenrai_data, "demographics")
+        data["synopsis"] = tenrai_data.get("synopsis", "N/A")
+        data["cover"] = tenrai_data.get("images", {}).get("jpg", {}).get("large_image_url")
+        data["trailer"] = youtube_control.extract_youtube_id_from_trailer(tenrai_data.get("trailer", {}))
         
         metadata_io.save_metadata()
-        print(f"\r{label}Refreshing Jikan data for {data['title']}...COMPLETE")
+        print(f"\r{label}Refreshing Tenrai data for {data['title']}...COMPLETE")
     else:
-        _reason = f" ({last_jikan_error})" if last_jikan_error else ""
-        print(f"\r{label}Refreshing Jikan data for {title}...FAILED{_reason}")
+        _reason = f" ({last_tenrai_error})" if last_tenrai_error else ""
+        print(f"\r{label}Refreshing Tenrai data for {title}...FAILED{_reason}")
 
 
 def refresh_anidb_data(anidb_id, data, label=""):
@@ -1862,7 +1870,7 @@ def fetch_all_metadata(delay=0):
         total_missing = 0
         save_new_theme = False
 
-        refresh_jikan = []
+        refresh_tenrai = []
         refresh_anidb = []
         refresh_anilist = []
         fetch_data = []
@@ -1877,9 +1885,9 @@ def fetch_all_metadata(delay=0):
                 
                 if mal_id in state.metadata.anime_metadata:
                     if not state.metadata.anime_metadata.get(mal_id, {}).get("title"):
-                        jikan_append = [mal_id, state.metadata.anime_metadata.get(mal_id)]
-                        if jikan_append not in refresh_jikan:
-                            refresh_jikan.append(jikan_append)
+                        tenrai_append = [mal_id, state.metadata.anime_metadata.get(mal_id)]
+                        if tenrai_append not in refresh_tenrai:
+                            refresh_tenrai.append(tenrai_append)
                             total_missing += 1
                 
                 if anilist_id and str(anilist_id) not in state.metadata.anilist_metadata:
@@ -1953,9 +1961,9 @@ def fetch_all_metadata(delay=0):
                     print(e)
                     time.sleep(3)  # Delay to avoid API rate limits
                     total_skipped += 1
-            for file_refresh in refresh_jikan:
+            for file_refresh in refresh_tenrai:
                 try:
-                    refresh_jikan_data(file_refresh[0], file_refresh[1], label=f"[{total_fetched+1}/{total_missing}]")
+                    refresh_tenrai_data(file_refresh[0], file_refresh[1], label=f"[{total_fetched+1}/{total_missing}]")
                     total_fetched += 1
                 except Exception as e:
                     print(e)
@@ -2102,8 +2110,8 @@ def refresh_all_anilist_metadata(delay=2):
 
 
 def refresh_all_metadata(delay=1):
-    """Refreshes all jikan metadata for files in the directory, spacing out API calls."""
-    confirm = messagebox.askyesno("Refresh All Jikan Metadata", "Are you sure you want to refresh all jikan metadata for files in your directory?")
+    """Refreshes all tenrai metadata for files in the directory, spacing out API calls."""
+    confirm = messagebox.askyesno("Refresh All Tenrai Metadata", "Are you sure you want to refresh all tenrai metadata for files in your directory?")
     if not confirm:
         return  # User canceled
     
@@ -2171,7 +2179,7 @@ def refresh_all_metadata(delay=1):
         
         for mal_id, data in entries_to_refresh:
             try:
-                refresh_jikan_data(mal_id, data, label=f"[{total_refreshed + 1}/{total_to_refresh}]")
+                refresh_tenrai_data(mal_id, data, label=f"[{total_refreshed + 1}/{total_to_refresh}]")
                 total_refreshed += 1
                 # time.sleep(delay)  # Delay to avoid API rate limits
             except Exception as e:

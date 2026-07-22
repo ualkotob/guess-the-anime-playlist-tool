@@ -102,12 +102,17 @@ def get_series_popularity(data):
         _series_popularity_cache = {}
         for anime in state.metadata.anime_metadata.values():
             pop = anime.get("popularity") or 10000
+            if not isinstance(pop, (int, float)):
+                pop = 10000  # placeholder values like "N/A"
             for s in metadata_display.series_list(anime, fallback_title=False):
                 if s not in _series_popularity_cache or pop < _series_popularity_cache[s]:
                     _series_popularity_cache[s] = pop
 
     pops = [_series_popularity_cache[s] for s in metadata_display.series_list(data, fallback_title=False) if s in _series_popularity_cache]
-    return min(pops) if pops else (data.get("popularity") or 10000)
+    fallback = data.get("popularity") or 10000
+    if not isinstance(fallback, (int, float)):
+        fallback = 10000
+    return min(pops) if pops else fallback
 
 
 # ---------------------------------------------------------------------------

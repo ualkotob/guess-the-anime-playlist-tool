@@ -61,6 +61,15 @@ _progress_fill_strip = None  # (bar_inner_h, 1, 4) uint8 premult BGRA — shaded
 # ── Bar shading style: 1=glossy pill  2=tubular/center-lit  3=inner bevel  4=soft gradient  5=two-tone ──
 _PROGRESS_BAR_SHADE_STYLE = 4
 
+# Animation-tick period (ms) for the blind/OST progress overlay. Each tick
+# rebuilds the box-sized BGRA sub-image and pushes it with a *synchronous*
+# mpv overlay_add; on a 2560×1440 OSD that's a ~5MB upload, so at the old
+# 50ms (20Hz) it ran ~100MB/s on the Tk thread and made the window drag janky
+# while a blind round played. 80ms (12.5Hz) keeps the slow bar + pulse smooth
+# enough while cutting that load ~37%. (The fuller fix is to upload only the
+# small dynamic bar/icon region instead of the whole box.)
+_PROGRESS_ANIM_MS = 20
+
 
 def _get_fixed_playlist_progress(current_round_elapsed_secs):
     """Return (elapsed*100, total*100) across the whole fixed playlist, or None if not active.
@@ -500,12 +509,12 @@ def _progress_overlay_tick(_gen=None):
     if not player.is_playing():
         root.after(500, _progress_overlay_tick, _gen)   # check again later when paused
         return
-    _progress_pulse_step += 0.55
+    _progress_pulse_step += 0.55 * (_PROGRESS_ANIM_MS / 50.0)   # keep pulse speed constant across tick rates
     _redraw_progress_overlay()
-    root.after(50, _progress_overlay_tick, _gen)
+    root.after(_PROGRESS_ANIM_MS, _progress_overlay_tick, _gen)
 
 
-def set_progress_overlay(current_time=None, total_length=None, destroy=False):
+def set_progress_overlay(current_time=None, total_length=None, destroy=False, redraw=False):
     global progress_overlay, light_progress_bar, music_icon_label, progress_bar_ready
     global _progress_img_overlay, _progress_bar_color, _progress_icon_color, _progress_music_icon
     global _progress_pulse_step, _progress_last_time, _progress_last_total, _progress_tick_gen
@@ -549,6 +558,9 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
     if total_length is not None:
         _progress_last_total = total_length
 
+    if redraw and progress_overlay is not None:
+        _redraw_progress_overlay()
+
     if progress_overlay is None:
         # First call: pick random colours and icon, create OSD, start animation loop
         _progress_bar_color  = (random.randint(0, 200), random.randint(0, 200), random.randint(0, 200))
@@ -576,11 +588,11 @@ def set_progress_overlay(current_time=None, total_length=None, destroy=False):
             _osd_w, _osd_h = 0, 0
         if _osd_w and _osd_h:
             _rebuild_progress_bg_layer(_osd_w, _osd_h)
-        # Draw one frame immediately, then start the 50 ms animation loop
+        # Draw one frame immediately, then start the animation loop
         _progress_tick_gen += 1
         _redraw_progress_overlay()
         root = state.widgets.root
-        root.after(50, _progress_overlay_tick, _progress_tick_gen)
+        root.after(_PROGRESS_ANIM_MS, _progress_overlay_tick, _progress_tick_gen)
 
 def pulsate_music_icon(label, sizes=None, _step=None, _font="Arial", _interval=50):
     global pulse_step

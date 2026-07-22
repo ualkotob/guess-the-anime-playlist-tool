@@ -20,9 +20,18 @@ def osd_command(*args):
 
     Shared by every OSD overlay module; reads the live player from
     ``state.widgets`` so callers need no injection.
+
+    Uses command_async so the calling (Tk) thread never waits on the mpv
+    core — the peek/slice overlay issues one of these per 50ms tick, and a
+    synchronous command blocks for the duration of any core stall
+    (seek/load/buffering). mpv still executes async commands in send order.
     """
     try:
-        state.widgets.player._p.command(*args)
+        p = state.widgets.player._p
+        try:
+            p.command_async(*args)
+        except AttributeError:
+            p.command(*args)
     except Exception:
         pass
 

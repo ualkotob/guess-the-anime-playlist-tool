@@ -330,6 +330,8 @@ def get_pop_time_groups(refetch=False):
                 p = variety_round.get_series_popularity(d)
             else:
                 p = d.get("popularity") or INT_INF
+            if not isinstance(p, (int, float)):
+                p = INT_INF  # placeholder values like "N/A" — treat as unranked
             mal = d.get("mal")
             placed = False
 
@@ -338,7 +340,10 @@ def get_pop_time_groups(refetch=False):
                 if dg_range[0] <= p <= dg_range[1]:
                     boost = 0
                     if mal not in shows_files_map:
-                        boost += (max(0, (d.get("score", 0) or 0) - score_boost_min) % 0.5) * score_boost_mult
+                        score = d.get("score", 0) or 0
+                        if not isinstance(score, (int, float)):
+                            score = 0  # placeholder values like "N/A"
+                        boost += (max(0, score - score_boost_min) % 0.5) * score_boost_mult
                         boost += season_boost_map.get(d.get("season", "Fall 2000"), 1)
                         if mal in mal_last_index:
                             distance_from_end = history_len - 1 - mal_last_index[mal]

@@ -8,8 +8,10 @@ import copy
 import os
 import json
 import threading
+import time
 from datetime import datetime
 
+from core.app_logging import get_logger
 from core.game_state import state
 import _app_scripts.file.web_server.web_server as web_server
 import _app_scripts.file.web_server.web_search as web_search
@@ -146,7 +148,16 @@ def wire_web_server():
 
 def _handle_host_action(action: str, data: dict):
     """Dispatch remote control commands from the web host controller."""
+    _received = time.monotonic()
+
     def _dispatch():
+        # Measure how long this command sat in Tk's queue waiting for the main
+        # loop — that wait IS the host-side portion of perceived control lag
+        # (network transit excluded). Logged so laggy sessions are diagnosable.
+        _waited = time.monotonic() - _received
+        if _waited >= 0.15:
+            get_logger().warning(
+                "web control '%s' waited %.2fs for the main loop", action, _waited)
 
         def _get_web_playlist_source():
             if state.lightning.fixed_lightning_round_playlist_data and state.lightning.fixed_lightning_round_playlist_data.get("rounds"):
@@ -196,6 +207,20 @@ def _handle_host_action(action: str, data: dict):
                 peek_dispatch._queued_peek_variant[0] = variant
             else:
                 peek_dispatch._queued_peek_variant[0] = None
+            bonus_answers._push_web_toggles()
+        elif action == 'set_auto_reveal':
+            # Full "Auto Queue at Start" selection from the web host modal (direct set, no toggle).
+            mode = str(data.get('mode', '')).strip() or None
+            if mode not in ('auto', 'blind', 'reveal', 'mute'):
+                mode = None
+            variant = str(data.get('variant', '')).strip() or None
+            if variant not in peek_dispatch._PEEK_VARIANT_LABELS:
+                variant = None
+            peek_dispatch.set_auto_reveal(mode, variant, toggle=False)
+            bonus_answers._push_web_toggles()
+        elif action == 'set_auto_reveal_seconds':
+            seconds = max(0, int(data.get('seconds', 0) or 0))
+            peek_dispatch.set_auto_reveal_seconds(seconds, toggle=False)
             bonus_answers._push_web_toggles()
         elif action in ('stop_queues', 'stop_lightning'):
             transport.stop_all_queues()
@@ -830,6 +855,22 @@ def _handle_host_action(action: str, data: dict):
                         json.dump(sb_cfg, cf, indent=2, ensure_ascii=False)
                 except Exception as e:
                     print(f"Error saving sc_set_prefs: {e}")
+        elif action == 'sc_set_sort':
+            cfg_path = os.path.join('scoreboard_data', 'scoreboard_config.json')
+            mode = str(data.get('player_sort', 'added'))
+            if mode not in ('added', 'points', 'az'):
+                mode = 'added'
+            if os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, 'r', encoding='utf-8') as cf:
+                        sb_cfg = json.load(cf)
+                    sb_cfg.setdefault('style', {})
+                    sb_cfg['style'].setdefault('player_sort', {'selected': 'points'})
+                    sb_cfg['style']['player_sort']['selected'] = mode
+                    with open(cfg_path, 'w', encoding='utf-8') as cf:
+                        json.dump(sb_cfg, cf, indent=2, ensure_ascii=False)
+                except Exception as e:
+                    print(f"Error saving sc_set_sort: {e}")
         elif action == 'scores_clear_all':
             scoreboard_control.send_command("[CLEAR_ALL]")
             try:

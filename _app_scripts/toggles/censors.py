@@ -1,9 +1,11 @@
-"""Censor boxes — OSD rendering, file loading, editor UI."""
+"""Censor boxes â€” OSD rendering, file loading, editor UI."""
 
 import os
 import json
 import copy
 import random as _random
+import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 from PIL import ImageColor
@@ -34,7 +36,7 @@ import _app_scripts.file.tooltip as tooltip
 # ---------------------------------------------------------------------------
 
 # Censor JSON file / folder come from core.paths (imported above). The OSD slot
-# IDs (100-139, for up to 40 boxes — mpv renders lower IDs on top, so these sit
+# IDs (100-139, for up to 40 boxes â€” mpv renders lower IDs on top, so these sit
 # behind peek/grow/edge 50-59) and the background colour are module-owned.
 _CENSOR_ASS_OSD_IDS = list(range(100, 140))
 _BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
@@ -45,14 +47,14 @@ _BACKGROUND_COLOR = state.colors.BACKGROUND_COLOR
 # ---------------------------------------------------------------------------
 censor_list = {}
 other_censor_lists = []
-_youtube_censor_list    = {}   # {filename: [censor, ...]} — populated at YouTube play time
+_youtube_censor_list    = {}   # {filename: [censor, ...]} â€” populated at YouTube play time
 censors_enabled = True
 censors_nsfw_enabled = True
 
 censor_boxes = {}
 _censor_osd = None       # unused; kept so any stale references don't NameError
 _censor_osd_img = None   # unused; kept so any stale references don't NameError
-_censor_osd_last_size = (0, 0)  # (osd_w, osd_h) at last commit — redraw on resize
+_censor_osd_last_size = (0, 0)  # (osd_w, osd_h) at last commit â€” redraw on resize
 
 mute_censor_used = False
 
@@ -72,7 +74,7 @@ def _osd_command(*args):
 
 
 def _commit_censor_osd():
-    """Draw censor boxes via ASS osd-overlay (IDs 100–139), one slot per box."""
+    """Draw censor boxes via ASS osd-overlay (IDs 100â€“139), one slot per box."""
     global _censor_osd_last_size
     # Lazy import: blind_screen imports censors, so a module-level import would cycle.
     import _app_scripts.playback.blind_screen as blind_screen
@@ -317,15 +319,21 @@ def load_censors():
 
 
 def _prime_start_censors(filename):
-    """Immediately activate any censors whose start==0 for the incoming file."""
+    """Activate visual censors covering the incoming file's effective start."""
     if (not censors_enabled and not censors_nsfw_enabled) or mismatch_round.mismatch_visuals or streaming.currently_streaming:
         return
     file_censors = get_file_censors(filename)
     if not file_censors:
         return
+    playback_start = get_start_skip_end(filename) or 0
     _osd_dirty = False
     for censor in file_censors:
-        if censor.get('start', 1) != 0:
+        try:
+            censor_start = float(censor.get('start', 0))
+            censor_end = float(censor.get('end', 0))
+        except (TypeError, ValueError):
+            continue
+        if censor_start > playback_start or censor_end < playback_start:
             continue
         if censor.get('mute') or censor.get('skip'):
             continue
@@ -413,6 +421,30 @@ def get_file_censors(filename):
         else:
             return file_censors
     return []
+def get_start_skip_end(filename):
+    """Return the end of an enabled skip censor that begins at time zero.
+
+    This lets mpv start decoding at that point instead of briefly displaying
+    the opening frame before the normal polling-based skip can run.
+    """
+    if (not censors_enabled and not censors_nsfw_enabled) or mismatch_round.mismatch_visuals or streaming.currently_streaming:
+        return None
+
+    skip_end = None
+    for censor in get_file_censors(filename) or []:
+        if not censor.get("skip") or censor.get("start", 0) != 0:
+            continue
+        if censor.get("nsfw") and not censors_nsfw_enabled:
+            continue
+        if not censor.get("nsfw") and not censors_enabled:
+            continue
+        try:
+            end = float(censor.get("end", 0))
+        except (TypeError, ValueError):
+            continue
+        if end > 0:
+            skip_end = max(skip_end or 0, end)
+    return skip_end
 
 
 def show_censor(censor, check_title=True):
@@ -468,13 +500,16 @@ def check_file_censors(filename, time, check_title=True):
                     if censor_entry is not None:
                         _censor_color = censor.get("color") or _image_color
                         if not _censor_color:
-                            _image_color = get_image_color()
+                            # Non-blocking: latest colour from the background
+                            # sampler; black only until the first sample lands.
+                            _image_color = _get_dynamic_censor_color()
                             _censor_color = _image_color or "black"
                         try:
-                            _cur_osd_size = (int(state.widgets.player._p.osd_width or 0), int(state.widgets.player._p.osd_height or 0))
+                            _cur_osd_size = state.widgets.player.get_osd_size()
                         except Exception:
                             _cur_osd_size = (0, 0)
-                        if censor_entry.get("color") != _censor_color or not censor_entry.get("committed") or _cur_osd_size != _censor_osd_last_size:
+                        if (not _colors_close(censor_entry.get("color"), _censor_color)
+                                or not censor_entry.get("committed") or _cur_osd_size != _censor_osd_last_size):
                             censor_entry["color"] = _censor_color
                             _osd_dirty = True
                 else:
@@ -511,20 +546,22 @@ def get_random_blind_color():
     return f"#{_random.randint(0, 0xFFFFFF):06x}"
 
 
-def get_image_color():
-    """Return the average colour of the current mpv video frame as a hex string.
-    Areas covered by active censor boxes are excluded from the average.
-    Falls back to a random color if no video frame is available.
+def _compute_frame_color():
+    """Sample the current mpv video frame and return its average colour as a
+    hex string, or None if no frame is available.
+
+    Areas covered by active censor boxes are excluded from the average. The
+    frame is subsampled (every 8th pixel per axis) -- statistically identical
+    for an average colour, at 1/64th of the numpy cost.
     """
-    fallback_color = get_random_blind_color()
     try:
         try:
             img = state.widgets.player._p.screenshot_raw()
         except Exception:
-            return fallback_color
+            return None
         if img is None:
-            return get_random_blind_color()
-        arr = np.array(img.convert('RGB'))
+            return None
+        arr = np.array(img.convert('RGB'))[::8, ::8]
         ih, iw = arr.shape[0], arr.shape[1]
         mask = np.ones((ih, iw), dtype=bool)
         active_censors = [d["censor"] for d in censor_boxes.values() if not d.get("destroying")]
@@ -538,16 +575,80 @@ def get_image_color():
             mask[cy:cy + ch, cx:cx + cw] = False
         pixels = arr[mask]
         if len(pixels) == 0:
-            # Censors cover the entire frame — sample the full frame instead
+            # Censors cover the entire frame â€” sample the full frame instead
             pixels = arr.reshape(-1, 3)
         l = len(pixels)
         if l == 0:
-            return get_random_blind_color()
+            return None
         r, g, b = (int(pixels[:, i].sum() / l) for i in range(3))
         return rgbtohex(r, g, b)
     except Exception as e:
         print(f"get_image_color error: {e}")
-        return get_random_blind_color()
+        return None
+
+
+def get_image_color():
+    """Return the average colour of the current mpv video frame as a hex string.
+    Areas covered by active censor boxes are excluded from the average.
+    Falls back to a random color if no video frame is available.
+
+    Synchronous -- blocks on an mpv frame render. Fine for per-round events
+    (blind-screen colour); the per-tick censor path must use
+    _get_dynamic_censor_color() instead.
+    """
+    return _compute_frame_color() or get_random_blind_color()
+
+
+# ---------------------------------------------------------------------------
+# Async dynamic-censor colour sampling
+# ---------------------------------------------------------------------------
+# Colourless ("dynamic") censors adapt their colour to the video around them.
+# Sampling was previously inline in the 50ms censor tick: a synchronous
+# full-frame screenshot_raw() + full-frame average, 20x/second on the Tk main
+# thread for as long as a censor was on screen -- the dominant cause of
+# session-long UI/buzzer lag during censored segments. The tick loop now reads
+# the latest colour published by a short-lived worker thread that samples at
+# most once per _DYN_COLOR_INTERVAL; screenshot_raw releases the GIL during
+# the render, so sampling no longer touches the main thread.
+_DYN_COLOR_INTERVAL = 0.3   # seconds between samples (~3Hz colour adaptation)
+_dyn_color_latest = None    # last sampled hex colour; None before first sample
+_dyn_color_worker_running = False
+_dyn_color_last_sample = 0.0
+
+
+def _dyn_color_worker():
+    global _dyn_color_latest, _dyn_color_worker_running, _dyn_color_last_sample
+    try:
+        color = _compute_frame_color()
+        if color:
+            _dyn_color_latest = color
+    finally:
+        _dyn_color_last_sample = time.monotonic()
+        _dyn_color_worker_running = False
+
+
+def _get_dynamic_censor_color():
+    """Non-blocking: return the latest sampled frame colour (None until the
+    first sample lands) and keep the background sampler alive while called.
+    Only invoked from the Tk thread, so the running-flag check cannot race."""
+    global _dyn_color_worker_running
+    if not _dyn_color_worker_running and (time.monotonic() - _dyn_color_last_sample) >= _DYN_COLOR_INTERVAL:
+        _dyn_color_worker_running = True
+        threading.Thread(target=_dyn_color_worker, daemon=True, name="censor-color-sampler").start()
+    return _dyn_color_latest
+
+
+def _colors_close(hex_a, hex_b, threshold=24):
+    """True when two '#rrggbb' colours differ by less than *threshold* summed
+    across channels -- used to skip OSD redraws for imperceptible drift."""
+    if hex_a == hex_b:
+        return True
+    try:
+        ra, ga, ba = int(hex_a[1:3], 16), int(hex_a[3:5], 16), int(hex_a[5:7], 16)
+        rb, gb, bb = int(hex_b[1:3], 16), int(hex_b[3:5], 16), int(hex_b[5:7], 16)
+    except (TypeError, ValueError, IndexError):
+        return False
+    return (abs(ra - rb) + abs(ga - gb) + abs(ba - bb)) < threshold
 
 
 def rgbtohex(r, g, b):
@@ -571,7 +672,12 @@ def on_play_starting():
 
 def reset_for_new_file(filename):
     """Clear censor overlays and prime start-censors for *filename*. Call after player.set_media()."""
+    global _dyn_color_latest, _dyn_color_last_sample
     remove_all_censor_boxes()
+    # Drop the previous file's sampled colour and let the next dynamic censor
+    # kick a fresh sample immediately instead of waiting out the interval.
+    _dyn_color_latest = None
+    _dyn_color_last_sample = 0.0
     if filename:
         _prime_start_censors(filename)
 

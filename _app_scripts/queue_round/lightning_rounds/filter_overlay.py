@@ -15,6 +15,8 @@ underlying objects without needing module qualification.
 """
 from __future__ import annotations
 
+import math
+
 from core.game_state import state
 from _app_scripts.playback import osd_text
 
@@ -51,18 +53,40 @@ def get_filter_state():
 
 
 def _filter_intensity_label(variant, progress):
-    """Return a human-readable intensity label for the current filter peek variant."""
-    intensity = round((1.0 - progress) * 100)
+    """Return a human-readable intensity label for the current filter peek variant.
+
+    The label reflects the effect's *actual* magnitude, not a linear countdown
+    of ``progress``. The effect curves in ``toggle_filter_vf`` are unchanged;
+    only the number shown here is remapped so it matches what's on screen:
+
+    * ZOOM shows its true magnification factor (15.0x -> 1.0x) instead of a %.
+    * BLUR / PIXELIZE keep the %, but scale it by the log of the raw
+      radius / divisor. Those parameters move linearly, yet perceptually the
+      image stays obscured until the last few steps (e.g. a pixel divisor of
+      40 still looks as blocky as 80). The log makes "50%" look roughly
+      half-revealed instead of tracking the raw parameter.
+
+    The raw-value formulas below mirror ``toggle_filter_vf`` — keep them in sync
+    if the curves there change.
+    """
+    obscurity = 1.0 - progress  # 1.0 at round start (max effect) -> 0.0 at end
+    if variant == 'zoom':
+        z = 1 + 14 * obscurity                      # matches zoom curve
+        return f"ZOOM: {z:.1f}x"
     if variant == 'blur':
-        return f"BLUR: {intensity}%"
-    elif variant == 'outline':
+        radius = max(1, round(200 * obscurity))     # matches blur curve
+        pct = round(math.log(radius) / math.log(200) * 100) if radius > 1 else 0
+        return f"BLUR: {pct}%"
+    if variant == 'pixelize':
+        divisor = max(1, round(80 * obscurity))     # matches pixelize curve
+        pct = round(math.log(divisor) / math.log(80) * 100) if divisor > 1 else 0
+        return f"PIXELIZE: {pct}%"
+    # outline / wave keep the plain linear countdown
+    intensity = round(obscurity * 100)
+    if variant == 'outline':
         return f"OUTLINE: {intensity}%"
-    elif variant == 'pixelize':
-        return f"PIXELIZE: {intensity}%"
-    elif variant == 'wave':
+    if variant == 'wave':
         return f"WAVE: {intensity}%"
-    elif variant == 'zoom':
-        return f"ZOOM: {intensity}%"
     return variant.upper()
 
 

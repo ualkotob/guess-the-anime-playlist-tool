@@ -83,6 +83,11 @@ SETTINGS_SCHEMA = [
     {"key": "auto_fetch_missing",    "config_key": "auto_fetch_missing",    "label": "Auto Fetch Missing:",       "type": "bool", "default": False, "state": "config", "tooltip": "Automatically fetches metadata if it's not found while playing themes."},
     {"key": "special_round_warning", "config_key": "special_round_warning", "label": "Special Round Warning:",   "type": "bool", "default": True,  "state": "config", "tooltip": "Shows a warning before special rounds begin."},
     {"key": "special_round_playlist","config_key": "special_round_playlist","label": "Special Round Playlist:",  "type": "bool", "default": True,  "state": "config", "tooltip": "Auto-queue special rounds based on system playlist marks."},
+    # Startup checks — gate the three on-launch "is something newer available?" prompts.
+    # group="startup_group" entries render together as one row of checkboxes in the popup.
+    {"key": "startup_check_updates",  "config_key": "startup_check_updates",  "label": "Startup Checks:", "short_label": "Updates",  "type": "bool", "default": True, "group": "startup_group", "state": "config", "tooltip": "On startup, check GitHub for a newer version of the app and prompt if one is available."},
+    {"key": "startup_check_metadata", "config_key": "startup_check_metadata", "label": None,              "short_label": "Metadata", "type": "bool", "default": True, "group": "startup_group", "state": "config", "tooltip": "On startup, check for a newer metadata package and prompt to import it."},
+    {"key": "startup_check_censors",  "config_key": "startup_check_censors",  "label": None,              "short_label": "Censors",  "type": "bool", "default": True, "group": "startup_group", "state": "config", "tooltip": "On startup, check for newer censors and prompt to import them."},
     # Rules file — special rendering: folder-scanned dropdown
     {"key": "selected_rules_file", "config_key": "selected_rules_file", "state": "config", "label": "Rules File:",              "type": "rules_file", "default": "", "tooltip": "Select which rules file to use for the scoreboard. Files must end with 'rules.json'."},
     # API keys — password type (masked entry)

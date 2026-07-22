@@ -244,7 +244,45 @@ def open_youtube_editor():
 
             btn_ref = [None]
 
-            def open_actions_menu(event, vid=video_id, vid_data=video, dl=is_downloaded, sv=start_var, ev=end_var, tv=title_var, bref=btn_ref):
+            def delete_file_this(vid=video_id):
+                """Delete the downloaded media without removing its saved entry."""
+                video = youtube_metadata["videos"].get(vid)
+                if not video:
+                    return
+                fpath = os.path.join(youtube_control.YOUTUBE_FOLDER, video.get("filename", ""))
+                if not os.path.exists(fpath):
+                    messagebox.showinfo("File Not Found", "This video's entry is already stream-only.", parent=youtube_editor_window)
+                    return
+                size_mb = os.path.getsize(fpath) / (1024 * 1024)
+                if messagebox.askyesno(
+                    "Delete Downloaded File",
+                    f"Delete the local file for {vid} ({size_mb:.1f} MB)?\n\nThe video entry and its settings will be kept.",
+                    parent=youtube_editor_window,
+                ):
+                    try:
+                        os.remove(fpath)
+                    except OSError as exc:
+                        messagebox.showerror("Delete Failed", f"Could not delete the file:\n{exc}", parent=youtube_editor_window)
+                        return
+                    youtube_editor_window.after(0, refresh_ui)
+
+            def redownload_this(vid=video_id, bref=btn_ref):
+                """Replace the local file without changing the saved entry."""
+                video = youtube_metadata["videos"].get(vid)
+                if not video:
+                    return
+                fpath = os.path.join(youtube_control.YOUTUBE_FOLDER, video.get("filename", ""))
+                if os.path.exists(fpath) and not messagebox.askyesno(
+                    "Re-download Video",
+                    "Replace the existing local file?\n\nThe video entry and its settings will be kept.",
+                    parent=youtube_editor_window,
+                ):
+                    return
+                youtube_control.download_youtube_video(vid, bref[0], refresh_ui, force=True)
+
+            def open_actions_menu(event, vid=video_id, vid_data=video, dl=is_downloaded, sv=start_var, ev=end_var, tv=title_var, bref=btn_ref,
+                                  archive_handler=archive_this, redownload_handler=redownload_this,
+                                  delete_file_handler=delete_file_this, delete_handler=delete_this):
                 url = f"https://www.youtube.com/watch?v={vid}"
                 menu = tk.Menu(youtube_editor_window, tearoff=0, bg="#222", fg="white",
                                activebackground="#444", activeforeground="white", bd=0,
@@ -271,8 +309,10 @@ def open_youtube_editor():
                 menu.add_command(label="🚫  Edit Censors", command=_open_yt_censor_editor)
                 menu.add_separator()
                 if dl:
-                    menu.add_command(label="📦  Archive", command=lambda: archive_this(vid))
-                menu.add_command(label="❌  Delete", foreground="#f77", command=lambda: delete_this(vid))
+                    menu.add_command(label="📦  Archive", command=archive_handler)
+                    menu.add_command(label="🔄  Re-download", command=redownload_handler)
+                    menu.add_command(label="🗑  Delete File", foreground="#f77", command=delete_file_handler)
+                menu.add_command(label="❌  Delete", foreground="#f77", command=delete_handler)
                 menu.post(event.x_root, event.y_root)
 
             btn_color = "#1a5c1a" if is_downloaded else "#1a3a5c"

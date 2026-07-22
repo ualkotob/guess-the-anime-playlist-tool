@@ -108,6 +108,38 @@ def get_cached_file_path(filename):
     if os.path.exists(cache_path):
         return cache_path
     return None
+def _metadata_year_season(data):
+    """Return (year, season) when metadata has a usable season value."""
+    season_str = (data or {}).get("season", "")
+    parts = season_str.split()
+    if len(parts) >= 2 and all(parts[:2]) and parts[0] != "N/A" and parts[1] != "N/A":
+        return parts[1], parts[0]
+    return None
+
+
+def _get_download_metadata(filename, wait_seconds=20):
+    """Wait for an in-flight fetch, then fetch missing metadata if needed."""
+    deadline = time.monotonic() + wait_seconds
+    while metadata_fetch.fetching_metadata.get(filename) and time.monotonic() < deadline:
+        time.sleep(0.1)
+
+    data = metadata_fetch.get_metadata(filename)
+    if _metadata_year_season(data):
+        return data
+    return metadata_fetch.get_metadata(filename, fetch=True)
+
+
+def _resolve_download_destination(filename):
+    """Choose a metadata-backed destination, or stage safely in the cache."""
+    year_season = _metadata_year_season(_get_download_metadata(filename))
+    directory = state.config.directory
+    if year_season and state.config.auto_download_themes and directory:
+        year, season = year_season
+        return os.path.join(directory, year, season, filename), None, True
+
+    # Do not create Unknown\Unknown folders when metadata is delayed or unavailable.
+    rel_path = os.path.join("_pending_metadata", filename)
+    return os.path.join(THEMES_CACHE_FOLDER, rel_path), rel_path, False
 
 
 def update_cache_play_count(filename):
@@ -285,8 +317,17 @@ def create_download_popup(filename):
 
     popup.update_idletasks()
     width, height = 500, 170
-    x = (popup.winfo_screenwidth() // 2) - (width // 2)
-    y = (popup.winfo_screenheight() // 2) - (height // 2)
+    # Center on the screen mpv occupies (falls back to the primary screen when
+    # mpv has no window yet). Lazy import: information_popup pulls in a wide
+    # dependency graph that would be a circular import at module load.
+    try:
+        from ..information import information_popup
+        mx, my, mw, mh = information_popup._get_mpv_client_rect_logical()
+    except Exception:
+        mx, my = 0, 0
+        mw, mh = popup.winfo_screenwidth(), popup.winfo_screenheight()
+    x = mx + (mw // 2) - (width // 2)
+    y = my + (mh // 2) - (height // 2)
     popup.geometry(f"{width}x{height}+{x}+{y}")
 
     popup.deiconify()
@@ -426,23 +467,7 @@ def download_to_cache(filename, silent=False):
     def do_cache_download():
         global downloads_completed, download_ui_update_pending
         try:
-            data       = metadata_fetch.get_metadata(filename)
-            season_str = data.get("season", "")
-            if season_str and season_str != "N/A":
-                parts  = season_str.split()
-                season = parts[0] if len(parts) >= 2 else "Unknown"
-                year   = parts[1] if len(parts) >= 2 else "Unknown"
-            else:
-                season = year = "Unknown"
-
-            directory    = state.config.directory
-            to_directory = state.config.auto_download_themes and bool(directory)
-            if to_directory:
-                dest_path = os.path.join(directory, year, season, filename)
-                rel_path  = None
-            else:
-                rel_path  = os.path.join(year, season, filename)
-                dest_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+            dest_path, rel_path, to_directory = _resolve_download_destination(filename)
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
             last_percent = [-1]
@@ -549,20 +574,8 @@ def download_animethemes_file(filename, button=None):
     def do_download():
         try:
             update_button("Starting...")
-            data       = metadata_fetch.get_metadata(filename)
-            season_str = data.get("season", "")
-            if season_str and season_str != "N/A":
-                parts  = season_str.split()
-                season = parts[0] if len(parts) >= 2 else "Unknown"
-                year   = parts[1] if len(parts) >= 2 else "Unknown"
-            else:
-                season = year = "Unknown"
-
-            directory = state.config.directory
-            dest_dir  = os.path.join(directory, year, season) if directory else os.path.join(year, season)
-            os.makedirs(dest_dir, exist_ok=True)
-            dest_path = os.path.join(dest_dir, filename)
-
+            dest_path, rel_path, to_directory = _resolve_download_destination(filename)
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             update_button("Downloading...")
 
             def progress_callback(mb_downloaded, mb_total):
@@ -576,7 +589,16 @@ def download_animethemes_file(filename, button=None):
                 messagebox.showerror("Download Error", f"Failed to download {filename}")
                 return
 
-            state.metadata.directory_files[filename] = dest_path
+            if to_directory:
+                state.metadata.directory_files[filename] = dest_path
+            else:
+                cache_metadata[filename] = {
+                    "path": rel_path,
+                    "size": os.path.getsize(dest_path),
+                    "play_count": 0,
+                    "last_played": datetime.now().isoformat(),
+                }
+                save_cache_metadata()
             mb = os.path.getsize(dest_path) / 1024 / 1024
             update_button(f"✓ {mb:.1f} MB")
             print(f"Downloaded {filename} to {dest_path}")
@@ -616,20 +638,12 @@ def move_cached_file_to_directory(filename, button=None):
                 messagebox.showerror("Error", f"File not found in cache: {filename}")
                 return
 
-            data       = metadata_fetch.get_metadata(filename)
-            season_str = data.get("season", "")
-            if season_str and season_str != "N/A":
-                parts  = season_str.split()
-                season = parts[0] if len(parts) >= 2 else "Unknown"
-                year   = parts[1] if len(parts) >= 2 else "Unknown"
-            else:
-                season = year = "Unknown"
-
-            directory = state.config.directory
-            dest_dir  = os.path.join(directory, year, season) if directory else os.path.join(year, season)
-            os.makedirs(dest_dir, exist_ok=True)
-            dest_path = os.path.join(dest_dir, filename)
-
+            dest_path, rel_path, to_directory = _resolve_download_destination(filename)
+            if not to_directory:
+                update_button("Metadata pending")
+                messagebox.showinfo("Metadata pending", "This file is still waiting for metadata and remains safely in the cache.")
+                return
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             shutil.move(cached_path, dest_path)
 
             # Clean up empty cache directories

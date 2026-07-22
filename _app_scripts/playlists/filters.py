@@ -29,6 +29,7 @@ import _app_scripts.ui.lists as lists
 import _app_scripts.playback.transport as transport
 import _app_scripts.data.config_io as config_io
 import _app_scripts.popout.popout_window as popout_window
+import _app_scripts.ui.windowing as windowing
 import _app_scripts.playlists.playlist as playlist_ops
 import _app_scripts.playlists.infinite as infinite
 
@@ -197,14 +198,14 @@ def show_filter_popup():
     popup_width = 550
     popup_height = 700
     filter_popup = popup
+    popup.update_idletasks()
     popout_controls = popout_window.popout_controls
     if popout_controls and popout_controls.winfo_exists():
-        popup.update_idletasks()
         x = popout_controls.winfo_x()
         y = popout_controls.winfo_y()
-        popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
     else:
-        popup.geometry(f"{popup_width}x{popup_height}")
+        x, y = windowing.get_window_position_and_setup()
+    popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
 
     main_frame = tk.Frame(popup, bg=BACKGROUND_COLOR)
     main_frame.pack(fill="both", expand=True)

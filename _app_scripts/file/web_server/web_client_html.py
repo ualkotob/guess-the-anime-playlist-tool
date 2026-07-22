@@ -1342,6 +1342,8 @@ HTML = r"""<!DOCTYPE html>
     }
     .sc-toolbar-btn:hover { background: #404040; color: #fff; border-color: #666; }
     .sc-toolbar-btn:active { background: #202020; }
+    #sc-sort-btn { display: inline-flex; align-items: center; gap: 3px; }
+    .sc-sort-icon { font-size: 1.15em; line-height: 1; opacity: 0.85; }
     #sc-submit-btn {
       background: #1a2040; color: #88aaff; border-color: #3355aa;
     }
@@ -1789,6 +1791,30 @@ HTML = r"""<!DOCTYPE html>
     .ctrl-sect-break {
       flex-basis: 100%; height: 0; margin: 0;
     }
+    /* ── Auto Queue at Start modal (from the "Auto Queue" extras button) ── */
+    #ctrl-autoreveal-popup-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.75); z-index: 845;
+      align-items: center; justify-content: center;
+    }
+    #ctrl-autoreveal-popup-overlay.active { display: flex; }
+    #ctrl-autoreveal-popup-box {
+      background: #0d0d1a; border: 1px solid #334; border-radius: 14px;
+      width: 95%; max-width: 560px; max-height: min(70vh, 560px);
+      display: flex; flex-direction: column; gap: 12px;
+      padding: 14px 16px 18px; box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+      overflow-y: auto; scrollbar-width: thin; scrollbar-color: #334 transparent;
+    }
+    #ctrl-autoreveal-popup-header { display: flex; align-items: center; justify-content: space-between; }
+    #ctrl-autoreveal-popup-title {
+      font-size: 0.8em; color: #88a; text-transform: uppercase;
+      letter-spacing: .06em; font-weight: 600;
+    }
+    #ctrl-autoreveal-popup-close {
+      background: none; border: none; color: #445; cursor: pointer;
+      font-size: 1.1em; padding: 0 2px; line-height: 1;
+    }
+    .ctrl-ar-btn-row { display: flex; flex-wrap: wrap; gap: 5px; width: 100%; }
     /* ── Info reveal buttons ── */
     #ctrl-info-reveal {
       display: flex; flex-wrap: wrap; gap: 7px; justify-content: center;
@@ -2502,6 +2528,7 @@ HTML = r"""<!DOCTYPE html>
       <span id="sc-toolbar-title">Scoreboard</span>
       <button id="sc-tog-auto" class="sc-toggle-btn" onclick="_scToggleAuto()" title="AUTO — Scores send automatically after clicking a delta. Turn off to batch manually.">&#9889;</button>
       <button id="sc-tog-together" class="sc-toggle-btn" onclick="_scToggleTogether()" title="BATCH — Any delta press resets the shared timer for everyone.">&#10697;</button>
+      <button id="sc-sort-btn" class="sc-toolbar-btn" onclick="_scCycleSort()" title="SORT — Order players: Added, Points, or A–Z. Click to cycle."><span class="sc-sort-icon">&#x21C5;</span>PT</button>
       <button id="sc-clear-btn" class="sc-toolbar-btn" onclick="_scClearAll()" title="CLEAR — Remove all players from the scoreboard.">&#128465;</button>
       <button id="sc-archive-btn" class="sc-toolbar-btn" onclick="_scArchive()" title="Archive current session (uses the host name configured in Scoreboard settings).">ARCHIVE</button>
       <button id="sc-history-btn" class="sc-toolbar-btn" onclick="_scShowHistory()" title="View score change history.">HISTORY</button>
@@ -2909,6 +2936,7 @@ HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="fl" onclick="_ctrlExtraClick('fl')">Fixed</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="search" onclick="_ctrlExtraClick('search')">&#x1F50D;</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="directory" onclick="_ctrlExtraClick('directory')">&#x1F4C2;</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="auto_reveal" onclick="_ctrlExtraClick('auto_reveal')">Auto Queue</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-queue" data-extra-id="lt_stop" onclick="_ctrlExtraClick('lt_stop')">&#x23F9;</button>
       </div>
       <div class="ctrl-extras-sect-row">
@@ -2986,6 +3014,27 @@ HTML = r"""<!DOCTYPE html>
       <div class="ctrl-extras-sect-row" id="ctrl-extras-layout-sect" style="display:none">
         <!-- kept for legacy save/load; hidden -->
         <div id="ctrl-extras-layout-chips" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+  <!-- Auto Queue at Start popup (opened by the "Auto Queue" extras button) -->
+  <div id="ctrl-autoreveal-popup-overlay" onclick="if(event.target===this)_ctrlCloseAutoRevealModal()">
+    <div id="ctrl-autoreveal-popup-box">
+      <div id="ctrl-autoreveal-popup-header">
+        <span id="ctrl-autoreveal-popup-title">Auto Queue at Start</span>
+        <button id="ctrl-autoreveal-popup-close" onclick="_ctrlCloseAutoRevealModal()">&#x2715;</button>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Round Type</span>
+        <div id="ctrl-ar-mode-row" class="ctrl-ar-btn-row"></div>
+      </div>
+      <div class="ctrl-extras-sect-row" id="ctrl-ar-variant-sect">
+        <span class="ctrl-extras-sect-label">Variant</span>
+        <div id="ctrl-ar-variant-row" class="ctrl-ar-btn-row"></div>
+      </div>
+      <div class="ctrl-extras-sect-row">
+        <span class="ctrl-extras-sect-label">Reveal After &mdash; Reveal / Mute only</span>
+        <div id="ctrl-ar-dur-row" class="ctrl-ar-btn-row"></div>
       </div>
     </div>
   </div>
@@ -6278,6 +6327,7 @@ HTML = r"""<!DOCTYPE html>
     let _ctrlDiffCurrent = 2;
     let _ctrlAutoBonusListOpen = false;
     let _ctrlAutoBonusCurrent = null;
+    let _ctrlAutoRevealOpen = false;
     let _ctrlListPopupMode = null;
     let _ctrlListPopupDownInsideBox = false;
 
@@ -6712,6 +6762,14 @@ HTML = r"""<!DOCTYPE html>
     let _scGlobalTimerEnd = null;
     let _scTogether    = false;
     let _scAuto        = false;
+    let _scSortMode    = 'points';   // mirrors config style.player_sort.selected
+    let _scSortLocalUntil = 0;       // timestamp — ignore incoming player_sort until this time (optimistic cycle)
+    // Mirrors PlayerManagerDialog._SORT_MODES in universal_scoreboard.py.
+    const _SC_SORT_MODES = [
+      ['added',  'AD', 'Added order'],
+      ['points', 'PT', 'Points (high → low)'],
+      ['az',     'AZ', 'A → Z'],
+    ];
     let _scDelay       = 1500; // ms — mirrors delta_commit_delay config
     let _scArchiveBusy = false;
     let _scArchiveRequestedAt = 0;
@@ -6727,19 +6785,62 @@ HTML = r"""<!DOCTYPE html>
       }
     }
 
-    function _scLoadPrefs(auto_send, delay_together, commit_delay, score_font, name_font) {
+    function _scLoadPrefs(auto_send, delay_together, commit_delay, score_font, name_font, player_sort) {
       _scAuto     = !!auto_send;
       _scTogether = !!delay_together;
       if (commit_delay !== undefined) _scDelay = Math.max(0, parseInt(commit_delay) || 0);
       if (score_font) document.documentElement.style.setProperty('--sc-score-font', "'" + score_font + "'");
       if (name_font)  document.documentElement.style.setProperty('--sc-name-font',  "'" + name_font  + "'");
       _scApplyToggleUI();
+      _scApplyServerSort(player_sort);
     }
     function _scApplyToggleUI() {
       const tb = document.getElementById('sc-tog-together');
       const ab = document.getElementById('sc-tog-auto');
       if (tb) tb.classList.toggle('sc-toggle-on', _scTogether);
       if (ab) ab.classList.toggle('sc-toggle-on', _scAuto);
+    }
+    // Order a [{name, score, team}, ...] list per the active sort mode.
+    // Mirrors PlayerManagerDialog._sort_players in universal_scoreboard.py:
+    //   'added'  → preserve incoming (sheet/insertion) order
+    //   'points' → score high→low, ties broken A→Z
+    //   'az'     → name A→Z
+    function _scSortPlayers(players) {
+      const arr = (players || []).slice();
+      if (_scSortMode === 'points')
+        return arr.sort((a, b) =>
+          ((Number(b.score) || 0) - (Number(a.score) || 0)) ||
+          String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase()));
+      if (_scSortMode === 'az')
+        return arr.sort((a, b) =>
+          String(a.name || '').toLowerCase().localeCompare(String(b.name || '').toLowerCase()));
+      return arr;
+    }
+    function _scUpdateSortBtn() {
+      const btn = document.getElementById('sc-sort-btn');
+      if (!btn) return;
+      const m = _SC_SORT_MODES.find(x => x[0] === _scSortMode) || _SC_SORT_MODES[0];
+      btn.innerHTML = '<span class="sc-sort-icon">&#x21C5;</span>' + m[1];
+      btn.title = 'SORT — currently ' + m[2] + '. Click to cycle (Added, Points, A–Z).';
+    }
+    // Apply a sort mode from the server payload (host may have changed it on the
+    // desktop control panel). Skipped briefly after a local cycle so an in-flight
+    // scores push carrying the old mode can't revert the optimistic change.
+    function _scApplyServerSort(player_sort) {
+      if (!player_sort || Date.now() < _scSortLocalUntil) return;
+      const mode = _SC_SORT_MODES.some(x => x[0] === player_sort) ? player_sort : 'added';
+      if (mode === _scSortMode) { _scUpdateSortBtn(); return; }
+      _scSortMode = mode;
+      _scUpdateSortBtn();
+      if (_scLastData) _scRender(_scLastData, true);
+    }
+    function _scCycleSort() {
+      const idx = _SC_SORT_MODES.findIndex(x => x[0] === _scSortMode);
+      _scSortMode = _SC_SORT_MODES[(idx + 1) % _SC_SORT_MODES.length][0];
+      _scSortLocalUntil = Date.now() + 4000;
+      _scUpdateSortBtn();
+      if (_scLastData) _scRender(_scLastData, true);
+      socket.emit('host_action', { action: 'sc_set_sort', player_sort: _scSortMode });
     }
     function _scToggleTogether() {
       _scTogether = !_scTogether;
@@ -6768,12 +6869,12 @@ HTML = r"""<!DOCTYPE html>
         return;
       }
 
-      // If this is a ghost player, promote them to a real row immediately (score 0)
-      // so the pending label shows on a proper scoreboard row rather than the ghost strip.
-      // _scCommit/_scFlushAll will then just add the committed delta to their existing score.
-      if (!_scPlayers.find(p => p.name === name)) {
-        _scOptimisticPromote(name, 0);
-      }
+      // NOTE: ghost players are deliberately NOT promoted here. The pending label
+      // renders on the ghost row itself (ghost rows carry their own .sc-pending-lbl),
+      // so a player never leaves the ghost strip while points are merely being queued.
+      // They only move into the sorted scoreboard once the delta actually commits
+      // (_scCommit / _scFlushAll → _scOptimisticPromote), well after input has settled.
+      // This avoids the list reshuffling under the cursor and causing misclicks.
 
       // Accumulate
       _scPending[name] = (_scPending[name] || 0) + delta;
@@ -7193,7 +7294,7 @@ HTML = r"""<!DOCTYPE html>
 
     function _scRender(data, forceRebuild = false) {
       if (!data) return;
-      const newPlayers   = data.players || [];
+      const newPlayers   = _scSortPlayers(data.players || []);
       const newDeltaBtns = _scParseDeltaBtns(data.delta_buttons);
       const container    = document.getElementById('sc-players');
       if (!container) return;
@@ -7232,7 +7333,7 @@ HTML = r"""<!DOCTYPE html>
         group.players.forEach(p => container.appendChild(_scBuildPlayerRow(p)));
       });
 
-      setTimeout(() => { _scUpdateAdjustWidth(); _scFitScroll(); _scRenderGhosts(); }, 0);
+      setTimeout(() => { _scUpdateAdjustWidth(); _scFitScroll(); _scRenderGhosts(); _scUpdateAllPendingLabels(); }, 0);
     }
 
     function _scRenderGhosts() {
@@ -7656,7 +7757,7 @@ HTML = r"""<!DOCTYPE html>
 
     socket.on('scores_update', data => {
       if (data && data.auto_send !== undefined)
-        _scLoadPrefs(data.auto_send, data.delay_together, data.commit_delay, data.score_font, data.name_font);
+        _scLoadPrefs(data.auto_send, data.delay_together, data.commit_delay, data.score_font, data.name_font, data.player_sort);
 
       if (_scArchiveBusy) {
         const now = Date.now();
@@ -7675,8 +7776,12 @@ HTML = r"""<!DOCTYPE html>
       if (Date.now() < _scOptimisticUntil && _scOptimisticPlayers) {
         const sp = _scOptimisticPlayers;
         const dp = data && data.players;
+        // Order-independent match (by unique player name): the rendered list is
+        // reordered per the active sort mode, so the server's sheet-order list
+        // can't be compared position-by-position.
+        const dmap = dp && new Map(dp.map(p => [p.name, p]));
         const matches = dp && dp.length === sp.length &&
-          sp.every((op, i) => dp[i] && dp[i].name === op.name && dp[i].score === op.score && _scDisplayTeam(dp[i]) === _scDisplayTeam(op));
+          sp.every(op => { const d = dmap.get(op.name); return d && d.score === op.score && _scDisplayTeam(d) === _scDisplayTeam(op); });
         // Always cache prefs/structure fields
         if (_scLastData && data) {
           _scLastData.auto_send      = data.auto_send;
@@ -8950,6 +9055,14 @@ HTML = r"""<!DOCTYPE html>
         document.querySelectorAll('[data-extra-id="auto_bonus"]').forEach(el =>
           el.classList.toggle('ctrl-toggle-active', _ctrlAutoBonusCurrent != null));
       }
+      if ('auto_reveal_start' in data) {
+        const arOn = !!data.auto_reveal_start;
+        document.querySelectorAll('[data-proxy-extra="auto_reveal"]').forEach(el =>
+          el.classList.toggle('ctrl-toggle-active', arOn));
+        document.querySelectorAll('[data-extra-id="auto_reveal"]').forEach(el =>
+          el.classList.toggle('ctrl-toggle-active', arOn));
+        if (_ctrlAutoRevealOpen) _ctrlRenderAutoRevealModal();
+      }
       if (data.bonus_menu_visibility && typeof data.bonus_menu_visibility === 'object') {
         _ctrlBonusMenuVisibility = data.bonus_menu_visibility;
         const _visMap = {
@@ -9009,8 +9122,8 @@ HTML = r"""<!DOCTYPE html>
     });
 
     const _CTRL_DEFAULT_PINNED = [
-      'b_multiple','b_year','b_members','b_score','search',
-      'b_tags','bonus_chars','b_rank','bonus_studio','b_free','_br_0',
+      'b_multiple','b_year','b_members','bonus_studio','search',
+      'b_tags','b_score','b_rank','bonus_chars','b_free','_br_0',
       'tgl_blind','tgl_peek','tgl_narrow','tgl_widen','tgl_mute','_br_1',
       'rev_info','rev_title','mark_tag','mark_fav','buzz_lock','_br_2',
       'tgl_censors','lt_stop','skip_to_end','_more_',
@@ -9050,6 +9163,7 @@ HTML = r"""<!DOCTYPE html>
       'fl':           { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Fixed',     title: 'Fixed lightning rounds', serverCtrl: true },
       'search':       { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F50D;', title: 'Search themes' },
       'directory':    { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: '&#x1F4C2;', title: 'Browse directory (by artist, season, series…)' },
+      'auto_reveal':  { classes: 'ctrl-toggle-btn ctrl-sect-queue',           html: 'Auto Queue', title: 'Auto-queue a Blind / Reveal / Mute Reveal round at the start of each theme (by popularity or a fixed type)' },
       // Bonus
       'b_multiple':   { classes: 'ctrl-sect-bonus',                           html: 'Multiple',  title: 'Multiple choice: guess the anime from 4 options' },
       'b_year':       { classes: 'ctrl-sect-bonus',                           html: 'Year',      title: 'Guess the year this anime first aired' },
@@ -9181,7 +9295,79 @@ HTML = r"""<!DOCTYPE html>
       'tgl_fullscreen':() => socket.emit('host_action',{action:'invoke',id:'fullscreen'}),
       'tgl_always_on_top':() => socket.emit('host_action',{action:'invoke',id:'always_on_top'}),
       'auto_bonus':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleAutoBonusList(); },
+      'auto_reveal':  () => { _ctrlCloseExtrasPopup(); _ctrlOpenAutoRevealModal(); },
     };
+
+    // ── Auto Queue at Start modal ─────────────────────────────────────────
+    const _CTRL_AR_MODES = [
+      {v:'',       icon:'✖',  label:'Off'},
+      {v:'auto',   icon:'🎯', label:'Auto'},
+      {v:'blind',  icon:'👁', label:'Blind'},
+      {v:'reveal', icon:'👀', label:'Reveal'},
+      {v:'mute',   icon:'🔇', label:'Mute Reveal'},
+    ];
+    const _CTRL_AR_DURATIONS = [0, 5, 10, 15, 20, 30, 45, 60];
+
+    function _ctrlOpenAutoRevealModal() {
+      _ctrlAutoRevealOpen = true;
+      _ctrlRenderAutoRevealModal();
+      document.getElementById('ctrl-autoreveal-popup-overlay').classList.add('active');
+    }
+    function _ctrlCloseAutoRevealModal() {
+      _ctrlAutoRevealOpen = false;
+      document.getElementById('ctrl-autoreveal-popup-overlay').classList.remove('active');
+    }
+    function _ctrlRenderAutoRevealModal() {
+      const t = _ctrlCurrentToggles || {};
+      const mode = t.auto_reveal_start || '';
+      const variant = t.auto_reveal_variant || '';
+      const seconds = Number(t.auto_reveal_seconds || 0);
+      // Round Type
+      const modeRow = document.getElementById('ctrl-ar-mode-row');
+      if (modeRow) {
+        modeRow.innerHTML = '';
+        _CTRL_AR_MODES.forEach(m => {
+          const b = document.createElement('button');
+          b.className = 'ctrl-bonus-btn' + (m.v === mode ? ' ctrl-bonus-active' : '');
+          b.innerHTML = m.icon + ' ' + m.label;
+          b.onclick = () => {
+            // Keep the chosen variant for reveal/mute; other modes ignore it (backend clears).
+            const vr = (m.v === 'reveal' || m.v === 'mute') ? variant : '';
+            socket.emit('host_action', {action:'set_auto_reveal', mode:m.v, variant:vr});
+          };
+          modeRow.appendChild(b);
+        });
+      }
+      // Variant (only meaningful for reveal / mute)
+      const varSect = document.getElementById('ctrl-ar-variant-sect');
+      const varRow = document.getElementById('ctrl-ar-variant-row');
+      const showVariants = (mode === 'reveal' || mode === 'mute');
+      if (varSect) varSect.style.display = showVariants ? '' : 'none';
+      if (varRow && showVariants) {
+        varRow.innerHTML = '';
+        _CTRL_PEEK_VARIANTS.forEach(v => {
+          if (v === null) return;
+          if (v.variant && _ctrlPeekVariantMenuVisibility[v.variant] === false) return;
+          const b = document.createElement('button');
+          b.className = 'ctrl-bonus-btn' + (v.variant === variant ? ' ctrl-bonus-active' : '');
+          b.innerHTML = v.icon + ' ' + v.label;
+          b.onclick = () => socket.emit('host_action', {action:'set_auto_reveal', mode:mode, variant:v.variant});
+          varRow.appendChild(b);
+        });
+      }
+      // Reveal After (duration)
+      const durRow = document.getElementById('ctrl-ar-dur-row');
+      if (durRow) {
+        durRow.innerHTML = '';
+        _CTRL_AR_DURATIONS.forEach(s => {
+          const b = document.createElement('button');
+          b.className = 'ctrl-bonus-btn' + (s === seconds ? ' ctrl-bonus-active' : '');
+          b.textContent = s === 0 ? 'Off' : (s + 's');
+          b.onclick = () => socket.emit('host_action', {action:'set_auto_reveal_seconds', seconds:s});
+          durRow.appendChild(b);
+        });
+      }
+    }
 
     function _ctrlSyncExtraTooltips() {
       document.querySelectorAll('[data-extra-id]').forEach(el => {

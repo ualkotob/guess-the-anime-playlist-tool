@@ -1,8 +1,8 @@
-"""Playback transport — seek / play / pause / next / stop controls.
+"""Playback transport â€” seek / play / pause / next / stop controls.
 
 These functions orchestrate playback: they read shared game data through the
 state container (state.metadata.playlist, state.playback.currently_playing,
-state.widgets.player/root, state.seek, …) and call sibling playback / metadata /
+state.widgets.player/root, state.seek, â€¦) and call sibling playback / metadata /
 overlay modules directly.
 """
 
@@ -86,7 +86,7 @@ def update_playlist_name(name=None):
     playlist = state.metadata.playlist
     if name:
         playlist["name"] = name
-    extra_text = " ∞" if playlist.get("infinite") else ""
+    extra_text = " âˆž" if playlist.get("infinite") else ""
     state.widgets.root.title(
         f"[{session_stats.get_themes_played_count()}] {WINDOW_TITLE} - {playlist['name']}{extra_text}")
     if web_server.is_running():
@@ -158,6 +158,9 @@ def stop_all_queues():
         if fl_name:
             coming_up_ui.toggle_coming_up_popup(False, fl_name)
         lists.update_playlist_display()
+    # Clear the armed "Auto Queue at Start" selection too
+    peek_dispatch.set_auto_reveal(None, None, toggle=False)
+    peek_dispatch.set_auto_reveal_seconds(0, toggle=False)
     metadata_display.up_next_text()
 
 
@@ -192,12 +195,13 @@ def skip_to_lightning_answer():
             log_exception("skip_to_lightning_answer: frame-round answer skip failed")
     if state.lightning.light_round_started and state.lightning.light_round_start_time is not None:
         try:
-            if state.lightning.light_blind_one_second_count:
-                state.widgets.player.play()
+            one_second_answer = state.lightning.light_blind_one_second_count is not None
+            if state.lightning.light_blind_one_second_count is not None:
                 state.lightning.light_blind_one_second_count = None
-                state.widgets.player.play()
+                state.lightning.light_answer_wall_start = None
+                state.lightning.light_answer_last_tick = None
 
-            # Already in answer phase — let play_next fall through to light_round_transition
+            # Already in answer phase â€” let play_next fall through to light_round_transition
             if state.lightning.light_answer_wall_start is not None:
                 return False
 
@@ -208,9 +212,10 @@ def skip_to_lightning_answer():
                 state.widgets.player.set_time(seek_target_ms)
                 return True
 
-            answer_time = state.lightning.light_round_start_time + state.lightning.light_round_length
-            target_ms = int((answer_time + 0.05) * 1000)
+            answer_time = state.lightning.light_round_start_time if one_second_answer else state.lightning.light_round_start_time + state.lightning.light_round_length
+            target_ms = int((answer_time + (0 if one_second_answer else 0.05)) * 1000)
             seek_to(target_ms)
+            state.widgets.player.play()
             return True
         except Exception as e:
             print(f"[DBG skip_to_lightning_answer] exception: {e}")
@@ -278,7 +283,7 @@ def update_current_index(value = None, save = True):
                 cur = state.metadata.playlist['current_index']
                 web_server.push_playlist_info(out_of, cur, counter=f'{cur+1}/{out_of}', label=state.metadata.playlist.get('name') or 'Playlist')
     except NameError:
-        pass  # root isn't defined yet — possibly too early in startup
+        pass  # root isn't defined yet â€” possibly too early in startup
 
 
 def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"] == -1
@@ -293,6 +298,7 @@ def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"
     state.lightning.title_light_string = ""
     state.lightning.title_light_letters = None
     lightning_manager.clean_up_light_round(True)
+    peek_dispatch.stop_timed_reveal()  # clear any timed auto-reveal carried from the previous round
     state.lightning.light_round_started = False
     state.lightning.light_round_armed = True
     state.lightning.current_light_mode = None
@@ -594,6 +600,29 @@ def play_filename(playlist_entry, fullscreen=True):
                 bonus_answers._push_web_toggles()
         else:
             bonus.guess_extra(pick)
+    # Auto-queue a reveal round at the start of every theme (the "Auto Reveal at
+    # Start" option — analogous to auto_bonus_start above). Skipped when a round
+    # is already armed manually this turn, so a deliberate host queue overrides
+    # the auto default for that one round. armed_auto_reveal gates the timed fade
+    # kicked off at the peek consumption site below.
+    armed_auto_reveal = False
+    if (state.controls.auto_reveal_start and not state.lightning.light_mode
+            and not blind_screen.blind_round_toggle
+            and not peek_dispatch.peek_round_toggle
+            and not peek_dispatch.mute_peek_round_toggle):
+        _ar_mode = state.controls.auto_reveal_start
+        if _ar_mode == "auto":
+            # Pick the round type from this theme's popularity (easy→mute, medium→blind, hard→reveal).
+            _ar_mode = peek_dispatch.resolve_auto_reveal_mode(data)
+        if _ar_mode == "blind":
+            blind_screen.blind_round_toggle = True
+        else:
+            peek_dispatch._queued_peek_variant[0] = state.controls.auto_reveal_variant
+            if _ar_mode == "mute":
+                peek_dispatch.mute_peek_round_toggle = True
+            else:
+                peek_dispatch.peek_round_toggle = True
+            armed_auto_reveal = state.controls.auto_reveal_seconds > 0
     # Update metadata display asynchronously
     metadata_display.update_metadata_queue(state.metadata.playlist["current_index"])
     state.playback.previous_media = filepath  # store path string for repeat playback
@@ -604,7 +633,8 @@ def play_filename(playlist_entry, fullscreen=True):
     if not state.lightning.light_mode and (blind_screen.blind_round_toggle or peek_dispatch.peek_round_toggle or peek_dispatch.mute_peek_round_toggle):
         _pre_load_blind_color = censors.get_image_color() if blind_screen.blind_round_toggle else 'black'
         blind_screen.set_black_screen(True, smooth=False, color=_pre_load_blind_color)
-    state.widgets.player.set_media(filepath)
+    start_skip_end = censors.get_start_skip_end(filename)
+    state.widgets.player.set_media(filepath, start_seconds=start_skip_end)
     censors.reset_for_new_file(filename)
     global background_music_rounds
     if state.lightning.light_mode:
@@ -646,11 +676,14 @@ def play_filename(playlist_entry, fullscreen=True):
         elif peek_dispatch.peek_round_toggle or peek_dispatch.mute_peek_round_toggle:
             blind_screen.manual_blind = False
             peek_dispatch.toggle_peek()
+            if armed_auto_reveal:
+                # Fade this auto-queued reveal fully off over N seconds of playback.
+                peek_dispatch.start_timed_reveal(state.controls.auto_reveal_seconds)
             if not peek_dispatch.peek_round_toggle:
                 music.next_background_track()
                 audio_toggles.toggle_mute(True)
             state.widgets.root.after(500, player_play)
-            # Don't remove the black screen here — playback-restart hook lifts it
+            # Don't remove the black screen here â€” playback-restart hook lifts it
             # once the peek overlay is confirmed active on the new file's first frame.
         else:
             blind_screen.manual_blind = False
@@ -827,7 +860,12 @@ def update_seek_bar():
             skip_play_ms = int(max(0, float(state.config.skip_play_seconds)) * 1000)
             skip_jump_ms = int(max(0, float(state.config.skip_jump_seconds)) * 1000)
             skip_triggered = False
-            if not state.lightning.light_round_started and bonus.guessing_extra and web_server.is_running():
+            # Throttled to every 5th tick (~4Hz): push_timer broadcasts to every
+            # connected client, and at full tick rate (20Hz) the serialize+enqueue
+            # cost scales with the player count on the main thread. The client
+            # display has whole-second granularity, so 4Hz is visually identical.
+            if (state.seek.web_playback_counter % 5 == 0 and not state.lightning.light_round_started
+                    and bonus.guessing_extra and web_server.is_running()):
                 if (bonus.guessing_extra == "yt_bonus" and bonus._yt_bonus_current_question
                         and bonus._yt_bonus_current_question.get("end_time", 0) > 0):
                     _time_left = max(0.0, bonus._yt_bonus_current_question["end_time"] - state.seek.projected_player_time / 1000)
@@ -915,7 +953,7 @@ def update_seek_bar():
                             _bq_end = _bq.get("end_time", 0)
                             if _bq_i not in bonus._yt_bonus_template_triggered and time >= _bq_start:
                                 if _bq_end > 0 and time >= _bq_end:
-                                    # Already past this question's window — skip silently
+                                    # Already past this question's window â€” skip silently
                                     bonus._yt_bonus_template_triggered.add(_bq_i)
                                     bonus._yt_bonus_template_scored.add(_bq_i)
                                 else:
@@ -943,6 +981,7 @@ def update_seek_bar():
                                 coming_up_ui.toggle_coming_up_popup(True, title=_cuq["title"], details=_cuq["details"], image=_cuq["image"], up_next=_cuq["up_next"])
                                 state.controls.coming_up_queue = None
                         lightning_manager.update_light_round(time)
+                        peek_dispatch.update_timed_reveal(time)
                         censors.apply_censors(time, length)
                 progress_bar_ops.update_progress_bar(state.seek.projected_player_time, player.get_length(), currently_playing.get("filename"))
     except Exception as e:

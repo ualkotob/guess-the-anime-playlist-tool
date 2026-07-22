@@ -498,7 +498,9 @@ def update_light_round(time):
                 state.lightning.light_answer_wall_start += _now - state.lightning.light_answer_last_tick
         state.lightning.light_answer_last_tick = _now
         _answer_elapsed = (_now - state.lightning.light_answer_wall_start) if state.lightning.light_answer_wall_start is not None else 0
-        if _in_answer_phase and _answer_elapsed >= state.lightning.light_round_answer_length:
+        if (_in_answer_phase
+                and state.lightning.light_blind_one_second_count is None
+                and _answer_elapsed >= state.lightning.light_round_answer_length):
             light_round_transition()
         elif _in_answer_phase:
             start_str = "next"
@@ -506,6 +508,13 @@ def update_light_round(time):
             BLIND_ONE_SECOND_TIME = 4
             if state.lightning.light_blind_one_second_count != None and state.lightning.light_blind_one_second_count < blind_length:
                 if state.lightning.light_blind_one_second_count % BLIND_ONE_SECOND_TIME == 0:
+                    replay_end_time = state.lightning.light_round_start_time + state.lightning.light_round_length
+                    replay_visual_end_time = replay_end_time + 0.15
+                    if time < replay_visual_end_time:
+                        replay_elapsed = min(state.lightning.light_round_length, max(0, time - state.lightning.light_round_start_time))
+                        progress_overlay_ops.set_progress_overlay(round(replay_elapsed * 100), state.lightning.light_round_length * 100, redraw=True)
+                        osd_text.set_countdown(round(blind_length - state.lightning.light_blind_one_second_count))
+                        return
                     state.lightning.light_blind_one_second_count += 1
                     state.widgets.player.pause()
                     progress_overlay_ops.set_progress_overlay(state.lightning.light_round_length*100, state.lightning.light_round_length*100)
@@ -513,14 +522,28 @@ def update_light_round(time):
                         if not state.lightning.light_blind_one_second_count:
                             return
                         if (state.lightning.light_blind_one_second_count + 1) % BLIND_ONE_SECOND_TIME == 0:
-                            state.widgets.player.set_time(round(float(state.lightning.light_round_start_time) * 1000))
+                            replay_target_ms = round(float(state.lightning.light_round_start_time) * 1000)
+                            state.seek.projected_player_time = replay_target_ms
+                            state.seek.last_player_time = replay_target_ms
+                            state.widgets.player.set_time(replay_target_ms)
                             state.widgets.player.play()
+                            progress_overlay_ops.set_progress_overlay(0, state.lightning.light_round_length * 100, redraw=True)
                         state.lightning.light_blind_one_second_count += 1
                         osd_text.set_countdown(round(blind_length - state.lightning.light_blind_one_second_count))
                     for s in range(BLIND_ONE_SECOND_TIME-1):
                         state.widgets.root.after(1000 * (s+1), update_light_blind_count)
                     osd_text.set_countdown(round(blind_length - state.lightning.light_blind_one_second_count))
             else:
+                if state.lightning.light_blind_one_second_count is not None:
+                    answer_target_ms = round(float(state.lightning.light_round_start_time) * 1000)
+                    state.seek.projected_player_time = answer_target_ms
+                    state.seek.last_player_time = answer_target_ms
+                    state.widgets.player.set_time(answer_target_ms)
+                    state.widgets.player.play()
+                    state.lightning.light_blind_one_second_count = None
+                    state.lightning.light_answer_wall_start = _now
+                    state.lightning.light_answer_last_tick = _now
+                    _answer_elapsed = 0
                 if not state.lightning._showed_lightning_answer:
                     state.lightning._showed_lightning_answer = True
                     char_answer = copy.copy(state.lightning.character_round_answer)
@@ -644,7 +667,7 @@ def update_light_round(time):
                     clues_overlay._clues_cell_values["Tags"] = f"in...{round(time_left-15)}"
                 if time_left <= 10:
                     clues_overlay._clues_cell_values["Episodes"] = information_popup.get_episode_display(data, suffix="")
-                    clues_overlay._clues_cell_values["Score"]    = f"{data.get('score')}\n#{data.get('rank')}"
+                    clues_overlay._clues_cell_values["Score"]    = f"{data.get('score') or 'N/A'}\n#{data.get('rank') or 'N/A'}"
                     _members_num = metadata_display._safe_int(data.get('members', 0), 0)
                     clues_overlay._clues_cell_values["Members"]  = f"{_members_num:,}\n#{data.get('popularity') or 'N/A'}"
                 else:
@@ -687,7 +710,7 @@ def update_light_round(time):
                 emoji_count = max(1, round(len(emojis) * progress)+1)
                 emoji_overlay.toggle_emoji_overlay(emojis=emojis, max_emojis=emoji_count)
             elif progress_overlay_ops.is_light_progress_bar_active():
-                progress_overlay_ops.set_progress_overlay(round((time - state.lightning.light_round_start_time)*100), state.lightning.light_round_length*100)
+                progress_overlay_ops.set_progress_overlay(round((time - state.lightning.light_round_start_time)*100), state.lightning.light_round_length*100, redraw=state.lightning.light_blind_one_second_count is not None)
                 if streaming.currently_streaming and (not state.lightning.fixed_current_round or state.lightning.fixed_current_round.get("reveal_title_halfway")):
                     half_time = (state.lightning.light_round_length / 2)
                     track_name = ost_overlay.extract_track_name_from_youtube_title(streaming.last_streamed[1], state.playback.currently_playing.get("data", {}))
@@ -747,27 +770,12 @@ def update_light_round(time):
                     word_num = total_swaps
                 osd_text.bottom_info(f"{word_num}/{total_swaps} SWAPS", inverse=state.lightning.character_round_answer)
                 swap_overlay.toggle_swap_overlay(num_swaps=word_num)
-            elif peek_overlay.peek_overlay1:
-                gap = peek_dispatch.get_peek_gap(state.playback.currently_playing.get("data"))
-                peek_overlay.toggle_peek_overlay(direction=peek_dispatch.peek_light_direction, progress=((state.lightning.light_round_length-time_left)/state.lightning.light_round_length)*100, gap=gap)
-                music.now_playing_background_music(music.music_files[music.current_music_index])
-            elif edge_overlay.edge_overlay_box:
-                edge_max = max(15, min(70, (state.playback.currently_playing.get("data").get('popularity') or 3000)/12))
+            elif peek_dispatch.is_peek_active():
+                # Reveal variants (slice/edge/grow + blur/outline/pixelize/wave/zoom).
+                # Rendering lives in peek_dispatch.render_reveal_progress so the timed
+                # auto-reveal driver can reuse the exact same progress→overlay mapping.
                 progress = (state.lightning.light_round_length - time_left) / state.lightning.light_round_length
-                block_percent = 100 - (edge_max * progress)  # from 100% to 80%
-                edge_overlay.toggle_edge_overlay(block_percent=block_percent)
-                music.now_playing_background_music(music.music_files[music.current_music_index])
-            elif grow_overlay.grow_overlay_boxes:
-                grow_max = max(20, min(60, (state.playback.currently_playing.get("data").get('popularity') or 3000)/10))
-                progress = (state.lightning.light_round_length - time_left) / state.lightning.light_round_length
-                block_percent = 100 - (grow_max * progress)  # from 100% to 80%
-                grow_overlay.toggle_grow_overlay(block_percent=block_percent, position=grow_overlay.grow_position)
-                music.now_playing_background_music(music.music_files[music.current_music_index])
-            elif filter_overlay.filter_vf_active:
-                progress = (state.lightning.light_round_length - time_left) / state.lightning.light_round_length
-                progress = min(max(progress, 0.0), 1.0)
-                filter_overlay.toggle_filter_vf(filter_overlay._filter_vf_variant, progress)
-                filter_overlay._update_filter_intensity_bottom_label(filter_overlay._filter_vf_variant, progress)
+                peek_dispatch.render_reveal_progress(progress)
                 music.now_playing_background_music(music.music_files[music.current_music_index])
             elif characters_overlay.characters_overlay_boxes:
                 reveal_num = min(4, (int(state.lightning.light_round_length - (time_left)) // (state.lightning.light_round_length // 4)) + 1)
@@ -1019,8 +1027,9 @@ def update_light_round(time):
                     top_header = "MUST SAY FULL TITLE"
                 osd_text.top_info(top_header.upper())
             elif state.lightning.light_mode == 'reveal':
-                scoreboard_control.send_command("hide")
                 peek_mode = peek_dispatch.get_next_peek_mode()
+                if peek_dispatch.should_hide_scoreboard(peek_mode):
+                    scoreboard_control.send_command("hide")
                 if peek_mode == 'edge':
                     edge_overlay.toggle_edge_overlay()
                 elif peek_mode == 'grow':

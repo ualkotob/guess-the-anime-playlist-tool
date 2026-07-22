@@ -12,6 +12,7 @@ from core.game_state import state
 
 # Direct sibling imports (registry command/condition lambdas call these).
 import _app_scripts.file.app_close as app_close
+import _app_scripts.file.auto_update as auto_update
 import _app_scripts.toggles.audio_toggles as audio_toggles
 import _app_scripts.toggles.autoplay as autoplay_toggles
 import _app_scripts.playback.blind_screen as blind_screen
@@ -158,9 +159,9 @@ def get_menu_registry():
         {"label": "Refresh Metadata", "icon": "⭮",
          "tooltip": "Refresh metadata from external sources.",
          "submenu": [
-             {"id": "refresh_jikan", "icon": "⭮", "label": "Refresh Jikan (MAL)",
-              "button_label": "REFRESH JIKAN", "command": metadata_fetch.refresh_all_metadata,
-              "tooltip": "Refresh Jikan (MAL) metadata — score and members — for files in your directory."},
+             {"id": "refresh_tenrai", "icon": "⭮", "label": "Refresh Tenrai (MAL)",
+              "button_label": "REFRESH TENRAI", "command": metadata_fetch.refresh_all_metadata,
+              "tooltip": "Refresh Tenrai (MAL) metadata — score and members — for files in your directory."},
              {"id": "refresh_anilist", "icon": "A", "label": "Refresh AniList",
               "button_label": "REFRESH ANILIST", "command": metadata_fetch.refresh_all_anilist_metadata,
               "tooltip": "Refresh AniList metadata — scores, rankings, tags, characters — for files in your directory."},
@@ -232,6 +233,10 @@ def get_menu_registry():
          "button_label": "GITHUB",
          "command": lambda: webbrowser.open("https://github.com/ualkotob/guess-the-anime-playlist-tool"),
          "tooltip": "Open the GitHub repository for this app in your browser."},
+        {"id": "check_updates", "icon": "⭮", "label": "Check for Updates",
+         "button_label": "UPDATES",
+         "command": auto_update.manual_check_for_updates,
+         "tooltip": "Check GitHub for a newer version of the app and prompt to install it if one is available."},
         "---",
         {"id": "exit", "icon": "✕", "label": "Exit",
          "button_label": "EXIT", "command": app_close.on_app_close,
@@ -296,7 +301,14 @@ def get_menu_registry():
               "tooltip": ("Creates a playlist by matching themes from a saved session log file.\n\n"
                           "Session .txt files are stored in the sessions/ folder.\n"
                           "Themes are matched against your local files/metadata using title and slug."),
-              "command": playlist_sources.generate_session_log_playlist},
+              "submenu": [
+                  {"id": "create_session_log_local", "label": "Local Files Only",
+                   "command": lambda: playlist_sources.generate_session_log_playlist(include_non_local=False),
+                   "tooltip": "Match only themes that are stored locally in your directory."},
+                  {"id": "create_session_log_stream", "icon": STREAM_ICON, "label": "Include Streaming Themes",
+                   "command": lambda: playlist_sources.generate_session_log_playlist(include_non_local=True),
+                   "tooltip": "Include non-local themes from metadata that will be streamed from AnimeThemes."},
+              ]},
              "---",
              {"id": "empty_playlist", "label": "Empty Playlist",
               "button_label": "EMPTY", "command": playlist_ops.empty_playlist,
@@ -490,6 +502,66 @@ def get_menu_registry():
                 "toggle": lambda v=v: peek_dispatch.mute_peek_round_toggle and peek_dispatch._queued_peek_variant[0] == v,
                 "tooltip": tooltip}
                for v, (icon, label, tooltip) in peek_dispatch._PEEK_VARIANT_LABELS.items()],
+         ]},
+        {"icon": "🔁", "label": "Auto Queue at Start",
+         "toggle": lambda: state.controls.auto_reveal_start is not None,
+         "tooltip": "Automatically queue a Blind / Reveal / Mute Reveal round at the start of every theme.",
+         "submenu": [
+             {"label": "Turn Off", "icon": "✖",
+              "command": lambda: peek_dispatch.set_auto_reveal(state.controls.auto_reveal_start, state.controls.auto_reveal_variant),
+              "condition": lambda: state.controls.auto_reveal_start is not None},
+             "---",
+             {"icon": "🎯", "label": "Auto (by Popularity)",
+              "command": lambda: peek_dispatch.set_auto_reveal("auto", None),
+              "toggle": lambda: state.controls.auto_reveal_start == "auto",
+              "tooltip": "Pick each round by popularity — Mute Reveal for easy (popular), Blind for medium, Reveal for hard (obscure)."},
+             "---",
+             {"icon": "👁", "label": "Blind",
+              "command": lambda: peek_dispatch.set_auto_reveal("blind", None),
+              "toggle": lambda: state.controls.auto_reveal_start == "blind",
+              "tooltip": "Auto-queue a Blind Round each theme (screen covered, audio only)."},
+             {"icon": "👀", "label": "Reveal",
+              "toggle": lambda: state.controls.auto_reveal_start == "reveal",
+              "tooltip": "Auto-queue a Reveal Round each theme.",
+              "submenu": [
+                  {"icon": "🔀", "label": "Random",
+                   "command": lambda: peek_dispatch.set_auto_reveal("reveal", None),
+                   "toggle": lambda: state.controls.auto_reveal_start == "reveal" and state.controls.auto_reveal_variant is None},
+                  "---",
+                  *[{"icon": icon, "label": label,
+                     "command": lambda v=v: peek_dispatch.set_auto_reveal("reveal", v),
+                     "toggle": lambda v=v: state.controls.auto_reveal_start == "reveal" and state.controls.auto_reveal_variant == v,
+                     "tooltip": tooltip}
+                    for v, (icon, label, tooltip) in peek_dispatch._PEEK_VARIANT_LABELS.items()],
+              ]},
+             {"icon": "🔇", "label": "Mute Reveal",
+              "toggle": lambda: state.controls.auto_reveal_start == "mute",
+              "tooltip": "Auto-queue a Mute Reveal Round each theme (audio muted).",
+              "submenu": [
+                  {"icon": "🔀", "label": "Random",
+                   "command": lambda: peek_dispatch.set_auto_reveal("mute", None),
+                   "toggle": lambda: state.controls.auto_reveal_start == "mute" and state.controls.auto_reveal_variant is None},
+                  "---",
+                  *[{"icon": icon, "label": label,
+                     "command": lambda v=v: peek_dispatch.set_auto_reveal("mute", v),
+                     "toggle": lambda v=v: state.controls.auto_reveal_start == "mute" and state.controls.auto_reveal_variant == v,
+                     "tooltip": tooltip}
+                    for v, (icon, label, tooltip) in peek_dispatch._PEEK_VARIANT_LABELS.items()],
+              ]},
+             "---",
+             {"icon": "⏱", "label": "Reveal After",
+              "toggle": lambda: bool(state.controls.auto_reveal_seconds),
+              "tooltip": "Fade the reveal overlay fully off over the selected seconds, like a lightning round (Reveal / Mute Reveal only).",
+              "submenu": [
+                  {"label": "Off", "icon": "✖",
+                   "command": lambda: peek_dispatch.set_auto_reveal_seconds(0),
+                   "toggle": lambda: not state.controls.auto_reveal_seconds},
+                  "---",
+                  *[{"label": f"{s} seconds",
+                     "command": lambda s=s: peek_dispatch.set_auto_reveal_seconds(s),
+                     "toggle": lambda s=s: state.controls.auto_reveal_seconds == s}
+                    for s in (5, 10, 15, 20, 30, 45, 60)],
+              ]},
          ]},
         "---",
         {"icon": "⚡", "label": "Lightning Rounds",
@@ -727,7 +799,7 @@ def get_menu_registry():
          "button_label": "AUTO REFRESH",
          "command": metadata_fetch.toggle_auto_auto_refresh,
          "toggle":  lambda: state.controls.auto_refresh_toggle,
-         "tooltip": "Toggle auto refreshing jikan metadata (score, members) as themes play — never refreshes the same anime twice per session."},
+         "tooltip": "Toggle auto refreshing Tenrai metadata (score, members) as themes play — never refreshes the same anime twice per session."},
         {"id": "fullscreen", "icon": "⛶", "label": "Fullscreen",
          "button_label": "FULLSCREEN",
          "command": autoplay_toggles.toggle_autoplay_fullscreen,
@@ -788,7 +860,7 @@ def get_menu_registry():
         {"id": "refetch_metadata", "icon": "📥", "label": "Fetch Theme Data",
          "button_label": "FETCH DATA", "command": metadata_fetch.refetch_metadata,
          "condition": lambda: bool(state.playback.currently_playing.get("filename")),
-         "tooltip": "Fetch metadata for the currently playing theme from AnimeThemes, Jikan, AniList, and AniDB."},
+         "tooltip": "Fetch metadata for the currently playing theme from AnimeThemes, Tenrai, AniList, and AniDB."},
         "---",
         {"id": "copy_filename", "icon": "⮺",  "label": "Copy Filename",
         "button_label": "COPY NAME", "command": lambda: pyperclip.copy(state.playback.currently_playing.get("filename", "")),

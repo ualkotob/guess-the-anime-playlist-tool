@@ -529,6 +529,16 @@ lightning_mode_settings_default = {
             "wave": False,
             "zoom": True
         },
+        "hide_scoreboard": {
+            "blur": False,
+            "edge": True,
+            "grow": False,
+            "outline": False,
+            "pixelize": False,
+            "slice": False,
+            "wave": False,
+            "zoom": False
+        },
         "blur_censor_percent": 40,
         "pixelize_censor_percent": 40,
         "variety": {

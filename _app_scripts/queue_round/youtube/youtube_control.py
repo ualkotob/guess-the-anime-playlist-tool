@@ -577,7 +577,7 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
 
 # ── YouTube video download ────────────────────────────────────────────────────
 
-def download_youtube_video(video_id, button, refresh_ui_callback):
+def download_youtube_video(video_id, button, refresh_ui_callback, force=False):
     """Download *video_id* from YouTube into the youtube/ folder via yt-dlp.
 
     *button* is an optional tk.Button whose text is updated with progress.
@@ -634,6 +634,14 @@ def download_youtube_video(video_id, button, refresh_ui_callback):
         except Exception as e:
             update_button("Error")
             print(f"Download error for {video_id}: {e}")
+
+    if force and os.path.exists(filename):
+        try:
+            os.remove(filename)
+        except OSError as exc:
+            update_button("Delete failed")
+            print(f"Could not replace {filename}: {exc}")
+            return
 
     if os.path.exists(filename):
         update_button(f"{round(os.path.getsize(filename) / 1_024 / 1_024, 1)} MB")
