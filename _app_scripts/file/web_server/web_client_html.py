@@ -3033,7 +3033,7 @@ HTML = r"""<!DOCTYPE html>
         <div id="ctrl-ar-variant-row" class="ctrl-ar-btn-row"></div>
       </div>
       <div class="ctrl-extras-sect-row">
-        <span class="ctrl-extras-sect-label">Reveal After &mdash; Reveal / Mute only</span>
+        <span class="ctrl-extras-sect-label">Reveal After &mdash; Blind / Reveal / Mute</span>
         <div id="ctrl-ar-dur-row" class="ctrl-ar-btn-row"></div>
       </div>
     </div>
@@ -5484,9 +5484,8 @@ HTML = r"""<!DOCTYPE html>
       const show = _buzzerLockControlsVisible();
       document.querySelectorAll('.sc-buzzer-lock-btn').forEach(btn => {
         const name = btn.dataset.buzzerLockName;
-        const connected = _lastPlayerList.some(lp => !lp.host && lp.name === name);
         const active = _isPlayerBuzzerLocked(name);
-        btn.style.display = (show && connected) ? '' : 'none';
+        btn.style.display = show ? '' : 'none';
         btn.classList.toggle('active', active);
         btn.title = active ? 'Unlock buzzer' : 'Lock buzzer';
       });
@@ -7275,7 +7274,7 @@ HTML = r"""<!DOCTYPE html>
           e.stopPropagation();
           socket.emit('toggle_buzzer_lock', { name: p.name });
         };
-        buzzerLockBtn.style.display = (_buzzerLockControlsVisible() && _isConnectedPlayer) ? '' : 'none';
+        buzzerLockBtn.style.display = _buzzerLockControlsVisible() ? '' : 'none';
         row.appendChild(buzzerLockBtn);
 
         // Menu button
@@ -7437,6 +7436,8 @@ HTML = r"""<!DOCTYPE html>
                 row.dataset.name = v;
                 nameSpan.textContent = v;
                 nameSpan.title = v + ' (not on scoreboard yet)';
+                const lockBtn = row.querySelector('.sc-buzzer-lock-btn');
+                if (lockBtn) lockBtn.dataset.buzzerLockName = v;
                 p.name = v;
               } catch (e) {}
             }
@@ -7453,6 +7454,18 @@ HTML = r"""<!DOCTYPE html>
         } else {
           row.appendChild(nameSpan);
         }
+
+        const buzzerLockBtn = document.createElement('button');
+        buzzerLockBtn.className = 'sc-buzzer-lock-btn' + (_isPlayerBuzzerLocked(p.name) ? ' active' : '');
+        buzzerLockBtn.textContent = '\uD83D\uDD12';
+        buzzerLockBtn.title = _isPlayerBuzzerLocked(p.name) ? 'Unlock buzzer' : 'Lock buzzer';
+        buzzerLockBtn.dataset.buzzerLockName = p.name;
+        buzzerLockBtn.onclick = e => {
+          e.stopPropagation();
+          socket.emit('toggle_buzzer_lock', { name: p.name });
+        };
+        buzzerLockBtn.style.display = _buzzerLockControlsVisible() ? '' : 'none';
+        row.appendChild(buzzerLockBtn);
         container.appendChild(row);
       });
     }

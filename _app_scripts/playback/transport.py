@@ -603,8 +603,8 @@ def play_filename(playlist_entry, fullscreen=True):
     # Auto-queue a reveal round at the start of every theme (the "Auto Reveal at
     # Start" option — analogous to auto_bonus_start above). Skipped when a round
     # is already armed manually this turn, so a deliberate host queue overrides
-    # the auto default for that one round. armed_auto_reveal gates the timed fade
-    # kicked off at the peek consumption site below.
+    # the auto default for that one round. armed_auto_reveal gates the timed
+    # uncover/fade kicked off when the queued round is consumed below.
     armed_auto_reveal = False
     if (state.controls.auto_reveal_start and not state.lightning.light_mode
             and not blind_screen.blind_round_toggle
@@ -622,7 +622,9 @@ def play_filename(playlist_entry, fullscreen=True):
                 peek_dispatch.mute_peek_round_toggle = True
             else:
                 peek_dispatch.peek_round_toggle = True
-            armed_auto_reveal = state.controls.auto_reveal_seconds > 0
+        # The duration applies to every auto-queued type, including Blind (and
+        # Auto when its popularity band resolves to Blind).
+        armed_auto_reveal = state.controls.auto_reveal_seconds > 0
     # Update metadata display asynchronously
     metadata_display.update_metadata_queue(state.metadata.playlist["current_index"])
     state.playback.previous_media = filepath  # store path string for repeat playback
@@ -672,6 +674,10 @@ def play_filename(playlist_entry, fullscreen=True):
         coming_up_ui.toggle_coming_up_popup(False, "Lightning Round")
         if blind_screen.blind_round_toggle:
             blind_screen.manual_blind = True
+            if armed_auto_reveal:
+                peek_dispatch.start_timed_reveal(
+                    state.controls.auto_reveal_seconds, mode="blind"
+                )
             state.widgets.root.after(500, player_play)
         elif peek_dispatch.peek_round_toggle or peek_dispatch.mute_peek_round_toggle:
             blind_screen.manual_blind = False

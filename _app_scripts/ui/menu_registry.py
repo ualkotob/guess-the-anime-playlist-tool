@@ -551,7 +551,7 @@ def get_menu_registry():
              "---",
              {"icon": "⏱", "label": "Reveal After",
               "toggle": lambda: bool(state.controls.auto_reveal_seconds),
-              "tooltip": "Fade the reveal overlay fully off over the selected seconds, like a lightning round (Reveal / Mute Reveal only).",
+              "tooltip": "Reveal after the selected seconds. Reveal / Mute Reveal follow lightning-round progression; Blind uncovers at the deadline.",
               "submenu": [
                   {"label": "Off", "icon": "✖",
                    "command": lambda: peek_dispatch.set_auto_reveal_seconds(0),

@@ -375,7 +375,8 @@ def get_pop_time_groups(refetch=False):
                         season = metadata_fetch.aired_to_season_year(meta.get("aired"), False)
                     else:
                         season = meta.get("season", "9999")[-4:]
-                    year_cache[entry] = int(season[-4:])
+                    yr = season[-4:]
+                    year_cache[entry] = int(yr) if yr.isdigit() else 9999
 
             def sort_by_year(entries):
                 return sorted(entries, key=lambda e: year_cache.get(e.replace("[EXTRA]", ""), 9999), reverse=True)
@@ -955,7 +956,8 @@ def create_virtual_groups_for_random(sorted_groups):
                 season = metadata_fetch.aired_to_season_year(meta.get("aired"), False)
             else:
                 season = meta.get("season", "9999")[-4:] if meta else "9999"
-            return int(season[-4:])
+            yr = season[-4:]
+            return int(yr) if yr.isdigit() else 9999
 
         sorted_virtual_group = sorted(virtual_group, key=get_year, reverse=True)
         virtual_subgroups = playlist_ops.split_into_three(sorted_virtual_group)

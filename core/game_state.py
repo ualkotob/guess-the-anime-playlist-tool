@@ -79,7 +79,7 @@ class GameState:
             auto_bonus_start=None,          # runtime: None=off, 'random' or a bonus type key=on
             auto_reveal_start=None,         # runtime (not saved): None=off | 'auto' | 'blind' | 'reveal' | 'mute' — auto-queue a round each theme
             auto_reveal_variant=None,       # runtime (not saved): None=random | a peek variant key — forced variant for auto-reveal
-            auto_reveal_seconds=0,          # runtime (not saved): 0=off (static) | int seconds — fade the reveal overlay fully off over this long
+            auto_reveal_seconds=0,          # runtime (not saved): 0=off (static) | int seconds — uncover Blind or fade Reveal/Mute Reveal over this long
         )
         # Lightning cluster — scalar lightning-round state (reassignable;
         # single source of truth, no main-side mirror).
