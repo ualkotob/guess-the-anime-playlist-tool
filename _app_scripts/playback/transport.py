@@ -86,7 +86,7 @@ def update_playlist_name(name=None):
     playlist = state.metadata.playlist
     if name:
         playlist["name"] = name
-    extra_text = " âˆž" if playlist.get("infinite") else ""
+    extra_text = " \u221e" if playlist.get("infinite") else ""
     state.widgets.root.title(
         f"[{session_stats.get_themes_played_count()}] {WINDOW_TITLE} - {playlist['name']}{extra_text}")
     if web_server.is_running():
