@@ -391,6 +391,30 @@ HTML = r"""<!DOCTYPE html>
     #submit-btn:disabled { background: #444; cursor: default; }
     #sent-msg { text-align: center; color: #5af; font-size: 0.95em; margin-top: 10px; display: none; }
 
+    /* ── Post-reveal vote skip ── */
+    #vote-skip-pane {
+      display: none; margin-top: 8px; padding: 12px 14px;
+      background: #151525; border: 1px solid #30304a; border-radius: 10px;
+    }
+    #vote-skip-title {
+      color: #778; font-size: .72em; text-transform: uppercase;
+      letter-spacing: .08em; font-weight: 650; margin-bottom: 8px;
+    }
+    #vote-skip-row { display: flex; align-items: center; gap: 12px; }
+    #vote-skip-btn {
+      flex: 1; min-height: 46px; padding: 10px 16px; border-radius: 8px;
+      border: 1px solid #555080; background: #29234a; color: #eee;
+      font-size: 1em; font-weight: 700; cursor: pointer;
+    }
+    #vote-skip-btn:hover { background: #352d60; border-color: #7770aa; }
+    #vote-skip-btn.voted {
+      background: #18372f; border-color: #3d7668; color: #c9f2e8;
+    }
+    #vote-skip-progress {
+      min-width: 94px; color: #99a; font-size: .82em; text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
     /* ── Emoji picker ── */
     #emoji-bar {
       display: none; margin-top: 8px;
@@ -808,6 +832,9 @@ HTML = r"""<!DOCTYPE html>
     .pl-check { color: #5f5; }
     .pl-dot   { color: #555; }
     .pl-crown { color: #fc0; font-size: 0.85em; flex-shrink: 0; }
+    .pl-vote-skip, .sc-vote-skip-badge {
+      color: #8ecbff; font-size: .82em; flex-shrink: 0;
+    }
 
     /* ── Peer answers (post-submit) ── */
     #peer-answers-wrap { margin-top: 14px; }
@@ -1228,6 +1255,140 @@ HTML = r"""<!DOCTYPE html>
       cursor: pointer; border-radius: 6px; display: flex; align-items: center; gap: 5px;
     }
     .ctrl-popup-item-back:hover { background: #1a1a2e; color: #aab; }
+    /* Host playlist-filter editor */
+    #ctrl-filter-editor-overlay {
+      display: none; position: fixed; inset: 0; z-index: 860;
+      background: rgba(0,0,0,0.82); align-items: flex-start; justify-content: center;
+      padding: 14px; overflow-y: auto;
+    }
+    #ctrl-filter-editor-overlay.active { display: flex; }
+    #ctrl-filter-editor-box {
+      width: min(960px, 100%); height: auto; max-height: calc(100vh - 28px);
+      min-width: 0;
+      background: #0b0b17; border: 1px solid #334; border-radius: 14px;
+      box-shadow: 0 10px 38px rgba(0,0,0,.75);
+      display: flex; flex-direction: column; overflow: hidden; margin-block: auto;
+    }
+    #ctrl-filter-editor-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 13px 16px; border-bottom: 1px solid #25253a; flex-shrink: 0;
+    }
+    #ctrl-filter-editor-title { color: #bbc; font-size: .92em; font-weight: 650; }
+    #ctrl-filter-editor-close {
+      border: 0; background: none; color: #667; cursor: pointer;
+      font-size: 1.15em; padding: 2px 4px;
+    }
+    #ctrl-filter-editor-body {
+      flex: 0 1 auto; min-height: 0; max-height: 65vh;
+      overflow-y: auto; padding: 12px 14px 18px; scrollbar-width: thin;
+      scrollbar-color: #334 transparent; overscroll-behavior: contain;
+    }
+    #ctrl-filter-editor-summary {
+      color: #778; font-size: .77em; line-height: 1.45; margin: 0 2px 9px;
+    }
+    .ctrl-filter-section {
+      border: 1px solid #25253a; border-radius: 9px; margin: 7px 0;
+      background: #0e0e1c; overflow: visible;
+    }
+    .ctrl-filter-section > summary {
+      list-style: none; cursor: pointer; color: #99a; font-size: .79em;
+      text-transform: uppercase; letter-spacing: .055em; font-weight: 650;
+      padding: 10px 12px; user-select: none;
+    }
+    .ctrl-filter-section > summary::-webkit-details-marker { display: none; }
+    .ctrl-filter-section > summary::after { content: '\25BE'; float: right; color: #556; }
+    .ctrl-filter-section:not([open]) > summary::after { content: '\25B8'; }
+    .ctrl-filter-section-content {
+      padding: 0 12px 12px; display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px;
+    }
+    .ctrl-filter-field { min-width: 0; }
+    .ctrl-filter-field.wide { grid-column: 1 / -1; }
+    .ctrl-filter-field label, .ctrl-filter-label {
+      display: block; color: #667; font-size: .72em; margin: 0 0 4px 2px;
+    }
+    .ctrl-filter-input, .ctrl-filter-select, .ctrl-filter-picker-input {
+      width: 100%; min-width: 0; background: #090914; border: 1px solid #303047;
+      border-radius: 6px; color: #ccd; font-size: .82em; padding: 7px 8px;
+      outline: none;
+    }
+    .ctrl-filter-input:focus, .ctrl-filter-select:focus, .ctrl-filter-picker-input:focus { border-color: #596080; }
+    .ctrl-filter-range { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 6px; }
+    .ctrl-filter-range-sep { color: #445; font-size: .72em; }
+    .ctrl-filter-slider { display: grid; gap: 3px; padding: 3px 2px 2px; }
+    .ctrl-filter-slider-values { display: flex; justify-content: space-between; gap: 12px; }
+    .ctrl-filter-slider-caption { color: #778; font-size: .71em; font-variant-numeric: tabular-nums; }
+    .ctrl-filter-slider-caption output { color: #bbc; font-weight: 600; }
+    .ctrl-filter-slider-track { position: relative; height: 22px; margin: 0 8px; }
+    .ctrl-filter-slider-rail, .ctrl-filter-slider-fill {
+      position: absolute; left: 0; right: 0; top: 9px; height: 5px;
+      border-radius: 5px; pointer-events: none;
+    }
+    .ctrl-filter-slider-rail { background: #303047; }
+    .ctrl-filter-slider-fill { right: auto; background: #6974a8; }
+    .ctrl-filter-slider input[type="range"] {
+      appearance: none; position: absolute; inset: 0; width: 100%; height: 22px;
+      margin: 0; background: transparent; pointer-events: none; outline: none;
+    }
+    .ctrl-filter-slider input[type="range"]::-webkit-slider-thumb {
+      appearance: none; width: 18px; height: 18px; border: 0; border-radius: 50%;
+      background: #8793cf; box-shadow: 0 0 0 2px #161629; pointer-events: auto; cursor: grab;
+    }
+    .ctrl-filter-slider input[type="range"]::-moz-range-thumb {
+      width: 18px; height: 18px; border: 0; border-radius: 50%;
+      background: #8793cf; box-shadow: 0 0 0 2px #161629; pointer-events: auto; cursor: grab;
+    }
+    .ctrl-filter-slider input[type="range"]::-moz-range-track { background: transparent; border: 0; }
+    .ctrl-filter-picker { position: relative; }
+    .ctrl-filter-chips { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 4px; }
+    .ctrl-filter-chip {
+      display: inline-flex; gap: 5px; align-items: center; max-width: 100%;
+      border: 1px solid #39405a; background: #191b2d; color: #aab;
+      border-radius: 12px; padding: 2px 7px; font-size: .71em;
+    }
+    .ctrl-filter-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ctrl-filter-chip button { border: 0; background: none; color: #778; cursor: pointer; }
+    .ctrl-filter-suggestions {
+      display: none; position: absolute; z-index: 3; left: 0; right: 0;
+      max-height: 190px; overflow-y: auto; background: #111122;
+      border: 1px solid #3a3a55; border-radius: 6px; margin-top: 2px;
+      box-shadow: 0 8px 22px rgba(0,0,0,.65);
+    }
+    .ctrl-filter-suggestions.active { display: block; }
+    .ctrl-filter-suggestion { padding: 7px 8px; color: #aab; font-size: .78em; cursor: pointer; }
+    .ctrl-filter-suggestion:hover { background: #20203a; color: #eef; }
+    .ctrl-filter-rule-head, .ctrl-filter-rule-row {
+      display: grid; grid-template-columns: 1fr 70px 70px; align-items: center; gap: 6px;
+    }
+    .ctrl-filter-rule-head { color: #556; font-size: .68em; padding: 0 4px 4px; text-align: center; }
+    .ctrl-filter-rule-head span:first-child { text-align: left; }
+    .ctrl-filter-rule-row { padding: 5px 4px; border-top: 1px solid #1e1e31; color: #99a; font-size: .76em; }
+    .ctrl-filter-rule-row label { text-align: center; cursor: pointer; }
+    .ctrl-filter-rule-row input { accent-color: #6974a8; }
+    #ctrl-filter-errors { display: none; color: #d88; font-size: .75em; line-height: 1.45; padding: 7px 10px; }
+    #ctrl-filter-errors.active { display: block; }
+    #ctrl-filter-editor-footer {
+      display: flex; align-items: center; gap: 7px; padding: 10px 14px;
+      border-top: 1px solid #25253a; background: #0d0d1a; flex-shrink: 0;
+    }
+    #ctrl-filter-result { color: #8990aa; font-size: .79em; font-variant-numeric: tabular-nums; margin-right: auto; }
+    .ctrl-filter-action {
+      border: 1px solid #363650; background: #17172a; color: #99a;
+      border-radius: 7px; padding: 7px 10px; cursor: pointer; font-size: .76em;
+    }
+    .ctrl-filter-action:hover { background: #22223a; color: #dde; }
+    .ctrl-filter-action.primary { border-color: #46614f; background: #183022; color: #bcd5c2; }
+    .ctrl-filter-action:disabled { opacity: .45; cursor: default; }
+    @media (max-width: 620px) {
+      #ctrl-filter-editor-overlay { padding: 0; align-items: flex-start; max-width: 100vw; overflow-y: auto; }
+      #ctrl-filter-editor-box { width: 100vw; max-width: 100vw; height: auto; max-height: 100vh; border-radius: 0; margin-block: 0; }
+      #ctrl-filter-editor-body { max-height: calc(100vh - 165px); }
+      .ctrl-filter-section-content { grid-template-columns: 1fr; }
+      .ctrl-filter-field.wide { grid-column: 1; }
+      #ctrl-filter-editor-footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #ctrl-filter-result { width: 100%; grid-column: 1 / -1; }
+      .ctrl-filter-action { min-width: 0; }
+    }
     #controller-box {
       background: #0d0d1a; border: 1px solid #334; border-radius: 16px 16px 0 0;
       width: 100%; max-width: 480px; padding: 10px 20px 32px;
@@ -1618,7 +1779,7 @@ HTML = r"""<!DOCTYPE html>
     }
     @media (hover: hover) {
       .ctrl-upnext-queue-btn:hover { background: #3d1010; color: #f88; border-color: #f88; }
-      #ctrl-upnext-reroll:hover { background: #102040; color: #9cf; border-color: #9cf; }
+      #ctrl-upnext-reroll:hover, #ctrl-upnext-skip-group:hover { background: #102040; color: #9cf; border-color: #9cf; }
     }
     .ctrl-upnext-queue-btn.ctrl-toggle-active {
       background: #3a1010; border-color: #cc5050; color: #ff8888;
@@ -1656,12 +1817,13 @@ HTML = r"""<!DOCTYPE html>
     }
     .ctrl-peek-var-item.ctrl-peek-var-active { color: #ff9a9a; font-weight: 600; }
     .ctrl-peek-var-sep { height: 1px; background: #1e2530; margin: 3px 6px; }
-    #ctrl-upnext-reroll {
+    #ctrl-upnext-reroll, #ctrl-upnext-skip-group {
       background: #071825; border-color: #1a6090; color: #44aadd;
       box-shadow: 0 0 5px 0 rgba(30,120,200,0.25);
+      min-width: 32px; padding: 5px 8px; font-size: 1em;
     }
     @media (hover: hover) {
-      #ctrl-upnext-reroll:hover { background: #0d2a40; color: #88ccff; border-color: #3399cc; box-shadow: 0 0 8px 0 rgba(30,150,220,0.45); }
+      #ctrl-upnext-reroll:hover, #ctrl-upnext-skip-group:hover { background: #0d2a40; color: #88ccff; border-color: #3399cc; box-shadow: 0 0 8px 0 rgba(30,150,220,0.45); }
     }
     /* ── Controls panel sub-grid spacing ── */
     #ctrl-controls-panel {
@@ -2625,6 +2787,13 @@ HTML = r"""<!DOCTYPE html>
       <div id="prev-question-title"></div>
       <div id="prev-question-body"></div>
     </div>
+    <div id="vote-skip-pane">
+      <div id="vote-skip-title">Skip this theme?</div>
+      <div id="vote-skip-row">
+        <button id="vote-skip-btn" onclick="_toggleVoteSkip()">&#x23ED;&#xFE0F; Vote to Skip</button>
+        <div id="vote-skip-progress"></div>
+      </div>
+    </div>
     <div id="emoji-bar">
       <p>React - Click to Send - Right Click / Long Press to Create/Delete Sets</p>
       <div id="emoji-btns">
@@ -2904,6 +3073,131 @@ HTML = r"""<!DOCTYPE html>
       <div id="ctrl-list-popup-list"></div>
     </div>
   </div>
+  <div id="ctrl-filter-editor-overlay" onclick="if(event.target===this)_ctrlFilterEditorClose()">
+    <div id="ctrl-filter-editor-box">
+      <div id="ctrl-filter-editor-header">
+        <span id="ctrl-filter-editor-title">Playlist Filter</span>
+        <button id="ctrl-filter-editor-close" onclick="_ctrlFilterEditorClose()">&#x2715;</button>
+      </div>
+      <div id="ctrl-filter-editor-body">
+        <div id="ctrl-filter-editor-summary">Loading filter options...</div>
+        <div id="ctrl-filter-errors"></div>
+        <details class="ctrl-filter-section" open>
+          <summary>Title, Theme Type, Score &amp; Season</summary>
+          <div class="ctrl-filter-section-content">
+            <div class="ctrl-filter-field wide">
+              <label for="ctrl-filter-keywords">Title or filename keywords (comma separated)</label>
+              <input id="ctrl-filter-keywords" class="ctrl-filter-input" data-filter-key="keywords" type="text" oninput="_ctrlFilterScalarChanged(this)">
+            </div>
+            <div class="ctrl-filter-field">
+              <label for="ctrl-filter-theme-type">Theme type</label>
+              <select id="ctrl-filter-theme-type" class="ctrl-filter-select" data-filter-key="theme_type" onchange="_ctrlFilterScalarChanged(this)">
+                <option value="Both">Both</option><option value="Opening">Opening</option><option value="Ending">Ending</option>
+              </select>
+            </div>
+            <div class="ctrl-filter-field wide">
+              <span class="ctrl-filter-label">Score</span>
+              <div class="ctrl-filter-slider">
+                <div class="ctrl-filter-slider-values">
+                  <span class="ctrl-filter-slider-caption">Minimum: <output id="ctrl-filter-score-low-output"></output></span>
+                  <span class="ctrl-filter-slider-caption">Maximum: <output id="ctrl-filter-score-high-output"></output></span>
+                </div>
+                <div class="ctrl-filter-slider-track">
+                  <div class="ctrl-filter-slider-rail"></div><div class="ctrl-filter-slider-fill" id="ctrl-filter-score-fill"></div>
+                  <input id="ctrl-filter-score-low" type="range" data-filter-range="score" data-range-side="low" oninput="_ctrlFilterRangeChanged(this)">
+                  <input id="ctrl-filter-score-high" type="range" data-filter-range="score" data-range-side="high" oninput="_ctrlFilterRangeChanged(this)">
+                </div>
+              </div>
+            </div>
+            <div class="ctrl-filter-field wide">
+              <span class="ctrl-filter-label">Aired season</span>
+              <div class="ctrl-filter-range">
+                <select id="ctrl-filter-season-min" class="ctrl-filter-select" data-filter-key="season_min" onchange="_ctrlFilterScalarChanged(this)"></select>
+                <span class="ctrl-filter-range-sep">to</span>
+                <select id="ctrl-filter-season-max" class="ctrl-filter-select" data-filter-key="season_max" onchange="_ctrlFilterScalarChanged(this)"></select>
+              </div>
+            </div>
+          </div>
+        </details>
+        <details class="ctrl-filter-section">
+          <summary>Rank, Popularity &amp; Members</summary>
+          <div class="ctrl-filter-section-content">
+            <div class="ctrl-filter-field wide">
+              <span class="ctrl-filter-label">Rank number (best to worst)</span>
+              <div class="ctrl-filter-slider">
+                <div class="ctrl-filter-slider-values">
+                  <span class="ctrl-filter-slider-caption">Best: <output id="ctrl-filter-rank-low-output"></output></span>
+                  <span class="ctrl-filter-slider-caption">Worst: <output id="ctrl-filter-rank-high-output"></output></span>
+                </div>
+                <div class="ctrl-filter-slider-track">
+                  <div class="ctrl-filter-slider-rail"></div><div class="ctrl-filter-slider-fill" id="ctrl-filter-rank-fill"></div>
+                  <input id="ctrl-filter-rank-low" type="range" data-filter-range="rank" data-range-side="low" oninput="_ctrlFilterRangeChanged(this)">
+                  <input id="ctrl-filter-rank-high" type="range" data-filter-range="rank" data-range-side="high" oninput="_ctrlFilterRangeChanged(this)">
+                </div>
+              </div>
+            </div>
+            <div class="ctrl-filter-field wide">
+              <span class="ctrl-filter-label">Popularity number (best to worst)</span>
+              <div class="ctrl-filter-slider">
+                <div class="ctrl-filter-slider-values">
+                  <span class="ctrl-filter-slider-caption">Best: <output id="ctrl-filter-popularity-low-output"></output></span>
+                  <span class="ctrl-filter-slider-caption">Worst: <output id="ctrl-filter-popularity-high-output"></output></span>
+                </div>
+                <div class="ctrl-filter-slider-track">
+                  <div class="ctrl-filter-slider-rail"></div><div class="ctrl-filter-slider-fill" id="ctrl-filter-popularity-fill"></div>
+                  <input id="ctrl-filter-popularity-low" type="range" data-filter-range="popularity" data-range-side="low" oninput="_ctrlFilterRangeChanged(this)">
+                  <input id="ctrl-filter-popularity-high" type="range" data-filter-range="popularity" data-range-side="high" oninput="_ctrlFilterRangeChanged(this)">
+                </div>
+              </div>
+            </div>
+            <div class="ctrl-filter-field wide">
+              <span class="ctrl-filter-label">Member count</span>
+              <div class="ctrl-filter-slider">
+                <div class="ctrl-filter-slider-values">
+                  <span class="ctrl-filter-slider-caption">Minimum: <output id="ctrl-filter-members-low-output"></output></span>
+                  <span class="ctrl-filter-slider-caption">Maximum: <output id="ctrl-filter-members-high-output"></output></span>
+                </div>
+                <div class="ctrl-filter-slider-track">
+                  <div class="ctrl-filter-slider-rail"></div><div class="ctrl-filter-slider-fill" id="ctrl-filter-members-fill"></div>
+                  <input id="ctrl-filter-members-low" type="range" data-filter-range="members" data-range-side="low" oninput="_ctrlFilterRangeChanged(this)">
+                  <input id="ctrl-filter-members-high" type="range" data-filter-range="members" data-range-side="high" oninput="_ctrlFilterRangeChanged(this)">
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+        <details class="ctrl-filter-section">
+          <summary>Artists, Studios &amp; Tags</summary>
+          <div class="ctrl-filter-section-content">
+            <div class="ctrl-filter-field" id="ctrl-filter-picker-artists"></div>
+            <div class="ctrl-filter-field" id="ctrl-filter-picker-studios"></div>
+            <div class="ctrl-filter-field" id="ctrl-filter-picker-tags_include"></div>
+            <div class="ctrl-filter-field" id="ctrl-filter-picker-tags_include_and"></div>
+            <div class="ctrl-filter-field wide" id="ctrl-filter-picker-tags_exclude"></div>
+          </div>
+        </details>
+        <details class="ctrl-filter-section">
+          <summary>Duplicates, Versions &amp; Content Flags</summary>
+          <div class="ctrl-filter-section-content"><div class="ctrl-filter-field wide" id="ctrl-filter-theme-rules"></div></div>
+        </details>
+        <details class="ctrl-filter-section">
+          <summary>Playlist Inclusion &amp; Exclusion</summary>
+          <div class="ctrl-filter-section-content">
+            <div class="ctrl-filter-field" id="ctrl-filter-picker-playlist_filter"></div>
+            <div class="ctrl-filter-field" id="ctrl-filter-picker-playlist_filter_and"></div>
+            <div class="ctrl-filter-field wide" id="ctrl-filter-picker-playlist_filter_exclude"></div>
+          </div>
+        </details>
+      </div>
+      <div id="ctrl-filter-editor-footer">
+        <span id="ctrl-filter-result">Not previewed</span>
+        <button class="ctrl-filter-action" onclick="_ctrlFilterReset()">Clear</button>
+        <button class="ctrl-filter-action" onclick="_ctrlFilterSave()">Save As</button>
+        <button class="ctrl-filter-action" id="ctrl-filter-preview-btn" onclick="_ctrlFilterPreview()">Preview</button>
+        <button class="ctrl-filter-action primary" id="ctrl-filter-apply-btn" onclick="_ctrlFilterApply()">Apply</button>
+      </div>
+    </div>
+  </div>
   <!-- Extras popup (More… button) -->
   <div id="ctrl-extras-popup-overlay" onclick="if(event.target===this)_ctrlCloseExtrasPopup()">
     <div id="ctrl-extras-popup-box">
@@ -2978,6 +3272,7 @@ HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-dock" data-extra-id="tgl_dock" onclick="_ctrlExtraClick('tgl_dock')">Dock</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-start" data-extra-id="tgl_info_start" onclick="_ctrlExtraClick('tgl_info_start')" title="Toggle auto-show info at start">Info Start</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-info-end" data-extra-id="tgl_info_end" onclick="_ctrlExtraClick('tgl_info_end')" title="Toggle auto-show info at end">Info End</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-toggle" id="ctrl-tgl-vote-skip" data-extra-id="tgl_vote_skip" onclick="_ctrlExtraClick('tgl_vote_skip')" title="Allow web players to vote to skip after full information is revealed">Vote Skip</button>
       </div>
       <div class="ctrl-extras-sect-row">
         <span class="ctrl-extras-sect-label">Info Reveal &amp; Marks</span>
@@ -3060,7 +3355,8 @@ HTML = r"""<!DOCTYPE html>
               <button class="ctrl-upnext-queue-btn ctrl-peek-var-trigger" id="ctrl-peek-var-trigger-mute" onclick="_ctrlTogglePeekVarMenu('mute')" ontouchend="this.blur()" title="Pick reveal style">&#x25BE;</button>
               <div class="ctrl-peek-var-dropdown" id="ctrl-peek-var-mute" style="display:none"></div>
             </div>
-            <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-reroll" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'reroll_next'})" ontouchend="this.blur()" title="Re-roll next track">&#x1F504; Re-roll</button>
+            <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-reroll" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'reroll_next'})" ontouchend="this.blur()" title="Re-roll within the current group" aria-label="Re-roll within the current group">&#x1F504;</button>
+            <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-skip-group" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'skip_infinite_group'})" ontouchend="this.blur()" title="Skip to the next infinite-playlist group" aria-label="Skip to the next infinite-playlist group">&#x23ED;</button>
           </div>
           <div id="ctrl-upnext-mode"></div>
           <div id="ctrl-upnext-title"><span class="ctrl-upnext-label">NEXT:</span> <span id="ctrl-upnext-title-text">No upcoming track</span></div>
@@ -3425,6 +3721,7 @@ HTML = r"""<!DOCTYPE html>
       _showToast('Host access denied');
       // Ensure host-only UI is closed and state reset
       _isHost = false;
+      _renderVoteSkip();
       try {
         // Hide host-specific controls/panels but keep metadata/info visible
         const ht = document.getElementById('host-toggle'); if (ht) ht.style.display = 'none';
@@ -4546,6 +4843,7 @@ HTML = r"""<!DOCTYPE html>
     socket.on('host_granted', data => {
       console.log('[GTA] host_granted received');
       _isHost = true;
+      _renderVoteSkip();
       document.getElementById('host-toggle').style.display = 'block';
       try {
         if (localStorage.getItem('hostPanelOpen') === '1') {
@@ -5861,6 +6159,13 @@ HTML = r"""<!DOCTYPE html>
           crown.textContent = '\uD83D\uDC51';
           crown.title = 'Host';
           div.appendChild(crown);
+        }
+        if (p.vote_skip) {
+          const vote = document.createElement('span');
+          vote.className = 'pl-vote-skip';
+          vote.textContent = '\u23ED\uFE0F';
+          vote.title = 'Voted to skip';
+          div.appendChild(vote);
         }
         const name = document.createElement('span');
         name.textContent = p.name + (p.dup_index && p.dup_index > 1 ? ' (' + p.dup_index + ')' : '');
@@ -7251,6 +7556,14 @@ HTML = r"""<!DOCTYPE html>
         row.appendChild(nameSpan);
         row.appendChild(nameInput);
 
+        const voteSkipBadge = document.createElement('span');
+        voteSkipBadge.className = 'sc-vote-skip-badge';
+        voteSkipBadge.dataset.voteSkipName = p.name;
+        voteSkipBadge.textContent = '\u23ED\uFE0F';
+        voteSkipBadge.title = 'Voted to skip';
+        voteSkipBadge.style.display = (_lastPlayerList.some(lp => lp.name === p.name && lp.vote_skip)) ? '' : 'none';
+        row.appendChild(voteSkipBadge);
+
         // Skip-grant button — always created, shown only when player is connected
         const skipGrantBtn = document.createElement('button');
         skipGrantBtn.className = 'sc-skip-btn' + (_scSkipGrantPlayer === p.name ? ' active' : '');
@@ -7286,6 +7599,13 @@ HTML = r"""<!DOCTYPE html>
         row.appendChild(menuBtn);
       } else {
         row.appendChild(nameSpan);
+        const voteSkipBadge = document.createElement('span');
+        voteSkipBadge.className = 'sc-vote-skip-badge';
+        voteSkipBadge.dataset.voteSkipName = p.name;
+        voteSkipBadge.textContent = '\u23ED\uFE0F';
+        voteSkipBadge.title = 'Voted to skip';
+        voteSkipBadge.style.display = (_lastPlayerList.some(lp => lp.name === p.name && lp.vote_skip)) ? '' : 'none';
+        row.appendChild(voteSkipBadge);
       }
 
       return row;
@@ -7454,6 +7774,14 @@ HTML = r"""<!DOCTYPE html>
         } else {
           row.appendChild(nameSpan);
         }
+
+        const voteSkipBadge = document.createElement('span');
+        voteSkipBadge.className = 'sc-vote-skip-badge';
+        voteSkipBadge.dataset.voteSkipName = p.name;
+        voteSkipBadge.textContent = '\u23ED\uFE0F';
+        voteSkipBadge.title = 'Voted to skip';
+        voteSkipBadge.style.display = gp.vote_skip ? '' : 'none';
+        row.appendChild(voteSkipBadge);
 
         const buzzerLockBtn = document.createElement('button');
         buzzerLockBtn.className = 'sc-buzzer-lock-btn' + (_isPlayerBuzzerLocked(p.name) ? ' active' : '');
@@ -7654,6 +7982,11 @@ HTML = r"""<!DOCTYPE html>
         const name = btn.dataset.skipName;
         const connected = _lastPlayerList.some(lp => !lp.host && lp.name === name);
         btn.style.display = connected ? '' : 'none';
+      });
+      container.querySelectorAll('.sc-vote-skip-badge').forEach(badge => {
+        const name = badge.dataset.voteSkipName;
+        const voted = _lastPlayerList.some(lp => lp.name === name && lp.vote_skip);
+        badge.style.display = voted ? '' : 'none';
       });
       _refreshBuzzerLockButtons();
     }
@@ -8764,7 +9097,387 @@ HTML = r"""<!DOCTYPE html>
     });
     // ── End playlist list ──────────────────────────────────────────────────
 
-    // Filter list
+    // Filter list and full editor
+    let _ctrlFilterEditorOpen = false;
+    let _ctrlFilterContext = null;
+    let _ctrlFilterDraft = {};
+    let _ctrlFilterPreviewRequest = 0;
+    let _ctrlFilterPendingSave = null;
+    const _ctrlFilterPickerDefs = {
+      artists: {label:'Artists (any)', option:'artists'},
+      studios: {label:'Studios (any)', option:'studios'},
+      tags_include: {label:'Tags — include any', option:'tags'},
+      tags_include_and: {label:'Tags — require all', option:'tags'},
+      tags_exclude: {label:'Tags — exclude any', option:'tags'},
+      playlist_filter: {label:'Playlists — include any', option:'playlists'},
+      playlist_filter_and: {label:'Playlists — require all', option:'playlists'},
+      playlist_filter_exclude: {label:'Playlists — exclude any', option:'playlists'},
+    };
+    const _ctrlFilterSliderDefs = {
+      score: {lowKey:'score_min', highKey:'score_max', step:0.1, fixedMin:0, fixedMax:10, decimals:1},
+      rank: {lowKey:'rank_max', highKey:'rank_min', step:1, decimals:0},
+      members: {lowKey:'members_min', highKey:'members_max', step:1, decimals:0},
+      popularity: {lowKey:'popularity_max', highKey:'popularity_min', step:1, decimals:0},
+    };
+
+    function _ctrlFilterSetErrors(errors) {
+      const el = document.getElementById('ctrl-filter-errors');
+      if (!el) return;
+      const values = Array.isArray(errors) ? errors.filter(Boolean) : [];
+      el.textContent = values.join(' · ');
+      el.classList.toggle('active', !!values.length);
+    }
+
+    function _ctrlFilterSetBusy(busy) {
+      ['ctrl-filter-preview-btn', 'ctrl-filter-apply-btn'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !!busy;
+      });
+    }
+
+    function _ctrlFilterFitViewport() {
+      if (!_ctrlFilterEditorOpen) return;
+      const overlay = document.getElementById('ctrl-filter-editor-overlay');
+      const box = document.getElementById('ctrl-filter-editor-box');
+      const body = document.getElementById('ctrl-filter-editor-body');
+      const header = document.getElementById('ctrl-filter-editor-header');
+      const footer = document.getElementById('ctrl-filter-editor-footer');
+      if (!overlay || !box || !body || !header || !footer) return;
+      const overlayStyle = getComputedStyle(overlay);
+      const verticalPadding = (parseFloat(overlayStyle.paddingTop) || 0) +
+        (parseFloat(overlayStyle.paddingBottom) || 0);
+      const boxChrome = header.getBoundingClientRect().height + footer.getBoundingClientRect().height + 2;
+      const availableBody = Math.max(80, window.innerHeight - verticalPadding - boxChrome);
+      const mobile = window.matchMedia('(max-width: 620px)').matches;
+      const preferredBody = mobile ? availableBody : Math.min(650, Math.floor(window.innerHeight * 0.65));
+      body.style.maxHeight = Math.max(80, Math.min(availableBody, preferredBody)) + 'px';
+      box.style.maxHeight = Math.max(120, window.innerHeight - verticalPadding) + 'px';
+    }
+
+    function _ctrlFilterMarkChanged() {
+      const result = document.getElementById('ctrl-filter-result');
+      if (result) result.textContent = 'Not previewed';
+      _ctrlFilterSetErrors([]);
+    }
+
+    function _ctrlFilterScalarChanged(el) {
+      const key = el.dataset.filterKey;
+      const value = String(el.value || '').trim();
+      if (!value || (key === 'theme_type' && value === 'Both')) delete _ctrlFilterDraft[key];
+      else _ctrlFilterDraft[key] = value;
+      _ctrlFilterMarkChanged();
+    }
+
+    function _ctrlFilterFormatSliderValue(value, decimals) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '0';
+      return decimals ? number.toFixed(decimals) : Math.round(number).toLocaleString();
+    }
+
+    function _ctrlFilterSetupSliders() {
+      if (!_ctrlFilterContext) return;
+      Object.entries(_ctrlFilterSliderDefs).forEach(([name, def]) => {
+        const values = (_ctrlFilterContext.ranges || {})[name] || {min:0, max:0};
+        let sourceMin = Number(values.min);
+        let sourceMax = Number(values.max);
+        if (!Number.isFinite(sourceMin)) sourceMin = 0;
+        if (!Number.isFinite(sourceMax)) sourceMax = sourceMin;
+        let sliderMin = def.fixedMin != null ? def.fixedMin : sourceMin;
+        let sliderMax = def.fixedMax != null ? def.fixedMax : sourceMax;
+        const draftLow = Number(_ctrlFilterDraft[def.lowKey]);
+        const draftHigh = Number(_ctrlFilterDraft[def.highKey]);
+        if (def.fixedMin == null && Number.isFinite(draftLow)) sliderMin = Math.min(sliderMin, draftLow);
+        if (def.fixedMin == null && Number.isFinite(draftHigh)) sliderMin = Math.min(sliderMin, draftHigh);
+        if (def.fixedMax == null && Number.isFinite(draftLow)) sliderMax = Math.max(sliderMax, draftLow);
+        if (def.fixedMax == null && Number.isFinite(draftHigh)) sliderMax = Math.max(sliderMax, draftHigh);
+        if (sliderMax <= sliderMin) sliderMax = sliderMin + def.step;
+        const defaultLow = Math.max(sliderMin, Math.min(sliderMax, sourceMin));
+        const defaultHigh = Math.max(defaultLow, Math.min(sliderMax, sourceMax));
+        const low = document.getElementById('ctrl-filter-' + name + '-low');
+        const high = document.getElementById('ctrl-filter-' + name + '-high');
+        if (!low || !high) return;
+        [low, high].forEach(input => {
+          input.min = sliderMin; input.max = sliderMax; input.step = def.step;
+        });
+        low.setAttribute('aria-label', name + ' lower bound');
+        high.setAttribute('aria-label', name + ' upper bound');
+        low.dataset.defaultValue = defaultLow;
+        high.dataset.defaultValue = defaultHigh;
+        low.value = _ctrlFilterDraft[def.lowKey] != null ? _ctrlFilterDraft[def.lowKey] : defaultLow;
+        high.value = _ctrlFilterDraft[def.highKey] != null ? _ctrlFilterDraft[def.highKey] : defaultHigh;
+        if (Number(low.value) > Number(high.value)) high.value = low.value;
+        _ctrlFilterUpdateSliderOutputs(name);
+      });
+    }
+
+    function _ctrlFilterUpdateSliderOutputs(name) {
+      const def = _ctrlFilterSliderDefs[name];
+      const low = document.getElementById('ctrl-filter-' + name + '-low');
+      const high = document.getElementById('ctrl-filter-' + name + '-high');
+      const lowOutput = document.getElementById('ctrl-filter-' + name + '-low-output');
+      const highOutput = document.getElementById('ctrl-filter-' + name + '-high-output');
+      if (lowOutput && low) lowOutput.textContent = _ctrlFilterFormatSliderValue(low.value, def.decimals);
+      if (highOutput && high) highOutput.textContent = _ctrlFilterFormatSliderValue(high.value, def.decimals);
+      if (low && high) {
+        const fill = document.getElementById('ctrl-filter-' + name + '-fill');
+        const minimum = Number(low.min);
+        const span = Math.max(Number(low.max) - minimum, Number(low.step) || 1);
+        const lowPercent = Math.max(0, Math.min(100, (Number(low.value) - minimum) / span * 100));
+        const highPercent = Math.max(lowPercent, Math.min(100, (Number(high.value) - minimum) / span * 100));
+        if (fill) {
+          fill.style.left = lowPercent + '%';
+          fill.style.width = (highPercent - lowPercent) + '%';
+        }
+        low.style.zIndex = Number(low.value) >= Number(high.value) ? '5' : '3';
+        high.style.zIndex = '4';
+      }
+    }
+
+    function _ctrlFilterRangeChanged(el) {
+      const name = el.dataset.filterRange;
+      const def = _ctrlFilterSliderDefs[name];
+      const low = document.getElementById('ctrl-filter-' + name + '-low');
+      const high = document.getElementById('ctrl-filter-' + name + '-high');
+      if (!def || !low || !high) return;
+      if (Number(low.value) > Number(high.value)) {
+        if (el.dataset.rangeSide === 'low') high.value = low.value;
+        else low.value = high.value;
+      }
+      [[low, def.lowKey], [high, def.highKey]].forEach(([input, key]) => {
+        const value = Number(input.value);
+        const defaultValue = Number(input.dataset.defaultValue);
+        if (Math.abs(value - defaultValue) < 0.0001) delete _ctrlFilterDraft[key];
+        else _ctrlFilterDraft[key] = def.decimals ? Number(value.toFixed(def.decimals)) : Math.round(value);
+      });
+      _ctrlFilterUpdateSliderOutputs(name);
+      _ctrlFilterMarkChanged();
+    }
+
+    function _ctrlFilterRenderPicker(key) {
+      const def = _ctrlFilterPickerDefs[key];
+      const root = document.getElementById('ctrl-filter-picker-' + key);
+      if (!def || !root || !_ctrlFilterContext) return;
+      root.innerHTML = '';
+      const label = document.createElement('span');
+      label.className = 'ctrl-filter-label';
+      label.textContent = def.label;
+      root.appendChild(label);
+      const picker = document.createElement('div');
+      picker.className = 'ctrl-filter-picker';
+      const chips = document.createElement('div');
+      chips.className = 'ctrl-filter-chips';
+      (_ctrlFilterDraft[key] || []).forEach(value => {
+        const chip = document.createElement('span');
+        chip.className = 'ctrl-filter-chip';
+        const text = document.createElement('span');
+        text.textContent = value;
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.textContent = '\u00d7';
+        remove.onclick = () => {
+          _ctrlFilterDraft[key] = (_ctrlFilterDraft[key] || []).filter(v => v !== value);
+          if (!_ctrlFilterDraft[key].length) delete _ctrlFilterDraft[key];
+          _ctrlFilterRenderPicker(key); _ctrlFilterMarkChanged();
+        };
+        chip.appendChild(text); chip.appendChild(remove); chips.appendChild(chip);
+      });
+      picker.appendChild(chips);
+      const input = document.createElement('input');
+      input.type = 'text'; input.className = 'ctrl-filter-picker-input';
+      input.placeholder = 'Search and add...'; input.autocomplete = 'off';
+      const suggestions = document.createElement('div');
+      suggestions.className = 'ctrl-filter-suggestions';
+      const show = () => _ctrlFilterShowSuggestions(key, input, suggestions);
+      input.oninput = show; input.onfocus = show;
+      input.onkeydown = ev => {
+        if (ev.key === 'Escape') { suggestions.classList.remove('active'); input.blur(); }
+        if (ev.key === 'Enter') {
+          const first = suggestions.querySelector('.ctrl-filter-suggestion');
+          if (first) { ev.preventDefault(); first.click(); }
+        }
+      };
+      picker.appendChild(input); picker.appendChild(suggestions); root.appendChild(picker);
+    }
+
+    function _ctrlFilterShowSuggestions(key, input, suggestions) {
+      const def = _ctrlFilterPickerDefs[key];
+      const options = ((_ctrlFilterContext || {}).options || {})[def.option] || [];
+      const selected = new Set(_ctrlFilterDraft[key] || []);
+      const query = String(input.value || '').trim().toLowerCase();
+      const matches = options.filter(v => !selected.has(v) && (!query || v.toLowerCase().includes(query))).slice(0, 40);
+      suggestions.innerHTML = '';
+      matches.forEach(value => {
+        const row = document.createElement('div');
+        row.className = 'ctrl-filter-suggestion'; row.textContent = value;
+        row.onclick = () => {
+          const values = _ctrlFilterDraft[key] || [];
+          if (!values.includes(value)) _ctrlFilterDraft[key] = values.concat([value]);
+          _ctrlFilterRenderPicker(key); _ctrlFilterMarkChanged();
+        };
+        suggestions.appendChild(row);
+      });
+      suggestions.classList.toggle('active', !!matches.length);
+    }
+
+    function _ctrlFilterRenderRules() {
+      const root = document.getElementById('ctrl-filter-theme-rules');
+      if (!root || !_ctrlFilterContext) return;
+      root.innerHTML = '<div class="ctrl-filter-rule-head"><span>Rule</span><span>Include</span><span>Exclude</span></div>';
+      const included = new Set(_ctrlFilterDraft.themes_include || []);
+      const excluded = new Set(_ctrlFilterDraft.themes_exclude || []);
+      (_ctrlFilterContext.options.theme_rules || []).forEach(rule => {
+        const row = document.createElement('div'); row.className = 'ctrl-filter-rule-row';
+        const title = document.createElement('span'); title.textContent = rule; row.appendChild(title);
+        ['themes_include', 'themes_exclude'].forEach(key => {
+          const label = document.createElement('label');
+          const box = document.createElement('input'); box.type = 'checkbox';
+          box.checked = key === 'themes_include' ? included.has(rule) : excluded.has(rule);
+          box.onchange = () => _ctrlFilterRuleChanged(key, rule, box.checked);
+          label.appendChild(box); row.appendChild(label);
+        });
+        root.appendChild(row);
+      });
+    }
+
+    function _ctrlFilterRuleChanged(key, rule, checked) {
+      const other = key === 'themes_include' ? 'themes_exclude' : 'themes_include';
+      let values = (_ctrlFilterDraft[key] || []).filter(v => v !== rule);
+      if (checked) values.push(rule);
+      if (values.length) _ctrlFilterDraft[key] = values; else delete _ctrlFilterDraft[key];
+      if (checked && _ctrlFilterDraft[other]) {
+        _ctrlFilterDraft[other] = _ctrlFilterDraft[other].filter(v => v !== rule);
+        if (!_ctrlFilterDraft[other].length) delete _ctrlFilterDraft[other];
+      }
+      _ctrlFilterRenderRules(); _ctrlFilterMarkChanged();
+    }
+
+    function _ctrlFilterRenderContext() {
+      if (!_ctrlFilterContext) return;
+      const c = _ctrlFilterContext;
+      const title = document.getElementById('ctrl-filter-editor-title');
+      if (title) title.textContent = c.selected_name ? 'Edit Filter: ' + c.selected_name : 'Playlist Filter';
+      const summary = document.getElementById('ctrl-filter-editor-summary');
+      if (summary) summary.textContent = c.playlist_name + ' · ' + c.source_total + ' source themes' +
+        (c.is_infinite ? ' · Infinite playlist' : ' · Changes apply only when you press Apply');
+
+      const seasons = c.options.seasons || [];
+      ['ctrl-filter-season-min', 'ctrl-filter-season-max'].forEach(id => {
+        const select = document.getElementById(id); if (!select) return;
+        select.innerHTML = '<option value="">Any season</option>' + seasons.map(v => '<option value="' + _ctrlEscapeHtml(v) + '">' + _ctrlEscapeHtml(v) + '</option>').join('');
+      });
+      document.querySelectorAll('#ctrl-filter-editor-box [data-filter-key]').forEach(el => {
+        const key = el.dataset.filterKey;
+        el.value = key === 'theme_type' ? (_ctrlFilterDraft[key] || 'Both') : (_ctrlFilterDraft[key] ?? '');
+      });
+      _ctrlFilterSetupSliders();
+      Object.keys(_ctrlFilterPickerDefs).forEach(_ctrlFilterRenderPicker);
+      _ctrlFilterRenderRules();
+      const result = document.getElementById('ctrl-filter-result');
+      if (result) result.textContent = c.source_total + ' source themes';
+      _ctrlFilterSetErrors([]); _ctrlFilterSetBusy(false);
+      requestAnimationFrame(_ctrlFilterFitViewport);
+    }
+
+    function _ctrlOpenFilterEditor(name) {
+      _ctrlListPopupClose();
+      _ctrlFilterEditorOpen = true; _ctrlFilterContext = null; _ctrlFilterDraft = {};
+      const overlay = document.getElementById('ctrl-filter-editor-overlay');
+      if (overlay) overlay.classList.add('active');
+      _ctrlFilterFitViewport();
+      const summary = document.getElementById('ctrl-filter-editor-summary');
+      if (summary) summary.textContent = 'Loading filter options...';
+      _ctrlFilterSetErrors([]); _ctrlFilterSetBusy(true);
+      socket.emit('host_action', {action:'get_filter_editor', name:name || ''});
+    }
+
+    function _ctrlFilterEditorClose() {
+      _ctrlFilterEditorOpen = false; _ctrlFilterContext = null; _ctrlFilterPendingSave = null;
+      const overlay = document.getElementById('ctrl-filter-editor-overlay');
+      if (overlay) overlay.classList.remove('active');
+    }
+
+    window.addEventListener('resize', () => {
+      if (_ctrlFilterEditorOpen) requestAnimationFrame(_ctrlFilterFitViewport);
+    });
+
+    function _ctrlFilterReset() {
+      _ctrlFilterDraft = {}; _ctrlFilterRenderContext(); _ctrlFilterMarkChanged();
+    }
+
+    function _ctrlFilterPreview() {
+      if (!_ctrlFilterContext) return;
+      const requestId = ++_ctrlFilterPreviewRequest;
+      _ctrlFilterSetBusy(true); _ctrlFilterSetErrors([]);
+      const result = document.getElementById('ctrl-filter-result'); if (result) result.textContent = 'Checking...';
+      socket.emit('host_action', {action:'preview_filter_draft', filter:_ctrlFilterDraft,
+        source_revision:_ctrlFilterContext.source_revision, request_id:requestId});
+    }
+
+    function _ctrlFilterApply() {
+      if (!_ctrlFilterContext) return;
+      _ctrlFilterSetBusy(true); _ctrlFilterSetErrors([]);
+      const result = document.getElementById('ctrl-filter-result'); if (result) result.textContent = 'Applying...';
+      socket.emit('host_action', {action:'apply_filter_draft', filter:_ctrlFilterDraft,
+        source_revision:_ctrlFilterContext.source_revision, live_revision:_ctrlFilterContext.live_revision});
+    }
+
+    function _ctrlFilterSave() {
+      if (!_ctrlFilterContext) return;
+      const suggested = _ctrlFilterContext.selected_name || '';
+      const name = window.prompt('Save this filter as:', suggested);
+      if (!name || !name.trim()) return;
+      _ctrlFilterPendingSave = {name:name.trim(), filter:JSON.parse(JSON.stringify(_ctrlFilterDraft))};
+      socket.emit('host_action', {action:'save_filter_draft', name:_ctrlFilterPendingSave.name,
+        filter:_ctrlFilterPendingSave.filter, overwrite:false});
+    }
+
+    socket.on('filter_editor_context', data => {
+      if (!_ctrlFilterEditorOpen) return;
+      _ctrlFilterContext = data; _ctrlFilterDraft = JSON.parse(JSON.stringify(data.filter || {}));
+      _ctrlFilterRenderContext();
+    });
+
+    socket.on('filter_editor_result', data => {
+      if (!_ctrlFilterEditorOpen) return;
+      const result = document.getElementById('ctrl-filter-result');
+      if (data.kind === 'preview') {
+        if (data.request_id !== _ctrlFilterPreviewRequest) return;
+        _ctrlFilterSetBusy(false);
+        if (data.ok) {
+          _ctrlFilterDraft = data.filter || _ctrlFilterDraft;
+          if (result) result.textContent = data.matched + ' of ' + data.total + ' themes match';
+          _ctrlFilterSetErrors([]);
+        } else {
+          if (result) result.textContent = 'Preview failed'; _ctrlFilterSetErrors(data.errors || ['Unable to preview filter']);
+        }
+      } else if (data.kind === 'apply') {
+        _ctrlFilterSetBusy(false);
+        if (data.ok) {
+          _ctrlFilterDraft = data.filter || _ctrlFilterDraft;
+          _ctrlFilterContext.live_revision = data.live_revision || _ctrlFilterContext.live_revision;
+          _ctrlFilterContext.source_revision = data.source_revision || _ctrlFilterContext.source_revision;
+          if (result) result.textContent = 'Applied · ' + data.matched + ' of ' + data.total + ' themes';
+          _ctrlFilterSetErrors([]);
+        } else {
+          if (result) result.textContent = 'Not applied'; _ctrlFilterSetErrors(data.errors || ['Unable to apply filter']);
+        }
+      } else if (data.kind === 'save') {
+        if (data.ok) {
+          _ctrlFilterContext.selected_name = data.name;
+          _ctrlFilterDraft = data.filter || _ctrlFilterDraft;
+          if (!_ctrlFilterContext.saved_filters.includes(data.name)) _ctrlFilterContext.saved_filters.push(data.name);
+          if (result) result.textContent = 'Saved as ' + data.name;
+          _ctrlFilterPendingSave = null; _ctrlFilterSetErrors([]);
+        } else if (data.exists && _ctrlFilterPendingSave) {
+          _ctrlConfirmYesNo('Replace the saved filter "' + data.name + '"?', () => {
+            socket.emit('host_action', {action:'save_filter_draft', name:_ctrlFilterPendingSave.name,
+              filter:_ctrlFilterPendingSave.filter, overwrite:true});
+          });
+        } else _ctrlFilterSetErrors(data.errors || ['Unable to save filter']);
+      } else if (data.kind === 'context') {
+        _ctrlFilterSetBusy(false); _ctrlFilterSetErrors(data.errors || ['Unable to open filter editor']);
+      }
+    });
+
     function _ctrlToggleFilterList() {
       const opening = !_ctrlFilterListOpen;
       _ctrlCloseAllLists();
@@ -8783,6 +9496,12 @@ HTML = r"""<!DOCTYPE html>
       if (!list) return;
       list.innerHTML = '';
       const filters = data.filters || [];
+      const custom = document.createElement('div');
+      custom.className = 'ctrl-popup-item';
+      custom.style.cssText = 'background:#17172a;border:1px solid #303047;margin-bottom:4px';
+      custom.innerHTML = '<span class="ctrl-popup-item-title">Custom Filter...</span><span style="color:#667">Edit</span>';
+      custom.onclick = () => _ctrlOpenFilterEditor('');
+      list.appendChild(custom);
       if (!filters.length) {
         const empty = document.createElement('div');
         empty.style.cssText = 'padding:8px;color:#556;font-size:0.85em';
@@ -8794,6 +9513,10 @@ HTML = r"""<!DOCTYPE html>
         const el = document.createElement('div');
         el.className = 'ctrl-popup-item';
         el.innerHTML = '<span class="ctrl-popup-item-title">' + _ctrlEscapeHtml(name) + '</span>';
+        const edit = document.createElement('button');
+        edit.className = 'ctrl-popup-item-add'; edit.textContent = 'Edit';
+        edit.onclick = ev => { ev.stopPropagation(); _ctrlOpenFilterEditor(name); };
+        el.appendChild(edit);
         el.onclick = () => {
           _ctrlConfirmYesNo(
             'Apply filter "' + name + '" to the current playlist?',
@@ -8960,6 +9683,7 @@ HTML = r"""<!DOCTYPE html>
         'ctrl-tgl-dock':      !!data.dock,
         'ctrl-tgl-info-start':!!data.info_start,
         'ctrl-tgl-info-end':  !!data.info_end,
+        'ctrl-tgl-vote-skip': !!data.vote_skip,
         'ctrl-queue-blind':    !!data.queue_blind,
         'ctrl-queue-peek':     !!data.queue_reveal,
         'ctrl-queue-mute-peek':!!data.queue_mute_reveal,
@@ -9003,6 +9727,7 @@ HTML = r"""<!DOCTYPE html>
         'tgl_narrow': !!data.reveal, 'tgl_widen': !!data.reveal,
         'tgl_censors': !!data.censors, 'tgl_censors_nsfw': !!data.censors_nsfw, 'tgl_shortcuts': !!data.shortcuts, 'tgl_dock': !!data.dock,
         'tgl_info_start': !!data.info_start, 'tgl_info_end': !!data.info_end,
+        'tgl_vote_skip': !!data.vote_skip,
         'tgl_fullscreen': !!data.autoplay_fullscreen,
         'tgl_always_on_top': !!data.always_on_top,
         'lt':      !!data.light_mode,
@@ -9037,6 +9762,7 @@ HTML = r"""<!DOCTYPE html>
         'tgl_dock': !!data.dock,
         'tgl_info_start': !!data.info_start,
         'tgl_info_end': !!data.info_end,
+        'tgl_vote_skip': !!data.vote_skip,
       };
       for (const [eid, active] of Object.entries(tglProxyMap)) {
         document.querySelectorAll(`[data-proxy-extra="${eid}"]`).forEach(el => el.classList.toggle('ctrl-toggle-active', active));
@@ -9209,6 +9935,7 @@ HTML = r"""<!DOCTYPE html>
       'tgl_dock':     { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Dock',      title: 'Toggle docked player' },
       'tgl_info_start':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',         html: 'Info Start', title: 'Toggle auto-show info at start' },
       'tgl_info_end': { classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Info End',  title: 'Toggle auto-show info at end' },
+      'tgl_vote_skip':{ classes: 'ctrl-toggle-btn ctrl-sect-toggle',          html: 'Vote Skip', title: 'Allow web players to vote to skip after full information is revealed' },
       // Info Reveal
       'rev_info':     { classes: 'ctrl-sect-reveal',                          html: 'Info Popup', title: 'Show full information about the current theme' },
       'rev_title':    { classes: 'ctrl-sect-reveal',                          html: 'Title',     title: 'Show anime title only' },
@@ -9274,6 +10001,7 @@ HTML = r"""<!DOCTYPE html>
       'tgl_dock':     () => socket.emit('host_action',{action:'invoke',id:'dock_player'}),
       'tgl_info_start':() => socket.emit('host_action',{action:'invoke',id:'auto_info_start'}),
       'tgl_info_end': () => socket.emit('host_action',{action:'invoke',id:'auto_info_end'}),
+      'tgl_vote_skip':() => socket.emit('host_action',{action:'invoke',id:'vote_skip'}),
       'rev_info':     () => { socket.emit('host_action',{action:'invoke',id:'info_popup'}); _ctrlCloseExtrasPopup(); },
       'rev_title':    () => { socket.emit('host_action',{action:'invoke',id:'title_popup'}); _ctrlCloseExtrasPopup(); },
       'reveal_artist':() => { socket.emit('host_action',{action:'invoke',id:'artist_info'}); _ctrlCloseExtrasPopup(); },
@@ -9779,17 +10507,20 @@ HTML = r"""<!DOCTYPE html>
       const titleText  = document.getElementById('ctrl-upnext-title-text');
       const detailEl   = document.getElementById('ctrl-upnext-detail');
       const rerollBtn  = document.getElementById('ctrl-upnext-reroll');
+      const skipBtn    = document.getElementById('ctrl-upnext-skip-group');
       if (!d || !d.title) {
         if (titleText) titleText.textContent = d && d.end_of_playlist ? 'End of playlist' : 'No upcoming track';
         if (modeEl)    modeEl.textContent    = '';
         if (detailEl)  detailEl.textContent  = '';
         if (rerollBtn) rerollBtn.style.display = 'none';
+        if (skipBtn)   skipBtn.style.display = 'none';
         return;
       }
       if (modeEl)    modeEl.textContent    = d.mode_label || '';
       if (titleText) titleText.textContent = (d.marks || '') + (d.title || '');
       if (detailEl)  detailEl.textContent  = d.detail || '';
       if (rerollBtn) rerollBtn.style.display = d.reroll ? '' : 'none';
+      if (skipBtn)   skipBtn.style.display = d.skip_group ? '' : 'none';
     }
 
     socket.on('up_next_update', data => {
@@ -9911,6 +10642,40 @@ HTML = r"""<!DOCTYPE html>
       const area = document.getElementById('player-skip-area');
       if (area) area.style.display = 'none';
     }
+
+    let _voteSkipState = {
+      enabled: false, open: false, resolved: false, eligible: false,
+      voted: false, votes: 0, required: 0, epoch: 0
+    };
+
+    function _renderVoteSkip() {
+      const pane = document.getElementById('vote-skip-pane');
+      const btn = document.getElementById('vote-skip-btn');
+      const progress = document.getElementById('vote-skip-progress');
+      if (!pane || !btn || !progress) return;
+      const visible = !_isHost && _voteSkipState.enabled && _voteSkipState.open &&
+        _voteSkipState.eligible && !_voteSkipState.resolved;
+      pane.style.display = visible ? 'block' : 'none';
+      btn.classList.toggle('voted', !!_voteSkipState.voted);
+      btn.setAttribute('aria-pressed', _voteSkipState.voted ? 'true' : 'false');
+      btn.textContent = _voteSkipState.voted ? '\u2713 Voted to Skip' : '\u23ED\uFE0F Vote to Skip';
+      const votes = Math.max(0, Number(_voteSkipState.votes || 0));
+      const required = Math.max(0, Number(_voteSkipState.required || 0));
+      progress.textContent = required ? (votes + ' of ' + required + ' votes') : '';
+    }
+
+    function _toggleVoteSkip() {
+      if (!_voteSkipState.open || !_voteSkipState.eligible) return;
+      socket.emit('vote_skip_submit', {
+        voted: !_voteSkipState.voted,
+        epoch: _voteSkipState.epoch
+      });
+    }
+
+    socket.on('vote_skip_state', data => {
+      _voteSkipState = Object.assign({}, _voteSkipState, data || {});
+      _renderVoteSkip();
+    });
 
     // Received by the granted player only
     socket.on('skip_grant_update', data => {

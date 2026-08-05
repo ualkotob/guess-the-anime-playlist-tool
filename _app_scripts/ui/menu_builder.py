@@ -326,6 +326,7 @@ DEFAULT_SHORTCUTS = {
     "dock_player":          "d",
     "search_themes":        "s",
     "reroll_next":          "r",
+    "skip_infinite_group":  None,
     # ── Scoreboard (hidden) ───────────────────────────────────────────────
     "scoreboard_align":     "a",
     "scoreboard_extend":    "x",

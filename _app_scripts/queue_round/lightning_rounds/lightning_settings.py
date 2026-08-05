@@ -196,6 +196,7 @@ lightning_mode_settings_default = {
         "framed_video_clip": True,
         "background_music": {
             "rounds_per_track": 3,
+            "repeat_after_percent": 50,
             "random_start": False,
             "hide_display_during_reveal": False
         }
@@ -312,6 +313,7 @@ lightning_mode_settings_default = {
     "characters": {
         "length": 12,
         "muted": True,
+        "show_characters_during_answer": True,
         "variety": {
             "enabled": True,
             "popularity": {
@@ -421,6 +423,7 @@ lightning_mode_settings_default = {
     "emoji": {
         "length": 12,
         "muted": True,
+        "show_emojis_during_answer": True,
         "variety": {
             "enabled": True,
             "popularity": {
@@ -509,6 +512,13 @@ lightning_mode_settings_default = {
     "reveal": {
         "length": 20,
         "muted": True,
+        "automatic_curve_strength": {
+            "blur": 100,
+            "pixelize": 100,
+            "outline": 100,
+            "wave": 100,
+            "zoom": 100
+        },
         "variants": {
             "blur": True,
             "edge": True,
@@ -598,6 +608,7 @@ lightning_mode_settings_default = {
     "synopsis": {
         "length": 20,
         "muted": True,
+        "show_synopsis_during_answer": True,
         "variety": {
             "enabled": True,
             "popularity": {
@@ -655,6 +666,7 @@ lightning_mode_settings_default = {
     "trivia": {
         "length": 12,
         "muted": True,
+        "show_question_during_answer": True,
         "variety": {
             "enabled": True,
             "popularity": {

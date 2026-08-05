@@ -229,7 +229,11 @@ def set_variety_light_mode(queue=None, excluded_modes=[]):
 # ---------------------------------------------------------------------------
 def has_lightning_mode_info(data, round_type):
     """Returns True if the given round_type has enough info for the file's data."""
-    from _app_scripts.queue_round.lightning_rounds import lightning_manager, trivia_round
+    from _app_scripts.queue_round.lightning_rounds import (
+        emoji_overlay,
+        lightning_manager,
+        trivia_round,
+    )
     if round_type == "clues":
         return len(information_popup.get_tags(data)) >= 3
     elif round_type == "song":
@@ -253,9 +257,15 @@ def has_lightning_mode_info(data, round_type):
     elif round_type == "ost":
         return not (streaming.youtube_api_limited or not state.config.YOUTUBE_API_KEY)
     elif round_type == "trivia":
-        return data.get("trivia") or (state.config.OPENAI_API_KEY and (int(data.get("season", "9999")[-4:]) <= trivia_round.gpt_cutoff_year or len((data.get("synopsis") or "").split()) > 40))
+        return trivia_round.get_cached_trivia(data) or (
+            trivia_round.is_openai_available()
+            and (
+                int(data.get("season", "9999")[-4:]) <= trivia_round.gpt_cutoff_year
+                or len((data.get("synopsis") or "").split()) > 40
+            )
+        )
     elif round_type == "emoji":
-        return bool(data.get("emojis")) or state.config.OPENAI_API_KEY
+        return bool(emoji_overlay.get_cached_emoji_clues(data)) or trivia_round.is_openai_available()
     elif round_type == "names":
         return len(data.get("characters", [])) >= 6
     elif round_type in ["c. reveal", "c. profile", "c. name"]:

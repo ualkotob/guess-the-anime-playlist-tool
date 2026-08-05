@@ -132,9 +132,19 @@ _current_toggles: dict = {}   # {blind, peek, mute, censors, shortcuts, dock, ce
 _host_action_callback = None  # callable(action, data) set by main app for remote control
 _on_buzz_callback = None       # callable(rank: int, name: str) called when a player buzzes in
 _on_skip_grant_callback = None # callable(name: str) called when skip grant changes (empty = cleared)
+_on_skip_decline_callback = None # callable(name: str, declined: bool); empty name clears all
+_on_vote_skip_changed_callback = None # callable(name: str, voted: bool); empty name clears all
+_on_vote_skip_passed_callback = None # callable() when a strict majority votes to skip
 _on_buzzer_lock_callback = None # callable(name: str, locked: bool) for per-player buzzer locks
 _pending_selections: dict = {}  # name → answer; silently tracks current selection before submit
 _skip_grant_player: str = ''  # name of the player currently granted a skip (empty = none)
+_skip_declined_players: set[str] = set()  # retained for the current question
+_vote_skip_enabled: bool = False
+_vote_skip_open: bool = False
+_vote_skip_resolved: bool = False
+_vote_skip_epoch: int = 0
+_vote_skip_votes: set[str] = set()
+_vote_skip_lock = threading.RLock()
 
 public_url = None          # Readable from main app after start()
 _server_port = 8080        # Port the server is listening on; set in start()
@@ -721,6 +731,7 @@ def push_question(title, info='', choices=None, drum=None, stepper=None, tags=No
     _socketio.emit('question', _current_question)
     # Clear any pending skip grant when a new question starts
     push_skip_grant('')
+    _clear_skip_declines()
     _emit_buzzer_state()
 
 
@@ -749,6 +760,179 @@ def push_skip_grant(name: str):
             _on_skip_grant_callback(name)
         except Exception:
             pass
+
+
+def _set_skip_declined(name: str, declined: bool):
+    """Update one player's durable skip-decline status for this question."""
+    name = str(name or '').strip()
+    if not name:
+        return
+    if declined:
+        _skip_declined_players.add(name)
+    else:
+        _skip_declined_players.discard(name)
+    if _on_skip_decline_callback is not None:
+        try:
+            _on_skip_decline_callback(name, declined)
+        except Exception:
+            pass
+
+
+def _clear_skip_declines():
+    """Clear all durable decline badges at a question boundary."""
+    _skip_declined_players.clear()
+    if _on_skip_decline_callback is not None:
+        try:
+            _on_skip_decline_callback('', False)
+        except Exception:
+            pass
+
+
+def _eligible_vote_skip_names():
+    """Return unique connected player names allowed to participate."""
+    names = set()
+    for sid, raw_name in list(_connected_players.items()):
+        name = str(raw_name or '').strip()
+        meta = _player_meta.get(sid) or {}
+        if (not name or sid in _host_sids or name in _banned_names
+                or name in _shadow_kicked_players
+                or meta.get('ip') in _shadow_kicked_ips):
+            continue
+        names.add(name)
+    return names
+
+
+def get_vote_skip_state(sid=None):
+    """Return the current vote-skip state, personalized for one connection."""
+    with _vote_skip_lock:
+        eligible_names = _eligible_vote_skip_names()
+        active_votes = _vote_skip_votes & eligible_names
+        required = len(eligible_names) // 2 + 1 if eligible_names else 0
+        name = str(_connected_players.get(sid, '') or '').strip() if sid else ''
+        eligible = bool(name and name in eligible_names and sid not in _host_sids)
+        return {
+            'enabled': _vote_skip_enabled,
+            'open': _vote_skip_open,
+            'resolved': _vote_skip_resolved,
+            'epoch': _vote_skip_epoch,
+            'votes': len(active_votes),
+            'required': required,
+            'eligible_count': len(eligible_names),
+            'eligible': eligible,
+            'voted': bool(eligible and name in active_votes),
+        }
+
+
+def _emit_vote_skip_state(to_sid=None):
+    if not FLASK_AVAILABLE or _socketio is None:
+        return
+    sids = [to_sid] if to_sid else list(_connected_players)
+    for sid in sids:
+        _socketio.emit('vote_skip_state', get_vote_skip_state(sid), to=sid)
+
+
+def _evaluate_vote_skip():
+    """Reconcile voters and fire the majority callback at most once."""
+    global _vote_skip_open, _vote_skip_resolved
+    removed = set()
+    passed = False
+    with _vote_skip_lock:
+        if _vote_skip_open and _vote_skip_enabled and not _vote_skip_resolved:
+            eligible_names = _eligible_vote_skip_names()
+            removed = _vote_skip_votes - eligible_names
+            _vote_skip_votes.intersection_update(eligible_names)
+            required = len(eligible_names) // 2 + 1 if eligible_names else 0
+            if required and len(_vote_skip_votes) >= required:
+                _vote_skip_open = False
+                _vote_skip_resolved = True
+                passed = True
+    if _on_vote_skip_changed_callback is not None:
+        for name in removed:
+            try:
+                _on_vote_skip_changed_callback(name, False)
+            except Exception:
+                pass
+    _emit_vote_skip_state()
+    if passed and _on_vote_skip_passed_callback is not None:
+        try:
+            _on_vote_skip_passed_callback()
+        except Exception:
+            pass
+
+
+def set_vote_skip_enabled(enabled):
+    """Set the persistent feature switch and clear stale votes when disabled."""
+    global _vote_skip_enabled, _vote_skip_open, _vote_skip_resolved, _vote_skip_epoch
+    enabled = bool(enabled)
+    with _vote_skip_lock:
+        if enabled == _vote_skip_enabled:
+            return
+        _vote_skip_enabled = enabled
+        _vote_skip_epoch += 1
+        _vote_skip_open = bool(enabled and _info_public)
+        _vote_skip_resolved = False
+        _vote_skip_votes.clear()
+    if _on_vote_skip_changed_callback is not None:
+        try:
+            _on_vote_skip_changed_callback('', False)
+        except Exception:
+            pass
+    _broadcast_players_update()
+
+
+def reset_vote_skip():
+    """Clear the current vote at a theme/session boundary."""
+    global _vote_skip_open, _vote_skip_resolved, _vote_skip_epoch
+    with _vote_skip_lock:
+        _vote_skip_epoch += 1
+        _vote_skip_open = False
+        _vote_skip_resolved = False
+        _vote_skip_votes.clear()
+    if _on_vote_skip_changed_callback is not None:
+        try:
+            _on_vote_skip_changed_callback('', False)
+        except Exception:
+            pass
+    _broadcast_players_update()
+
+
+def open_vote_skip():
+    """Open voting after full information has been publicly revealed."""
+    global _vote_skip_open
+    with _vote_skip_lock:
+        if not _vote_skip_enabled or _vote_skip_resolved:
+            return
+        _vote_skip_open = True
+    _evaluate_vote_skip()
+
+
+def submit_vote_skip(sid, voted, epoch):
+    """Apply one player's vote. Returns True only when their vote changed."""
+    name = str(_connected_players.get(sid, '') or '').strip()
+    with _vote_skip_lock:
+        if (not _vote_skip_enabled or not _vote_skip_open or _vote_skip_resolved
+                or sid in _host_sids or name not in _eligible_vote_skip_names()):
+            return False
+        try:
+            if int(epoch) != _vote_skip_epoch:
+                return False
+        except (TypeError, ValueError):
+            return False
+        voted = bool(voted)
+        was_voted = name in _vote_skip_votes
+        if voted == was_voted:
+            return False
+        if voted:
+            _vote_skip_votes.add(name)
+        else:
+            _vote_skip_votes.discard(name)
+    if _on_vote_skip_changed_callback is not None:
+        try:
+            _on_vote_skip_changed_callback(name, voted)
+        except Exception:
+            pass
+    _broadcast_players_update()
+    return True
 
 
 def remove_answer_by_name(name: str):
@@ -830,6 +1014,7 @@ def clear_question():
     _broadcast_players_update()
     set_info_public(False)
     push_skip_grant('')
+    _clear_skip_declines()
 
 
 def get_answers():
@@ -959,6 +1144,8 @@ def set_info_public(show: bool):
     """Show or hide the metadata button for all non-host clients."""
     global _info_public
     _info_public = show
+    if show:
+        open_vote_skip()
     if not FLASK_AVAILABLE or _socketio is None:
         return
     if show:
@@ -1022,6 +1209,24 @@ def push_filter_list(filters: list, to_sid: str = None):
         sids = [to_sid] if to_sid else list(_host_sids)
         for sid in sids:
             _socketio.emit('filter_list', payload, to=sid)
+
+
+def push_filter_editor_context(context: dict, to_sid: str = None):
+    """Send a complete playlist-filter editor context to host clients."""
+    if FLASK_AVAILABLE and _socketio:
+        sids = [to_sid] if to_sid else list(_host_sids)
+        for sid in sids:
+            _socketio.emit('filter_editor_context', context, to=sid)
+
+
+def push_filter_editor_result(kind: str, result: dict, to_sid: str = None):
+    """Send a preview/apply/save result to the requesting host client."""
+    if FLASK_AVAILABLE and _socketio:
+        payload = dict(result or {})
+        payload['kind'] = kind
+        sids = [to_sid] if to_sid else list(_host_sids)
+        for sid in sids:
+            _socketio.emit('filter_editor_result', payload, to=sid)
 
 
 def push_directory_groups(groups: list, stat_type: str, total: int, to_sid: str = None):
@@ -1151,6 +1356,24 @@ def set_skip_grant_callback(fn):
     _on_skip_grant_callback = fn
 
 
+def set_skip_decline_callback(fn):
+    """Register callable(name, declined); an empty name clears all badges."""
+    global _on_skip_decline_callback
+    _on_skip_decline_callback = fn
+
+
+def set_vote_skip_changed_callback(fn):
+    """Register callable(name, voted); an empty name clears all vote badges."""
+    global _on_vote_skip_changed_callback
+    _on_vote_skip_changed_callback = fn
+
+
+def set_vote_skip_passed_callback(fn):
+    """Register a callback fired once when vote-skip reaches a majority."""
+    global _on_vote_skip_passed_callback
+    _on_vote_skip_passed_callback = fn
+
+
 def set_buzzer_lock_callback(fn):
     """Register a callable(name: str, locked: bool) for per-player buzzer locks."""
     global _on_buzzer_lock_callback
@@ -1255,6 +1478,7 @@ def stop():
     _taken_years.clear()
     _taken_scores.clear()
     _taken_ranks.clear()
+    reset_vote_skip()
 
 
 def is_running():
@@ -1422,6 +1646,7 @@ def _build_app():
             emit('timer_update', _timer_state)
         if _info_public and _current_metadata:
             emit('info_public_update', {'show': True, 'metadata': _current_metadata})
+        emit('vote_skip_state', get_vote_skip_state(_req.sid))
         emit('emoji_status', {'muted': False, 'timed_out': False, 'timeout_until': 0, 'remaining_ms': 0})
         _emit_buzzer_state(to_sid=_req.sid)
         # Send skip grant if this player is the granted one
@@ -1485,6 +1710,7 @@ def _build_app():
             if _current_toggles:
                 emit('toggles_update', _current_toggles)
             emit('host_messages_update', {'messages': _host_visible_messages()})
+            _broadcast_players_update()
         else:
             emit('host_denied', {})
 
@@ -2056,6 +2282,8 @@ def _build_app():
         name = str((data or {}).get('name', '')).strip()
         # Toggle: if already granted to this player, revoke; otherwise grant
         new_name = '' if (_skip_grant_player == name) else name
+        if new_name:
+            _set_skip_declined(new_name, False)
         push_skip_grant(new_name)
 
     @_socketio.on('toggle_buzzer_lock')
@@ -2093,6 +2321,17 @@ def _build_app():
         if name in _banned_names or _req_client_ip(_req) in _shadow_kicked_ips:
             return
         push_skip_grant('')
+        _set_skip_declined(name, True)
+
+    @_socketio.on('vote_skip_submit')
+    def handle_vote_skip_submit(data):
+        from flask import request as _req
+        payload = data or {}
+        changed = submit_vote_skip(
+            _req.sid, payload.get('voted', True), payload.get('epoch')
+        )
+        if not changed:
+            emit('vote_skip_state', get_vote_skip_state(_req.sid))
 
     @_socketio.on('host_action')
     def handle_host_action(data):
@@ -2133,9 +2372,12 @@ def _build_app():
 
 def _broadcast_players_update():
     """Emit current player list (with submitted state) to all connected clients."""
+    _evaluate_vote_skip()
     if not _socketio:
         return
     submitted_names = {a['name'] for a in _submitted_answers}
+    with _vote_skip_lock:
+        vote_skip_names = set(_vote_skip_votes)
     host_names = {name for sid, name in _connected_players.items() if sid in _host_sids}
     seen = set()
     players = []
@@ -2153,6 +2395,7 @@ def _broadcast_players_update():
           'messages_blocked': name in _message_blocked_names,
           'message_notifications_blocked': name in _message_notifications_blocked_names,
           'buzzer_locked': name in _buzzer_disabled_names,
+          'vote_skip': name in vote_skip_names,
         })
     for name in _shadow_kicked_players:
         if name not in seen:
@@ -2166,6 +2409,7 @@ def _broadcast_players_update():
           'messages_blocked': name in _message_blocked_names,
           'message_notifications_blocked': name in _message_notifications_blocked_names,
           'buzzer_locked': name in _buzzer_disabled_names,
+          'vote_skip': False,
         })
     # Deduped list goes to everyone (player-facing UI is unchanged).
     _socketio.emit('players_update', {'players': players})
@@ -2200,6 +2444,7 @@ def _broadcast_players_update():
                   'messages_blocked': name in _message_blocked_names,
                   'message_notifications_blocked': name in _message_notifications_blocked_names,
                   'buzzer_locked': name in _buzzer_disabled_names,
+                  'vote_skip': name in vote_skip_names,
                 })
         for name in _shadow_kicked_players:
             host_players.append({
@@ -2217,6 +2462,7 @@ def _broadcast_players_update():
               'messages_blocked': name in _message_blocked_names,
               'message_notifications_blocked': name in _message_notifications_blocked_names,
               'buzzer_locked': name in _buzzer_disabled_names,
+              'vote_skip': False,
             })
         for _hsid in list(_host_sids):
             _socketio.emit('players_update', {'players': host_players}, to=_hsid)

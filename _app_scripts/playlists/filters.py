@@ -10,7 +10,9 @@ refresh_pop_time_groups / get_playlists_dict) — both references are runtime
 only, so the cycle resolves cleanly.
 """
 import copy
+import hashlib
 import json
+import math
 import os
 import re
 
@@ -45,6 +47,199 @@ DEFAULT_INFINITE_FILTER = {
     ],
     "playlist_filter_exclude": ["Tagged Themes", "New Themes"],
 }
+
+THEME_FILTER_OPTIONS = [
+    "DUPLICATES", "LATER VERSIONS",
+    "OVERLAP (Without Censors)", "OVERLAP (With Censors)",
+    "NSFW (Without Censors)", "NSFW (With Censors)",
+    "SPOILER (Without Censors)", "SPOILER (With Censors)",
+    "TRANSITION (Without Censors)", "TRANSITION (With Censors)",
+    "MOVIE EDs (Without Censors)", "MOVIE EDs (With Censors)",
+]
+
+FILTER_LIST_KEYS = {
+    "playlist_filter", "playlist_filter_and", "playlist_filter_exclude",
+    "themes_include", "themes_exclude", "artists", "studios",
+    "tags_include", "tags_include_and", "tags_exclude",
+}
+FILTER_FLOAT_KEYS = {"score_min", "score_max"}
+FILTER_INT_KEYS = {
+    "rank_min", "rank_max", "members_min", "members_max",
+    "popularity_min", "popularity_max",
+}
+FILTER_KEYS = (
+    FILTER_LIST_KEYS | FILTER_FLOAT_KEYS | FILTER_INT_KEYS |
+    {"keywords", "theme_type", "season_min", "season_max"}
+)
+
+# The web editor remembers the unfiltered base of the most recent ordinary
+# playlist.  This lets a host loosen a filter after applying it; evaluating
+# against the already-filtered result would otherwise make removed entries
+# impossible to recover without reloading the playlist.
+_editor_regular_source = None
+_editor_regular_name = None
+_editor_regular_result_revision = None
+_editor_regular_filter = {}
+
+
+class FilterValidationError(ValueError):
+    """Raised when an untrusted filter definition cannot be normalized."""
+
+    def __init__(self, errors):
+        self.errors = list(errors)
+        super().__init__("; ".join(self.errors))
+
+
+def _normalized_string_list(value, key, errors):
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        errors.append(f"{key} must be a list")
+        return []
+    if len(value) > 500:
+        errors.append(f"{key} has too many selections")
+        value = list(value)[:500]
+    result = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, str):
+            errors.append(f"{key} contains a non-text selection")
+            continue
+        item = item.strip()
+        if not item:
+            continue
+        if len(item) > 200:
+            errors.append(f"{key} contains a selection that is too long")
+            continue
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def normalize_filter(filters, *, strict=False):
+    """Return a safe, canonical filter dictionary.
+
+    Saved desktop filters are normalized permissively for backwards
+    compatibility. Browser submissions use ``strict=True`` so malformed or
+    unknown fields are reported instead of silently reaching filter logic.
+    """
+    if filters is None:
+        return {}
+    if not isinstance(filters, dict):
+        raise FilterValidationError(["Filter data must be an object"])
+
+    source = copy.deepcopy(filters)
+    utils._migrate_theme_flags(source)
+    errors = []
+    if strict:
+        unknown = sorted(set(source) - FILTER_KEYS)
+        if unknown:
+            errors.append("Unknown filter fields: " + ", ".join(unknown))
+
+    normalized = {}
+    for key in FILTER_LIST_KEYS:
+        if key not in source:
+            continue
+        values = _normalized_string_list(source.get(key), key, errors)
+        if strict and key.startswith("playlist_filter"):
+            unsafe_names = [
+                value for value in values
+                if value != os.path.basename(value) or "/" in value or "\\" in value
+            ]
+            if unsafe_names:
+                errors.append(f"{key} contains an invalid playlist name")
+                values = [value for value in values if value not in unsafe_names]
+        if key in {"themes_include", "themes_exclude"}:
+            unknown_flags = [value for value in values if value not in THEME_FILTER_OPTIONS]
+            if strict and unknown_flags:
+                errors.append(f"{key} contains unknown theme rules")
+            values = [value for value in values if value in THEME_FILTER_OPTIONS]
+        if values:
+            normalized[key] = values
+
+    if "keywords" in source:
+        value = source.get("keywords")
+        if not isinstance(value, str):
+            errors.append("keywords must be text")
+        else:
+            value = value.strip()
+            if len(value) > 500:
+                errors.append("keywords is too long")
+            elif value:
+                normalized["keywords"] = value
+
+    theme_type = source.get("theme_type")
+    if theme_type not in (None, "", "Both"):
+        if theme_type in {"Opening", "Ending"}:
+            normalized["theme_type"] = theme_type
+        else:
+            errors.append("theme_type must be Both, Opening, or Ending")
+
+    for key in FILTER_FLOAT_KEYS | FILTER_INT_KEYS:
+        if key not in source or source.get(key) in (None, ""):
+            continue
+        value = source.get(key)
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError
+            if key in FILTER_FLOAT_KEYS:
+                if not 0 <= number <= 10:
+                    raise ValueError
+                normalized[key] = round(number, 1)
+            else:
+                if not number.is_integer() or not 0 <= number <= 2_147_483_647:
+                    raise ValueError
+                normalized[key] = int(number)
+        except (TypeError, ValueError):
+            limit = "between 0 and 10" if key in FILTER_FLOAT_KEYS else "a non-negative whole number"
+            errors.append(f"{key} must be {limit}")
+
+    for key in ("season_min", "season_max"):
+        if key not in source or source.get(key) in (None, ""):
+            continue
+        value = source.get(key)
+        if not isinstance(value, str) or not re.fullmatch(
+            r"(?:Winter|Spring|Summer|Fall)\s+\d{4}", value.strip()
+        ):
+            errors.append(f"{key} must be a season such as Spring 2024")
+        else:
+            normalized[key] = value.strip()
+
+    ordered_pairs = [
+        ("score_min", "score_max"),
+        ("members_min", "members_max"),
+        # Rank and popularity use best-number / worst-number semantics: the
+        # *_max field is the best accepted number and *_min is the worst.
+        ("rank_max", "rank_min"),
+        ("popularity_max", "popularity_min"),
+    ]
+    for low_key, high_key in ordered_pairs:
+        if low_key in normalized and high_key in normalized and normalized[low_key] > normalized[high_key]:
+            errors.append(f"{low_key} cannot be greater than {high_key}")
+    if "season_min" in normalized and "season_max" in normalized:
+        if utils._season_to_tuple(normalized["season_min"]) > utils._season_to_tuple(normalized["season_max"]):
+            errors.append("season_min cannot be later than season_max")
+
+    if errors:
+        raise FilterValidationError(errors)
+    return normalized
+
+
+def _playlist_revision(files=None):
+    playlist = state.metadata.playlist
+    values = list(playlist.get("playlist", [])) if files is None else list(files)
+    payload = json.dumps(
+        [playlist.get("name", ""), bool(playlist.get("infinite")), values],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()[:20]
 
 
 def load_filters(update=False):
@@ -93,8 +288,7 @@ def apply_saved_filter(name, filters_by_index=None, notify=True):
     )
     if not filter_data:
         return False
-    filters = copy.deepcopy(filter_data.get("filter") or {})
-    utils._migrate_theme_flags(filters)
+    filters = normalize_filter(filter_data.get("filter") or {})
     playlist = state.metadata.playlist
     if playlist.get("infinite"):
         playlist["filter"] = filters
@@ -291,14 +485,7 @@ def show_filter_popup():
         season_end_dropdown.icursor(tk.END)
     season_end_dropdown.bind("<<ComboboxSelected>>", unhighlight_season_end_dropdown)
 
-    theme_exclude_options = [
-        "DUPLICATES", "LATER VERSIONS",
-        "OVERLAP (Without Censors)", "OVERLAP (With Censors)",
-        "NSFW (Without Censors)", "NSFW (With Censors)",
-        "SPOILER (Without Censors)", "SPOILER (With Censors)",
-        "TRANSITION (Without Censors)", "TRANSITION (With Censors)",
-        "MOVIE EDs (Without Censors)", "MOVIE EDs (With Censors)",
-    ]
+    theme_exclude_options = THEME_FILTER_OPTIONS
     themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     playlist_exclude_listbox = filter_entry_listbox("PLAYLISTS\nEXCLUDE\n(OR)", right_column, available_playlists, height=4)
@@ -534,14 +721,284 @@ def get_all_studios(playlis, games=True, repeats=False):
     return sorted(studios)
 
 
-def filter_playlist(filters, notify=True):
-    """Filters the playlist based on given criteria."""
+def get_saved_filter(name):
+    """Return a named saved filter definition, or ``None`` when not found."""
+    target = str(name or "").strip()
+    for data in get_all_filters().values():
+        if data.get("name") == target:
+            try:
+                return normalize_filter(data.get("filter") or {})
+            except FilterValidationError:
+                return None
+    return None
+
+
+def save_filter_definition(name, filters, *, overwrite=False):
+    """Validate and save a web-created filter using a safe filename."""
+    name = str(name or "").strip()
+    errors = []
+    if not name:
+        errors.append("A filter name is required")
+    if len(name) > 80:
+        errors.append("Filter names must be 80 characters or fewer")
+    if name in {".", ".."} or re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+        errors.append("The filter name contains characters Windows cannot use")
+    if name.endswith("."):
+        errors.append("Filter names cannot end with a period")
+    stem = name.rstrip(" .").split(".", 1)[0].upper()
+    if stem in {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }:
+        errors.append("That filter name is reserved by Windows")
+    if errors:
+        raise FilterValidationError(errors)
+
+    normalized = normalize_filter(filters, strict=True)
+    os.makedirs(FILTERS_FOLDER, exist_ok=True)
+    existing_path = None
+    for filename in os.listdir(FILTERS_FOLDER):
+        if filename.lower() == f"{name}.json".lower():
+            existing_path = os.path.join(FILTERS_FOLDER, filename)
+            break
+    if existing_path and not overwrite:
+        raise FileExistsError(name)
+    path = existing_path or os.path.join(FILTERS_FOLDER, f"{name}.json")
+    utils._atomic_json_write(path, {"name": name, "filter": normalized}, indent=4)
+    return normalized
+
+
+def _editor_source_and_filter():
+    """Return a stable editor source and the last web-applied draft."""
+    global _editor_regular_source, _editor_regular_name
+    global _editor_regular_result_revision, _editor_regular_filter
+
+    playlist = state.metadata.playlist
+    if playlist.get("infinite"):
+        return get_filter_source(), normalize_filter(playlist.get("filter") or {})
+
+    live = list(playlist.get("playlist", []))
+    live_revision = _playlist_revision(live)
+    name = playlist.get("name", "")
+    if (
+        _editor_regular_source is not None
+        and _editor_regular_name == name
+        and _editor_regular_result_revision == live_revision
+    ):
+        return list(_editor_regular_source), copy.deepcopy(_editor_regular_filter)
+
+    _editor_regular_source = list(live)
+    _editor_regular_name = name
+    _editor_regular_result_revision = live_revision
+    _editor_regular_filter = {}
+    return list(live), {}
+
+
+def _season_sort_key(season):
+    try:
+        part, year = season.split()
+        return int(year), {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}.get(part, 99)
+    except (AttributeError, TypeError, ValueError):
+        return 9999, 99
+
+
+def get_filter_editor_context(saved_name=None):
+    """Build the host web editor's filter, option lists, and source token."""
+    source, current_filter = _editor_source_and_filter()
+    selected_name = str(saved_name or "").strip()
+    if selected_name:
+        selected_filter = get_saved_filter(selected_name)
+        if selected_filter is None:
+            raise FilterValidationError(["The selected saved filter no longer exists"])
+        current_filter = selected_filter
+
+    seasons = set()
+    artists = set()
+    studios = set()
+    tags = set()
+    scores = []
+    ranks = []
+    members = []
+    popularity = []
+    for filename in source:
+        data = metadata_fetch.get_metadata(filename)
+        if not data:
+            continue
+        season = data.get("season")
+        if season:
+            seasons.add(season)
+        try:
+            if data.get("score") is not None:
+                scores.append(float(data["score"]))
+        except (TypeError, ValueError):
+            pass
+        for key, target in (("rank", ranks), ("members", members), ("popularity", popularity)):
+            try:
+                if data.get(key) is not None:
+                    target.append(int(data[key]))
+            except (TypeError, ValueError):
+                pass
+        for song in data.get("songs", []):
+            artists.update(a for a in song.get("artist", []) if isinstance(a, str) and a)
+        studios.update(s for s in data.get("studios", []) if isinstance(s, str) and s)
+        tags.update(t for t in information_popup.get_tags(data) if isinstance(t, str) and t)
+
+    def _range(values, fallback_min=0, fallback_max=0):
+        return {
+            "min": min(values) if values else fallback_min,
+            "max": max(values) if values else fallback_max,
+        }
+
+    saved_filters = sorted(
+        (data.get("name") for data in get_all_filters().values() if data.get("name")),
+        key=str.lower,
+    )
+    playlists = sorted(set(playlist_ops.get_playlists_dict().values()), key=str.lower)
+    return {
+        "filter": current_filter,
+        "selected_name": selected_name,
+        "is_infinite": bool(state.metadata.playlist.get("infinite")),
+        "playlist_name": state.metadata.playlist.get("name") or "Playlist",
+        "source_total": len(source),
+        "source_revision": _playlist_revision(source),
+        "live_revision": _playlist_revision(),
+        "saved_filters": saved_filters,
+        "options": {
+            "playlists": playlists,
+            "seasons": sorted(seasons, key=_season_sort_key),
+            "artists": sorted(artists, key=str.lower),
+            "studios": sorted(studios, key=str.lower),
+            "tags": sorted(tags, key=str.lower),
+            "theme_rules": list(THEME_FILTER_OPTIONS),
+        },
+        "ranges": {
+            "score": _range(scores, 0, 10),
+            "rank": _range(ranks),
+            "members": _range(members),
+            "popularity": _range(popularity),
+        },
+    }
+
+
+def preview_filter_definition(filters, *, source_revision=None):
+    """Evaluate a browser draft against the editor's stable source."""
+    source, _ = _editor_source_and_filter()
+    current_source_revision = _playlist_revision(source)
+    if source_revision and source_revision != current_source_revision:
+        return {"ok": False, "stale": True, "errors": ["The filter source changed; reopen the editor"]}
+    try:
+        normalized = normalize_filter(filters, strict=True)
+    except FilterValidationError as exc:
+        return {"ok": False, "errors": exc.errors}
+    try:
+        matched = evaluate_filter(normalized, source)
+    except Exception as exc:
+        print(f"Unable to preview playlist filter: {exc}")
+        return {"ok": False, "errors": ["Unable to evaluate this filter"]}
+    return {
+        "ok": True,
+        "filter": normalized,
+        "matched": len(matched),
+        "total": len(source),
+        "source_revision": current_source_revision,
+    }
+
+
+def apply_saved_filter_from_web(name):
+    """Apply a saved filter through the web editor's reversible source."""
+    saved_filter = get_saved_filter(name)
+    if saved_filter is None:
+        return {"ok": False, "errors": ["The selected saved filter no longer exists"]}
+    source, _ = _editor_source_and_filter()
+    return apply_filter_definition(
+        saved_filter,
+        source_revision=_playlist_revision(source),
+        live_revision=_playlist_revision(),
+    )
+
+
+def apply_filter_definition(filters, *, source_revision=None, live_revision=None):
+    """Apply an explicit web-editor draft, preserving the current item."""
+    global _editor_regular_result_revision, _editor_regular_filter
+
+    source, _ = _editor_source_and_filter()
+    if source_revision and source_revision != _playlist_revision(source):
+        return {"ok": False, "stale": True, "errors": ["The filter source changed; reopen the editor"]}
+    if live_revision and live_revision != _playlist_revision():
+        return {"ok": False, "stale": True, "errors": ["The playlist changed while this filter was open"]}
+    try:
+        normalized = normalize_filter(filters, strict=True)
+    except FilterValidationError as exc:
+        return {"ok": False, "errors": exc.errors}
+
+    playlist = state.metadata.playlist
+    if playlist.get("infinite"):
+        old_filter = copy.deepcopy(playlist.get("filter") or {})
+        playlist["filter"] = copy.deepcopy(normalized)
+        print("Applied Filters:", normalized)
+        try:
+            infinite.refresh_pop_time_groups()
+        except Exception as exc:
+            playlist["filter"] = old_filter
+            print(f"Unable to apply infinite playlist filter: {exc}")
+            return {"ok": False, "errors": ["Unable to apply this filter"]}
+        config_io.save_config()
+        return {
+            "ok": True,
+            "filter": normalized,
+            "matched": infinite.total_infinite_files,
+            "total": len(source),
+            "source_revision": _playlist_revision(source),
+            "live_revision": _playlist_revision(),
+        }
+
+    live = list(playlist.get("playlist", []))
+    old_index = playlist.get("current_index", -1)
+    current_file = live[old_index] if 0 <= old_index < len(live) else None
+    try:
+        filtered = evaluate_filter(normalized, source)
+    except Exception as exc:
+        print(f"Unable to apply playlist filter: {exc}")
+        return {"ok": False, "errors": ["Unable to apply this filter"]}
+    playlist["playlist"] = filtered
+    if current_file in filtered:
+        new_index = filtered.index(current_file)
+    else:
+        new_index = 0 if filtered else -1
+    print("Applied Filters:", normalized)
+    lists.show_playlist(True)
+    transport.update_current_index(new_index)
+    _editor_regular_filter = copy.deepcopy(normalized)
+    _editor_regular_result_revision = _playlist_revision(filtered)
+    return {
+        "ok": True,
+        "filter": normalized,
+        "matched": len(filtered),
+        "total": len(source),
+        "current_index": new_index,
+        "source_revision": _playlist_revision(source),
+        "live_revision": _editor_regular_result_revision,
+    }
+
+
+def get_filter_source():
+    """Return the current unmodified source used by playlist filtering."""
     playlist = state.metadata.playlist
     if playlist.get("infinite", False):
         inf_settings = infinite.get_infinite_settings()
-        playlis = playlist_ops.get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=False, deduplicate_versions=False)
-    else:
-        playlis = playlist["playlist"]
+        return playlist_ops.get_directory_files(
+            include_non_local=inf_settings.get("include_non_local_files", False),
+            deduplicate_files=False,
+            deduplicate_versions=False,
+        )
+    return list(playlist.get("playlist", []))
+
+
+def evaluate_filter(filters, playlis=None):
+    """Evaluate a filter without changing the live playlist or its index."""
+    filters = normalize_filter(filters)
+    playlis = list(get_filter_source() if playlis is None else playlis)
 
     filtered = []
 
@@ -614,10 +1071,15 @@ def filter_playlist(filters, notify=True):
     def _load_playlist_files(names):
         result = set()
         for name in (names if isinstance(names, list) else [names]):
+            if not isinstance(name, str) or name != os.path.basename(name) or "/" in name or "\\" in name:
+                continue
             path = os.path.join(PLAYLISTS_FOLDER, f"{name}.json")
             if os.path.exists(path):
-                with open(path, "r") as f:
-                    result.update(json.load(f).get("playlist", []))
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        result.update(json.load(f).get("playlist", []))
+                except (OSError, json.JSONDecodeError, AttributeError):
+                    continue
         return result
 
     playlist_filter_files = _load_playlist_files(filters["playlist_filter"]) if has_playlist_filter else set()
@@ -652,7 +1114,10 @@ def filter_playlist(filters, notify=True):
                 continue
 
         if has_rank_min or has_rank_max:
-            rank = data.get("rank") or 100000
+            try:
+                rank = int(data.get("rank") or 100000)
+            except (TypeError, ValueError):
+                rank = 100000
             if has_rank_min and rank > filter_rank_min:
                 continue
             if has_rank_max and rank < filter_rank_max:
@@ -666,7 +1131,10 @@ def filter_playlist(filters, notify=True):
                 continue
 
         if has_popularity_min or has_popularity_max:
-            popularity = data.get("popularity") or INT_INF
+            try:
+                popularity = int(data.get("popularity") or INT_INF)
+            except (TypeError, ValueError, OverflowError):
+                popularity = INT_INF
             if has_popularity_min and popularity > filter_popularity_min:
                 continue
             if has_popularity_max and popularity < filter_popularity_max:
@@ -680,7 +1148,7 @@ def filter_playlist(filters, notify=True):
                 continue
 
         if has_keywords:
-            title = data.get("title", "").lower()
+            title = (data.get("title") or "").lower()
             eng_title = (data.get("eng_title", "") or "").lower()
             filename_lower = filename.lower()
             if not any(kw in filename_lower or kw in title or kw in eng_title for kw in keyword_list):
@@ -703,7 +1171,7 @@ def filter_playlist(filters, notify=True):
         if has_artists or has_studios:
             if has_artists:
                 slug = data.get("slug", "")
-                theme = utils.get_song_by_slug(data, slug)
+                theme = utils.get_song_by_slug(data, slug) or {}
                 artists = theme.get("artist", [])
                 if filter_artists_set.isdisjoint(artists):
                     continue
@@ -760,13 +1228,25 @@ def filter_playlist(filters, notify=True):
 
         filtered.append(filename)
 
+    return filtered
+
+
+def filter_playlist(filters, notify=True):
+    """Apply a filter to a standard playlist, or evaluate an infinite one.
+
+    This keeps the long-standing public behavior for desktop and infinite
+    playlist callers. New preview code must call :func:`evaluate_filter`.
+    """
+    playlist = state.metadata.playlist
+    normalized = normalize_filter(filters)
+    filtered = evaluate_filter(normalized)
     if not playlist.get("infinite"):
         playlist["playlist"] = filtered
-        print("Applied Filters:", filters)
+        print("Applied Filters:", normalized)
         lists.show_playlist(True)
-        transport.update_current_index(0)
+        transport.update_current_index(0 if filtered else -1)
         if notify:
-            messagebox.showinfo("Playlist Filtered", f"Playlist filtered to {len(playlist['playlist'])} videos.")
+            messagebox.showinfo("Playlist Filtered", f"Playlist filtered to {len(filtered)} videos.")
     return filtered
 
 

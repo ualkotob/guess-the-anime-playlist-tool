@@ -262,8 +262,8 @@ def new_playlist(playlis, name=None):
     if playlis and len(playlis) > 0:
         first_entry = playlis[0]
         first_filename = entry_paths.get_clean_filename(first_entry)
-        directory_files = state.metadata.directory_files
-        if cache_download.is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
+        if (cache_download.is_animethemes_stream_file(first_filename)
+                and not cache_download.check_file_availability(first_filename)):
             threading.Thread(
                 target=lambda: cache_download.download_to_cache(first_filename, silent=False),
                 daemon=True,
@@ -296,8 +296,8 @@ def create_infinite_playlist(include_non_local=None):
     if playlist["playlist"] and len(playlist["playlist"]) > 0:
         first_entry = playlist["playlist"][0]
         first_filename = entry_paths.get_clean_filename(first_entry)
-        directory_files = state.metadata.directory_files
-        if cache_download.is_animethemes_stream_file(first_filename) and first_filename not in directory_files:
+        if (cache_download.is_animethemes_stream_file(first_filename)
+                and not cache_download.check_file_availability(first_filename)):
             threading.Thread(
                 target=lambda: cache_download.download_to_cache(first_filename, silent=False),
                 daemon=True,

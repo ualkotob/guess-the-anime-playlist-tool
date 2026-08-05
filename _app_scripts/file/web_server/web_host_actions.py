@@ -16,6 +16,7 @@ from core.game_state import state
 import _app_scripts.file.web_server.web_server as web_server
 import _app_scripts.file.web_server.web_search as web_search
 import _app_scripts.queue_round.lightning_rounds.peek_dispatch as peek_dispatch
+import _app_scripts.queue_round.lightning_rounds.frame_round as frame_round
 import _app_scripts.playback.music as music
 import _app_scripts.playback.cache_download as cache_download
 import _app_scripts.playback.transport as transport
@@ -84,6 +85,43 @@ def _on_skip_grant_changed(name):
         scoreboard_control.send_command("[SKIP_GRANT_CLEAR]")
 
 
+def _on_skip_declined_changed(name, declined):
+    if not name:
+        scoreboard_control.clear_player_badge(key="skip_declined")
+    elif declined:
+        scoreboard_control.set_player_badge(
+            name, "skip_declined", "\u25b6\u25b6", crossed_out=True
+        )
+    else:
+        scoreboard_control.clear_player_badge(
+            player_name=name, key="skip_declined"
+        )
+
+
+def _on_vote_skip_changed(name, voted):
+    if not name:
+        scoreboard_control.clear_player_badge(key="vote_skip")
+    elif voted:
+        scoreboard_control.set_player_badge(
+            name, "vote_skip", "⏭", priority=70
+        )
+    else:
+        scoreboard_control.clear_player_badge(
+            player_name=name, key="vote_skip"
+        )
+
+
+def _on_vote_skip_passed():
+    """Finish through the active round's normal transition path."""
+    def _finish():
+        if state.lightning.light_round_started or frame_round.frame_light_round_started:
+            transport.play_next()
+        else:
+            web_search._invoke_registry_by_id("skip_to_end_ff")
+
+    state.widgets.root.after(0, _finish)
+
+
 def _on_buzzer_lock_changed(name, locked):
     if locked:
         scoreboard_control.send_command(f"[BUZZER_LOCK]{name}")
@@ -143,6 +181,10 @@ def wire_web_server():
     web_server.set_host_action_callback(_handle_host_action)
     web_server.set_buzz_callback(buzz._play_buzz_sound)
     web_server.set_skip_grant_callback(_on_skip_grant_changed)
+    web_server.set_skip_decline_callback(_on_skip_declined_changed)
+    web_server.set_vote_skip_changed_callback(_on_vote_skip_changed)
+    web_server.set_vote_skip_passed_callback(_on_vote_skip_passed)
+    web_server.set_vote_skip_enabled(state.controls.vote_skip_enabled)
     web_server.set_buzzer_lock_callback(_on_buzzer_lock_changed)
 
 
@@ -372,13 +414,74 @@ def _handle_host_action(action: str, data: dict):
             web_server.push_filter_list(names, to_sid=data.get('_sid'))
         elif action == 'select_filter':
             target = str(data.get('name', '')).strip()
-            if target and playlist_filters.apply_saved_filter(target, notify=False):
+            result = playlist_filters.apply_saved_filter_from_web(target) if target else {"ok": False}
+            if result.get('ok'):
                 source = _get_web_playlist_source()
                 web_server.push_playlist_info(
                     len(source['items']),
                     source['current_index'],
                     counter=source['counter'],
                     label=source['label'],
+                )
+        elif action == 'get_filter_editor':
+            try:
+                context = playlist_filters.get_filter_editor_context(data.get('name'))
+                web_server.push_filter_editor_context(context, to_sid=data.get('_sid'))
+            except playlist_filters.FilterValidationError as exc:
+                web_server.push_filter_editor_result(
+                    'context', {"ok": False, "errors": exc.errors}, to_sid=data.get('_sid')
+                )
+            except Exception as exc:
+                get_logger().exception("unable to build web filter editor context: %s", exc)
+                web_server.push_filter_editor_result(
+                    'context', {"ok": False, "errors": ["Unable to load filter options"]},
+                    to_sid=data.get('_sid'),
+                )
+        elif action == 'preview_filter_draft':
+            result = playlist_filters.preview_filter_definition(
+                data.get('filter'), source_revision=data.get('source_revision')
+            )
+            result['request_id'] = data.get('request_id')
+            web_server.push_filter_editor_result('preview', result, to_sid=data.get('_sid'))
+        elif action == 'apply_filter_draft':
+            result = playlist_filters.apply_filter_definition(
+                data.get('filter'),
+                source_revision=data.get('source_revision'),
+                live_revision=data.get('live_revision'),
+            )
+            web_server.push_filter_editor_result('apply', result, to_sid=data.get('_sid'))
+            if result.get('ok'):
+                source = _get_web_playlist_source()
+                web_server.push_playlist_info(
+                    len(source['items']),
+                    source['current_index'],
+                    counter=source['counter'],
+                    label=source['label'],
+                )
+        elif action == 'save_filter_draft':
+            name = str(data.get('name', '')).strip()
+            try:
+                normalized = playlist_filters.save_filter_definition(
+                    name, data.get('filter'), overwrite=bool(data.get('overwrite'))
+                )
+                web_server.push_filter_editor_result(
+                    'save', {"ok": True, "name": name, "filter": normalized},
+                    to_sid=data.get('_sid'),
+                )
+            except FileExistsError:
+                web_server.push_filter_editor_result(
+                    'save', {"ok": False, "exists": True, "name": name},
+                    to_sid=data.get('_sid'),
+                )
+            except playlist_filters.FilterValidationError as exc:
+                web_server.push_filter_editor_result(
+                    'save', {"ok": False, "errors": exc.errors}, to_sid=data.get('_sid')
+                )
+            except OSError as exc:
+                get_logger().exception("unable to save web playlist filter: %s", exc)
+                web_server.push_filter_editor_result(
+                    'save', {"ok": False, "errors": ["Unable to write the saved filter"]},
+                    to_sid=data.get('_sid'),
                 )
         elif action == 'get_lightning_presets_list':
             presets_state = state.settings_presets

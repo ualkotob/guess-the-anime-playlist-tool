@@ -18,6 +18,7 @@ from core.game_state import state
 import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.queue_round.lightning_rounds.title_overlay as title_overlay
 import _app_scripts.queue_round.lightning_rounds.ost_overlay as ost_overlay
+import _app_scripts.queue_round.lightning_rounds.round_start_guard as round_start_guard
 import _app_scripts.information.information_popup as information_popup
 
 try:
@@ -154,11 +155,13 @@ def stop_stream(restore=True):
                 ost_overlay._hide_ost_cover()
             elif attempt < 12:
                 try:
-                    state.widgets.root.after(50, _seek_to_answer, attempt + 1)
+                    round_start_guard.after(
+                        50, _seek_to_answer, attempt + 1
+                    )
                 except Exception:
                     ost_overlay._hide_ost_cover()
         try:
-            state.widgets.root.after(50, _seek_to_answer)
+            round_start_guard.after(50, _seek_to_answer)
         except Exception:
             ost_overlay._hide_ost_cover()
     else:
@@ -360,7 +363,8 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "#animeexplain", "top 3", "top 5", "top 10", "top 11", "top 12", "top 13",
                     "anime mix", "english dub greeting video", "best of 20", "reacts to", "anime boston",
                     "best anime fights compilation", "best anime fight compilation", "best anime battles compilation",
-                    "best anime battle compilation", "#animeindo", "first impressions", ") hype reel", "my recommended "
+                    "best anime battle compilation", "#animeindo", "first impressions", ") hype reel", "my recommended ",
+                    "in a nutshell", "this year", "recap", "summary"
                 ]
                 ost_bad_keywords = [
                     "insert song", "anime songs", "cd single", "theme song", "full album", "extended", "toda la música"
@@ -451,7 +455,8 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "Crunchyroll en Espa\u00f1ol", "Crunchyroll FR", "Crunchyroll India", "Crunchyroll DE", "WatchMojo", "Watch Mojo",
                     "AnimeVersa", "Crunchyroll en Espa\u00f1ol", "Netflix Jr.", "MWAMVEVO", "Tarkeus", "Gigguk", "ryuuarm", "Jent Watches",
                     "IGN Anime Club", "Albert Senpai", "AnimeSekaiStore", "ForgottenRelics", "Anuj Lama", "Garnt", " Watches",
-                    "ProfessorOtakuD2", "The Best Anime Here", "SuperGainsBros", "BennettTheSage", "janken", "rainsyru",
+                    "ProfessorOtakuD2", "The Best Anime Here", "SuperGainsBros", "BennettTheSage", "janken", "rainsyru", "Anime Analyzer",
+                    "Filipe Valente Mendes"
                 ]
                 ost_blacklisted_channels = [" - Topic"]
                 if not ost:

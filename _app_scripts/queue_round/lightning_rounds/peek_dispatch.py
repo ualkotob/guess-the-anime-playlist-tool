@@ -24,7 +24,13 @@ from __future__ import annotations
 import random
 
 from core.game_state import state
-from . import peek_overlay, edge_overlay, grow_overlay, filter_overlay
+from . import (
+    edge_overlay,
+    filter_overlay,
+    grow_overlay,
+    peek_overlay,
+    round_start_guard,
+)
 import _app_scripts.file.scoreboard_control as scoreboard_control
 import _app_scripts.playback.progress_overlay as progress_overlay
 import _app_scripts.playback.coming_up_ui as coming_up_ui
@@ -144,7 +150,7 @@ def _activate_peek_variant(peek_mode):
         def _drop_blind():
             blind_screen.set_black_screen(False)
             progress_overlay.set_progress_overlay(destroy=True)
-        state.widgets.root.after(100, _drop_blind)
+        round_start_guard.after(100, _drop_blind)
     popout_window._refresh_popout_toggles()
 
 
@@ -245,7 +251,11 @@ def narrow_peek():
     elif grow_overlay.grow_overlay_boxes:
         grow_overlay.toggle_grow_overlay(block_percent=96-gap_modifier, position=grow_overlay.grow_position)
     elif filter_overlay.filter_vf_active:
-        progress = max(0.0, round(filter_overlay._filter_vf_last_progress[0] - 0.05, 3))
+        progress = filter_overlay.step_manual_filter_progress(
+            filter_overlay._filter_vf_variant,
+            filter_overlay._filter_vf_last_progress[0],
+            reveal_more=False,
+        )
         filter_overlay._filter_vf_last_progress[0] = progress
         filter_overlay.toggle_filter_vf(filter_overlay._filter_vf_variant, progress)
         filter_overlay._update_filter_intensity_bottom_label(filter_overlay._filter_vf_variant, progress)
@@ -259,7 +269,11 @@ def widen_peek():
     elif grow_overlay.grow_overlay_boxes:
         grow_overlay.toggle_grow_overlay(block_percent=96-gap_modifier, position=grow_overlay.grow_position)
     elif filter_overlay.filter_vf_active:
-        progress = min(1.0, round(filter_overlay._filter_vf_last_progress[0] + 0.05, 3))
+        progress = filter_overlay.step_manual_filter_progress(
+            filter_overlay._filter_vf_variant,
+            filter_overlay._filter_vf_last_progress[0],
+            reveal_more=True,
+        )
         filter_overlay._filter_vf_last_progress[0] = progress
         filter_overlay.toggle_filter_vf(filter_overlay._filter_vf_variant, progress)
         filter_overlay._update_filter_intensity_bottom_label(filter_overlay._filter_vf_variant, progress)
@@ -304,8 +318,38 @@ def render_reveal_progress(progress):
         grow_overlay.toggle_grow_overlay(block_percent=100 - (grow_max * progress),
                                          position=grow_overlay.grow_position)
     elif filter_overlay.filter_vf_active:
-        filter_overlay.toggle_filter_vf(filter_overlay._filter_vf_variant, progress)
-        filter_overlay._update_filter_intensity_bottom_label(filter_overlay._filter_vf_variant, progress)
+        variant = filter_overlay._filter_vf_variant
+        render_progress = filter_overlay.get_automatic_filter_progress(
+            variant, progress
+        )
+        filter_overlay.toggle_filter_vf(variant, render_progress)
+        filter_overlay._update_filter_intensity_bottom_label(
+            variant, render_progress
+        )
+
+
+def update_manual_slice_reveal(time, data=None):
+    """Animate a non-timed Slice reveal from the current playback position.
+
+    Timed Auto Reveal has its own monotonic progress driver. Letting this
+    legacy/manual animation draw during a timed reveal submits a second OSD
+    update with a different direction and progress on every tick, making the
+    visible slice jump between the two renderings.
+    """
+    if (_timed_reveal["active"] or not peek_overlay.peek_overlay1
+            or state.lightning.light_round_started):
+        return False
+    gap = get_peek_gap(data)
+    progress = ((time + peek_modifier) % 24 / 12) * 100
+    if progress >= 100:
+        direction = "right"
+        progress -= 100
+    else:
+        direction = "down"
+    peek_overlay.toggle_peek_overlay(
+        direction=direction, progress=progress, gap=gap
+    )
+    return True
 
 
 def set_auto_reveal(mode, variant=None, toggle=True):

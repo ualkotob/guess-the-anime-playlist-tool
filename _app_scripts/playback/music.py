@@ -1,7 +1,7 @@
 """Background music for lightning rounds.
 
 Loads `./music/*.{mp3,wav,ogg}` into a shuffled playlist, picks the next track
-with a half-playlist no-repeat history, and pumps pygame.mixer.music for
+with a configurable recent-track cooldown, and pumps pygame.mixer.music for
 play/pause/random-start. The visual "Now Playing" floating label is rendered
 via the injected ``set_floating_text`` (a main-resident overlay primitive).
 
@@ -70,19 +70,56 @@ def load_music_files():
         current_music_index = 0
 
 
+def get_repeat_protection_count(total_tracks):
+    """Return how many recent distinct tracks should be ineligible.
+
+    Fifty percent intentionally uses the same ``total_tracks // 2`` behavior
+    as the original fixed rule. At 100%, one slot must remain eligible, which
+    means every other track is heard before a track can repeat.
+    """
+    if total_tracks <= 1:
+        return 0
+    raw_percent = (
+        state.playback.lightning_mode_settings
+        .get("_misc_settings", {})
+        .get("background_music", {})
+        .get("repeat_after_percent", 50)
+    )
+    try:
+        percent = min(100.0, max(0.0, float(raw_percent)))
+    except (TypeError, ValueError):
+        percent = 50.0
+    return min(total_tracks - 1, int(total_tracks * percent / 100.0))
+
+
+def _recent_protected_tracks(track_history, available_tracks, protect_count):
+    """Return the most recently used distinct tracks still in the library."""
+    if protect_count <= 0:
+        return set()
+    available = set(available_tracks)
+    protected = set()
+    for track in reversed(track_history):
+        track_basename = os.path.basename(track)
+        if track_basename not in available or track_basename in protected:
+            continue
+        protected.add(track_basename)
+        if len(protected) >= protect_count:
+            break
+    return protected
+
+
 def next_background_track():
-    """Advance current_music_index, skipping anything in the recent-half history."""
+    """Advance to the next track outside the configured repeat cooldown."""
     global current_music_index, music_changed
     if music_files:
         playlist = state.metadata.playlist
         track_history = playlist.get("background_track_history", [])
         total_tracks = len(music_files)
-
-        # Calculate how many tracks to avoid (half of total tracks)
-        avoid_count = total_tracks // 2
-
-        # Get list of recently used tracks to avoid
-        recent_tracks = track_history[-avoid_count:] if avoid_count > 0 else []
+        available_tracks = [os.path.basename(path) for path in music_files]
+        protect_count = get_repeat_protection_count(total_tracks)
+        protected_tracks = _recent_protected_tracks(
+            track_history, available_tracks, protect_count
+        )
 
         # Find next available track that hasn't been used recently
         attempts = 0
@@ -94,12 +131,13 @@ def next_background_track():
             current_track_basename = os.path.basename(current_track_path)
 
             # If this track is not in recent history, use it
-            if current_track_basename not in recent_tracks:
+            if current_track_basename not in protected_tracks:
                 break
 
             attempts += 1
 
-        # If all tracks are in recent history, just use the next one
+        # Defensive fallback. The protected count is capped below the library
+        # size, so a valid candidate should always exist.
         if attempts >= total_tracks:
             current_music_index = (original_index + 1) % total_tracks
 
@@ -195,8 +233,8 @@ def record_background_track_usage(track_path):
     if not playlist["background_track_history"] or playlist["background_track_history"][-1] != track_basename:
         playlist["background_track_history"].append(track_basename)
 
-    # Keep history manageable - limit to total number of tracks available
-    # This ensures we can always find non-recent tracks when we have enough variety
+    # Keep enough chronological usage to support any percentage, including a
+    # setting increased later in the same session, without unbounded growth.
     max_history = len(music_files) if music_files else 50
     if len(playlist["background_track_history"]) > max_history:
         playlist["background_track_history"] = playlist["background_track_history"][-max_history:]

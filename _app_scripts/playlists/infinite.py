@@ -83,6 +83,8 @@ series_cooldowns_cache = None
 file_cooldowns_cache = None
 _refetch_debounce_id = None
 _reroll_debounce_id = None
+_spec_pick_running = False
+_spec_generation = 0
 
 
 def get_infinite_settings():
@@ -184,6 +186,8 @@ def _set_difficulty_from_menu(idx):
 
 def _clear_speculative_tail():
     """Cancel downloads for and discard all speculative tail entries."""
+    global _spec_generation
+    _spec_generation += 1
     playlist = state.metadata.playlist
     for f in playlist.get("speculative_tail", []):
         clean = entry_paths.get_clean_filename(f)
@@ -545,7 +549,50 @@ def reroll_next():
     _reroll_debounce_id = state.widgets.root.after(5000, _start_reroll_prefetch)
 
 
-_spec_pick_running = False
+def skip_infinite_group():
+    """Replace the queued track with one from the next scheduled group."""
+    global _reroll_debounce_id
+    if not is_reroll_valid():
+        return
+
+    playlist = state.metadata.playlist
+    old_next = entry_paths.get_clean_filename(playlist["playlist"][-1])
+    if cache_download.is_downloading(old_next):
+        cache_download.cancel_download(old_next)
+
+    if _reroll_debounce_id is not None:
+        state.widgets.root.after_cancel(_reroll_debounce_id)
+        _reroll_debounce_id = None
+
+    playlist["playlist"].pop()
+    tail = playlist.get("speculative_tail", [])
+    if tail:
+        # The speculative head belongs to exactly the group after the
+        # committed next track, so promotion keeps the future queue aligned.
+        promoted = tail.pop(0)
+        next_playlist_order()
+        playlist["playlist"].append(promoted)
+        transport.update_current_index()
+        playlist_ops._notify_playlist_list_updated()
+        cache_download.prefetch_next_themes()
+        state.widgets.root.after(50, fill_speculative_tail)
+    else:
+        # Invalidate any in-flight speculative result before selecting the
+        # next group, or it could later append a stale duplicate.
+        _clear_speculative_tail()
+        get_next_infinite_track(increment=True)
+        playlist.pop("spec_order", None)
+        state.widgets.root.after(50, fill_speculative_tail)
+
+    metadata_display.up_next_text()
+    state.widgets.root.after(1000, lightning_manager.queue_next_lightning_mode)
+
+    if playlist["playlist"]:
+        new_next = entry_paths.get_clean_filename(playlist["playlist"][-1])
+        if cache_download.is_downloading(new_next):
+            cache_download.cancel_download(new_next)
+
+    _reroll_debounce_id = state.widgets.root.after(5000, _start_reroll_prefetch)
 
 
 def _build_spec_snapshot():
@@ -797,6 +844,7 @@ def fill_speculative_tail(n=None):
         state.widgets.root.after(30, lambda: fill_speculative_tail(n))
         return
 
+    generation = _spec_generation
     snap = _build_spec_snapshot()
     next_spec_order()
     _spec_pick_running = True
@@ -812,6 +860,9 @@ def fill_speculative_tail(n=None):
         def _on_main():
             global _spec_pick_running
             _spec_pick_running = False
+            if generation != _spec_generation:
+                state.widgets.root.after(5, lambda: fill_speculative_tail(n))
+                return
             if result:
                 playlist["speculative_tail"].append(result)
                 if final_spec_order > playlist.get("spec_order", 0):

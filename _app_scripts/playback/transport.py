@@ -41,6 +41,7 @@ import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.queue_round.lightning_rounds.frame_round as frame_round
 import _app_scripts.information.information_popup as information_popup
 import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_manager
+import _app_scripts.queue_round.lightning_rounds.round_start_guard as round_start_guard
 import _app_scripts.ui.lists as lists
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.playback.music as music
@@ -51,7 +52,6 @@ import _app_scripts.playlists.playlist as playlist_ops
 import _app_scripts.playlists.infinite as infinite
 import _app_scripts.playback.progress_bar as progress_bar_ops
 import _app_scripts.playback.progress_overlay as progress_overlay_ops
-import _app_scripts.queue_round.lightning_rounds.peek_overlay as peek_overlay
 import _app_scripts.search.search as search_ops
 from _app_scripts.file import session_end
 import _app_scripts.playback.streaming as streaming
@@ -112,6 +112,9 @@ def seek_to(time_ms):
 
 def stop():
     """Function to stop the video"""
+    round_start_guard.begin_round()
+    if web_server.is_running():
+        web_server.reset_vote_skip()
     state.playback.currently_playing.clear()  # Clear first to prevent idle-active re-entry
     state.controls.video_stopped = True
     lightning_manager.toggle_light_mode()
@@ -136,7 +139,9 @@ def stop():
     coming_up_ui.toggle_coming_up_popup(False, title=(state.controls.coming_up_queue or {}).get("title", ""))
     state.widgets.seek_bar.set(0)
     lightning_manager.clean_up_light_round(new_round=True)
-    state.widgets.root.after(500, lambda: lightning_manager.clean_up_light_round(new_round=True))
+    round_start_guard.after(
+        500, lightning_manager.clean_up_light_round, new_round=True
+    )
 
 
 def stop_all_queues():
@@ -171,6 +176,54 @@ def player_play(override_autoplay=False):
         state.widgets.player.stop()
 
 
+def _pre_mute_incoming_lightning_media():
+    """Apply a muted lightning mode before mpv begins loading its theme.
+
+    ``set_media`` starts playback immediately.  Waiting for the lightning
+    ticker to apply the mode's mute setting can therefore leak the first beat
+    of a theme.  mpv's mute property persists across ``loadfile``, so setting
+    it immediately before the load closes that window without starting the
+    background-music side effects of ``toggle_mute`` early.
+    """
+    light_mode = state.lightning.light_mode
+    should_mute = bool(
+        light_mode
+        and state.playback.lightning_mode_settings.get(light_mode, {}).get("muted")
+    )
+    if should_mute:
+        state.controls.light_muted = True
+        state.widgets.player.audio_set_mute(True)
+    return should_mute
+
+
+def _load_incoming_media(filepath, start_seconds=None):
+    """Apply the startup safety cover/audio policy before loading media.
+
+    Mode-specific lightning setup still happens in ``update_light_round``.
+    This helper only establishes the invariant that a lightning theme cannot
+    begin loading before its existing blind and initial mute have been applied.
+    """
+    light_mode = state.lightning.light_mode
+    queued_manual_cover = (
+        blind_screen.blind_round_toggle
+        or peek_dispatch.peek_round_toggle
+        or peek_dispatch.mute_peek_round_toggle
+    )
+    if light_mode:
+        blind_screen.set_black_screen(True, smooth=False)
+    elif queued_manual_cover:
+        pre_load_color = (
+            censors.get_image_color()
+            if blind_screen.blind_round_toggle
+            else "black"
+        )
+        blind_screen.set_black_screen(
+            True, smooth=False, color=pre_load_color
+        )
+    _pre_mute_incoming_lightning_media()
+    state.widgets.player.set_media(filepath, start_seconds=start_seconds)
+
+
 def set_skip_direction(dir):
     state.seek.skip_direction = dir
 
@@ -185,11 +238,7 @@ def skip_to_lightning_answer():
         try:
             if frame_round.frame_light_round_frame_index is None or frame_round.frame_light_round_frame_index < 4:
                 frame_round.frame_light_round_frame_index = 4
-                frame_round.frame_light_round_frame_time = 0
-                osd_text.bottom_info()
-                music.play_background_music(False)
-                blind_screen.set_black_screen(False)
-                information_popup.toggle_title_popup(True)
+                frame_round.start_frame_light_round_answer()
                 return True
         except Exception:
             log_exception("skip_to_lightning_answer: frame-round answer skip failed")
@@ -290,6 +339,7 @@ def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"
     """Function to play a specific video by index"""
     global playlist_loaded, playing_next_error
     global playlist_changed
+    round_start_guard.begin_round()
     playlist_loaded = False
     playlist_changed = False
     playlist_ops.playlist_changed = False
@@ -307,6 +357,7 @@ def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"
     playing_next_error = False
     if web_server.is_running():
         web_server.push_skip_grant('')
+        web_server.reset_vote_skip()
     if not (bonus.guessing_extra == "buzzer" and state.controls.auto_bonus_start == "buzzer"):
         bonus.guess_extra()
     information_popup.toggle_title_popup(False)
@@ -628,15 +679,8 @@ def play_filename(playlist_entry, fullscreen=True):
     # Update metadata display asynchronously
     metadata_display.update_metadata_queue(state.metadata.playlist["current_index"])
     state.playback.previous_media = filepath  # store path string for repeat playback
-    # Pre-load black cover: applied before set_media so OSD dims from the previous
-    # video are still valid. Prevents the new file's first decoded frame from being
-    # visible before blind/reveal overlays are active. The playback-restart hook
-    # (or the blind_round_toggle branch below) reapplies/removes it as needed.
-    if not state.lightning.light_mode and (blind_screen.blind_round_toggle or peek_dispatch.peek_round_toggle or peek_dispatch.mute_peek_round_toggle):
-        _pre_load_blind_color = censors.get_image_color() if blind_screen.blind_round_toggle else 'black'
-        blind_screen.set_black_screen(True, smooth=False, color=_pre_load_blind_color)
     start_skip_end = censors.get_start_skip_end(filename)
-    state.widgets.player.set_media(filepath, start_seconds=start_skip_end)
+    _load_incoming_media(filepath, start_seconds=start_skip_end)
     censors.reset_for_new_file(filename)
     global background_music_rounds
     if state.lightning.light_mode:
@@ -662,7 +706,7 @@ def play_filename(playlist_entry, fullscreen=True):
             state.lightning.light_round_length = state.lightning.fixed_current_round.get("duration", state.lightning.light_round_length)
         if not blind_screen.black_overlay:
             blind_screen.set_black_screen(True)
-            state.widgets.root.after(500, player_play)
+            round_start_guard.after(500, player_play)
         else:
             player_play()
             audio_toggles.set_volume(state.controls.volume_level)
@@ -678,7 +722,7 @@ def play_filename(playlist_entry, fullscreen=True):
                 peek_dispatch.start_timed_reveal(
                     state.controls.auto_reveal_seconds, mode="blind"
                 )
-            state.widgets.root.after(500, player_play)
+            round_start_guard.after(500, player_play)
         elif peek_dispatch.peek_round_toggle or peek_dispatch.mute_peek_round_toggle:
             blind_screen.manual_blind = False
             peek_dispatch.toggle_peek()
@@ -688,18 +732,18 @@ def play_filename(playlist_entry, fullscreen=True):
             if not peek_dispatch.peek_round_toggle:
                 music.next_background_track()
                 audio_toggles.toggle_mute(True)
-            state.widgets.root.after(500, player_play)
+            round_start_guard.after(500, player_play)
             # Don't remove the black screen here â€” playback-restart hook lifts it
             # once the peek overlay is confirmed active on the new file's first frame.
         else:
             blind_screen.manual_blind = False
             player_play()
-            state.widgets.root.after(0, lambda: blind_screen.set_black_screen(False))
+            round_start_guard.after(0, blind_screen.set_black_screen, False)
     blind_screen.blind_round_toggle = False
     peek_dispatch.peek_round_toggle = False
     peek_dispatch.mute_peek_round_toggle = False
     if fullscreen and state.controls.autoplay_fullscreen and state.lightning.light_mode not in ['clip', 'ost']:
-        state.widgets.root.after(150, lambda: state.widgets.player.set_fullscreen(True))
+        round_start_guard.after(150, state.widgets.player.set_fullscreen, True)
     if state.lightning.light_mode not in ['frame', 'clip', 'ost', 'blind']:
         retry_delay = 250
         if animethemes_stream:
@@ -790,6 +834,15 @@ def go_to_index():
         play_video(index - 1)
 
 
+def _tick_paused_lightning_answer(player):
+    """Account for paused wall time before the answer timer can resume."""
+    if (
+        state.lightning.light_answer_wall_start is not None
+        and not player.is_playing()
+    ):
+        lightning_manager.update_light_round(player.get_time() / 1000)
+
+
 def play_pause():
     """Function to play/pause the video"""
     state.controls.video_stopped = True
@@ -807,6 +860,7 @@ def play_pause():
         state.widgets.player.pause()
         playpause_icon._show_playpause_icon(True)
     elif state.widgets.player.get_media():
+        _tick_paused_lightning_answer(state.widgets.player)
         state.widgets.player.play()
         state.controls.video_stopped = False
         playpause_icon._show_playpause_icon(False)
@@ -856,6 +910,10 @@ def update_seek_bar():
                 if not state.seek.last_seek_time:
                     state.seek.can_seek = False
                     seek_bar.set(player_time/1000)
+            # The answer countdown uses a wall clock so seeking the video does
+            # not reset it. Keep ticking it while playback is paused so its
+            # pause-compensation logic can exclude the paused interval.
+            _tick_paused_lightning_answer(player)
         else:
             player_time = player.get_time()
             if player_time != state.seek.last_player_time:
@@ -923,15 +981,9 @@ def update_seek_bar():
                         time * 1000, length * 1000, currently_playing.get("filename")
                     )
                     progress_overlay_ops.set_progress_overlay(_eff_time / 1000, _eff_len / 1000)
-                if peek_overlay.peek_overlay1 and not state.lightning.light_round_started:
-                    gap = peek_dispatch.get_peek_gap(currently_playing.get("data"))
-                    progress = ((time+peek_dispatch.peek_modifier)%24/12)*100
-                    if progress >= 100:
-                        direction = "right"
-                        progress -= 100
-                    else:
-                        direction = "down"
-                    peek_overlay.toggle_peek_overlay(direction=direction, progress=progress, gap=gap)
+                peek_dispatch.update_manual_slice_reveal(
+                    time, currently_playing.get("data")
+                )
                 if length > 0:
                     # Auto-revoke skip grant when already within the last 3 seconds
                     if web_server.is_running() and web_server.get_skip_grant_player():

@@ -16,6 +16,7 @@ from core.game_state import state
 from _app_scripts.playback import coming_up_ui, blind_screen, transport
 from _app_scripts.queue_round.lightning_rounds import (
     filter_overlay, edge_overlay, peek_overlay, grow_overlay,
+    round_start_guard,
 )
 
 # --- module-owned state ---
@@ -107,12 +108,18 @@ def _on_playback_restart(_):
         _root = state.widgets.root
         if not _root:
             return
+        round_token = round_start_guard.capture()
+
         def _reapply():
             _bo = blind_screen.black_overlay
             _cache = blind_screen._blind_osd_color_cache or 'black'
             # Reapply blind OSD (covers blind rounds AND the pre-load cover for reveal rounds)
             if _bo:
                 blind_screen._set_blind_osd_alpha(_cache, 255)
+            # A file load can reset mpv's OSD surface.  Rebuild active censors
+            # now, while the blind is still on top, so lifting the blind cannot
+            # expose a frame before its censor overlay has been submitted.
+            blind_screen.censors._commit_censor_osd()
             # For non-lightning reveal rounds: reapply active peek overlay then lift blind
             if not state.lightning.light_mode and not state.lightning.light_round_started:
                 _fvf = filter_overlay.filter_vf_active
@@ -129,8 +136,13 @@ def _on_playback_restart(_):
                     peek_overlay.toggle_peek_overlay()
                 # If any peek overlay is active and we put up a pre-load black screen, lift it
                 if _bo and (_fvf or _eo or _po or _go):
-                    _root.after(50, lambda: blind_screen.set_black_screen(False))
-        _root.after(0, _reapply)
+                    round_start_guard.after(
+                        50,
+                        blind_screen.set_black_screen,
+                        False,
+                        token=round_token,
+                    )
+        round_start_guard.after(0, _reapply, token=round_token)
     except Exception:
         pass
 

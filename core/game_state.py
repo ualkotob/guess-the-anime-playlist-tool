@@ -75,6 +75,7 @@ class GameState:
             pending_restore_collapsed=False, # runtime: apply saved collapsed player state after UI render
             auto_info_start=False,          # persisted: auto-show info popup at round start
             auto_info_end=False,            # persisted: auto-show info popup at round end
+            vote_skip_enabled=False,        # persisted: majority web skip after full info reveal
             auto_refresh_toggle=False,      # persisted: auto-refresh metadata on fetch
             auto_bonus_start=None,          # runtime: None=off, 'random' or a bonus type key=on
             auto_reveal_start=None,         # runtime (not saved): None=off | 'auto' | 'blind' | 'reveal' | 'mute' — auto-queue a round each theme
@@ -88,6 +89,7 @@ class GameState:
             character_round_answer=None,
             light_round_started=False,
             light_round_armed=False,        # a track just started (play_video ran); round is eligible to begin until the start window passes
+            round_generation=0,             # invalidates delayed startup work when playback advances or stops
 
             light_round_length=12,
             light_round_number=0,
@@ -178,9 +180,10 @@ class GameState:
             # Controls-frame autoplay/repeat-mode button; created once at
             # startup, read/reconfigured by toggles.autoplay (its only reader).
             autoplay_button=None,
-            # Right-column "reroll" button, created/destroyed by metadata_display
-            # (its only reader/writer).
+            # Right-column infinite-playlist buttons, created/destroyed by
+            # metadata_display (their only reader/writer).
             reroll_button=None,
+            skip_group_button=None,
             # Points to right_column_header_label when a list title is shown;
             # written by ui.lists (its only writer).
             list_title_label=None,

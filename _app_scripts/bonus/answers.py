@@ -467,6 +467,7 @@ def _push_web_toggles():
     """Push current toggle states to all web host clients."""
     if not web_server.is_running():
         return
+    web_server.set_vote_skip_enabled(state.controls.vote_skip_enabled)
     if not state.playback.fl_rounds_list:
         fixed_lightning_actions.load_fixed_lightning_rounds(filter_missing_themes=True)
     fn = state.playback.currently_playing.get("filename", "")
@@ -486,6 +487,7 @@ def _push_web_toggles():
         "dock":         bool(windowing.is_docked()),
         "info_start":   bool(state.controls.auto_info_start),
         "info_end":     bool(state.controls.auto_info_end),
+        "vote_skip":    bool(state.controls.vote_skip_enabled),
         "info_popup":   bool(state.info_display._title_popup_intent and not state.info_display.title_info_only),
         "title_popup":  bool(state.info_display._title_popup_intent and state.info_display.title_info_only),
         "artist_popup": bool(state.info_display._title_popup_intent and state.info_display.artist_info_display),
@@ -535,6 +537,14 @@ def _push_web_toggles():
             state.playback.lightning_mode_settings.get("reveal", {}).get("show_in_menu", {})
         ),
     })
+
+
+def toggle_vote_skip():
+    """Enable or disable post-reveal majority vote-skipping for web players."""
+    state.controls.vote_skip_enabled = not state.controls.vote_skip_enabled
+    web_server.set_vote_skip_enabled(state.controls.vote_skip_enabled)
+    _push_web_toggles()
+    print("Web Vote Skip Enabled: " + str(state.controls.vote_skip_enabled))
 
 
 def _poll_web_answers():

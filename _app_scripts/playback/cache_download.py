@@ -98,15 +98,16 @@ def save_cache_metadata():
 
 def get_cached_file_path(filename):
     """Return full path to a cached file, or None if not cached."""
-    if filename in cache_metadata:
-        rel_path = cache_metadata[filename].get("path", filename)
-        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+    for candidate in entry_paths.get_interchangeable_filenames(filename):
+        if candidate in cache_metadata:
+            rel_path = cache_metadata[candidate].get("path", candidate)
+            cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+            if os.path.exists(cache_path):
+                return cache_path
+        # Fallback: flat legacy structure
+        cache_path = os.path.join(THEMES_CACHE_FOLDER, candidate)
         if os.path.exists(cache_path):
             return cache_path
-    # Fallback: flat legacy structure
-    cache_path = os.path.join(THEMES_CACHE_FOLDER, filename)
-    if os.path.exists(cache_path):
-        return cache_path
     return None
 def _metadata_year_season(data):
     """Return (year, season) when metadata has a usable season value."""
@@ -304,14 +305,14 @@ def create_download_popup(filename):
     cancel_button = tk.Button(
         button_frame, text="Cancel", font=("Arial", 10),
         bg=button_bg, fg=fg_color, activebackground=button_hover,
-        command=lambda: cancel_download(filename), width=10, relief=tk.FLAT,
+        command=lambda: cancel_download(filename, popup), width=10, relief=tk.FLAT,
     )
     cancel_button.pack(side=tk.LEFT, padx=5)
 
     retry_button = tk.Button(
         button_frame, text="Retry", font=("Arial", 10),
         bg=button_bg, fg=fg_color, activebackground=button_hover,
-        command=lambda: retry_download(filename), width=10, relief=tk.FLAT,
+        command=lambda: retry_download(filename, popup), width=10, relief=tk.FLAT,
     )
     retry_button.pack(side=tk.LEFT, padx=5)
 
@@ -348,36 +349,47 @@ def create_download_popup(filename):
 # Download lifecycle management
 # ---------------------------------------------------------------------------
 
-def cancel_download(filename):
-    """Signal an active download to abort."""
+
+def _close_download_popup(filename, popup=None):
+    """Destroy and forget a download popup from the Tk/main thread.
+
+    ``popup`` is accepted as a fallback for a button belonging to an orphaned
+    registry entry, ensuring Cancel can always dismiss the window.
+    """
+    info = download_progress.pop(filename, None)
+    popup_ref = popup or (info.get("popup") if info else None)
+    if popup_ref:
+        try:
+            popup_ref.destroy()
+        except Exception:
+            pass
+
+
+def cancel_download(filename, popup=None):
+    """Signal an active download to abort and dismiss its popup immediately."""
     if filename in active_downloads:
         download_cancel_flags[filename] = True
         print(f"Cancelling download: {filename}")
-        pending_play_queue.pop(filename, None)
+    pending_play_queue.pop(filename, None)
+    _close_download_popup(filename, popup)
 
 
-def retry_download(filename):
+def retry_download(filename, popup=None):
     """Cancel any in-flight download for *filename* and restart it."""
     pending_play_info = pending_play_queue.get(filename)
 
     if filename in active_downloads:
         print(f"Stopping current download to retry: {filename}")
-        cancel_download(filename)
+        cancel_download(filename, popup)
 
-        def start_retry():
+        def start_retry_when_ready():
+            # A requests read cannot be killed from another Python thread. Wait
+            # until its bounded network timeout releases the old destination
+            # before allowing a new worker to write to the same file.
+            if filename in active_downloads:
+                state.widgets.root.after(250, start_retry_when_ready)
+                return
             download_cancel_flags.pop(filename, None)
-            if pending_play_info:
-                pending_play_queue[filename] = pending_play_info
-                pending_play_queue[filename]["start_time"] = time.time()
-            # Close existing popup if present
-            if filename in download_progress:
-                popup_ref = download_progress[filename].get("popup")
-                if popup_ref:
-                    try:
-                        popup_ref.destroy()
-                    except Exception:
-                        pass
-                del download_progress[filename]
             if pending_play_info:
                 pending_play_queue[filename] = {
                     **pending_play_info,
@@ -386,18 +398,10 @@ def retry_download(filename):
             download_to_cache(filename, silent=False)
             print(f"Retrying download: {filename}")
 
-        state.widgets.root.after(500, start_retry)
+        state.widgets.root.after(250, start_retry_when_ready)
     else:
         download_cancel_flags.pop(filename, None)
-        # Close existing popup
-        if filename in download_progress:
-            popup_ref = download_progress[filename].get("popup")
-            if popup_ref:
-                try:
-                    popup_ref.destroy()
-                except Exception:
-                    pass
-            del download_progress[filename]
+        _close_download_popup(filename, popup)
 
         if pending_play_info:
             pending_play_queue[filename] = {
@@ -447,7 +451,7 @@ def download_to_cache(filename, silent=False):
         return False
     if get_cached_file_path(filename):
         return False
-    if filename in state.metadata.directory_files:
+    if entry_paths.get_directory_file_path(filename):
         return False
 
     download_cancel_flags.pop(filename, None)
@@ -518,7 +522,10 @@ def download_to_cache(filename, silent=False):
 
             if to_directory:
                 state.metadata.directory_files[filename] = dest_path
-                state.widgets.root.after(100, lambda: _show_playlist(True))
+                # Let the main-thread UI poller refresh the playlist. Calling
+                # Tk's ``after`` from this worker can block during shutdown or
+                # a busy main loop and prevent the worker's final cleanup.
+                download_ui_update_pending = True
             else:
                 evict_cache_for_size(actual_size)
                 cache_metadata[filename] = {
@@ -541,14 +548,9 @@ def download_to_cache(filename, silent=False):
         finally:
             active_downloads.pop(filename, None)
             download_cancel_flags.pop(filename, None)
-            if filename in download_progress:
-                popup_ref = download_progress[filename].get("popup")
-                if popup_ref:
-                    try:
-                        state.widgets.root.after(0, popup_ref.destroy)
-                    except Exception:
-                        pass
-                del download_progress[filename]
+            # Tk widgets must only be destroyed by the main thread. Leave the
+            # registry entry for check_download_ui_updates() to close on its
+            # next pass; Cancel may already have removed it.
 
     thread = threading.Thread(target=do_cache_download, daemon=True)
     active_downloads[filename] = thread
@@ -750,7 +752,7 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
 
 def check_file_availability(filename):
     """Return True if *filename* is already on disk (directory or cache)."""
-    if filename in state.metadata.directory_files:
+    if entry_paths.get_directory_file_path(filename):
         return True
     if get_cached_file_path(filename):
         return True
@@ -765,9 +767,9 @@ def get_file_status(filename):
       is_local  — file is in the user's directory (not just cache)
       is_stream — file is an AnimThemes stream (and not in the local directory)
     """
-    directory_files = state.metadata.directory_files
     is_cached = get_cached_file_path(filename) is not None
-    is_local = filename in directory_files and os.path.exists(directory_files[filename])
+    local_path = entry_paths.get_directory_file_path(filename)
+    is_local = bool(local_path and os.path.exists(local_path))
     is_stream = is_animethemes_stream_file(filename) and not is_local if filename else False
     return {"is_cached": is_cached, "is_local": is_local, "is_stream": is_stream}
 
@@ -844,11 +846,15 @@ def check_download_ui_updates():
     if download_ui_update_pending:
         download_ui_update_pending = False
         try:
+            _show_playlist(True)
             metadata_display.up_next_text()
         except Exception:
             pass
 
     for fn, info in list(download_progress.items()):
+        if fn not in active_downloads:
+            _close_download_popup(fn)
+            continue
         popup = info.get("popup")
         if popup:
             try:
@@ -881,6 +887,9 @@ def check_download_ui_updates():
                 f"falling back to streaming: {fn}"
             )
             completed.append(fn)
+            # Streaming has taken over, so stop the redundant background
+            # download and remove its progress window immediately.
+            cancel_download(fn)
             stream_url = get_animethemes_stream_url(fn)
             streaming_entry = (
                 play_info["playlist_entry"].copy()

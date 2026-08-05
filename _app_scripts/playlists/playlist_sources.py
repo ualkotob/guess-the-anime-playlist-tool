@@ -315,82 +315,165 @@ def generate_session_log_playlist(include_non_local=None):
     playlist.new_playlist(matched, playlist_name)
 
 
-def update_living_playlists():
-    """Update all saved playlists with source metadata (living playlists) in background."""
-    def update_in_background():
+def _refreshed_current_index(old_files, new_files, old_index):
+    """Keep the same current theme when a living playlist is replaced.
+
+    If the source removed the current theme, point just before the comparable
+    position so the normal Next action does not skip the following entry.
+    """
+    if not new_files:
+        return -1
+    if 0 <= old_index < len(old_files):
+        current_file = old_files[old_index]
         try:
-            if not os.path.exists(PLAYLISTS_FOLDER):
-                return
+            return new_files.index(current_file)
+        except ValueError:
+            for upcoming_file in old_files[old_index + 1:]:
+                try:
+                    return new_files.index(upcoming_file) - 1
+                except ValueError:
+                    continue
+            return len(new_files) - 1
+    return min(old_index, len(new_files) - 1) if old_index >= 0 else -1
 
-            updated_playlists = []
 
-            for filename in os.listdir(PLAYLISTS_FOLDER):
-                if not filename.endswith('.json'):
+def _apply_loaded_playlist_refresh(playlist_name, source, matching_files):
+    """Apply a completed source refresh to the matching in-memory playlist.
+
+    This runs on Tk's main thread. Both name and source are checked again
+    because the user may have loaded another playlist while the network
+    request was in progress.
+    """
+    loaded = state.metadata.playlist
+    if loaded.get('name') != playlist_name or loaded.get('source') != source:
+        return False
+
+    old_files = list(loaded.get('playlist', []))
+    new_files = list(matching_files)
+    old_index = loaded.get('current_index', -1)
+    new_index = _refreshed_current_index(old_files, new_files, old_index)
+    if old_files == new_files and old_index == new_index:
+        return False
+
+    loaded.setdefault('playlist', [])[:] = new_files
+    loaded['current_index'] = new_index
+    # update_current_index refreshes the counter/web clients and persists the
+    # reconciled loaded playlist in config without starting or seeking media.
+    import _app_scripts.playback.transport as transport
+    transport.update_current_index(new_index)
+    playlist._notify_playlist_list_updated()
+    print(f"Refreshed loaded playlist '{playlist_name}' ({len(new_files)} themes)")
+    return True
+
+
+def _schedule_loaded_playlist_refresh(saved_playlist, filename, matching_files):
+    playlist_name = saved_playlist.get('name') or os.path.splitext(filename)[0]
+    source = copy.deepcopy(saved_playlist.get('source'))
+    files = list(matching_files)
+
+    def apply_refresh():
+        _apply_loaded_playlist_refresh(playlist_name, source, files)
+
+    root = getattr(state.widgets, 'root', None)
+    if root is None:
+        apply_refresh()
+    else:
+        root.after(0, apply_refresh)
+
+
+def _update_living_playlists_in_background():
+    try:
+        if not os.path.exists(PLAYLISTS_FOLDER):
+            return
+
+        for filename in os.listdir(PLAYLISTS_FOLDER):
+            if not filename.endswith('.json'):
+                continue
+
+            filepath = os.path.join(PLAYLISTS_FOLDER, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    saved_playlist = json.load(f)
+
+                saved_playlist = utils.convert_infinity_markers(saved_playlist)
+
+                source = saved_playlist.get('source')
+                if not source or not source.get('auto_update', True):
                     continue
 
-                filepath = os.path.join(PLAYLISTS_FOLDER, filename)
-                try:
-                    with open(filepath, 'r', encoding='utf-8') as f:
-                        saved_playlist = json.load(f)
+                source_type = source.get('type')
+                existing_files = set(saved_playlist.get('playlist', []))
+                all_matching = None
 
-                    saved_playlist = utils.convert_infinity_markers(saved_playlist)
+                if source_type == 'anilist':
+                    user_id = source.get('user_id')
+                    only_watched = source.get('only_watched', False)
+                    include_non_local = source.get('include_non_local', False)
+                    all_matching = get_anilist_matching_files(
+                        user_id, only_watched, include_non_local
+                    )
 
-                    source = saved_playlist.get('source')
-                    if not source:
-                        continue
+                elif source_type == 'animethemes':
+                    hashid = source.get('hashid')
+                    include_non_local = source.get('include_non_local', False)
+                    result = get_animethemes_matching_files(
+                        hashid, include_non_local
+                    )
+                    if result:
+                        all_matching, _, _ = result
 
-                    if not source.get('auto_update', True):
-                        continue
+                if all_matching is None:
+                    continue
 
-                    source_type = source.get('type')
-                    existing_files = set(saved_playlist.get('playlist', []))
-                    all_matching = None
+                all_matching_set = set(all_matching)
+                new_files = [f for f in all_matching if f not in existing_files]
+                removed_files = [
+                    f for f in existing_files if f not in all_matching_set
+                ]
 
-                    if source_type == 'anilist':
-                        user_id = source.get('user_id')
-                        only_watched = source.get('only_watched', False)
-                        include_non_local = source.get('include_non_local', False)
-                        all_matching = get_anilist_matching_files(user_id, only_watched, include_non_local)
+                if new_files or removed_files:
+                    saved_playlist['playlist'] = all_matching
+                    playlist_to_save = copy.deepcopy(saved_playlist)
+                    if playlist_to_save.get("infinite_settings"):
+                        playlist_to_save["infinite_settings"] = (
+                            utils.convert_infinities_to_markers(
+                                playlist_to_save["infinite_settings"]
+                            )
+                        )
+                    utils._atomic_json_write(
+                        filepath, playlist_to_save, indent=4
+                    )
 
-                    elif source_type == 'animethemes':
-                        hashid = source.get('hashid')
-                        include_non_local = source.get('include_non_local', False)
-                        result = get_animethemes_matching_files(hashid, include_non_local)
-                        if result:
-                            all_matching, _, _ = result
+                    playlist_name = saved_playlist.get('name', filename[:-5])
+                    change_summary = []
+                    if new_files:
+                        change_summary.append(f"+{len(new_files)}")
+                    if removed_files:
+                        change_summary.append(f"-{len(removed_files)}")
+                    print(
+                        f"Updated playlist '{playlist_name}': "
+                        f"{' '.join(change_summary)} themes"
+                    )
+                    for theme in removed_files:
+                        print(f"  - {theme}")
+                    for theme in new_files:
+                        print(f"  + {theme}")
 
-                    if all_matching is not None:
-                        all_matching_set = set(all_matching)
-                        new_files = [f for f in all_matching if f not in existing_files]
-                        removed_files = [f for f in existing_files if f not in all_matching_set]
+                # Always reconcile a matching loaded copy. Its config snapshot
+                # may be stale even when this saved JSON needed no new changes.
+                _schedule_loaded_playlist_refresh(
+                    saved_playlist, filename, all_matching
+                )
 
-                        if new_files or removed_files:
-                            saved_playlist['playlist'] = all_matching
-                            playlist_to_save = copy.deepcopy(saved_playlist)
-                            if playlist_to_save.get("infinite_settings"):
-                                playlist_to_save["infinite_settings"] = utils.convert_infinities_to_markers(
-                                    playlist_to_save["infinite_settings"]
-                                )
-                            with open(filepath, 'w', encoding='utf-8') as f:
-                                json.dump(playlist_to_save, f, indent=4)
+            except Exception as e:
+                print(f"Error updating playlist {filename}: {e}")
+    except Exception as e:
+        print(f"Error in update_living_playlists: {e}")
 
-                            playlist_name = saved_playlist.get('name', filename[:-5])
-                            change_summary = []
-                            if new_files:
-                                change_summary.append(f"+{len(new_files)}")
-                            if removed_files:
-                                change_summary.append(f"-{len(removed_files)}")
-                            updated_playlists.append((playlist_name, len(new_files), len(removed_files)))
-                            print(f"Updated playlist '{playlist_name}': {' '.join(change_summary)} themes")
-                            for theme in removed_files:
-                                print(f"  - {theme}")
-                            for theme in new_files:
-                                print(f"  + {theme}")
 
-                except Exception as e:
-                    print(f"Error updating playlist {filename}: {e}")
-        except Exception as e:
-            print(f"Error in update_living_playlists: {e}")
-
-    thread = threading.Thread(target=update_in_background, daemon=True)
+def update_living_playlists():
+    """Update saved and currently loaded source playlists in background."""
+    thread = threading.Thread(
+        target=_update_living_playlists_in_background, daemon=True
+    )
     thread.start()

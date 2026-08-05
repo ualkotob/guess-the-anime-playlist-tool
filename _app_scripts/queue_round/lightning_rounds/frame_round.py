@@ -10,6 +10,7 @@ from _app_scripts.playback import osd_text, music, coming_up_ui, blind_screen
 from _app_scripts.playback import progress_bar as progress_bar_ops
 from _app_scripts.toggles import censors
 from _app_scripts.information import information_popup
+from . import round_start_guard
 
 import random
 
@@ -146,10 +147,28 @@ def setup_frame_light_round():
     music.play_background_music(True)
     lightning_manager.update_light_round_number()
     if state.playback.lightning_mode_settings.get("_misc_settings", {}).get("framed_video"):
-        state.widgets.root.after(300, blind_screen.set_video_frame, True)
+        round_start_guard.after(300, blind_screen.set_video_frame, True)
     # Increased delay to give video more time to load before attempting first frame
-    state.widgets.root.after(1000, update_frame_light_round, state.playback.currently_playing.get('filename'))
-    state.widgets.root.after(1300, blind_screen.set_black_screen, False)
+    round_start_guard.after(
+        1000,
+        update_frame_light_round,
+        state.playback.currently_playing.get('filename'),
+    )
+    round_start_guard.after(1300, blind_screen.set_black_screen, False)
+
+
+def start_frame_light_round_answer():
+    """Enter the frame answer phase with the same audio policy as other rounds."""
+    from _app_scripts.queue_round.lightning_rounds import lightning_manager
+    global frame_light_round_frame_time
+
+    frame_light_round_frame_time = 0
+    lightning_manager.restore_lightning_answer_audio()
+    state.widgets.player.play()
+    information_popup.toggle_title_popup(True)
+    blind_screen.set_black_screen(False)
+    osd_text.bottom_info()
+    music.play_background_music(False)
 
 
 def update_frame_light_round(currently_playing_filename):
@@ -193,7 +212,11 @@ def update_frame_light_round(currently_playing_filename):
             length = state.widgets.player.get_length()
             if length <= 0:
                 # Video not loaded yet, wait for next cycle without incrementing frame
-                state.widgets.root.after(state.seek.SEEK_POLLING, update_frame_light_round, currently_playing_filename)
+                round_start_guard.after(
+                    state.seek.SEEK_POLLING,
+                    update_frame_light_round,
+                    currently_playing_filename,
+                )
                 return
 
             frame_light_round_frame_index = frame_light_round_frame_index + 1
@@ -219,10 +242,10 @@ def update_frame_light_round(currently_playing_filename):
                 progress_bar_ops.update_progress_bar(time, length, state.playback.currently_playing.get("filename"))
                 osd_text.bottom_info(str(frame_light_round_frame_index+1) + "/" + str(len(frame_light_round_frames)))
             elif not information_popup.is_title_window_up():
-                frame_light_round_frame_time = 0
-                state.widgets.player.play()
-                information_popup.toggle_title_popup(True)
-                osd_text.bottom_info()
-                music.play_background_music(False)
+                start_frame_light_round_answer()
 
-    state.widgets.root.after(state.seek.SEEK_POLLING, update_frame_light_round, currently_playing_filename)
+    round_start_guard.after(
+        state.seek.SEEK_POLLING,
+        update_frame_light_round,
+        currently_playing_filename,
+    )

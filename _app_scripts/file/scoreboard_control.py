@@ -172,6 +172,46 @@ def send_score(player_name, delta):
     send_command(f"[SCORE_WRITE][PLAYER]{player_name}[DELTA]{delta}")
 
 
+def set_player_badge(
+    player_name, key, text, priority=50, crossed_out=False
+):
+    """Set a short keyed status badge beside a scoreboard player."""
+    player_name = str(player_name or '').strip()
+    key = str(key or '').strip()
+    text = str(text or '').strip()
+    if not player_name or not key or not text:
+        return
+    try:
+        priority = min(100, max(0, int(priority)))
+    except (TypeError, ValueError):
+        priority = 50
+    payload = json.dumps(
+        {
+            "player": player_name,
+            "key": key,
+            "text": text[:8],
+            "priority": priority,
+            "crossed_out": bool(crossed_out),
+        },
+        ensure_ascii=False,
+        separators=(',', ':'),
+    )
+    send_command(f"[PLAYER_BADGE]{payload}")
+
+
+def clear_player_badge(player_name=None, key=None):
+    """Clear one player's keyed badge, or every badge with that key."""
+    payload = {}
+    if player_name:
+        payload["player"] = str(player_name).strip()
+    if key:
+        payload["key"] = str(key).strip()
+    send_command(
+        "[PLAYER_BADGE_CLEAR]"
+        + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+    )
+
+
 # ── Score-change log ──────────────────────────────────────────────────────────
 
 def read_score_changes():

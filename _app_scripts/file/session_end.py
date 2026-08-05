@@ -137,7 +137,12 @@ def _end_msg_build_canvas(y_top):
     for kind, text, pt, bold in rows:
         if kind in ("msg", "text") and text:
             size = _fs(pt)
-            fnt  = osd_text._get_ass_font(size, bold=bold, narrow=True)
+            # Use the same regular Arial family on every machine. Arial Narrow
+            # is supplied by some Office installations but absent on others;
+            # selecting it conditionally made the panel much more condensed on
+            # machines where it was installed. The controlled H_SQUEEZE below
+            # provides the intended, consistent horizontal adjustment.
+            fnt  = osd_text._get_ass_font(size, bold=bold, narrow=False)
             if fnt:
                 try:
                     w = round(fnt.getlength(text))
@@ -184,7 +189,7 @@ def _end_msg_build_canvas(y_top):
                             fill=(fg_r, fg_g, fg_b, 200))
             cy += _row_advance(index, kind, size)
         else:
-            fnt    = osd_text._get_ass_font(size, bold=bold, narrow=True)
+            fnt    = osd_text._get_ass_font(size, bold=bold, narrow=False)
             if text and fnt:
                 try:
                     tw = round(fnt.getlength(text))

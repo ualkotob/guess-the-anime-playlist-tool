@@ -462,6 +462,7 @@ def _push_web_up_next():
                 "detail": " | ".join(detail_parts),
                 "mode_label": mode_label,
                 "reroll": infinite.is_reroll_valid(),
+                "skip_group": infinite.is_reroll_valid(),
             })
     except Exception:
         web_server.push_up_next({})
@@ -498,13 +499,22 @@ def update_up_next_display(widget, clear=False):
                             widget, text="🔄", font=("Arial", 11, "bold"), borderwidth=0,
                             pady=0, command=infinite.reroll_next, bg="black", fg="white"
                         )
+                    state.widgets.skip_group_button = tk.Button(
+                            widget, text="⏭", font=("Arial", 11, "bold"), borderwidth=0,
+                            pady=0, command=infinite.skip_infinite_group, bg="black", fg="white"
+                        )
                     if not is_popout:
                         widget.window_create(
                             tk.END,
                             window=state.widgets.reroll_button
                         )
+                        widget.window_create(
+                            tk.END,
+                            window=state.widgets.skip_group_button
+                        )
                 else:
                     state.widgets.reroll_button = None
+                    state.widgets.skip_group_button = None
             if not is_popout:
                 widget.insert(tk.END, "NEXT: ", "bold")
 

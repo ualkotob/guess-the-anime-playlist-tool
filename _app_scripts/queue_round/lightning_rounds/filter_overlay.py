@@ -34,6 +34,88 @@ _filter_vf_last_progress = [0.0]   # mutable box so widen/narrow can read/write 
 _filter_zoom_offset     = [0.0, 0.0]  # [ox, oy] crop centre offset in [-0.5, 0.5] for zoom_filter
 
 
+# Discrete manual-control levels, expressed as the renderer's normalized
+# progress. Automatic/timed reveals remain continuous. These ladders are
+# variant-specific so each Reveal More/Less press makes a deliberate visual
+# step instead of reusing the automatic curve's generic 0.05 increment.
+_MANUAL_FILTER_PROGRESS_LEVELS = {
+    # Fixed five-percentage-point steps for the four percentage-based effects.
+    "blur": tuple(step / 20 for step in range(21)),
+    "pixelize": tuple(step / 20 for step in range(21)),
+    "outline": tuple(step / 20 for step in range(21)),
+    "wave": tuple(step / 20 for step in range(21)),
+    # Fixed 0.5x magnification steps from 15x down to the full 1x frame.
+    "zoom": tuple((15 - half_step / 2) / 14 for half_step in range(30, 1, -1)),
+}
+
+
+def _linearized_filter_progress(variant, progress):
+    """Map elapsed time to approximately constant visible change.
+
+    The renderer's existing parameter formulas are intentionally untouched.
+    This function supplies the raw renderer progress that makes each effect's
+    meaningful visual unit move steadily: logarithmic intensity for blur and
+    pixelization, visible frame fraction for zoom, and logarithmic edge
+    threshold for outline. Wave amplitude is already linear.
+    """
+    progress = min(1.0, max(0.0, float(progress)))
+    if progress <= 0.0 or progress >= 1.0:
+        return progress
+    if variant == "blur":
+        radius = 200 ** (1.0 - progress)
+        return 1.0 - radius / 200.0
+    if variant == "pixelize":
+        divisor = 80 ** (1.0 - progress)
+        return 1.0 - divisor / 80.0
+    if variant == "outline":
+        high = 0.99 * ((0.01 / 0.99) ** progress)
+        return (0.99 - high) / 0.98
+    if variant == "zoom":
+        zoom = 15.0 / (1.0 + 14.0 * progress)
+        return (15.0 - zoom) / 14.0
+    return progress
+
+
+def get_automatic_filter_progress(variant, progress):
+    """Blend linearized pacing toward the exact legacy renderer progress.
+
+    Per-variant strength is 0..100.  Zero is constant visual pacing; 100
+    returns ``progress`` verbatim so existing profiles retain bit-for-bit
+    timing.  Manual reveal controls do not call this function.
+    """
+    legacy_progress = min(1.0, max(0.0, float(progress)))
+    raw_strength = (
+        state.playback.lightning_mode_settings.get("reveal", {})
+        .get("automatic_curve_strength", {})
+        .get(variant, 100)
+    )
+    try:
+        strength = min(100.0, max(0.0, float(raw_strength)))
+    except (TypeError, ValueError):
+        strength = 100.0
+    if strength >= 100.0:
+        return legacy_progress
+
+    linear_progress = _linearized_filter_progress(variant, legacy_progress)
+    if strength <= 0.0:
+        return linear_progress
+    legacy_weight = strength / 100.0
+    return linear_progress + (legacy_progress - linear_progress) * legacy_weight
+
+
+def step_manual_filter_progress(variant, current_progress, reveal_more):
+    """Return the adjacent discrete manual level for a filter variant."""
+    levels = _MANUAL_FILTER_PROGRESS_LEVELS.get(variant)
+    current = min(1.0, max(0.0, float(current_progress)))
+    if not levels:
+        delta = 0.05 if reveal_more else -0.05
+        return min(1.0, max(0.0, round(current + delta, 3)))
+    epsilon = 1e-6
+    if reveal_more:
+        return next((level for level in levels if level > current + epsilon), levels[-1])
+    return next((level for level in reversed(levels) if level < current - epsilon), levels[0])
+
+
 def get_zoom_state():
     """Return (zoom_factor, offset_x, offset_y) while a zoom filter is visibly
     magnifying the frame (factor > 1.005), else None.  Read by censors to keep

@@ -25,6 +25,7 @@ import re
 import random
 
 from core.game_state import state
+from . import character_roster
 import _app_scripts.playback.osd_text as osd_text
 from . import title_overlay
 
@@ -235,7 +236,9 @@ def set_light_names():
         main = []
         secondary = []
         appear = []
-        for character in data["characters"]:
+        for character in character_roster.dedupe_characters_by_name(
+            data["characters"]
+        ):
             name = character[1]
             if character[0] == "m":
                 main.append([character[0], name])

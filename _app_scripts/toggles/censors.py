@@ -85,8 +85,11 @@ def _commit_censor_osd():
         for _sid in _CENSOR_ASS_OSD_IDS:
             _osd_command('osd-overlay', _sid, 'none', '', 0, 0, 0, 'no')
 
-    # Hide while blind/black overlay is active.
-    if not active or blind_screen.black_overlay is not None:
+    # Keep censors rendered while the blind/black overlay is active.  Censor
+    # overlays use z=-1 below, while the blind uses z=1, so they remain hidden
+    # behind it.  Having them ready before the blind is removed prevents mpv
+    # from presenting an uncensored frame between the two OSD updates.
+    if not active:
         _clear_all_slots()
         _censor_osd_last_size = (0, 0)
         return

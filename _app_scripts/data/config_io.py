@@ -109,7 +109,7 @@ SETTINGS_SCHEMA = [
     {"key": "CLOUDFLARE_PUBLIC_URL",   "config_key": "cloudflare_public_url",   "label": "Cloudflare Public URL:",   "type": "str",      "default": "", "width": 30, "requires_cloudflared": True, "state": "config", "tooltip": "The public HTTPS URL for your Cloudflare tunnel (e.g. https://gta.yourdomain.com). Must match the hostname configured in the Cloudflare dashboard."},
     {"key": "HOST_PASSWORD",      "config_key": "host_password",      "label": "Host Password:",         "type": "password", "default": "", "width": 30, "requires_tunnel": True, "state": "config", "tooltip": "If set, entering this password on the join screen grants host view (live answer panel + metadata). Leave blank to disable."},
     # Toggles persistence
-    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "state": "config", "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Keyboard Shortcuts, Progress Bar, Fullscreen, Collapsed Interface, and Always On Top toggles across restarts."},
+    {"key": "keep_set_toggles", "config_key": "keep_set_toggles", "label": "Keep Set Toggles:", "type": "bool", "default": True, "state": "config", "tooltip": "Remember the state of Censors, Auto Refresh, Info Start, Info End, Vote Skip, Keyboard Shortcuts, Progress Bar, Fullscreen, Collapsed Interface, and Always On Top toggles across restarts."},
 ]
 
 
@@ -295,6 +295,7 @@ def save_config():
             "censors_nsfw_enabled": censors.censors_nsfw_enabled,
             "auto_info_start": state.controls.auto_info_start,
             "auto_info_end": state.controls.auto_info_end,
+            "vote_skip_enabled": state.controls.vote_skip_enabled,
             "auto_refresh_toggle": state.controls.auto_refresh_toggle,
             "disable_shortcuts": state.controls.disable_shortcuts,
             "progress_bar_enabled": state.controls.progress_bar_enabled,
@@ -430,6 +431,8 @@ def load_config():
                     state.controls.auto_info_start = bool(_t["auto_info_start"])
                 if "auto_info_end" in _t:
                     state.controls.auto_info_end = bool(_t["auto_info_end"])
+                if "vote_skip_enabled" in _t:
+                    state.controls.vote_skip_enabled = bool(_t["vote_skip_enabled"])
                 if "auto_refresh_toggle" in _t:
                     state.controls.auto_refresh_toggle = bool(_t["auto_refresh_toggle"])
                 if "disable_shortcuts" in _t:

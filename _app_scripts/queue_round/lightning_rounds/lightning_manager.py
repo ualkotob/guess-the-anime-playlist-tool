@@ -32,6 +32,7 @@ from _app_scripts.queue_round.lightning_rounds import (
     peek_dispatch,
     peek_overlay,
     profile_overlay,
+    round_start_guard,
     scramble_overlay,
     song_overlay,
     swap_overlay,
@@ -319,12 +320,79 @@ def get_light_round_time():
 # active overlay, restores mpv state (mismatch hook, original video track,
 # audio mute), and resets the cross-cutting round state to its defaults.
 # ---------------------------------------------------------------------------
+def _restore_lightning_answer_audio(new_round, fixed_current_round, disable_video_audio):
+    """Restore answer audio without unnecessarily replacing an answer clip."""
+    keep_answer_clip = bool(
+        not new_round
+        and fixed_current_round
+        and fixed_current_round.get("clip_for_answer")
+    )
+    if not keep_answer_clip:
+        streaming.stop_stream(restore=not new_round)
+
+    # Keeping a clip for the answer only preserves its media; it must not
+    # preserve the question phase's lightning mute state.
+    state.controls.light_muted = False
+    if not disable_video_audio:
+        audio_toggles.toggle_mute(False, True)
+
+
+def restore_lightning_answer_audio():
+    """Restore the current round's audio when its answer phase begins."""
+    _restore_lightning_answer_audio(
+        False,
+        state.lightning.fixed_current_round,
+        state.controls.disable_video_audio,
+    )
+
+
+def _should_keep_trivia_question():
+    return bool(
+        state.lightning.current_light_mode == "trivia"
+        and trivia_round.light_trivia_answer
+        and state.playback.lightning_mode_settings.get("trivia", {}).get(
+            "show_question_during_answer", True
+        )
+    )
+
+
+def _should_keep_emoji_clues():
+    return bool(
+        state.lightning.current_light_mode == "emoji"
+        and state.playback.lightning_mode_settings.get("emoji", {}).get(
+            "show_emojis_during_answer", True
+        )
+    )
+
+
+def _should_keep_synopsis():
+    return bool(
+        state.lightning.current_light_mode == "synopsis"
+        and state.playback.lightning_mode_settings.get("synopsis", {}).get(
+            "show_synopsis_during_answer", True
+        )
+    )
+
+
+def _should_keep_characters():
+    return bool(
+        state.lightning.current_light_mode == "characters"
+        and state.playback.lightning_mode_settings.get("characters", {}).get(
+            "show_characters_during_answer", True
+        )
+    )
+
+
 def clean_up_light_round(new_round=False):
     player = state.widgets.player
     fixed_current_round       = state.lightning.fixed_current_round
     light_mode                = state.lightning.light_mode
     lightning_mode_settings   = state.playback.lightning_mode_settings
     disable_video_audio       = state.controls.disable_video_audio
+    keep_trivia_question = not new_round and _should_keep_trivia_question()
+    keep_emoji_clues = not new_round and _should_keep_emoji_clues()
+    keep_synopsis = not new_round and _should_keep_synopsis()
+    keep_characters = not new_round and _should_keep_characters()
     from _app_scripts.playback import blind_screen as _blind_screen
     _video_frame_active       = _blind_screen._video_frame_active
 
@@ -350,19 +418,20 @@ def clean_up_light_round(new_round=False):
         mismatch_round._mismatch_vid_track_id = None
         mismatch_round._mismatch_orig_vid     = None
 
-    if new_round or not fixed_current_round or not fixed_current_round.get("clip_for_answer"):
-        streaming.stop_stream(restore=not new_round)
-        state.controls.light_muted = False
-        if not disable_video_audio:
-            audio_toggles.toggle_mute(False, True)
+    _restore_lightning_answer_audio(
+        new_round, fixed_current_round, disable_video_audio
+    )
 
     mismatch_round.mismatch_visuals            = None
     state.lightning.character_round_answer      = None
     cover_image_overlay.light_cover_image       = None
-    trivia_round.light_trivia_answer            = None
+    if not keep_trivia_question:
+        trivia_round.light_trivia_answer        = None
     episode_overlay.light_name_overlay          = False
     frame_round.frame_light_round_started       = False
-    characters_overlay.characters_round_characters = []
+    if not keep_characters:
+        characters_overlay.characters_round_characters = []
+        characters_overlay.characters_round_names = []
     tag_cloud_overlay.tag_cloud_tags            = []
     episode_overlay.light_episode_names         = []
     state.lightning.light_speed_modifier = 1
@@ -389,17 +458,21 @@ def clean_up_light_round(new_round=False):
         image_reveal_overlays.toggle_slice_overlay,
     ]:
         overlay(destroy=True)
-    if True:  # pending change to not remove for answer
-        for overlay in [
-            clues_overlay.toggle_clues_overlay,
-            song_overlay.toggle_song_overlay,
-            characters_overlay.toggle_characters_overlay,
-            tag_cloud_overlay.toggle_tag_cloud_overlay,
-            episode_overlay.toggle_episode_overlay,
-            emoji_overlay.toggle_emoji_overlay,
-            profile_overlay.toggle_character_profile_overlay,
-        ]:
-            overlay(destroy=True)
+    answer_phase_overlays = [
+        clues_overlay.toggle_clues_overlay,
+        song_overlay.toggle_song_overlay,
+        tag_cloud_overlay.toggle_tag_cloud_overlay,
+        episode_overlay.toggle_episode_overlay,
+        profile_overlay.toggle_character_profile_overlay,
+    ]
+    if not keep_characters:
+        answer_phase_overlays.append(
+            characters_overlay.toggle_characters_overlay
+        )
+    if not keep_emoji_clues:
+        answer_phase_overlays.append(emoji_overlay.toggle_emoji_overlay)
+    for overlay in answer_phase_overlays:
+        overlay(destroy=True)
     filter_overlay.toggle_filter_vf(destroy=True)
     if new_round:
         blind_screen.set_video_frame(False)
@@ -418,7 +491,11 @@ def clean_up_light_round(new_round=False):
         synopsis_overlay.toggle_mc_choices_overlay(highlight=True)
     else:
         synopsis_overlay.toggle_mc_choices_overlay(destroy=True)
-    if new_round or (not (fixed_current_round and fixed_current_round.get("overlay_during_answer"))):
+    if new_round or not (
+        keep_trivia_question
+        or keep_synopsis
+        or (fixed_current_round and fixed_current_round.get("overlay_during_answer"))
+    ):
         synopsis_overlay.toggle_synopsis_overlay(destroy=True)
     for info in [osd_text.bottom_info, osd_text.top_info]:
         info()
@@ -449,7 +526,41 @@ def light_round_transition():
     if _blind_screen._video_frame_active:
         blind_screen.set_video_frame(False)
     clean_up_light_round(new_round=True)
-    state.widgets.root.after(500, transport.play_next)
+    round_start_guard.after(500, transport.play_next)
+
+
+def _start_ai_round_fallback(source_mode):
+    """Start a local clue round when prefetched AI data is not ready."""
+    data = state.playback.currently_playing.get("data") or {}
+    synopsis_words = (data.get("synopsis") or "").split()
+    base_title = title_overlay.get_base_title(data)
+
+    preferred_modes = (
+        ("synopsis", "title")
+        if source_mode == "trivia"
+        else ("title", "synopsis")
+    )
+    for fallback_mode in preferred_modes:
+        if fallback_mode == "synopsis" and len(synopsis_words) >= 20:
+            state.lightning.current_light_mode = "synopsis"
+            synopsis_overlay.pick_synopsis()
+            synopsis_overlay.toggle_synopsis_overlay(
+                text=synopsis_overlay.get_light_synopsis_string(words=1)
+            )
+            break
+        if fallback_mode == "title" and len(base_title.replace(" ", "")) >= 4:
+            state.lightning.current_light_mode = "title"
+            start_title_round()
+            osd_text.top_info("MUST SAY FULL TITLE")
+            break
+    else:
+        fallback_mode = "regular"
+        state.lightning.current_light_mode = fallback_mode
+        audio_toggles.toggle_mute(False, True)
+        blind_screen.set_black_screen(False)
+        osd_text.top_info("GUESS THE ANIME")
+
+    return fallback_mode
 
 
 # ---------------------------------------------------------------------------
@@ -531,7 +642,9 @@ def update_light_round(time):
                         state.lightning.light_blind_one_second_count += 1
                         osd_text.set_countdown(round(blind_length - state.lightning.light_blind_one_second_count))
                     for s in range(BLIND_ONE_SECOND_TIME-1):
-                        state.widgets.root.after(1000 * (s+1), update_light_blind_count)
+                        round_start_guard.after(
+                            1000 * (s + 1), update_light_blind_count
+                        )
                     osd_text.set_countdown(round(blind_length - state.lightning.light_blind_one_second_count))
             else:
                 if state.lightning.light_blind_one_second_count is not None:
@@ -545,7 +658,6 @@ def update_light_round(time):
                     state.lightning.light_answer_last_tick = _now
                     _answer_elapsed = 0
                 if not state.lightning._showed_lightning_answer:
-                    state.lightning._showed_lightning_answer = True
                     char_answer = copy.copy(state.lightning.character_round_answer)
                     cover_answer = cover_image_overlay.light_cover_image
                     image_answer_source = None  # source text shown as answer (no header, width_max=0.55)
@@ -591,13 +703,32 @@ def update_light_round(time):
                         top_info_data = None
                     if state.lightning.light_mode == 'ost' and not (state.lightning.fixed_current_round and state.lightning.fixed_current_round.get("clip_for_answer")):
                         ost_overlay._show_ost_cover()  # hide video during transition; removed by stop_stream
+                    # Restore answer audio before nonessential answer UI work.  Only
+                    # mark setup complete after cleanup succeeds so a transient
+                    # failure can be retried on the next playback tick.
+                    clean_up_light_round()
+                    state.lightning._showed_lightning_answer = True
                     information_popup.toggle_title_popup(True)
                     blind_screen.set_black_screen(False)
                     update_light_round_number()
-                    clean_up_light_round()
+                    if _should_keep_characters():
+                        characters_overlay.toggle_characters_overlay(
+                            num_characters=4, show_names=True
+                        )
                     max_width_size = 0.55 if (state.lightning.light_round_answer_length < 10) else 0.5
 
-                    if synopsis_overlay.synopsis_start_index is not None and state.lightning.fixed_current_round and state.lightning.fixed_current_round.get("overlay_during_answer"):
+                    _keep_trivia_question = _should_keep_trivia_question()
+                    _keep_synopsis = _should_keep_synopsis()
+                    if synopsis_overlay.synopsis_start_index is not None and (
+                        _keep_trivia_question
+                        or _keep_synopsis
+                        or (
+                            state.lightning.fixed_current_round
+                            and state.lightning.fixed_current_round.get(
+                                "overlay_during_answer"
+                            )
+                        )
+                    ):
                         synopsis_overlay.toggle_synopsis_overlay(text=synopsis_overlay.get_light_synopsis_string())
                     if top_info_data:
                         osd_text.top_info(top_info_data, 20)
@@ -694,6 +825,12 @@ def update_light_round(time):
                         progress = max(0.0, min(1.0, elapsed / _reveal_speed))
                 else:
                     reveal_duration = state.lightning.light_round_length - answer_time
+                    if trivia_round.light_trivia_answer:
+                        reveal_duration = trivia_round.get_reveal_duration(
+                            len(synopsis_words),
+                            state.lightning.light_round_length,
+                            answer_time,
+                        )
                     if reveal_duration > 0:
                         elapsed = state.lightning.light_round_length - time_left
                         progress = max(0.0, min(1.0, elapsed / reveal_duration))
@@ -704,11 +841,14 @@ def update_light_round(time):
                 synopsis_overlay.toggle_synopsis_overlay(text=shown_text)
             elif state.lightning.current_light_mode == 'emoji' or emoji_overlay.emoji_overlay_window:
                 # Reveal emojis one by one over the round
-                emojis = emoji_overlay.get_emoji_clues_for_title(state.playback.currently_playing.get("data"))
-                elapsed = state.lightning.light_round_length - max(0, time_left)
-                progress = max(0, min(1, elapsed / state.lightning.light_round_length))
-                emoji_count = max(1, round(len(emojis) * progress)+1)
-                emoji_overlay.toggle_emoji_overlay(emojis=emojis, max_emojis=emoji_count)
+                emojis = emoji_overlay.get_emoji_clues_for_title(
+                    state.playback.currently_playing.get("data"), allow_api=False
+                )
+                if emojis:
+                    elapsed = state.lightning.light_round_length - max(0, time_left)
+                    progress = max(0, min(1, elapsed / state.lightning.light_round_length))
+                    emoji_count = max(1, round(len(emojis) * progress)+1)
+                    emoji_overlay.toggle_emoji_overlay(emojis=emojis, max_emojis=emoji_count)
             elif progress_overlay_ops.is_light_progress_bar_active():
                 progress_overlay_ops.set_progress_overlay(round((time - state.lightning.light_round_start_time)*100), state.lightning.light_round_length*100, redraw=state.lightning.light_blind_one_second_count is not None)
                 if streaming.currently_streaming and (not state.lightning.fixed_current_round or state.lightning.fixed_current_round.get("reveal_title_halfway")):
@@ -887,9 +1027,13 @@ def update_light_round(time):
             state.lightning._showed_lightning_answer = False
             state.lightning.current_light_mode = state.lightning.light_mode
             if state.playback.lightning_mode_settings.get("_misc_settings", {}).get("framed_video"):
-                state.widgets.root.after(300, blind_screen.set_video_frame, True)
+                round_start_guard.after(
+                    300, blind_screen.set_video_frame, True
+                )
             if state.lightning.light_mode in ['regular', 'reveal']:
-                state.widgets.root.after(500, blind_screen.set_black_screen, False)
+                round_start_guard.after(
+                    500, blind_screen.set_black_screen, False
+                )
             def set_double_speed():
                 state.lightning.light_speed_modifier = 2
                 state.widgets.player.set_rate(state.lightning.light_speed_modifier)
@@ -978,7 +1122,9 @@ def update_light_round(time):
                     _cur_fn = state.playback.currently_playing.get("filename")
                     def _theme_worker():
                         theme_path = state.metadata.directory_files.get(mismatch_round.get_mismatched_theme())
-                        state.widgets.root.after(0, _start_mismatch_after_theme, theme_path)
+                        round_start_guard.after(
+                            0, _start_mismatch_after_theme, theme_path
+                        )
                     threading.Thread(target=_theme_worker, daemon=True).start()
                 else:
                     if not state.lightning.fixed_current_round:
@@ -1013,11 +1159,22 @@ def update_light_round(time):
                 synopsis_overlay.pick_synopsis()
                 synopsis_overlay.toggle_synopsis_overlay(text=synopsis_overlay.get_light_synopsis_string(words = 1))
             elif state.lightning.light_mode == 'trivia':
-                trivia_data = lightning_queue_data.get(state.playback.currently_playing.get("filename", {}), {}).get("trivia", [])
-                trivia_round.set_light_trivia(trivia_data=trivia_data)
-                synopsis_overlay.toggle_synopsis_overlay(text=synopsis_overlay.get_light_synopsis_string(words = 1))
+                data = state.playback.currently_playing.get("data") or {}
+                trivia_data = lightning_queue_data.get(
+                    state.playback.currently_playing.get("filename", {}), {}
+                ).get("trivia") or trivia_round.get_cached_trivia(data)
+                if trivia_data and trivia_data[1] != "None":
+                    trivia_round.set_light_trivia(trivia_data=trivia_data, allow_api=False)
+                    synopsis_overlay.toggle_synopsis_overlay(text=synopsis_overlay.get_light_synopsis_string(words=1))
+                else:
+                    _start_ai_round_fallback("trivia")
             elif state.lightning.light_mode == "emoji":
-                emoji_overlay.toggle_emoji_overlay(max_emojis=1)
+                data = state.playback.currently_playing.get("data") or {}
+                emojis = emoji_overlay.get_emoji_clues_for_title(data, allow_api=False)
+                if emojis:
+                    emoji_overlay.toggle_emoji_overlay(emojis=emojis, max_emojis=1)
+                else:
+                    _start_ai_round_fallback("emoji")
             elif state.lightning.light_mode == 'title':
                 start_title_round()
                 top_header = ""
@@ -1043,7 +1200,15 @@ def update_light_round(time):
                     filter_overlay._filter_vf_variant = peek_mode
                     filter_overlay.toggle_filter_vf(peek_mode, 0)
             elif state.lightning.light_mode == 'characters':
-                characters_overlay.characters_round_characters = lightning_queue_data.get(state.playback.currently_playing.get("filename", {}), {}).get("characters", [])
+                queued_characters = lightning_queue_data.get(
+                    state.playback.currently_playing.get("filename", {}), {}
+                )
+                characters_overlay.characters_round_characters = (
+                    queued_characters.get("characters", [])
+                )
+                characters_overlay.characters_round_names = (
+                    queued_characters.get("character_names", [])
+                )
                 if not characters_overlay.characters_round_characters:
                     characters_overlay.get_characters_round_characters()
                 characters_overlay.toggle_characters_overlay(num_characters=1)
@@ -1177,7 +1342,9 @@ def update_light_round(time):
                         def restart_player():
                             state.widgets.player.stop()
                             state.widgets.player.play()
-                            state.widgets.root.after(100, wait_for_stream, filename, 0)
+                            round_start_guard.after(
+                                100, wait_for_stream, filename, 0
+                            )
                         if filename != state.playback.currently_playing.get("filename") or not streaming.currently_streaming:
                             return
                         elif state.widgets.player.is_playing() and state.widgets.player.get_length() > 0:
@@ -1261,23 +1428,27 @@ def update_light_round(time):
                                         if state.widgets.player.is_playing() and state.widgets.player.get_time() < target_ms - 2500:
                                             streaming.test_print("Seek retry failed — restarting stream")
                                             restart_player()
-                                    state.widgets.root.after(2000, _check_retry)
+                                    round_start_guard.after(2000, _check_retry)
                                 # else: playing from (approximately) the right position
-                            state.widgets.root.after(2000, start_player)
+                            round_start_guard.after(2000, start_player)
                             set_stream_start()
                             for time in [500, 1000, 1500, 2000]:
-                                state.widgets.root.after(time, stream_overlay)
+                                round_start_guard.after(time, stream_overlay)
                         elif count >= 5000:
                             restart_player()
                         else:
                             count += 100
-                            state.widgets.root.after(100, wait_for_stream, filename, count)
+                            round_start_guard.after(
+                                100, wait_for_stream, filename, count
+                            )
                     wait_for_stream(state.playback.currently_playing.get("filename"), 0)
                 else:
                     if variety_round.last_variety_forced:
                         variety_round.variety_mode_cooldown_counts['clip'] = state.playback.lightning_mode_settings.get("clip", {}).get("variety", {}).get("cooldown", {}).get("max_gap", 0)
                     audio_toggles.toggle_mute(False)
-                    state.widgets.root.after(500, blind_screen.set_black_screen, False)
+                    round_start_guard.after(
+                        500, blind_screen.set_black_screen, False
+                    )
             # Auto-trigger MC bonus if this fixed round defines MC choices
             if state.lightning.fixed_current_round and state.lightning.fixed_current_round.get("mc_choice_2"):
                 bonus.guess_extra("fixed_mc")
@@ -1382,17 +1553,25 @@ def queue_next_lightning_mode():
                     min_desc = 120
                 lightning_queue_data[next_filename]["character_answer"] = character_parts_overlay.get_character_round_image(types=get_char_types_by_popularity(data, next_mode), min_desc_length=min_desc, data=data, queue=True, mode=next_mode)
             elif next_mode == "characters":
-                lightning_queue_data[next_filename]["characters"] = characters_overlay.get_characters_round_characters(data=data, queue=True)
+                character_data = characters_overlay.get_characters_round_characters(
+                    data=data, queue=True, include_names=True
+                )
+                lightning_queue_data[next_filename]["characters"] = (
+                    character_data["images"]
+                )
+                lightning_queue_data[next_filename]["character_names"] = (
+                    character_data["names"]
+                )
             elif next_mode == "trivia":
                 if not fixed_data:
                     trivia_question = trivia_round.set_light_trivia(data=data, queue=True)
                     if trivia_question[1] == "None" and variety_round.variety_light_mode_enabled:
                         excluded_modes.append('trivia')
                         next_mode = None
-                    else:
+                    elif trivia_question[1] != "None":
                         lightning_queue_data[next_filename]["trivia"] = trivia_question
             elif next_mode == "emoji":
-                if not data.get("emojis"):
+                if not emoji_overlay.get_cached_emoji_clues(data):
                     emoji_overlay.get_emoji_clues_for_title(data)
             elif next_mode == "image":
                 if next_fixed_round and next_fixed_round.get("image_url"):
