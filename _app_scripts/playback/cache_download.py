@@ -36,6 +36,7 @@ downloads_completed     = 0    # mutated by do_cache_download via AugAssign
 download_ui_update_pending = False
 pending_play_queue      = {}   # {filename: {playlist_entry, fullscreen, start_time, timeout}}
 download_progress       = {}   # {filename: {downloaded_mb, total_mb, popup, progress_bar, status_label}}
+_cache_lock             = threading.RLock()
 
 # Runtime-configurable settings are read directly at call time:
 #   state.config.themes_cache_size / state.config.auto_download_themes, and
@@ -74,40 +75,108 @@ def get_animethemes_stream_url(filename):
 
 def load_cache_metadata():
     global cache_metadata
-    try:
-        if os.path.exists(CACHE_METADATA_FILE):
-            with open(CACHE_METADATA_FILE, "r", encoding="utf-8") as f:
-                cache_metadata = json.load(f)
-        else:
+    with _cache_lock:
+        try:
+            if os.path.exists(CACHE_METADATA_FILE):
+                with open(CACHE_METADATA_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                cache_metadata = loaded if isinstance(loaded, dict) else {}
+            else:
+                cache_metadata = {}
+        except Exception as e:
+            print(f"Error loading cache metadata: {e}")
             cache_metadata = {}
-    except Exception as e:
-        print(f"Error loading cache metadata: {e}")
-        cache_metadata = {}
+
+        _reconcile_cache_metadata()
+        evict_cache_for_size(0)
 
 
 def save_cache_metadata():
+    with _cache_lock:
+        try:
+            os.makedirs(os.path.dirname(CACHE_METADATA_FILE), exist_ok=True)
+            with open(CACHE_METADATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(cache_metadata, f, indent=2)
+        except Exception as e:
+            print(f"Error saving cache metadata: {e}")
+
+
+def _cache_limit_bytes():
+    return max(0, int(state.config.themes_cache_size)) * 1024 * 1024
+
+
+def _cache_path(rel_path):
+    return os.path.join(THEMES_CACHE_FOLDER, rel_path)
+
+
+def _cleanup_empty_cache_dirs(cache_path):
+    cache_root = os.path.normcase(os.path.abspath(THEMES_CACHE_FOLDER))
+    cache_dir = os.path.dirname(os.path.abspath(cache_path))
     try:
-        os.makedirs(os.path.dirname(CACHE_METADATA_FILE), exist_ok=True)
-        with open(CACHE_METADATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache_metadata, f, indent=2)
-    except Exception as e:
-        print(f"Error saving cache metadata: {e}")
+        while os.path.normcase(cache_dir) != cache_root and os.path.exists(cache_dir):
+            if not os.listdir(cache_dir):
+                os.rmdir(cache_dir)
+                cache_dir = os.path.dirname(cache_dir)
+            else:
+                break
+    except Exception:
+        pass
+
+
+def _reconcile_cache_metadata():
+    """Make metadata reflect every file actually present in the cache folder."""
+    metadata_path = os.path.normcase(os.path.abspath(CACHE_METADATA_FILE))
+    known_paths = set()
+
+    for filename, metadata in list(cache_metadata.items()):
+        if not isinstance(metadata, dict):
+            del cache_metadata[filename]
+            continue
+        rel_path = metadata.get("path", filename)
+        cache_path = _cache_path(rel_path)
+        if not os.path.isfile(cache_path):
+            del cache_metadata[filename]
+            continue
+        metadata["size"] = os.path.getsize(cache_path)
+        known_paths.add(os.path.normcase(os.path.abspath(cache_path)))
+
+    if os.path.isdir(THEMES_CACHE_FOLDER):
+        for folder, _dirs, files in os.walk(THEMES_CACHE_FOLDER):
+            for basename in files:
+                cache_path = os.path.join(folder, basename)
+                normalized_path = os.path.normcase(os.path.abspath(cache_path))
+                if normalized_path == metadata_path or normalized_path in known_paths:
+                    continue
+                rel_path = os.path.relpath(cache_path, THEMES_CACHE_FOLDER)
+                key = basename
+                if key in cache_metadata:
+                    key = f"__orphan__:{rel_path}"
+                cache_metadata[key] = {
+                    "path": rel_path,
+                    "size": os.path.getsize(cache_path),
+                    "play_count": 0,
+                    "last_played": datetime.fromtimestamp(os.path.getmtime(cache_path)).isoformat(),
+                }
+                known_paths.add(normalized_path)
+
+    save_cache_metadata()
 
 
 
 
 def get_cached_file_path(filename):
     """Return full path to a cached file, or None if not cached."""
-    for candidate in entry_paths.get_interchangeable_filenames(filename):
-        if candidate in cache_metadata:
-            rel_path = cache_metadata[candidate].get("path", candidate)
-            cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
+    with _cache_lock:
+        for candidate in entry_paths.get_interchangeable_filenames(filename):
+            if candidate in cache_metadata:
+                rel_path = cache_metadata[candidate].get("path", candidate)
+                cache_path = _cache_path(rel_path)
+                if os.path.exists(cache_path):
+                    return cache_path
+            # Fallback: flat legacy structure
+            cache_path = _cache_path(candidate)
             if os.path.exists(cache_path):
                 return cache_path
-        # Fallback: flat legacy structure
-        cache_path = os.path.join(THEMES_CACHE_FOLDER, candidate)
-        if os.path.exists(cache_path):
-            return cache_path
     return None
 def _metadata_year_season(data):
     """Return (year, season) when metadata has a usable season value."""
@@ -145,10 +214,11 @@ def _resolve_download_destination(filename):
 
 def update_cache_play_count(filename):
     """Increment play count and refresh last_played for a cached file."""
-    if filename in cache_metadata:
-        cache_metadata[filename]["play_count"] = cache_metadata[filename].get("play_count", 0) + 1
-        cache_metadata[filename]["last_played"] = datetime.now().isoformat()
-        save_cache_metadata()
+    with _cache_lock:
+        if filename in cache_metadata:
+            cache_metadata[filename]["play_count"] = cache_metadata[filename].get("play_count", 0) + 1
+            cache_metadata[filename]["last_played"] = datetime.now().isoformat()
+            save_cache_metadata()
 
 
 def evict_cache_for_size(needed_size_bytes):
@@ -156,53 +226,91 @@ def evict_cache_for_size(needed_size_bytes):
 
     Returns True when enough space was freed.
     """
-    current_size = sum(m.get("size", 0) for m in cache_metadata.values())
-    cache_limit_bytes = state.config.themes_cache_size * 1024 * 1024
+    needed_size_bytes = max(0, int(needed_size_bytes))
+    with _cache_lock:
+        cache_limit_bytes = _cache_limit_bytes()
+        # A completed download always wins over older cache entries. If that
+        # one file is larger than the configured cap, retain it as the sole
+        # cache entry rather than breaking playback for the active session.
+        effective_limit_bytes = max(cache_limit_bytes, needed_size_bytes)
 
-    if current_size + needed_size_bytes <= cache_limit_bytes:
-        return True
+        current_size = 0
+        cached_files = []
+        metadata_changed = False
+        for filename, metadata in list(cache_metadata.items()):
+            if not isinstance(metadata, dict):
+                del cache_metadata[filename]
+                metadata_changed = True
+                continue
+            rel_path = metadata.get("path", filename)
+            cache_path = _cache_path(rel_path)
+            if not os.path.isfile(cache_path):
+                del cache_metadata[filename]
+                metadata_changed = True
+                continue
+            try:
+                actual_size = os.path.getsize(cache_path)
+            except OSError:
+                continue
+            if metadata.get("size") != actual_size:
+                metadata["size"] = actual_size
+                metadata_changed = True
+            current_size += actual_size
+            cached_files.append({
+                "filename": filename,
+                "size": actual_size,
+                "last_played": metadata.get("last_played", ""),
+                "path": cache_path,
+            })
 
-    cached_files = [
-        {
-            "filename": fn,
-            "size": m.get("size", 0),
-            "play_count": m.get("play_count", 0),
-            "last_played": m.get("last_played", ""),
-        }
-        for fn, m in cache_metadata.items()
-    ]
-    cached_files.sort(key=lambda x: x["last_played"])
+        if current_size + needed_size_bytes <= effective_limit_bytes:
+            if metadata_changed:
+                save_cache_metadata()
+            return True
 
-    space_needed = current_size + needed_size_bytes - cache_limit_bytes
-    space_freed = 0
+        cached_files.sort(key=lambda item: item["last_played"])
+        space_needed = current_size + needed_size_bytes - effective_limit_bytes
+        space_freed = 0
 
-    for file_info in cached_files:
-        if space_freed >= space_needed:
-            break
-        fn = file_info["filename"]
-        rel_path = cache_metadata.get(fn, {}).get("path", fn)
-        cache_path = os.path.join(THEMES_CACHE_FOLDER, rel_path)
-        try:
-            if os.path.exists(cache_path):
-                os.remove(cache_path)
-                # Clean up empty parent dirs
-                cache_dir = os.path.dirname(cache_path)
-                try:
-                    while cache_dir != THEMES_CACHE_FOLDER and os.path.exists(cache_dir):
-                        if not os.listdir(cache_dir):
-                            os.rmdir(cache_dir)
-                            cache_dir = os.path.dirname(cache_dir)
-                        else:
-                            break
-                except Exception:
-                    pass
+        for file_info in cached_files:
+            if space_freed >= space_needed:
+                break
+            filename = file_info["filename"]
+            try:
+                os.remove(file_info["path"])
+                _cleanup_empty_cache_dirs(file_info["path"])
                 space_freed += file_info["size"]
-            del cache_metadata[fn]
-        except Exception as e:
-            print(f"Error evicting {fn}: {e}")
+                cache_metadata.pop(filename, None)
+                metadata_changed = True
+            except Exception as e:
+                print(f"Error evicting {filename}: {e}")
 
-    save_cache_metadata()
-    return space_freed >= space_needed
+        if metadata_changed:
+            save_cache_metadata()
+        return space_freed >= space_needed
+
+
+def _finalize_cached_file(filename, rel_path, cache_path):
+    """Atomically evict older entries and register a completed download.
+
+    The new file is always retained. The return value reports whether all
+    requested eviction succeeded; a False result means the cache is only
+    temporarily over its target (for example, because an old file is locked).
+    """
+    actual_size = os.path.getsize(cache_path)
+    with _cache_lock:
+        # A stale record for this filename must not make the new file count twice.
+        cache_metadata.pop(filename, None)
+        eviction_complete = evict_cache_for_size(actual_size)
+
+        cache_metadata[filename] = {
+            "path": rel_path,
+            "size": actual_size,
+            "play_count": 0,
+            "last_played": datetime.now().isoformat(),
+        }
+        save_cache_metadata()
+        return eviction_complete
 
 
 # ---------------------------------------------------------------------------
@@ -527,14 +635,7 @@ def download_to_cache(filename, silent=False):
                 # a busy main loop and prevent the worker's final cleanup.
                 download_ui_update_pending = True
             else:
-                evict_cache_for_size(actual_size)
-                cache_metadata[filename] = {
-                    "path":       rel_path,
-                    "size":       actual_size,
-                    "play_count": 0,
-                    "last_played": datetime.now().isoformat(),
-                }
-                save_cache_metadata()
+                _finalize_cached_file(filename, rel_path, dest_path)
 
             if not silent:
                 mb = actual_size / 1024 / 1024
@@ -594,13 +695,7 @@ def download_animethemes_file(filename, button=None):
             if to_directory:
                 state.metadata.directory_files[filename] = dest_path
             else:
-                cache_metadata[filename] = {
-                    "path": rel_path,
-                    "size": os.path.getsize(dest_path),
-                    "play_count": 0,
-                    "last_played": datetime.now().isoformat(),
-                }
-                save_cache_metadata()
+                _finalize_cached_file(filename, rel_path, dest_path)
             mb = os.path.getsize(dest_path) / 1024 / 1024
             update_button(f"✓ {mb:.1f} MB")
             print(f"Downloaded {filename} to {dest_path}")
@@ -662,9 +757,10 @@ def move_cached_file_to_directory(filename, button=None):
 
             state.metadata.directory_files[filename] = dest_path
 
-            if filename in cache_metadata:
-                del cache_metadata[filename]
-                save_cache_metadata()
+            with _cache_lock:
+                if filename in cache_metadata:
+                    del cache_metadata[filename]
+                    save_cache_metadata()
 
             mb = os.path.getsize(dest_path) / 1024 / 1024
             update_button(f"✓ {mb:.1f} MB")

@@ -77,21 +77,27 @@ def _looks_like_scoreboard_team_id(value):
 
 
 def _apply_web_team_assignments(scores_data):
-    """Sanitize per-player team values from the scoreboard's scores export.
+    """Resolve displayable teams for the web scoreboard.
 
     Team names arrive in scoreboard_scores.json (the scoreboard exports its
-    sheet's TEAM column directly). Purely numeric values are scoreboard-
-    internal team IDs, not display names -- blank them rather than showing
-    digits on the web score panel.
+    sheet's TEAM column directly). Some scoreboard versions instead export a
+    numeric internal team ID, and a freshly submitted web assignment can also
+    race the next scores-file refresh. In either case, use the assignment that
+    the web host persisted when it sent PLAYER_SET_TEAM. A displayable team in
+    the scores export remains authoritative so changes made in the scoreboard
+    app are still reflected on the web.
     """
     if not scores_data:
         return scores_data
+    web_assignments = _load_web_team_assignments()
     copied = dict(scores_data)
     players = []
     for player in copied.get('players', []) or []:
         p = dict(player)
-        if _looks_like_scoreboard_team_id(p.get('team')):
-            p['team'] = ''
+        name = str(p.get('name', '') or '').strip()
+        exported_team = str(p.get('team', '') or '').strip()
+        if not exported_team or _looks_like_scoreboard_team_id(exported_team):
+            p['team'] = str(web_assignments.get(name, '') or '').strip()
         players.append(p)
     copied['players'] = players
     return copied
@@ -520,6 +526,10 @@ def _push_web_toggles():
         "auto_reveal_variant": state.controls.auto_reveal_variant or "",
         "auto_reveal_seconds": state.controls.auto_reveal_seconds,
         "active_bonus": bonus.guessing_extra,
+        "buzzer_pause": bool(state.playback.bonus_settings.get(
+            "buzzer", bonus.BONUS_SETTINGS_DEFAULT["buzzer"]).get("pause_on_buzz", False)),
+        "buzzer_timer_seconds": int(state.playback.bonus_settings.get(
+            "buzzer", bonus.BONUS_SETTINGS_DEFAULT["buzzer"]).get("answer_timer_seconds", 0) or 0),
         "end_session_popup": bool(session_end.end_message_window),
         "scoreboard_open": scoreboard_open,
         "scoreboard_visible": scoreboard_visible,

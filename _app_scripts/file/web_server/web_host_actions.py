@@ -89,6 +89,11 @@ def _on_skip_declined_changed(name, declined):
     if not name:
         scoreboard_control.clear_player_badge(key="skip_declined")
     elif declined:
+        # The scoreboard gives the lock icon visual priority, but its label can
+        # inherit the hidden custom badge's strike-through. Retain the decline
+        # in web-server state and restore its badge when the player is unlocked.
+        if name in web_server.get_buzzer_disabled_names():
+            return
         scoreboard_control.set_player_badge(
             name, "skip_declined", "\u25b6\u25b6", crossed_out=True
         )
@@ -125,8 +130,15 @@ def _on_vote_skip_passed():
 def _on_buzzer_lock_changed(name, locked):
     if locked:
         scoreboard_control.send_command(f"[BUZZER_LOCK]{name}")
+        scoreboard_control.clear_player_badge(
+            player_name=name, key="skip_declined"
+        )
     else:
         scoreboard_control.send_command(f"[BUZZER_UNLOCK]{name}")
+        if web_server.has_skip_declined(name):
+            scoreboard_control.set_player_badge(
+                name, "skip_declined", "\u25b6\u25b6", crossed_out=True
+            )
 
 
 def _team_assignments_path():
@@ -180,6 +192,7 @@ def wire_web_server():
     web_server.set_host_password(state.config.HOST_PASSWORD)
     web_server.set_host_action_callback(_handle_host_action)
     web_server.set_buzz_callback(buzz._play_buzz_sound)
+    web_server.set_buzzer_reset_callback(buzz.reset_answer_queue)
     web_server.set_skip_grant_callback(_on_skip_grant_changed)
     web_server.set_skip_decline_callback(_on_skip_declined_changed)
     web_server.set_vote_skip_changed_callback(_on_vote_skip_changed)
@@ -283,6 +296,10 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'set_bzz_modifier':
             state.playback.bonus_settings.setdefault('buzzer', dict(bonus.BONUS_SETTINGS_DEFAULT['buzzer']))['sound_volume'] = max(0.0, min(1.5, float(data.get('modifier', 1.0))))
             config_io.save_config()
+        elif action == 'set_buzzer_pause':
+            buzz.set_pause_on_buzz(bool(data.get('enabled', False)))
+        elif action == 'set_buzzer_timer':
+            buzz.set_answer_timer_seconds(data.get('seconds', 0))
         elif action == 'set_strm_boost':
             state.controls.stream_volume_boost = max(-100, min(100, int(data.get('boost', 0))))
             audio_toggles.set_volume(state.controls.volume_level)
@@ -508,9 +525,9 @@ def _handle_host_action(action: str, data: dict):
             query = str(data.get('query', '')).strip()
             if query:
                 def _run_search(q=query):
-                    _play_count_map, _play_last_map, _series_play_map, _cur_idx = web_search._build_play_maps()
+                    play_history = web_search._build_play_history()
                     raw = search_ops.search_playlist(q)
-                    results = [web_search._build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_map, _cur_idx, query_lower=q.lower()) for fn in raw]
+                    results = [web_search._build_theme_web_result(fn, play_history, query_lower=q.lower()) for fn in raw]
                     web_server.push_theme_search_results(results, state.metadata.playlist.get('infinite', False), q)
                 threading.Thread(target=_run_search, daemon=True).start()
 
@@ -763,8 +780,8 @@ def _handle_host_action(action: str, data: dict):
                             if meta.get('slug', 'Unknown') == gl: files.append(fn)
                     if not _preserve_order:
                         files.sort(key=lambda f: lists.get_title(f, f).lower())
-                    _play_count_map, _play_last_map, _series_play_map, _cur_idx = web_search._build_play_maps()
-                    results = [web_search._build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_map, _cur_idx) for fn in files]
+                    play_history = web_search._build_play_history()
+                    results = [web_search._build_theme_web_result(fn, play_history) for fn in files]
                 except Exception as e:
                     print(f"[directory_themes error] {e}")
                     results = []

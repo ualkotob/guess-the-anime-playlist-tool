@@ -22,6 +22,17 @@ AUDIO_DISTORTION_FILTERS = {
 audio_distortions_active = set()
 
 
+def _sync_reveal_mute_badge(muted):
+    """Keep the reveal-round OSD badge aligned with the live mute state."""
+    # Lazy imports avoid the module cycle: peek_dispatch imports audio_toggles
+    # for reveal cleanup, while the OSD primitive sits below both modules.
+    from _app_scripts.playback import osd_text
+    from _app_scripts.queue_round.lightning_rounds import peek_dispatch
+
+    if peek_dispatch.is_peek_active():
+        osd_text.set_countdown_muted(muted)
+
+
 def _set_main_volume_level(value):
     state.controls.volume_level = int(value)
 
@@ -131,3 +142,4 @@ def toggle_mute(muted=None, lightning=False):
         player.audio_set_mute(muted)
         if music.music_loaded:
             set_volume(state.controls.volume_level)
+    _sync_reveal_mute_badge(muted)

@@ -26,6 +26,7 @@ from core.paths import (
     AI_METADATA_FILE,
     ANILIST_METADATA_FILE,
     MANUAL_METADATA_FILE,
+    THEME_ARTIST_RESOLUTIONS_FILE,
 )
 
 
@@ -120,6 +121,17 @@ def save_metadata_overrides():
     save_metadata_atomic(ANIME_METADATA_OVERRIDES_FILE, state.metadata.anime_metadata_overrides)
 
 
+def load_theme_artist_resolutions():
+    """Load reviewed blank-artist statuses for app and playlist consumers."""
+    state.metadata.theme_artist_resolutions.clear()
+    if not os.path.exists(THEME_ARTIST_RESOLUTIONS_FILE):
+        return
+    with open(THEME_ARTIST_RESOLUTIONS_FILE, "r", encoding="utf-8") as handle:
+        resolutions = json.load(handle)
+    state.metadata.theme_artist_resolutions.update(resolutions)
+    print(f"Loaded {len(resolutions)} theme artist resolutions...")
+
+
 def load_metadata():
     # All metadata dicts are mutated in place (clear + update) so the
     # module-level aliases and `state.metadata.*` keep the same identity.
@@ -174,6 +186,8 @@ def load_metadata():
         state.metadata.anime_metadata_overrides.update(loaded_overrides)
         print("Loaded anime metadata overrides for " + str(len(state.metadata.anime_metadata_overrides)) + " entries...")
         deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
+
+    load_theme_artist_resolutions()
 
     # Load anilist_metadata
     data, is_compressed = load_metadata_compressed(ANILIST_METADATA_FILE, encoding="utf-8", name="anilist metadata")

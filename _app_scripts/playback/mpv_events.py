@@ -16,7 +16,7 @@ from core.game_state import state
 from _app_scripts.playback import coming_up_ui, blind_screen, transport
 from _app_scripts.queue_round.lightning_rounds import (
     filter_overlay, edge_overlay, peek_overlay, grow_overlay,
-    round_start_guard,
+    mismatch_round, round_start_guard,
 )
 
 # --- module-owned state ---
@@ -108,18 +108,57 @@ def _on_playback_restart(_):
         _root = state.widgets.root
         if not _root:
             return
+        # Start sampling directly from the mpv callback, where the incoming
+        # frame is already renderable. This runs in a worker and does not hold
+        # playback or wait for the Tk event queue.
+        try:
+            _cp = state.playback.currently_playing
+            _time = state.widgets.player.get_time() / 1000
+            blind_screen.censors.prewarm_dynamic_censor_color(
+                _cp.get('filename'), _time, check_title=True
+            )
+        except Exception:
+            pass
         round_token = round_start_guard.capture()
+
+        def _refresh_starting_censor_color(attempts_left=50):
+            refreshed = blind_screen.censors.refresh_active_dynamic_censor_colors()
+            if refreshed:
+                blind_screen.censors._commit_censor_osd()
+            elif refreshed is None and attempts_left > 0:
+                # The screenshot worker normally finishes within a few ms.
+                # Poll briefly on Tk so the warmed color is submitted as soon
+                # as it lands instead of waiting for the 50ms playback tick.
+                round_start_guard.after(
+                    5, _refresh_starting_censor_color, attempts_left - 1,
+                    token=round_token,
+                )
 
         def _reapply():
             _bo = blind_screen.black_overlay
             _cache = blind_screen._blind_osd_color_cache or 'black'
+            # Also request from Tk after transport has completed its new-file
+            # reset; the mpv callback can narrowly race that reset on fast loads.
+            try:
+                _cp = state.playback.currently_playing
+                _time = state.widgets.player.get_time() / 1000
+                blind_screen.censors.prewarm_dynamic_censor_color(
+                    _cp.get('filename'), _time, check_title=True
+                )
+            except Exception:
+                pass
             # Reapply blind OSD (covers blind rounds AND the pre-load cover for reveal rounds)
             if _bo:
                 blind_screen._set_blind_osd_alpha(_cache, 255)
             # A file load can reset mpv's OSD surface.  Rebuild active censors
             # now, while the blind is still on top, so lifting the blind cannot
             # expose a frame before its censor overlay has been submitted.
+            _refresh_result = blind_screen.censors.refresh_active_dynamic_censor_colors()
             blind_screen.censors._commit_censor_osd()
+            if _refresh_result is None:
+                round_start_guard.after(
+                    5, _refresh_starting_censor_color, token=round_token
+                )
             # For non-lightning reveal rounds: reapply active peek overlay then lift blind
             if not state.lightning.light_mode and not state.lightning.light_round_started:
                 _fvf = filter_overlay.filter_vf_active
@@ -142,6 +181,10 @@ def _on_playback_restart(_):
                         False,
                         token=round_token,
                     )
+            # A mismatch blind round swaps to an external video track while
+            # paused. playback-restart is the first safe point at which that
+            # track has a renderable frame, so only uncover it here.
+            mismatch_round._reveal_mismatch_if_ready()
         round_start_guard.after(0, _reapply, token=round_token)
     except Exception:
         pass

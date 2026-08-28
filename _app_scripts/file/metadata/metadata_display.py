@@ -129,18 +129,19 @@ def _build_web_series_themes(data, playing_filename):
         return []
     playing_slug = data.get("slug")
 
-    # Pre-build a play-count map keyed by normalised filename (cheap dict lookup per theme)
-    _play_counts = {}
-    _play_last = {}
+    # Reuse the same normal/lightning calculation as the desktop metadata row.
+    _play_history = None
+    _cur_idx = state.metadata.playlist.get("current_index", 0)
     if state.metadata.playlist.get("infinite"):
         _pl = state.metadata.playlist.get("playlist", [])
-        _cur_idx = state.metadata.playlist.get("current_index", 0)
-        _played = _pl[:_cur_idx + 1]
-        for _i, _item in enumerate(_played):
-            _f = _item[3:] if _item.startswith("[L]") else _item
-            _k = _play_name_key(_f)
-            _play_counts[_k] = _play_counts.get(_k, 0) + 1
-            _play_last[_k] = _i
+        _play_history = _prepare_play_history(_pl, _cur_idx)
+
+    def _file_play_info(filename):
+        if not filename or _play_history is None:
+            return {"count": 0, "ago": None, "lightning": 0}
+        return _calc_plays_info(
+            filename, None, (), _cur_idx, prepared_history=_play_history
+        )[0]
 
     def _serialize_anime(anime_dict, anime_id, is_playing_anime):
         mal_key = str(anime_id)
@@ -194,26 +195,30 @@ def _build_web_series_themes(data, playing_filename):
                             except (TypeError, ValueError):
                                 is_playing_ver = (v_fn == playing_filename)
 
+                        v_play_info = _file_play_info(v_fn)
                         serialized_versions.append({
                             "version": v_num,
                             "episodes": v.get("episodes"),
                             "flags": _get_version_flags(v),
                             "filename": v_fn,
-                            "plays": _play_counts.get(_play_name_key(v_fn), 0) if v_fn else 0,
-                            "plays_ago": (_cur_idx - _play_last[_play_name_key(v_fn)]) if v_fn and _play_name_key(v_fn) in _play_last and _play_last[_play_name_key(v_fn)] < _cur_idx else None,
+                            "plays": v_play_info["count"],
+                            "plays_ago": v_play_info["ago"],
+                            "lightning_plays": v_play_info["lightning"],
                             "favorited": bool(playlist_marks.check_favorited(v_fn)) if v_fn else False,
                             "file_props": get_file_props_label(v_fn) if v_fn else "",
                             "is_playing": bool(is_playing_ver),
                         })
 
                 _th_artists = theme.get("artist") or []
+                theme_play_info = _file_play_info(fn)
                 themes_out.append({
                     "slug": theme_slug,
                     "overall_suffix": overall_suffix,
                     "title": theme.get("title"),
                     "filename": fn,
-                    "plays": _play_counts.get(_play_name_key(fn), 0) if fn else 0,
-                    "plays_ago": (_cur_idx - _play_last[_play_name_key(fn)]) if fn and _play_name_key(fn) in _play_last and _play_last[_play_name_key(fn)] < _cur_idx else None,
+                    "plays": theme_play_info["count"],
+                    "plays_ago": theme_play_info["ago"],
+                    "lightning_plays": theme_play_info["lightning"],
                     "favorited": bool(playlist_marks.check_favorited(fn)) if fn else False,
                     "artists": _th_artists,
                     "artists_str": metadata_fetch.get_artists_string(_th_artists, total=False),
@@ -249,49 +254,60 @@ def _build_web_series_themes(data, playing_filename):
             for aid, anime in all_series]
 
 
-def _build_played_series_map(played, cur_idx):
-    """Build a dict mapping every series name seen in played entries to
-    {count, last_idx} for series-play lookups.  All get_metadata calls hit
-    the in-memory cache so this is fast even for large playlists."""
-    series_map = {}   # series_name -> {'count': int, 'last_idx': int}
-    for _i, _item in enumerate(played):
-        _f = _item[3:] if _item.startswith("[L]") else _item
-        _md = metadata_fetch.get_metadata(_f)
-        if not _md:
-            continue
-        for _s in series_set(_md):
-            if _s not in series_map:
-                series_map[_s] = {'count': 0, 'last_idx': -1}
-            series_map[_s]['count'] += 1
-            series_map[_s]['last_idx'] = _i
-    return series_map
+def _prepare_play_history(pl, cur_idx):
+    """Prepare reusable normal/lightning history through ``cur_idx``."""
+    files = {}
+    entries = []
+    for index, item in enumerate(pl[:cur_idx + 1]):
+        lightning = item.startswith("[L]")
+        filename = item[3:] if lightning else item
+        key = _play_name_key(filename)
+        stats = files.setdefault(key, {
+            "count": 0,
+            "lightning": 0,
+            "normal_indices": [],
+        })
+        if lightning:
+            stats["lightning"] += 1
+        else:
+            stats["count"] += 1
+            stats["normal_indices"].append(index)
+        metadata = metadata_fetch.get_metadata(filename)
+        entries.append((series_set(metadata) if metadata else set(), lightning, index))
+
+    return {
+        "cur_idx": cur_idx,
+        "files": files,
+        "entries": entries,
+        "series_cache": {},
+    }
 
 
-def _calc_plays_info(filename, data, pl, cur_idx):
+def _calc_plays_info(filename, data, pl, cur_idx, prepared_history=None):
     """Return dicts with file-play and series-play stats for the given filename.
 
     Only counts playlist entries up to and including cur_idx (i.e. already played).
 
     Returns (file_plays, series_plays) where each is a dict:
-      count      – int total occurrences (normal + lightning)
+      count      – int normal-round occurrences
       ago        – int | None  distance to most-recent prior normal occurrence
       lightning  – int lightning-round occurrences
     series_plays is None when no other series matches exist.
     """
-    _clean = lambda f: f[3:] if f.startswith("[L]") else f
-
     _cur_key = _play_name_key(filename)
-
-    # Only consider entries at or before the current index (already played)
-    played = pl[:cur_idx + 1]
+    history = prepared_history or _prepare_play_history(pl, cur_idx)
 
     # ── file plays ────────────────────────────────────────────────────────────
-    f_normal = sum(1 for item in played if _play_name_key(_clean(item)) == _cur_key and not item.startswith("[L]"))
-    f_light  = sum(1 for item in played if item.startswith("[L]") and _play_name_key(_clean(item)) == _cur_key)
+    file_stats = history["files"].get(_cur_key, {
+        "count": 0,
+        "lightning": 0,
+        "normal_indices": [],
+    })
+    f_normal = file_stats["count"]
+    f_light = file_stats["lightning"]
     f_count  = f_normal + f_light
-    f_prev   = [i for i, item in enumerate(played) if _play_name_key(_clean(item)) == _cur_key
-                and not item.startswith("[L]") and i < cur_idx]
-    f_ago    = (cur_idx - max(f_prev)) if f_prev else None
+    f_prev = [i for i in file_stats["normal_indices"] if i < cur_idx]
+    f_ago = (cur_idx - max(f_prev)) if f_prev else None
 
     file_plays = {"count": f_count-f_light, "ago": f_ago, "lightning": f_light}
 
@@ -300,24 +316,22 @@ def _calc_plays_info(filename, data, pl, cur_idx):
     # current file itself.
     series_plays = None
     if data:
-        _cur_series_set = series_set(data)
-        s_normal = f_normal   # seed with this file's own normal plays
-        s_light  = f_light    # …and its lightning plays
-        s_prev   = list(f_prev)  # …and its prior-occurrence indices
-        for _i, _item in enumerate(played):
-            _cf = _clean(_item)
-            if _play_name_key(_cf) == _cur_key:
-                continue  # already seeded above
-            _fd = metadata_fetch.get_metadata(_cf)
-            if not _fd:
-                continue
-            if _cur_series_set & series_set(_fd):
-                if _item.startswith("[L]"):
-                    s_light += 1
+        series_key = frozenset(series_set(data))
+        series_stats = history["series_cache"].get(series_key)
+        if series_stats is None:
+            series_stats = {"count": 0, "lightning": 0, "normal_indices": []}
+            for entry_series, lightning, index in history["entries"]:
+                if not series_key.intersection(entry_series):
+                    continue
+                if lightning:
+                    series_stats["lightning"] += 1
                 else:
-                    s_normal += 1
-                    if _i < cur_idx:
-                        s_prev.append(_i)
+                    series_stats["count"] += 1
+                    series_stats["normal_indices"].append(index)
+            history["series_cache"][series_key] = series_stats
+        s_normal = series_stats["count"]
+        s_light = series_stats["lightning"]
+        s_prev = [i for i in series_stats["normal_indices"] if i < cur_idx]
         total = s_normal + s_light
         # Only show series line when there are other-file entries
         if total > f_count:

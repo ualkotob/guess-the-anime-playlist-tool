@@ -37,6 +37,7 @@ class GameState:
             anidb_metadata={},
             ai_metadata={},
             anime_metadata_overrides={},
+            theme_artist_resolutions={},
             anilist_metadata={},
             youtube_metadata={},            # loaded in-place by youtube_control.load_youtube_metadata()
         )

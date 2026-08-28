@@ -111,7 +111,17 @@ def check_missing_artists():
     for filename in state.metadata.directory_files:
         data = metadata_fetch.get_metadata(filename)
         for theme in data.get("songs", []):
-            if theme.get("slug") == data.get("slug") and theme.get("artist") == []:
+            resolution = state.metadata.theme_artist_resolutions.get(
+                f"{data.get('mal')}:{theme.get('slug')}",
+                {},
+            )
+            if (
+                theme.get("slug") == data.get("slug")
+                and utils.theme_artist_needs_resolution(
+                    theme,
+                    resolution.get("status"),
+                )
+            ):
                 if not previous_removed:
                     remove_previous_playlist()
                     previous_removed = True

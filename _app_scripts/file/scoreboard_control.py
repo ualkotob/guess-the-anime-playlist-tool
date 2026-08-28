@@ -232,8 +232,72 @@ def read_score_changes():
         return []
 
 
+def read_player_teams():
+    """Return current team names keyed by player name (blank when unassigned).
+
+    The scoreboard exports its current player rows to ``scoreboard_scores.json``.
+    Older scoreboard builds may put a numeric internal team ID in that export;
+    for those rows, use the display name persisted by the web host when it sent
+    the team assignment command.
+    """
+    try:
+        scores_path = os.path.join(_DATA_FOLDER, "scoreboard_scores.json")
+        if not os.path.exists(scores_path):
+            return {}
+        with open(scores_path, "r", encoding="utf-8") as f:
+            scores_data = json.load(f)
+
+        web_assignments = {}
+        assignments_path = os.path.join(_DATA_FOLDER, "web_team_assignments.json")
+        if os.path.exists(assignments_path):
+            try:
+                with open(assignments_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    web_assignments = loaded
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        assignments_casefolded = {
+            str(name).casefold(): str(team or "").strip()
+            for name, team in web_assignments.items()
+        }
+        teams = {}
+        for player in scores_data.get("players", []) or []:
+            name = str(player.get("name", "") or "").strip()
+            team = str(player.get("team", "") or "").strip()
+            if team.isdigit():
+                team = str(
+                    web_assignments.get(name)
+                    or assignments_casefolded.get(name.casefold(), "")
+                ).strip()
+            if name:
+                teams[name] = team
+        return teams
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+
+
 def add_score_changes_to_session(session_data):
     """Merge scoreboard score-change entries into *session_data* (in-place, no duplicates)."""
+    player_teams = read_player_teams()
+    teams_casefolded = {name.casefold(): team for name, team in player_teams.items()}
+
+    # Team assignments can be made after a player's first score change. Refresh
+    # entries already merged into the session so the saved JSON and text log
+    # capture the final team grouping.
+    for entry in session_data:
+        if entry.get("type") != "scoreboard_score":
+            continue
+        player = str(entry.get("player", "") or "").strip()
+        team = player_teams.get(player)
+        if team is None:
+            team = teams_casefolded.get(player.casefold())
+        if team:
+            entry["team"] = team
+        elif team == "":
+            entry.pop("team", None)
+
     existing_ts = {
         e.get("timestamp")
         for e in session_data
@@ -242,14 +306,21 @@ def add_score_changes_to_session(session_data):
     for change in read_score_changes():
         if change.get("timestamp") in existing_ts:
             continue
-        session_data.append({
+        player = change["player"]
+        team = str(change.get("team", "") or "").strip()
+        if not team or team.isdigit():
+            team = player_teams.get(player) or teams_casefolded.get(str(player).casefold(), "")
+        session_entry = {
             "timestamp": change["timestamp"],
             "type":      "scoreboard_score",
-            "player":    change["player"],
+            "player":    player,
             "old_score": change["old_score"],
             "new_score": change["new_score"],
             "delta":     change["delta"],
-        })
+        }
+        if team:
+            session_entry["team"] = team
+        session_data.append(session_entry)
 
 
 # ── Rules ─────────────────────────────────────────────────────────────────────

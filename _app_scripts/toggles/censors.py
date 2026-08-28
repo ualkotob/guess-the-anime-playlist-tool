@@ -350,7 +350,7 @@ def _prime_start_censors(filename):
             continue
         entry = toggle_censor_box(filename, censor, True)
         if entry is not None:
-            color = censor.get('color') or 'black'
+            color = censor.get('color') or _dyn_color_latest or 'black'
             if entry.get('color') != color or not entry.get('committed'):
                 entry['color'] = color
                 _osd_dirty = True
@@ -476,7 +476,12 @@ def check_file_censors(filename, time, check_title=True):
     file_censors = get_file_censors(filename)
     censor_found = False
     mute_found = False
-    _image_color = None
+    # Start the asynchronous sampler shortly before a colorless visual censor
+    # is due. This gives it a current frame color before the box is submitted,
+    # without adding screenshot work to this timing-sensitive playback tick.
+    _image_color = prewarm_dynamic_censor_color(
+        filename, time, check_title=check_title, file_censors=file_censors
+    )
     _osd_dirty = False
     if file_censors:
         for censor in file_censors:
@@ -553,13 +558,24 @@ def _compute_frame_color():
     """Sample the current mpv video frame and return its average colour as a
     hex string, or None if no frame is available.
 
-    Areas covered by active censor boxes are excluded from the average. The
-    frame is subsampled (every 8th pixel per axis) -- statistically identical
-    for an average colour, at 1/64th of the numpy cost.
+    Active censor regions are excluded from the raw video sample. If an active
+    fixed-color censor covers the full frame, its color is returned instead so
+    another censor appearing during that transition matches the visible frame.
+    The frame is subsampled every 8th pixel per axis for 1/64th of the numpy
+    cost.
     """
     try:
+        active_censors = [
+            d["censor"] for d in censor_boxes.values()
+            if not d.get("destroying")
+        ]
+        for censor in active_censors:
+            if (censor.get("color")
+                    and float(censor.get('size_w', 0) or 0) >= 99.5
+                    and float(censor.get('size_h', 0) or 0) >= 99.5):
+                return censor["color"]
         try:
-            img = state.widgets.player._p.screenshot_raw()
+            img = state.widgets.player._p.screenshot_raw(includes='video')
         except Exception:
             return None
         if img is None:
@@ -567,18 +583,19 @@ def _compute_frame_color():
         arr = np.array(img.convert('RGB'))[::8, ::8]
         ih, iw = arr.shape[0], arr.shape[1]
         mask = np.ones((ih, iw), dtype=bool)
-        active_censors = [d["censor"] for d in censor_boxes.values() if not d.get("destroying")]
         for censor in active_censors:
-            cw = int(iw * censor.get('size_w', 0.0) / 100)
-            ch = int(ih * censor.get('size_h', 0.0) / 100)
+            cw = int(iw * float(censor.get('size_w', 0.0) or 0.0) / 100)
+            ch = int(ih * float(censor.get('size_h', 0.0) or 0.0) / 100)
             if cw <= 0 or ch <= 0:
                 continue
-            cx = int((iw - cw) * censor.get('pos_x', 0.0) / 100)
-            cy = int((ih - ch) * censor.get('pos_y', 0.0) / 100)
-            mask[cy:cy + ch, cx:cx + cw] = False
+            cx = int((iw - cw) * float(censor.get('pos_x', 0.0) or 0.0) / 100)
+            cy = int((ih - ch) * float(censor.get('pos_y', 0.0) or 0.0) / 100)
+            mask[max(0, cy):min(ih, cy + ch),
+                 max(0, cx):min(iw, cx + cw)] = False
         pixels = arr[mask]
         if len(pixels) == 0:
-            # Censors cover the entire frame â€” sample the full frame instead
+            # A dynamic or combined set of censors covers the full frame but
+            # has no fixed color to inherit; use the unobscured raw video.
             pixels = arr.reshape(-1, 3)
         l = len(pixels)
         if l == 0:
@@ -592,7 +609,7 @@ def _compute_frame_color():
 
 def get_image_color():
     """Return the average colour of the current mpv video frame as a hex string.
-    Areas covered by active censor boxes are excluded from the average.
+    Active censor regions and rendered censor/subtitle layers are excluded.
     Falls back to a random color if no video frame is available.
 
     Synchronous -- blocks on an mpv frame render. Fine for per-round events
@@ -612,32 +629,109 @@ def get_image_color():
 # session-long UI/buzzer lag during censored segments. The tick loop now reads
 # the latest colour published by a short-lived worker thread that samples at
 # most once per _DYN_COLOR_INTERVAL; screenshot_raw releases the GIL during
-# the render, so sampling no longer touches the main thread.
-_DYN_COLOR_INTERVAL = 0.3   # seconds between samples (~3Hz colour adaptation)
+# the render, so sampling no longer touches the main thread. Sampling begins
+# shortly before a dynamic censor so its initial color is normally ready too.
+_DYN_COLOR_INTERVAL = 0.05  # seconds between samples (20Hz colour adaptation)
+_DYN_COLOR_PREWARM_SECONDS = 0.5
 _dyn_color_latest = None    # last sampled hex colour; None before first sample
 _dyn_color_worker_running = False
 _dyn_color_last_sample = 0.0
+_dyn_color_generation = 0   # prevents a retiring file's worker publishing late
+_dyn_color_lock = threading.Lock()
 
 
-def _dyn_color_worker():
+def _dyn_color_worker(generation):
     global _dyn_color_latest, _dyn_color_worker_running, _dyn_color_last_sample
     try:
         color = _compute_frame_color()
-        if color:
-            _dyn_color_latest = color
+        with _dyn_color_lock:
+            if color and generation == _dyn_color_generation:
+                _dyn_color_latest = color
     finally:
-        _dyn_color_last_sample = time.monotonic()
-        _dyn_color_worker_running = False
+        # A reset may already have launched a worker for the incoming file.
+        # Do not let this retiring worker overwrite or throttle that sample.
+        with _dyn_color_lock:
+            if generation == _dyn_color_generation:
+                _dyn_color_last_sample = time.monotonic()
+                _dyn_color_worker_running = False
 
 
 def _get_dynamic_censor_color():
     """Non-blocking: return the latest sampled frame colour (None until the
     first sample lands) and keep the background sampler alive while called.
-    Only invoked from the Tk thread, so the running-flag check cannot race."""
+    Safe to invoke from either the Tk or mpv event thread."""
     global _dyn_color_worker_running
-    if not _dyn_color_worker_running and (time.monotonic() - _dyn_color_last_sample) >= _DYN_COLOR_INTERVAL:
-        _dyn_color_worker_running = True
-        threading.Thread(target=_dyn_color_worker, daemon=True, name="censor-color-sampler").start()
+    start_worker = False
+    with _dyn_color_lock:
+        if (not _dyn_color_worker_running
+                and (time.monotonic() - _dyn_color_last_sample) >= _DYN_COLOR_INTERVAL):
+            _dyn_color_worker_running = True
+            start_worker = True
+        latest = _dyn_color_latest
+        generation = _dyn_color_generation
+    if start_worker:
+        threading.Thread(target=_dyn_color_worker, args=(generation,),
+                         daemon=True, name="censor-color-sampler").start()
+    return latest
+
+
+def refresh_active_dynamic_censor_colors():
+    """Put a warmed sample onto primed dynamic boxes before an OSD rebuild.
+
+    Returns None while such a box is waiting for its first sample, otherwise a
+    bool indicating whether any stored box color changed.
+    """
+    dynamic_entries = [
+        entry for entry in censor_boxes.values()
+        if not entry.get("destroying") and not entry["censor"].get("color")
+    ]
+    if not dynamic_entries:
+        return False
+    with _dyn_color_lock:
+        color = _dyn_color_latest
+    if not color:
+        return None
+    changed = False
+    for entry in dynamic_entries:
+        if entry.get("color") != color:
+            entry["color"] = color
+            changed = True
+    return changed
+
+
+def prewarm_dynamic_censor_color(filename, playback_time, *, check_title=True,
+                                 file_censors=None):
+    """Non-blockingly sample when a colorless visual censor is nearly active.
+
+    Called by the playback tick for lookahead and by mpv's first-frame callback
+    for censors at the effective start of a newly loaded file.
+    """
+    if (not filename or (not censors_enabled and not censors_nsfw_enabled)
+            or mismatch_round.mismatch_visuals or streaming.currently_streaming
+            or _is_filter_suppressing_censors()):
+        return _dyn_color_latest
+    if file_censors is None:
+        file_censors = get_file_censors(filename)
+    try:
+        now = float(playback_time)
+    except (TypeError, ValueError):
+        return _dyn_color_latest
+    for censor in file_censors or []:
+        if censor.get("color") or censor.get("mute") or censor.get("skip"):
+            continue
+        if censor.get('nsfw') and not censors_nsfw_enabled:
+            continue
+        if not censor.get('nsfw') and not censors_enabled:
+            continue
+        if not show_censor(censor, check_title):
+            continue
+        try:
+            start = float(censor.get('start', 0))
+            end = float(censor.get('end', 0))
+        except (TypeError, ValueError):
+            continue
+        if end >= now and start <= now + _DYN_COLOR_PREWARM_SECONDS:
+            return _get_dynamic_censor_color()
     return _dyn_color_latest
 
 
@@ -676,11 +770,16 @@ def on_play_starting():
 def reset_for_new_file(filename):
     """Clear censor overlays and prime start-censors for *filename*. Call after player.set_media()."""
     global _dyn_color_latest, _dyn_color_last_sample
+    global _dyn_color_generation, _dyn_color_worker_running
     remove_all_censor_boxes()
     # Drop the previous file's sampled colour and let the next dynamic censor
-    # kick a fresh sample immediately instead of waiting out the interval.
-    _dyn_color_latest = None
-    _dyn_color_last_sample = 0.0
+    # kick a fresh sample immediately instead of waiting out the interval. The
+    # generation also prevents an in-flight old-file sample from arriving late.
+    with _dyn_color_lock:
+        _dyn_color_generation += 1
+        _dyn_color_latest = None
+        _dyn_color_last_sample = 0.0
+        _dyn_color_worker_running = False
     if filename:
         _prime_start_censors(filename)
 
@@ -1270,6 +1369,35 @@ def find_similar_theme_censors(current_filename):
 # ---------------------------------------------------------------------------
 # Censor editor
 # ---------------------------------------------------------------------------
+def _replace_censor_in_place(censor, values):
+    """Replace editor values without invalidating callbacks holding *censor*."""
+    censor.clear()
+    censor.update(values)
+
+
+def _apply_rectangle_result(censor, rect_text):
+    """Apply a RectangleDrawerOverlay result to an editor censor record."""
+    parts = rect_text.split(",")
+    if len(parts) < 2:
+        raise ValueError("rectangle result is missing size or position")
+
+    size_parts = parts[0].split("x")
+    pos_parts = parts[1].split("x")
+    if len(size_parts) != 2 or len(pos_parts) != 2:
+        raise ValueError("rectangle result has an invalid size or position")
+
+    rotation = float(parts[2]) if len(parts) > 2 else 0.0
+    shape = parts[3] if len(parts) > 3 and parts[3] in ("rect", "ellipse") else "rect"
+    censor.update({
+        "size_w": float(size_parts[0]),
+        "size_h": float(size_parts[1]),
+        "pos_x": float(pos_parts[0]),
+        "pos_y": float(pos_parts[1]),
+        "rotation": rotation if rotation != 0.0 else None,
+        "shape": shape if shape != "rect" else None,
+    })
+
+
 def update_censor_editor_for_new_play():
     """Update the censor editor with new censors data when a new song plays, preserving window position."""
     global current_censors, censor_editor, censor_page_offset, censor_entry_widgets
@@ -1425,7 +1553,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
         ColorPickerOverlay(set_color)
         save_to_current()
 
-    def pick_target_func(size_var, pos_rot_var, shape_btn=None):
+    def pick_target_func(target_censor, size_var, pos_rot_var, shape_btn=None):
         initial = None
         try:
             sw, sh = (float(v) for v in size_var.get().split("x"))
@@ -1440,16 +1568,15 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
 
         def set_target(rect_text):
             try:
-                parts = rect_text.split(",")
-                size_var.set(parts[0])
-                rot_str = parts[2] if len(parts) > 2 else "0.0"
-                pos_rot_var.set(f"{parts[1]}x{rot_str}")
-                if shape_btn is not None and len(parts) > 3:
-                    new_shape = parts[3] if parts[3] in ('rect', 'ellipse') else 'rect'
-                    shape_btn.shape = new_shape
-                    _lbl = {'rect': '\u25ad', 'ellipse': '\u2b2d'}
-                    shape_btn.config(text=_lbl[new_shape])
-                    save_to_current()
+                # Adding, deleting, duplicating, or paging censors rebuilds all
+                # row widgets. Preserve current row edits first, then update the
+                # original censor record instead of the stale Tk variables that
+                # opened this overlay.
+                save_to_current()
+                if not any(censor is target_censor for censor in current_censors):
+                    return
+                _apply_rectangle_result(target_censor, rect_text)
+                refresh_ui()
             except Exception as e:
                 print("Failed to parse rectangle:", e)
         RectangleDrawerOverlay(set_target, initial=initial)
@@ -1545,7 +1672,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                     save_to_current()
                 shape_btn.config(command=_cycle_shape)
                 _pick_btn = tk.Button(size_frame, text="\U0001f3af", width=3, font=font_big, bg=bg_color, fg=fg_color,
-                                      command=lambda sv=size_var, prv=pos_rot_var, sb=shape_btn: pick_target_func(sv, prv, sb))
+                                      command=lambda c=censor, sv=size_var, prv=pos_rot_var, sb=shape_btn: pick_target_func(c, sv, prv, sb))
                 _pick_btn.pack(side="left")
                 tooltip.ToolTip(_pick_btn, "Open area selector to visually pick the censor region")
                 shape_btn.pack(side="left", padx=(2, 0))
@@ -1748,14 +1875,14 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                     continue
 
                 if current_censors[actual_i].get("mute", False):
-                    current_censors[actual_i] = {
+                    replacement = {
                         "mute": True,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
                         "nsfw": widgets[5].var
                     }
                 elif current_censors[actual_i].get("skip", False):
-                    current_censors[actual_i] = {
+                    replacement = {
                         "skip": True,
                         "start": float(widgets[2].winfo_children()[1].get()),
                         "end": float(widgets[3].winfo_children()[1].get()),
@@ -1767,7 +1894,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                     rot_val = float(pr_parts[2]) if len(pr_parts) > 2 else 0.0
                     _shape_btn = widgets[0].winfo_children()[1] if len(widgets[0].winfo_children()) > 1 else None
                     _shape_val = getattr(_shape_btn, 'shape', 'rect') if _shape_btn else 'rect'
-                    current_censors[actual_i] = {
+                    replacement = {
                         "size_w": float(size_parts[0]),
                         "size_h": float(size_parts[1]),
                         "pos_x": float(pr_parts[0]),
@@ -1779,6 +1906,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                         "color": getattr(widgets[4].winfo_children()[0], 'hex_color', None) if widgets[4].winfo_children()[0].cget("text") != "AUTO" else None,
                         "nsfw": widgets[5].var
                     }
+                _replace_censor_in_place(current_censors[actual_i], replacement)
             except Exception as e:
                 messagebox.showerror("Save Error", f"Error saving row {display_i+1}: {e}")
                 return

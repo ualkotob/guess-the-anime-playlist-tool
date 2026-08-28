@@ -57,7 +57,8 @@ _atomic_json_write = utils._atomic_json_write
 # tooltip    - ToolTip text in settings popup
 # width      - Entry widget width (optional, default 10)
 # min/max    - Clamping for int/float (optional)
-# after_save - "restart_warning" | "reset_serpapi" (optional post-save callback key)
+# after_save - "restart_warning" | "reset_serpapi" | "trim_themes_cache"
+#              (optional post-save callback key)
 #
 # Owned here (consumed by save_config/load_config below). main imports it as
 # `from data.config_io import SETTINGS_SCHEMA` only so the settings popup can
@@ -67,7 +68,7 @@ SETTINGS_SCHEMA = [
     {"key": "volume_level",                    "config_key": "volume_level",                    "label": "Volume Level:",              "type": "int",      "default": 100,   "width": 10, "state": "controls", "tooltip": "Master volume level for all audio playback (0-100)."},
     {"key": "stream_volume_boost",             "config_key": "stream_volume_boost",             "label": "Stream Volume Boost:",       "type": "int",      "default": 0,     "width": 10, "state": "controls", "tooltip": "Additional volume boost specifically for stream audio from YouTube clips/trailers."},
     {"key": "bgm_volume","config_key": "bgm_volume","label": "BGM Volume:",     "type": "float",    "default": 1.0,   "width": 10, "min": 0.0, "max": 1.5, "state": "controls", "tooltip": "Volume multiplier for background music (0.0 - 1.5). Scales the dB curve output."},
-    {"key": "themes_cache_size",               "config_key": "themes_cache_size",               "label": "Themes Cache Size (MB):",    "type": "int",      "default": 500,   "width": 10, "min": 0,   "state": "config", "tooltip": "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."},
+    {"key": "themes_cache_size",               "config_key": "themes_cache_size",               "label": "Themes Cache Size (MB):",    "type": "int",      "default": 500,   "width": 10, "min": 0,   "state": "config", "after_save": "trim_themes_cache", "tooltip": "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."},
     {"key": "auto_download_themes",             "config_key": "auto_download_themes",             "label": "Auto-Download Themes:",       "type": "bool",     "default": False,          "state": "config", "tooltip": "When enabled, downloaded themes are saved directly to your themes directory as permanent files instead of the temporary cache."},
     # Skip group — 4 entries rendered as one row in the popup
     {"key": "skip_play_seconds",     "config_key": "skip_play_seconds",  "label": "Skip Play Settings:", "type": "float", "default": 0,   "width": 6, "min": 0, "group": "skip_group", "state": "config", "tooltip": "Play Seconds: Duration to play before auto-skip (0 = disabled)"},

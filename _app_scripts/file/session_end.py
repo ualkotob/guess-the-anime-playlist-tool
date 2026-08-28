@@ -331,6 +331,7 @@ def toggle_end_message(speed=500):
         end_message_window = True
         _end_msg_slide_in()
         session_stats.save_session_history(create_text_file=True, silent=False)
+        session_stats.publish_final_session_history()
         bonus_answers._push_web_toggles()
     except Exception as e:
         log_exception("Error displaying end session message")

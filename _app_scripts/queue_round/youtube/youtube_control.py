@@ -14,6 +14,7 @@ integration) stay in guess_the_anime.py — see *YOUTUBE VIDEOS section.
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -58,6 +59,52 @@ _cached_streams: dict = {}
 _yt_cache_downloads_in_progress: set = set()
 # Progress info per vid_id: {downloaded, total, speed, eta}
 _yt_download_progress: dict = {}
+
+
+def get_youtube_ydl_options(**overrides):
+    """Return shared yt-dlp options, including any installed JS runtimes.
+
+    Deno is yt-dlp's default.  Explicitly discovering the other supported
+    runtimes also lets the app use an existing Node/QuickJS installation, and
+    checking ``_ROOT_DIR`` supports a portable ``deno.exe`` placed beside the
+    packaged application.
+    """
+    runtime_executables = {
+        "deno": ("deno.exe", "deno"),
+        "node": ("node.exe", "node"),
+        "quickjs": ("qjs.exe", "qjs"),
+    }
+    js_runtimes = {}
+    for runtime, executable_names in runtime_executables.items():
+        adjacent_path = next(
+            (
+                os.path.join(_ROOT_DIR, executable_name)
+                for executable_name in executable_names
+                if os.path.isfile(os.path.join(_ROOT_DIR, executable_name))
+            ),
+            None,
+        )
+        executable_path = adjacent_path
+        if not executable_path:
+            for executable_name in executable_names:
+                executable_path = shutil.which(executable_name)
+                if executable_path:
+                    break
+        if executable_path:
+            js_runtimes[runtime] = {"path": executable_path}
+
+    # Preserve yt-dlp's default Deno configuration when no runtime is found.
+    # This keeps its normal diagnostic warning and also supports discovery
+    # mechanisms added by yt-dlp itself.
+    if not js_runtimes:
+        js_runtimes = {"deno": {}}
+
+    options = {
+        "js_runtimes": js_runtimes,
+        "no_cache_dir": True,
+    }
+    options.update(overrides)
+    return options
 
 
 # ── Utility helpers ───────────────────────────────────────────────────────────
@@ -381,16 +428,15 @@ def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
                     "eta":        d.get("eta"),
                 }
 
-        ydl_opts = {
-            "format":             "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-            "merge_output_format":"mp4",
-            "outtmpl":            cache_path,
-            "quiet":              True,
-            "no_warnings":        True,
-            "noprogress":         True,
-            "no_cache_dir":       True,
-            "progress_hooks":     [_progress_hook],
-        }
+        ydl_opts = get_youtube_ydl_options(
+            format="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            merge_output_format="mp4",
+            outtmpl=cache_path,
+            quiet=True,
+            no_warnings=True,
+            noprogress=True,
+            progress_hooks=[_progress_hook],
+        )
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=True)
         if os.path.exists(part_path):
@@ -554,10 +600,32 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
         if YoutubeDL is None:
             return (None, 0, "", "") if include_other_info else (None, 0)
 
-        ydl_opts = {"format": "best[ext=mp4]/best", "quiet": True, "no_warnings": True, "no_cache_dir": True}
+        ydl_opts = get_youtube_ydl_options(
+            format="bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            quiet=True,
+            no_warnings=True,
+        )
         with YoutubeDL(ydl_opts) as ydl:
             info     = ydl.extract_info(youtube_url, download=False)
-            stream   = info["url"]
+            requested_formats = info.get("requested_formats") or []
+            video_format = next(
+                (
+                    fmt for fmt in requested_formats
+                    if fmt.get("vcodec") not in (None, "none")
+                ),
+                None,
+            )
+            audio_format = next(
+                (
+                    fmt for fmt in requested_formats
+                    if fmt.get("acodec") not in (None, "none")
+                ),
+                None,
+            )
+            if video_format and audio_format and video_format is not audio_format:
+                stream = (video_format["url"], audio_format["url"])
+            else:
+                stream = info["url"]
             duration = info.get("duration", 0)
             title    = info.get("title", "")
             uploader = info.get("uploader", "")
@@ -616,14 +684,13 @@ def download_youtube_video(video_id, button, refresh_ui_callback, force=False):
     def do_download():
         update_button("Starting...")
         try:
-            ydl_opts = {
-                "format":             "bestvideo+bestaudio/best",
-                "outtmpl":            filename,
-                "quiet":              True,
-                "no_cache_dir":       True,
-                "progress_hooks":     [on_progress],
-                "merge_output_format":"mp4",
-            }
+            ydl_opts = get_youtube_ydl_options(
+                format="bestvideo+bestaudio/best",
+                outtmpl=filename,
+                quiet=True,
+                progress_hooks=[on_progress],
+                merge_output_format="mp4",
+            )
             os.makedirs(YOUTUBE_FOLDER, exist_ok=True)
             with YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(

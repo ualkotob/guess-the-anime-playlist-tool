@@ -104,6 +104,42 @@ def stream_url(url, name=None, channel=None, new_player=True):
     return length
 
 
+def fallback_to_theme(start_seconds=None):
+    """Abandon a failed YouTube stream and resume the underlying theme.
+
+    Direct YouTube URLs are temporary. A URL can resolve successfully through
+    yt-dlp and then be rejected by mpv, leaving a lightning round waiting on a
+    stream that will never become playable. Clear that stream's cached URL so
+    a later round can resolve it again, then reload the theme at the lightning
+    round's question position.
+    """
+    global currently_streaming, last_streamed, _stream_theme_path, _stream_wall_start
+
+    failed_stream = currently_streaming
+    restore_path = _stream_theme_path or state.playback.previous_media
+    current_filename = state.playback.currently_playing.get("filename")
+
+    if failed_stream and len(failed_stream) > 1:
+        youtube_control._cached_streams.pop(failed_stream[1], None)
+    if last_streamed and last_streamed[0] == current_filename:
+        last_streamed = ["", "", "", ""]
+
+    currently_streaming = None
+    _stream_wall_start = None
+    _stream_theme_path = None
+
+    if not restore_path:
+        return False
+
+    try:
+        start_seconds = max(0, float(start_seconds or 0))
+        state.controls.video_stopped = False
+        state.widgets.player.set_media(restore_path, start_seconds=start_seconds)
+        return True
+    except Exception:
+        return False
+
+
 def stop_stream(restore=True):
     global currently_streaming, _stream_theme_path, _stream_wall_start
 

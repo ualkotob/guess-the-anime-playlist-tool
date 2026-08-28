@@ -215,7 +215,15 @@ class MediaPlayer:
                 # (matches the direct-read behavior, where both were None here).
                 self._c_time_pos = None
                 self._c_duration = None
-                if start_seconds is not None and start_seconds > 0:
+                if isinstance(path_or_none, (tuple, list)) and len(path_or_none) == 2:
+                    video_url, audio_url = path_or_none
+                    options = [f'audio-file={audio_url}']
+                    if start_seconds is not None and start_seconds > 0:
+                        options.append(f'start={start_seconds}')
+                    self._p.command(
+                        'loadfile', str(video_url), 'replace', '-1', ','.join(options)
+                    )
+                elif start_seconds is not None and start_seconds > 0:
                     self._p.command(
                         'loadfile', str(path_or_none), 'replace', '-1',
                         f'start={start_seconds}'

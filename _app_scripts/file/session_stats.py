@@ -21,6 +21,8 @@ import _app_scripts.playback.transport as transport
 # ---------------------------------------------------------------------------
 session_data = []
 session_start_time = None
+_last_web_revealed_theme_entry = None
+_last_web_session_lines = None
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +31,69 @@ session_start_time = None
 def add_entry(entry):
     """Append a single entry to session_data."""
     session_data.append(entry)
+
+
+def _latest_theme_entry():
+    """Return the most recently logged theme/YouTube entry, if any."""
+    return next(
+        (entry for entry in reversed(session_data)
+         if entry.get("type") in ("theme", "youtube")),
+        None,
+    )
+
+
+def _push_web_session_history():
+    """Publish the complete current session to the web download endpoint."""
+    global _last_web_session_lines
+    lines = generate_text_from_session_data()
+    web_server.push_session_history(
+        lines,
+        filename=f"guess_the_anime_{session_start_time}.txt",
+    )
+    _last_web_session_lines = tuple(lines)
+
+
+def publish_revealed_session_history(entry_type=None, filename=None):
+    """Publish once when the current theme's full information is revealed.
+
+    ``entry_type`` and ``filename`` identify the player item that requested the
+    reveal.  They prevent a deferred UI callback from accidentally publishing
+    the previous log entry while a new theme is still being started.
+    """
+    global _last_web_revealed_theme_entry
+    if not session_data or not session_start_time:
+        return False
+
+    latest_theme = _latest_theme_entry()
+    if latest_theme is None or latest_theme is _last_web_revealed_theme_entry:
+        return False
+    if entry_type and latest_theme.get("type", "theme") != entry_type:
+        return False
+    if filename is not None and latest_theme.get("filename", "") != filename:
+        return False
+
+    _push_web_session_history()
+    _last_web_revealed_theme_entry = latest_theme
+    return True
+
+
+def publish_final_session_history():
+    """Publish final session changes that were not sent by the last reveal."""
+    global _last_web_revealed_theme_entry, _last_web_session_lines
+    if not session_data or not session_start_time:
+        return False
+
+    lines = generate_text_from_session_data()
+    if tuple(lines) == _last_web_session_lines:
+        return False
+
+    web_server.push_session_history(
+        lines,
+        filename=f"guess_the_anime_{session_start_time}.txt",
+    )
+    _last_web_session_lines = tuple(lines)
+    _last_web_revealed_theme_entry = _latest_theme_entry()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -258,18 +323,53 @@ def generate_session_stats(data=None):
         for entry in scoreboard_entries:
             player = entry.get("player", "")
             new_score = entry.get("new_score", 0)
-            player_scores[player] = new_score
+            previous = player_scores.get(player, {})
+            player_scores[player] = {
+                "score": new_score,
+                "team": entry.get("team") or previous.get("team", ""),
+            }
 
-        sorted_players = sorted(player_scores.items(), key=lambda x: x[1], reverse=True)
+        sorted_players = sorted(
+            player_scores.items(),
+            key=lambda item: (-item[1]["score"], item[0].casefold()),
+        )
 
         stats_lines.append("=" * 60)
         stats_lines.append("-SCOREBOARD-")
         stats_lines.append("PTs   PLAYER")
         stats_lines.append("\u203e" * 12)
-        for i, (player, score) in enumerate(sorted_players, 1):
-            score_str = f"{score:g}"
-            score_str += " " * (4 - len(score_str))
-            stats_lines.append(f"{score_str}  {player}")
+
+        if any(details["team"] for details in player_scores.values()):
+            team_groups = {}
+            for player, details in sorted_players:
+                team = details["team"] or "NO TEAM"
+                group = team_groups.setdefault(
+                    team.casefold(),
+                    {"team": team, "players": []},
+                )
+                group["players"].append((player, details["score"]))
+
+            sorted_groups = sorted(
+                team_groups.values(),
+                key=lambda item: (
+                    -sum(score for _player, score in item["players"]),
+                    item["team"].casefold(),
+                ),
+            )
+            for group in sorted_groups:
+                team = group["team"]
+                players = group["players"]
+                team_total = sum(score for _player, score in players)
+                stats_lines.append(f"{team} [{team_total:g} PTs]")
+                for player, score in players:
+                    score_str = f"{score:g}"
+                    score_str += " " * (4 - len(score_str))
+                    stats_lines.append(f"{score_str}  {player}")
+        else:
+            for player, details in sorted_players:
+                score_str = f"{details['score']:g}"
+                score_str += " " * (4 - len(score_str))
+                stats_lines.append(f"{score_str}  {player}")
 
     stats_lines.append("=" * 60)
     stats_lines.append("")
@@ -518,20 +618,6 @@ def save_session_history(create_text_file=True, silent=True):
     with open(json_filename, "w", encoding="utf-8") as f:
         json.dump(session_data, f, indent=2, ensure_ascii=False)
 
-    last_theme_idx = next(
-        (i for i in range(len(session_data) - 1, -1, -1)
-         if session_data[i].get("type") in ("theme", "youtube")),
-        None,
-    )
-    if last_theme_idx is not None:
-        web_data = session_data[:last_theme_idx] + session_data[last_theme_idx + 1:]
-    else:
-        web_data = session_data
-    web_server.push_session_history(
-        generate_text_from_session_data(web_data),
-        filename=f"guess_the_anime_{session_start_time}.txt",
-    )
-
     if create_text_file:
         txt_filename = f"sessions/guess_the_anime_{session_start_time}.txt"
         text_lines = generate_text_from_session_data()
@@ -545,6 +631,7 @@ def save_session_history(create_text_file=True, silent=True):
 def reset_session_history(confirm=True):
     """Clear the current session, optionally asking for confirmation."""
     global session_data, session_start_time
+    global _last_web_revealed_theme_entry, _last_web_session_lines
 
     if confirm and session_data:
         count = get_themes_played_count()
@@ -557,6 +644,12 @@ def reset_session_history(confirm=True):
 
     session_data = []
     session_start_time = datetime.now().strftime('%Y-%m-%d_%H-%M')
+    _last_web_revealed_theme_entry = None
+    _last_web_session_lines = ()
+    web_server.push_session_history(
+        [],
+        filename=f"guess_the_anime_{session_start_time}.txt",
+    )
 
     json_path = os.path.join("sessions", "current_session.json")
     try:

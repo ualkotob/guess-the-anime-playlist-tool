@@ -1083,6 +1083,10 @@ HTML = r"""<!DOCTYPE html>
       flex: 0 0 auto; margin-right: 6px;
     }
     #timer-display.timer-warning { color: #ff4444; }
+    #timer-player {
+      display: none; max-width: 44vw; overflow: hidden; text-overflow: ellipsis;
+      font-size: 1.05em; color: #c9d5ff; font-weight: 700;
+    }
     #timer-title {
       font-size: 0.9em; color: #5566aa; letter-spacing: 0.22em;
       text-transform: uppercase; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32vw;
@@ -1319,7 +1323,7 @@ HTML = r"""<!DOCTYPE html>
     .ctrl-filter-slider-values { display: flex; justify-content: space-between; gap: 12px; }
     .ctrl-filter-slider-caption { color: #778; font-size: .71em; font-variant-numeric: tabular-nums; }
     .ctrl-filter-slider-caption output { color: #bbc; font-weight: 600; }
-    .ctrl-filter-slider-track { position: relative; height: 22px; margin: 0 8px; }
+    .ctrl-filter-slider-track { position: relative; height: 22px; margin: 0 8px; cursor: pointer; }
     .ctrl-filter-slider-rail, .ctrl-filter-slider-fill {
       position: absolute; left: 0; right: 0; top: 9px; height: 5px;
       border-radius: 5px; pointer-events: none;
@@ -1354,7 +1358,7 @@ HTML = r"""<!DOCTYPE html>
       border: 1px solid #3a3a55; border-radius: 6px; margin-top: 2px;
       box-shadow: 0 8px 22px rgba(0,0,0,.65);
     }
-    .ctrl-filter-suggestions.active { display: block; }
+    .ctrl-filter-picker:focus-within .ctrl-filter-suggestions.active { display: block; }
     .ctrl-filter-suggestion { padding: 7px 8px; color: #aab; font-size: .78em; cursor: pointer; }
     .ctrl-filter-suggestion:hover { background: #20203a; color: #eef; }
     .ctrl-filter-rule-head, .ctrl-filter-rule-row {
@@ -1638,6 +1642,11 @@ HTML = r"""<!DOCTYPE html>
     .sc-team-header-count { color: #8190aa; font-weight: 600; }
     .sc-team-header-editable { cursor: pointer; }
     .sc-team-header-editable:hover { border-color: #4f6592; background: #252c3d; color: #d6e0ff; }
+    .sc-team-header.sc-team-drop-target { border-style: dashed; border-color: #6177aa; }
+    .sc-team-header.sc-team-drop-active {
+      border-style: solid; border-color: #88aaff; background: #2b3652;
+      color: #eef3ff; box-shadow: 0 0 0 2px rgba(110,145,255,0.18) inset;
+    }
     /* scroll area */
     #sc-scroll {
       overflow-y: auto;
@@ -1655,6 +1664,8 @@ HTML = r"""<!DOCTYPE html>
       box-sizing: border-box; cursor: default;
     }
     .sc-row:hover { border-color: #444; }
+    .sc-row.sc-row-draggable { cursor: grab; }
+    .sc-row.sc-row-dragging { opacity: 0.45; cursor: grabbing; }
     .sc-row.sc-ghost {
       border-color: #2a2a2a; background: #1e1e1e;
     }
@@ -2611,7 +2622,7 @@ HTML = r"""<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <div id="timer-bar"><div id="timer-display" style="display:none">0</div><div id="timer-title"><span class="tt-desktop">Guess The Anime</span><span class="tt-mobile">GUESS<br>THE ANIME</span></div></div>
+  <div id="timer-bar"><div id="timer-player"></div><div id="timer-display" style="display:none">0</div><div id="timer-title"><span class="tt-desktop">Guess The Anime</span><span class="tt-mobile">GUESS<br>THE ANIME</span></div></div>
   <div id="top-bar">
     <button id="history-btn" onclick="_openHistory()" style="display:none">&#8635; SESSION HISTORY</button>
     <div id="player-label" title="Click to change name">
@@ -3249,6 +3260,9 @@ HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="bonus_buzzer" onclick="_ctrlExtraClick('bonus_buzzer')">Buzzer</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_lock" onclick="_ctrlExtraClick('buzz_lock')">Bz Lock</button>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_reset" onclick="_ctrlExtraClick('buzz_reset')">Bz Reset</button>
+        <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_next" onclick="_ctrlExtraClick('buzz_next')">Bz Next</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_pause" onclick="_ctrlExtraClick('buzz_pause')">Bz Pause</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_timer" onclick="_ctrlExtraClick('buzz_timer')">Bz Timer</button>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_sound" onclick="_ctrlExtraClick('buzz_sound')" title="Choose buzzer sound preset">Bz Sound</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="auto_bonus" onclick="_ctrlExtraClick('auto_bonus')">Auto Bonus</button>
       </div>
@@ -4989,6 +5003,11 @@ HTML = r"""<!DOCTYPE html>
       _timerLastTs  = null;
       document.getElementById('timer-bar').style.visibility = 'visible';
       document.getElementById('timer-display').style.display = '';
+      const timerPlayer = document.getElementById('timer-player');
+      const timerName = String((data && data.player) || '');
+      const timerRank = Number(data && data.rank);
+      timerPlayer.textContent = timerName ? ((timerRank > 0 ? '#' + timerRank + '  ' : '') + timerName) : '';
+      timerPlayer.style.display = timerName ? '' : 'none';
       document.getElementById('timer-title').style.display = 'none';
       _renderTimer();
       if (_timerRafId) { cancelAnimationFrame(_timerRafId); _timerRafId = null; }
@@ -5000,6 +5019,7 @@ HTML = r"""<!DOCTYPE html>
       if (_timerRafId) { cancelAnimationFrame(_timerRafId); _timerRafId = null; }
       document.getElementById('timer-bar').style.visibility = 'visible';
       document.getElementById('timer-display').style.display = 'none';
+      document.getElementById('timer-player').style.display = 'none';
       document.getElementById('timer-title').style.display = '';
     });
     function _timerRaf(ts) {
@@ -6762,6 +6782,7 @@ HTML = r"""<!DOCTYPE html>
       _ctrlAutoBonusListOpen = false;
       _ctrlDirListOpen = false;
       _ctrlBuzzSoundListOpen = false;
+      _ctrlBuzzerTimerListOpen = false;
       _ctrlRulesListOpen = false;
       _ctrlLtSettingsListOpen = false;
       _ctrlPlaylistListOpen = false;
@@ -7059,6 +7080,7 @@ HTML = r"""<!DOCTYPE html>
     let _scOptimisticPlayers = null;  // snapshot of _scPlayers after last optimistic op
     let _scTeamNames   = [];   // cached team name list for autocomplete
     let _scPlayerTeams = {};   // player name -> team display name; shields UI from scoreboard row ids
+    let _scDraggedPlayer = ''; // player row currently being dragged to a team header
     let _scPending     = {};   // name → accumulated uncommitted delta
     let _scTimers      = {};   // name → per-player setTimeout id
     let _scTimerEnds   = {};   // name → deadline timestamp
@@ -7390,6 +7412,7 @@ HTML = r"""<!DOCTYPE html>
       _scTeamNames = _scTeamOptions(clean);
     }
     function _scIsScoreboardEditing() {
+      if (_scDraggedPlayer) return true;
       const container = document.getElementById('sc-players');
       const active = document.activeElement;
       return !!(container && active && container.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName));
@@ -7415,6 +7438,62 @@ HTML = r"""<!DOCTYPE html>
       if (unassigned.length) groups.push({ team: '', players: unassigned });
       return groups;
     }
+    function _scClearTeamDrag() {
+      document.querySelectorAll('.sc-team-drop-target, .sc-team-drop-active').forEach(el => {
+        el.classList.remove('sc-team-drop-target', 'sc-team-drop-active');
+      });
+      document.querySelectorAll('.sc-row-dragging').forEach(el => el.classList.remove('sc-row-dragging'));
+      _scDraggedPlayer = '';
+    }
+    function _scEnablePlayerTeamDrag(row, player) {
+      if (!_isHost || !row || !player || !player.name) return;
+      let dragBlocked = false;
+      row.draggable = true;
+      row.classList.add('sc-row-draggable');
+      row.addEventListener('pointerdown', e => {
+        dragBlocked = !!(e.target && e.target.closest && e.target.closest('button,input,textarea,select'));
+      });
+      row.addEventListener('pointerup', () => { dragBlocked = false; });
+      row.addEventListener('dragstart', e => {
+        if (dragBlocked) {
+          e.preventDefault();
+          dragBlocked = false;
+          return;
+        }
+        _scDraggedPlayer = player.name;
+        row.classList.add('sc-row-dragging');
+        document.querySelectorAll('.sc-team-header').forEach(el => el.classList.add('sc-team-drop-target'));
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', player.name);
+        }
+      });
+      row.addEventListener('dragend', _scClearTeamDrag);
+    }
+    function _scEnableTeamDrop(header, team) {
+      if (!_isHost || !header) return;
+      header.dataset.team = team;
+      header.addEventListener('dragover', e => {
+        if (!_scDraggedPlayer) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        header.classList.add('sc-team-drop-active');
+      });
+      header.addEventListener('dragleave', e => {
+        if (!e.relatedTarget || !header.contains(e.relatedTarget)) {
+          header.classList.remove('sc-team-drop-active');
+        }
+      });
+      header.addEventListener('drop', e => {
+        if (!_scDraggedPlayer) return;
+        e.preventDefault();
+        const playerName = _scDraggedPlayer;
+        const player = _scPlayers.find(p => p.name === playerName);
+        const currentTeam = player ? _scDisplayTeam(player) : '';
+        _scClearTeamDrag();
+        if (currentTeam !== team) _scSetTeamForPlayers([playerName], team);
+      });
+    }
     function _scMakeTeamHeader(team, players) {
       const header = document.createElement('div');
       header.className = 'sc-team-header' + (_isHost && team ? ' sc-team-header-editable' : '');
@@ -7426,9 +7505,12 @@ HTML = r"""<!DOCTYPE html>
       count.textContent = String((players || []).length);
       header.appendChild(name);
       header.appendChild(count);
+      _scEnableTeamDrop(header, team);
       if (_isHost && team) {
-        header.title = 'Rename team';
+        header.title = 'Rename team, or drop a player here';
         header.onclick = () => _scSetTeamPromptForPlayers('Team: ' + team, players.map(p => p.name), team);
+      } else if (_isHost) {
+        header.title = 'Drop a player here to remove their team';
       }
       return header;
     }
@@ -7463,6 +7545,7 @@ HTML = r"""<!DOCTYPE html>
       const row = document.createElement('div');
       row.className = 'sc-row';
       row.dataset.name = p.name;
+      _scEnablePlayerTeamDrag(row, p);
 
       if (_isHost) {
         // Delta buttons
@@ -7564,7 +7647,7 @@ HTML = r"""<!DOCTYPE html>
         voteSkipBadge.style.display = (_lastPlayerList.some(lp => lp.name === p.name && lp.vote_skip)) ? '' : 'none';
         row.appendChild(voteSkipBadge);
 
-        // Skip-grant button — always created, shown only when player is connected
+        // Skip grants are name-based and may be assigned before a player connects.
         const skipGrantBtn = document.createElement('button');
         skipGrantBtn.className = 'sc-skip-btn' + (_scSkipGrantPlayer === p.name ? ' active' : '');
         skipGrantBtn.textContent = '\u23ED';
@@ -7574,8 +7657,6 @@ HTML = r"""<!DOCTYPE html>
           e.stopPropagation();
           socket.emit('toggle_skip_grant', { name: p.name });
         };
-        const _isConnectedPlayer = _lastPlayerList.some(lp => !lp.host && lp.name === p.name);
-        skipGrantBtn.style.display = _isConnectedPlayer ? '' : 'none';
         row.appendChild(skipGrantBtn);
 
         const buzzerLockBtn = document.createElement('button');
@@ -7975,14 +8056,8 @@ HTML = r"""<!DOCTYPE html>
 
     function _scSubmitPending() { _scFlushAll(); }
     function _scUpdateSkipBtns() {
-      // Show/hide skip-grant buttons based on who is currently connected, without re-rendering
       const container = document.getElementById('sc-players');
       if (!container) return;
-      container.querySelectorAll('.sc-skip-btn').forEach(btn => {
-        const name = btn.dataset.skipName;
-        const connected = _lastPlayerList.some(lp => !lp.host && lp.name === name);
-        btn.style.display = connected ? '' : 'none';
-      });
       container.querySelectorAll('.sc-vote-skip-badge').forEach(badge => {
         const name = badge.dataset.voteSkipName;
         const voted = _lastPlayerList.some(lp => lp.name === name && lp.vote_skip);
@@ -8510,8 +8585,8 @@ HTML = r"""<!DOCTYPE html>
       const lineMeta = document.createElement('div');
       lineMeta.className = 'ctrl-popup-search-line meta';
       let metaHtml = _ctrlHighlightSearchText(metaText, _ctrlSearchQuery);
-      if (r.plays > 0) metaHtml += ' <span class="mt-plays">Plays: ' + r.plays + 'x' + (r.plays_ago != null ? ' (' + r.plays_ago + ' ago)' : '') + '</span>';
-      if ((r.series_plays || 0) > (r.plays || 0)) metaHtml += ' <span class="mt-plays">Series: ' + r.series_plays + 'x' + (r.series_plays_ago != null ? ' (' + r.series_plays_ago + ' ago)' : '') + '</span>';
+      if (r.plays > 0 || r.lightning_plays > 0) metaHtml += ' <span class="mt-plays">Plays: ' + r.plays + 'x' + (r.plays_ago != null ? ' (' + r.plays_ago + ' ago)' : '') + (r.lightning_plays ? ' (' + r.lightning_plays + ' L)' : '') + '</span>';
+      if ((r.series_plays || 0) > (r.plays || 0) || (r.series_lightning_plays || 0) > (r.lightning_plays || 0)) metaHtml += ' <span class="mt-plays">Series: ' + r.series_plays + 'x' + (r.series_plays_ago != null ? ' (' + r.series_plays_ago + ' ago)' : '') + (r.series_lightning_plays ? ' (' + r.series_lightning_plays + ' L)' : '') + '</span>';
       lineMeta.innerHTML = metaHtml;
       textCol.appendChild(lineSong);
       textCol.appendChild(lineArtist);
@@ -8931,6 +9006,8 @@ HTML = r"""<!DOCTYPE html>
 
     // ── Buzzer sound preset selector ─────────────────────────────────────────
     let _ctrlBuzzSoundListOpen = false;
+    let _ctrlBuzzerTimerListOpen = false;
+    let _ctrlBuzzerTimerSeconds = 0;
     let _ctrlRulesListOpen = false;
     let _ctrlRulesCurrentFile = null;
 
@@ -9206,8 +9283,33 @@ HTML = r"""<!DOCTYPE html>
         low.value = _ctrlFilterDraft[def.lowKey] != null ? _ctrlFilterDraft[def.lowKey] : defaultLow;
         high.value = _ctrlFilterDraft[def.highKey] != null ? _ctrlFilterDraft[def.highKey] : defaultHigh;
         if (Number(low.value) > Number(high.value)) high.value = low.value;
+        const track = low.closest('.ctrl-filter-slider-track');
+        if (track) track.onpointerdown = ev => _ctrlFilterSliderTrackPointerDown(name, ev);
         _ctrlFilterUpdateSliderOutputs(name);
       });
+    }
+
+    function _ctrlFilterSliderTrackPointerDown(name, ev) {
+      if (ev.button != null && ev.button !== 0) return;
+      if (ev.target && ev.target.closest && ev.target.closest('input[type="range"]')) return;
+      const def = _ctrlFilterSliderDefs[name];
+      const low = document.getElementById('ctrl-filter-' + name + '-low');
+      const high = document.getElementById('ctrl-filter-' + name + '-high');
+      const track = low && low.closest('.ctrl-filter-slider-track');
+      if (!def || !low || !high || !track) return;
+      const bounds = track.getBoundingClientRect();
+      if (!bounds.width) return;
+      const ratio = Math.max(0, Math.min(1, (ev.clientX - bounds.left) / bounds.width));
+      const minimum = Number(low.min);
+      const maximum = Number(low.max);
+      const step = Number(low.step) || 1;
+      const steps = Math.round((minimum + ratio * (maximum - minimum) - minimum) / step);
+      const value = Math.max(minimum, Math.min(maximum, minimum + steps * step));
+      const target = Math.abs(value - Number(low.value)) <= Math.abs(value - Number(high.value)) ? low : high;
+      target.value = value;
+      target.focus({preventScroll:true});
+      _ctrlFilterRangeChanged(target);
+      ev.preventDefault();
     }
 
     function _ctrlFilterUpdateSliderOutputs(name) {
@@ -9287,7 +9389,11 @@ HTML = r"""<!DOCTYPE html>
       const suggestions = document.createElement('div');
       suggestions.className = 'ctrl-filter-suggestions';
       const show = () => _ctrlFilterShowSuggestions(key, input, suggestions);
-      input.oninput = show; input.onfocus = show;
+      input.oninput = show;
+      input.onfocus = () => { _ctrlFilterCloseSuggestions(suggestions); show(); };
+      input.onblur = () => setTimeout(() => {
+        if (!picker.contains(document.activeElement)) suggestions.classList.remove('active');
+      }, 0);
       input.onkeydown = ev => {
         if (ev.key === 'Escape') { suggestions.classList.remove('active'); input.blur(); }
         if (ev.key === 'Enter') {
@@ -9298,7 +9404,14 @@ HTML = r"""<!DOCTYPE html>
       picker.appendChild(input); picker.appendChild(suggestions); root.appendChild(picker);
     }
 
+    function _ctrlFilterCloseSuggestions(except) {
+      document.querySelectorAll('#ctrl-filter-editor-box .ctrl-filter-suggestions.active').forEach(panel => {
+        if (panel !== except) panel.classList.remove('active');
+      });
+    }
+
     function _ctrlFilterShowSuggestions(key, input, suggestions) {
+      _ctrlFilterCloseSuggestions(suggestions);
       const def = _ctrlFilterPickerDefs[key];
       const options = ((_ctrlFilterContext || {}).options || {})[def.option] || [];
       const selected = new Set(_ctrlFilterDraft[key] || []);
@@ -9308,6 +9421,7 @@ HTML = r"""<!DOCTYPE html>
       matches.forEach(value => {
         const row = document.createElement('div');
         row.className = 'ctrl-filter-suggestion'; row.textContent = value;
+        row.onpointerdown = ev => ev.preventDefault();
         row.onclick = () => {
           const values = _ctrlFilterDraft[key] || [];
           if (!values.includes(value)) _ctrlFilterDraft[key] = values.concat([value]);
@@ -9371,6 +9485,7 @@ HTML = r"""<!DOCTYPE html>
       _ctrlFilterSetupSliders();
       Object.keys(_ctrlFilterPickerDefs).forEach(_ctrlFilterRenderPicker);
       _ctrlFilterRenderRules();
+      _ctrlFilterCloseSuggestions();
       const result = document.getElementById('ctrl-filter-result');
       if (result) result.textContent = c.source_total + ' source themes';
       _ctrlFilterSetErrors([]); _ctrlFilterSetBusy(false);
@@ -9391,6 +9506,7 @@ HTML = r"""<!DOCTYPE html>
 
     function _ctrlFilterEditorClose() {
       _ctrlFilterEditorOpen = false; _ctrlFilterContext = null; _ctrlFilterPendingSave = null;
+      _ctrlFilterCloseSuggestions();
       const overlay = document.getElementById('ctrl-filter-editor-overlay');
       if (overlay) overlay.classList.remove('active');
     }
@@ -9398,6 +9514,13 @@ HTML = r"""<!DOCTYPE html>
     window.addEventListener('resize', () => {
       if (_ctrlFilterEditorOpen) requestAnimationFrame(_ctrlFilterFitViewport);
     });
+
+    document.addEventListener('pointerdown', ev => {
+      if (!_ctrlFilterEditorOpen) return;
+      const picker = ev.target && ev.target.closest ? ev.target.closest('.ctrl-filter-picker') : null;
+      const active = picker ? picker.querySelector('.ctrl-filter-suggestions.active') : null;
+      _ctrlFilterCloseSuggestions(active);
+    }, true);
 
     function _ctrlFilterReset() {
       _ctrlFilterDraft = {}; _ctrlFilterRenderContext(); _ctrlFilterMarkChanged();
@@ -9539,6 +9662,53 @@ HTML = r"""<!DOCTYPE html>
         if (list) list.innerHTML = '<div style="padding:8px;color:#556;font-size:0.85em">Loading…</div>';
         socket.emit('host_action', {action: 'get_buzz_presets'});
       }
+    }
+
+    function _ctrlToggleBuzzerTimerList() {
+      const opening = !_ctrlBuzzerTimerListOpen;
+      _ctrlCloseAllLists();
+      if (!opening) return;
+      _ctrlBuzzerTimerListOpen = true;
+      _ctrlListPopupOpen('Buzzer Answer Timer', 'buzz_timer');
+      const list = document.getElementById('ctrl-list-popup-list');
+      if (!list) return;
+      list.innerHTML = '';
+      const current = Math.min(60, Math.max(0, _ctrlBuzzerTimerSeconds));
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'padding:16px 14px 12px;min-width:min(320px,78vw);';
+      const value = document.createElement('div');
+      value.style.cssText = 'text-align:center;color:#eef;font-size:1.55em;font-weight:700;margin-bottom:10px;';
+      value.textContent = current > 0 ? current + ' seconds' : 'Timer Off';
+      const slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = '0';
+      slider.max = '60';
+      slider.step = '1';
+      slider.value = String(current);
+      slider.setAttribute('aria-label', 'Seconds per buzzer answer');
+      slider.style.cssText = 'width:100%;accent-color:#7799ee;';
+      slider.oninput = () => {
+        const seconds = Number(slider.value);
+        value.textContent = seconds > 0 ? seconds + ' seconds' : 'Timer Off';
+      };
+      const scale = document.createElement('div');
+      scale.style.cssText = 'display:flex;justify-content:space-between;color:#667;font-size:0.72em;margin-top:2px;';
+      scale.innerHTML = '<span>Off</span><span>20s</span><span>40s</span><span>60s</span>';
+      const actions = document.createElement('div');
+      actions.style.cssText = 'display:flex;gap:8px;margin-top:16px;';
+      const apply = document.createElement('button');
+      apply.className = 'ctrl-popup-item ctrl-yt-active';
+      apply.style.cssText = 'appearance:none;width:100%;justify-content:center;text-align:center;border:1px solid #668;border-radius:6px;font:inherit;';
+      apply.textContent = 'Apply';
+      apply.onclick = () => {
+        const seconds = Number(slider.value);
+        _ctrlBuzzerTimerSeconds = seconds;
+        socket.emit('host_action', {action: 'set_buzzer_timer', seconds});
+        _ctrlListPopupClose();
+      };
+      actions.append(apply);
+      wrap.append(value, slider, scale, actions);
+      list.appendChild(wrap);
     }
 
     socket.on('buzz_presets', data => {
@@ -9802,6 +9972,17 @@ HTML = r"""<!DOCTYPE html>
           el.classList.toggle('ctrl-toggle-active', arOn));
         if (_ctrlAutoRevealOpen) _ctrlRenderAutoRevealModal();
       }
+      if ('buzzer_pause' in data) {
+        document.querySelectorAll('[data-extra-id="buzz_pause"],[data-proxy-extra="buzz_pause"]').forEach(el =>
+          el.classList.toggle('ctrl-toggle-active', !!data.buzzer_pause));
+      }
+      if ('buzzer_timer_seconds' in data) {
+        _ctrlBuzzerTimerSeconds = Math.max(0, Number(data.buzzer_timer_seconds || 0));
+        document.querySelectorAll('[data-extra-id="buzz_timer"],[data-proxy-extra="buzz_timer"]').forEach(el => {
+          el.classList.toggle('ctrl-toggle-active', _ctrlBuzzerTimerSeconds > 0);
+          el.textContent = _ctrlBuzzerTimerSeconds > 0 ? 'Bz Timer ' + _ctrlBuzzerTimerSeconds + 's' : 'Bz Timer';
+        });
+      }
       if (data.bonus_menu_visibility && typeof data.bonus_menu_visibility === 'object') {
         _ctrlBonusMenuVisibility = data.bonus_menu_visibility;
         const _visMap = {
@@ -9918,6 +10099,9 @@ HTML = r"""<!DOCTYPE html>
       'bonus_buzzer': { classes: 'ctrl-sect-bonus',                           html: 'Buzzer',    title: 'Open a buzzer-only web bonus round' },
       'buzz_lock':    { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Bz Lock', title: 'Toggle buzzer lock' },
       'buzz_reset':   { classes: 'ctrl-sect-bonus',                           html: 'Bz Reset', title: 'Reset buzzer order' },
+      'buzz_next':    { classes: 'ctrl-sect-bonus',                           html: 'Bz Next', title: 'Advance to the next queued buzzer answer' },
+      'buzz_pause':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Bz Pause', title: 'Pause playback while buzzer answers are served' },
+      'buzz_timer':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Bz Timer', title: 'Choose the answer time for each queued player' },
       'buzz_sound':   { classes: 'ctrl-sect-bonus',                           html: 'Bz Sound', title: 'Choose buzzer sound preset' },
       'auto_bonus':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Auto Bonus', title: 'Automatically trigger a bonus round at the start of each theme' },
       // Toggles
@@ -9989,6 +10173,9 @@ HTML = r"""<!DOCTYPE html>
       'bonus_buzzer': () => { socket.emit('host_action',{action:'invoke',id:'bonus_buzzer'}); _ctrlCloseExtrasPopup(); },
       'buzz_lock':    () => socket.emit('host_action',{action:'invoke',id:'buzzer_lock'}),
       'buzz_reset':   () => socket.emit('host_action',{action:'invoke',id:'buzzer_reset'}),
+      'buzz_next':    () => socket.emit('host_action',{action:'invoke',id:'buzzer_next'}),
+      'buzz_pause':   () => socket.emit('host_action',{action:'set_buzzer_pause',enabled:!_ctrlCurrentToggles.buzzer_pause}),
+      'buzz_timer':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleBuzzerTimerList(); },
       'buzz_sound':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleBuzzSoundList(); },
       'tgl_blind':    () => socket.emit('host_action',{action:'invoke',id:'blind'}),
       'tgl_peek':     () => socket.emit('host_action',{action:'invoke',id:'peek'}),
@@ -11521,7 +11708,7 @@ HTML = r"""<!DOCTYPE html>
                 if (v.episodes) vText += (vText ? ': ' : '') + '(Eps: ' + v.episodes + ')';
                 if (v.flags && v.flags.length) vText += (vText ? ' ' : '') + v.flags.join(' ');
                 const propsHtml = v.file_props ? ' <span class="mt-props">' + _escHtml(v.file_props) + '</span>' : '';
-                const playsHtml = (v.plays > 0) ? ' <span class="mt-plays">Plays: ' + v.plays + 'x' + (v.plays_ago != null ? ' (' + v.plays_ago + ' ago)' : '') + '</span>' : '';
+                const playsHtml = (v.plays > 0 || v.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + v.plays + 'x' + (v.plays_ago != null ? ' (' + v.plays_ago + ' ago)' : '') + (v.lightning_plays ? ' (' + v.lightning_plays + ' L)' : '') + '</span>' : '';
                 const vFilename = String(v.filename || '').trim();
                 const vActionId = (_isHost && vFilename)
                   ? _themeActionRegister(vFilename, anime.title + ' – ' + slugText + (vText ? ' ' + vText : ''))
@@ -11542,7 +11729,7 @@ HTML = r"""<!DOCTYPE html>
                 ? '<button class="mt-action-btn" data-taid="' + themeActionId + '" title="Theme actions">&#9654;</button>'
                 : '';
               const themeFavHtml = favMarkHtml(!!theme.favorited, theme.is_playing ? 'leading playing' : 'leading');
-              const themePlaysHtml = (theme.plays > 0) ? ' <span class="mt-plays">Plays: ' + theme.plays + 'x' + (theme.plays_ago != null ? ' (' + theme.plays_ago + ' ago)' : '') + '</span>' : '';
+              const themePlaysHtml = (theme.plays > 0 || theme.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + theme.plays + 'x' + (theme.plays_ago != null ? ' (' + theme.plays_ago + ' ago)' : '') + (theme.lightning_plays ? ' (' + theme.lightning_plays + ' L)' : '') + '</span>' : '';
               if (vText || tActionBtn || themeFavHtml || themePlaysHtml) html += '<div class="' + subRowClass + '">' + tActionBtn + themeFavHtml + '<span class="mt-ver">' + _escHtml(vText) + themePlaysHtml + '</span></div>';
             }
             if (theme.special) html += ' <span class="mt-flags">(SPECIAL)</span>';

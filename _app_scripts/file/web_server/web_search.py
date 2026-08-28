@@ -61,24 +61,15 @@ def _fmt_seconds(seconds) -> str:
     return f"{m}:{s:02}"
 
 
-def _build_play_maps():
-    """Build play-count and series-play maps from the current playlist history."""
+def _build_play_history():
+    """Build the shared desktop/web play-history snapshot."""
     playlist = state.metadata.playlist
     _pl = playlist.get('playlist', [])
     _cur_idx = playlist.get('current_index', 0)
-    _played = _pl[:_cur_idx + 1]
-    _play_count_map = {}
-    _play_last_map = {}
-    for _i, _item in enumerate(_played):
-        _f = _item[3:] if _item.startswith('[L]') else _item
-        _k = metadata_display._play_name_key(_f)
-        _play_count_map[_k] = _play_count_map.get(_k, 0) + 1
-        _play_last_map[_k] = _i
-    _series_play_map = metadata_display._build_played_series_map(_played, _cur_idx)
-    return _play_count_map, _play_last_map, _series_play_map, _cur_idx
+    return metadata_display._prepare_play_history(_pl, _cur_idx)
 
 
-def _build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_map, _cur_idx, query_lower=''):
+def _build_theme_web_result(fn, play_history, query_lower=''):
     """Build a single theme result dict for web push_theme_search_results / push_directory_themes."""
     meta = metadata_fetch.get_metadata(fn)
     title_en = str(meta.get('eng_title') or '').strip()
@@ -92,10 +83,10 @@ def _build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_ma
             song_title = s.get('title') or ''
             artist_name = metadata_fetch.get_artists_string(s.get('artist') or [], total=False)
             break
-    _fn_series = metadata_display.series_set(meta)
-    _sp_count = sum(_series_play_map[_s]['count'] for _s in _fn_series if _s in _series_play_map)
-    _sp_last = min((_series_play_map[_s]['last_idx'] for _s in _fn_series if _s in _series_play_map), default=None)
-    _pk = metadata_display._play_name_key(fn)
+    _cur_idx = play_history['cur_idx']
+    _fp, _sp = metadata_display._calc_plays_info(
+        fn, meta, (), _cur_idx, prepared_history=play_history
+    )
     return {
         'filename': fn,
         'title': title,
@@ -109,10 +100,12 @@ def _build_theme_web_result(fn, _play_count_map, _play_last_map, _series_play_ma
         'studio': ', '.join([str(x).strip() for x in (meta.get('studios') or []) if str(x).strip()]),
         'song_match': bool(query_lower and song_title and query_lower in song_title.lower()),
         'artist_match': bool(query_lower and artist_name and query_lower in artist_name.lower()),
-        'plays': _play_count_map.get(_pk, 0),
-        'plays_ago': (_cur_idx - _play_last_map[_pk]) if _pk in _play_last_map and _play_last_map[_pk] < _cur_idx else None,
-        'series_plays': _sp_count,
-        'series_plays_ago': (_cur_idx - _sp_last) if _sp_last is not None and _sp_last < _cur_idx else None,
+        'plays': _fp['count'],
+        'plays_ago': _fp['ago'],
+        'lightning_plays': _fp['lightning'],
+        'series_plays': _sp['count'] if _sp else 0,
+        'series_plays_ago': _sp['ago'] if _sp else None,
+        'series_lightning_plays': _sp['lightning'] if _sp else 0,
     }
 
 

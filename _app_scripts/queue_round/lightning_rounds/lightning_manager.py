@@ -56,6 +56,74 @@ from _app_scripts.queue_round.lightning_rounds import ost_overlay
 from _app_scripts.ui import styling
 
 
+LIGHTNING_STREAM_READY_TIMEOUT_MS = 5000
+
+
+def _prefetched_youtube_media_ready(youtube_url, require_download):
+    """Return whether prefetch produced usable media before round start."""
+    if not youtube_url:
+        return False
+
+    cache_path = youtube_control._get_yt_cache_path(youtube_url)
+    if (cache_path and os.path.exists(cache_path)
+            and not os.path.exists(cache_path + ".part")):
+        return True
+    if require_download:
+        return False
+
+    cached_stream = youtube_control._cached_streams.get(youtube_url)
+    return bool(cached_stream and cached_stream[0])
+
+
+def _select_variety_media_fallback(failed_mode):
+    """Re-arm this round with a non-YouTube Variety type."""
+    global lightning_queue
+
+    if (not variety_round.variety_light_mode_enabled
+            or state.lightning.fixed_current_round):
+        return None
+
+    lightning_queue = None
+    selected = variety_round.set_variety_light_mode(
+        excluded_modes=["clip", "ost"]
+    )
+    new_mode = selected[0] if isinstance(selected, tuple) else selected
+    state.lightning.current_light_mode = None
+    state.lightning.current_light_variant = None
+    state.lightning.light_round_started = False
+    state.lightning.light_round_armed = True
+    if new_mode == "frame":
+        state.lightning.light_round_start_time = None
+    state.lightning.light_round_length = state.playback.lightning_mode_settings.get(
+        new_mode, {}
+    ).get("length", lightning_settings.LIGHT_ROUND_LENGTH_DEFAULT)
+    print(
+        f"Variety {failed_mode} media was unavailable; switching this round "
+        f"to {new_mode}."
+    )
+    return new_mode
+
+
+def _fallback_failed_lightning_stream(filename):
+    """Restore the theme when a resolved lightning stream never becomes ready."""
+    if (filename != state.playback.currently_playing.get("filename")
+            or not streaming.currently_streaming):
+        return False
+
+    failed_mode = state.lightning.light_mode
+    failed_url = streaming.currently_streaming[1]
+    print(
+        "YouTube lightning stream failed to load; falling back to the theme: "
+        f"{failed_url}"
+    )
+    restored = streaming.fallback_to_theme(state.lightning.light_round_start_time)
+    if restored and _select_variety_media_fallback(failed_mode):
+        return True
+    audio_toggles.toggle_mute(False)
+    round_start_guard.after(500, blind_screen.set_black_screen, False)
+    return restored
+
+
 def init_lightning_ui():
     """Build the lightning-round dropdown state read by the popout + menu.
 
@@ -404,6 +472,7 @@ def clean_up_light_round(new_round=False):
     mismatch_round._mismatch_hwnd = 0
     mismatch_round._main_hwnd     = 0
     mismatch_round._note_hwnd     = 0
+    mismatch_round._mismatch_reveal_pending = False
 
     # Restore original video track (don't video-remove — that reinitializes VO and causes a glitch;
     # just switching the track ID is seamless and the orphaned external track is dropped on next load)
@@ -563,6 +632,31 @@ def _start_ai_round_fallback(source_mode):
     return fallback_mode
 
 
+def _start_trivia_overlay(data):
+    """Start trivia from the fixed round or the prefetched/cache source."""
+    fixed_round = state.lightning.fixed_current_round
+    if fixed_round:
+        trivia_data = [
+            fixed_round.get("trivia_question") or "No trivia found.",
+            fixed_round.get("trivia_answer") or "None",
+        ]
+    else:
+        filename = state.playback.currently_playing.get("filename") or ""
+        trivia_data = (
+            lightning_queue_data.get(filename, {}).get("trivia")
+            or trivia_round.get_cached_trivia(data)
+        )
+
+    if not trivia_data or trivia_data[1] == "None":
+        return False
+
+    trivia_round.set_light_trivia(trivia_data=trivia_data, allow_api=False)
+    synopsis_overlay.toggle_synopsis_overlay(
+        text=synopsis_overlay.get_light_synopsis_string(words=1)
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Per-tick update for the current lightning round. Drives every per-mode
 # overlay animation, the answer-phase transition, the round-start setup
@@ -701,7 +795,8 @@ def update_light_round(time):
                         top_info_data = f"IMAGE SOURCE:\n{domain}"
                     else:
                         top_info_data = None
-                    if state.lightning.light_mode == 'ost' and not (state.lightning.fixed_current_round and state.lightning.fixed_current_round.get("clip_for_answer")):
+                    if (state.lightning.light_mode == 'ost' and streaming.currently_streaming
+                            and not (state.lightning.fixed_current_round and state.lightning.fixed_current_round.get("clip_for_answer"))):
                         ost_overlay._show_ost_cover()  # hide video during transition; removed by stop_stream
                     # Restore answer audio before nonessential answer UI work.  Only
                     # mark setup complete after cleanup succeeds so a transient
@@ -1104,6 +1199,13 @@ def update_light_round(time):
                                     mismatch_round._mismatch_vid_track_id = ext_vids[-1].get('id')
                             except Exception:
                                 pass
+                            # Keep the startup blind in place until mpv emits
+                            # playback-restart for this selected external track.
+                            # Track selection is synchronous, but first-frame
+                            # decoding is not; uncovering here leaked the
+                            # original theme video for a moment.
+                            mismatch_round._mismatch_active = True
+                            mismatch_round._mismatch_reveal_pending = True
                             # Always unpause — we want the round playing regardless of initial state
                             state.widgets.player._p.pause = False
                         except Exception as e:
@@ -1113,9 +1215,7 @@ def update_light_round(time):
                         # Unmute now that we're at the right position with the right video
                         state.widgets.player.audio_set_mute(False)
                         audio_toggles.set_volume(state.controls.volume_level)
-                        mismatch_round._mismatch_active = True
                         overlay_primitives.spawn_pulsating_music_note()
-                        blind_screen.set_black_screen(False)
                         osd_text.top_info("MISMATCHED VISUALS")
                         osd_text.bottom_info("GUESS BY MUSIC ONLY")
                         update_light_round_number()
@@ -1160,13 +1260,7 @@ def update_light_round(time):
                 synopsis_overlay.toggle_synopsis_overlay(text=synopsis_overlay.get_light_synopsis_string(words = 1))
             elif state.lightning.light_mode == 'trivia':
                 data = state.playback.currently_playing.get("data") or {}
-                trivia_data = lightning_queue_data.get(
-                    state.playback.currently_playing.get("filename", {}), {}
-                ).get("trivia") or trivia_round.get_cached_trivia(data)
-                if trivia_data and trivia_data[1] != "None":
-                    trivia_round.set_light_trivia(trivia_data=trivia_data, allow_api=False)
-                    synopsis_overlay.toggle_synopsis_overlay(text=synopsis_overlay.get_light_synopsis_string(words=1))
-                else:
+                if not _start_trivia_overlay(data):
                     _start_ai_round_fallback("trivia")
             elif state.lightning.light_mode == "emoji":
                 data = state.playback.currently_playing.get("data") or {}
@@ -1286,31 +1380,16 @@ def update_light_round(time):
                 osd_text.top_info("CHARACTER NAMES")
             elif state.lightning.light_mode in ['clip', 'ost']:
                 _always_dl_clip = ffmpeg_check.is_ffmpeg_available() and state.playback.lightning_mode_settings.get("_misc_settings", {}).get("always_download_clip", False)
-                def _ensure_clip_downloaded(yt_url):
-                    """If always_download_clip is on and the file isn't cached, start the download then show the wait popup."""
-                    if not (yt_url and _always_dl_clip):
-                        return
-                    cache_path = youtube_control._get_yt_cache_path(yt_url)
-                    if not cache_path or (os.path.exists(cache_path) and not os.path.exists(cache_path + '.part')):
-                        return  # already cached (or no video ID) — nothing to do
-                    # Start download if not already running
-                    vid_id = youtube_control.extract_youtube_id_from_url(yt_url)
-                    if vid_id and vid_id not in youtube_control._yt_cache_downloads_in_progress:
-                        cache_mb = int(state.playback.lightning_mode_settings.get("_misc_settings", {}).get("download_cache_mb", 0))
-                        effective_mb = cache_mb if cache_mb > 0 else 500
-                        threading.Thread(
-                            target=youtube_control._yt_cache_download_bg,
-                            args=(yt_url, cache_path, effective_mb),
-                            daemon=True
-                        ).start()
-                    youtube_control._yt_cache_wait_popup(yt_url)
                 if state.lightning.fixed_current_round:
                     url, name, channel = state.lightning.fixed_current_round.get("clip_url"), state.lightning.fixed_current_round.get("clip_title"), state.lightning.fixed_current_round.get("clip_author")
-                    _ensure_clip_downloaded(url)
-                    length = streaming.stream_url(url, name, channel)
+                    if _prefetched_youtube_media_ready(url, _always_dl_clip):
+                        length = streaming.stream_url(url, name, channel)
+                    else:
+                        print("YouTube lightning media was not ready after prefetch; falling back to the theme.")
+                        length = 0
                 else:
                     clip_variants = state.playback.lightning_mode_settings.get("clip", {}).get("variants", {})
-                    clip_enabled, trailer_enabled = clip_variants.get("random_clip"), clip_variants.get("trailer")
+                    trailer_enabled = clip_variants.get("trailer")
                     length = 0
                     is_ost = (state.lightning.light_mode == 'ost')
                     if is_ost:    
@@ -1318,15 +1397,14 @@ def update_light_round(time):
                     else:
                         url = lightning_queue_data.get(state.playback.currently_playing.get("filename", {}), {}).get("clip_url")
                     if not url:
-                        if not streaming.youtube_api_limited and state.config.YOUTUBE_API_KEY and (clip_enabled or is_ost):
-                            length = streaming.play_random_clip(ost=is_ost)
-                        elif state.playback.currently_playing.get("data", {}).get("trailer") and trailer_enabled and is_ost:
-                            length = streaming.play_trailer()
-                    elif trailer_enabled and url[1] == 'trailer':
+                        print("YouTube lightning media was not ready after prefetch; falling back to the theme.")
+                    elif (trailer_enabled and url[1] == 'trailer'
+                            and _prefetched_youtube_media_ready(url[0], _always_dl_clip)):
                         length = streaming.play_trailer()
-                    else:
-                        _ensure_clip_downloaded(url[0])
+                    elif _prefetched_youtube_media_ready(url[0], _always_dl_clip):
                         length = streaming.stream_url(url[0], url[1], url[2])
+                    else:
+                        print("YouTube lightning media was not ready after prefetch; falling back to the theme.")
                 if streaming.currently_streaming:
                     # Compute start time now if we have a known length; otherwise defer until player is ready
                     if length > 0:
@@ -1339,12 +1417,6 @@ def update_light_round(time):
                     streaming.test_print(streaming.currently_streaming)
                     def wait_for_stream(filename, count):
                         streaming.test_print(F"Waiting...{count}")
-                        def restart_player():
-                            state.widgets.player.stop()
-                            state.widgets.player.play()
-                            round_start_guard.after(
-                                100, wait_for_stream, filename, 0
-                            )
                         if filename != state.playback.currently_playing.get("filename") or not streaming.currently_streaming:
                             return
                         elif state.widgets.player.is_playing() and state.widgets.player.get_length() > 0:
@@ -1426,16 +1498,16 @@ def update_light_round(time):
                                         if filename != state.playback.currently_playing.get("filename") or not streaming.currently_streaming:
                                             return
                                         if state.widgets.player.is_playing() and state.widgets.player.get_time() < target_ms - 2500:
-                                            streaming.test_print("Seek retry failed — restarting stream")
-                                            restart_player()
+                                            streaming.test_print("Seek retry failed — using lightning fallback")
+                                            _fallback_failed_lightning_stream(filename)
                                     round_start_guard.after(2000, _check_retry)
                                 # else: playing from (approximately) the right position
                             round_start_guard.after(2000, start_player)
                             set_stream_start()
                             for time in [500, 1000, 1500, 2000]:
                                 round_start_guard.after(time, stream_overlay)
-                        elif count >= 5000:
-                            restart_player()
+                        elif count >= LIGHTNING_STREAM_READY_TIMEOUT_MS:
+                            _fallback_failed_lightning_stream(filename)
                         else:
                             count += 100
                             round_start_guard.after(
@@ -1443,6 +1515,8 @@ def update_light_round(time):
                             )
                     wait_for_stream(state.playback.currently_playing.get("filename"), 0)
                 else:
+                    if _select_variety_media_fallback(state.lightning.light_mode):
+                        return
                     if variety_round.last_variety_forced:
                         variety_round.variety_mode_cooldown_counts['clip'] = state.playback.lightning_mode_settings.get("clip", {}).get("variety", {}).get("cooldown", {}).get("max_gap", 0)
                     audio_toggles.toggle_mute(False)
@@ -1519,13 +1593,13 @@ def queue_next_lightning_mode():
                         url, name, channel = streaming.play_random_clip(data, True, ost=(next_mode=='ost'))
                     if url:
                         yt_source_url = url
-                        length = youtube_control.get_youtube_stream_url(url)
+                        _, length = youtube_control.get_youtube_stream_url(url)
                     elif next_mode != 'ost' and data.get("trailer") and trailer_enabled:
                         url = f"https://www.youtube.com/watch?v={data.get("trailer")}"
                         yt_source_url = url
                         name = "trailer"
                         channel = None
-                        length = youtube_control.get_youtube_stream_url(url)
+                        _, length = youtube_control.get_youtube_stream_url(url)
                     elif variety_round.variety_light_mode_enabled:
                         excluded_modes.append(next_mode)
                         next_mode = None

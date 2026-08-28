@@ -14,6 +14,12 @@ _courier_font_cache = {}
 
 floating_windows = {}  # name -> osd_id (int); tracks active floating text OSD slots
 
+_MUTED_ICON = "🔇"
+_countdown_value = None
+_countdown_position = "top right"
+_countdown_inverse = False
+_countdown_muted = False
+
 
 def osd_command(*args):
     """Send a raw osd-overlay command to the mpv player (no-op on failure).
@@ -38,8 +44,13 @@ def osd_command(*args):
 
 def set_countdown(value=None, position="top right", inverse=False):
     """Create, update, or remove the countdown overlay."""
+    global _countdown_value, _countdown_position, _countdown_inverse
     if state.config.inverted_positions:
         position = "top left"
+
+    _countdown_value = value
+    _countdown_position = position
+    _countdown_inverse = inverse
 
     # Lazy imports: osd_text is a low-level OSD primitive; bonus and the web
     # server sit above (or alongside) it, so reach them at call time.
@@ -50,7 +61,30 @@ def set_countdown(value=None, position="top right", inverse=False):
             web_server.push_timer(float(value), paused=True)
         except (TypeError, ValueError):
             pass
-    set_floating_text("Countdown", value, position=position, inverse=inverse)
+    _render_countdown()
+
+
+def set_countdown_muted(muted=False):
+    """Show a mute badge in the countdown slot, preserving any timer value."""
+    global _countdown_muted
+    _countdown_muted = bool(muted)
+    _render_countdown()
+
+
+def _render_countdown():
+    value = _countdown_value
+    if _countdown_muted:
+        value = (
+            f"{value}  {_MUTED_ICON}"
+            if value is not None and value != ""
+            else _MUTED_ICON
+        )
+    set_floating_text(
+        "Countdown",
+        value,
+        position=_countdown_position,
+        inverse=_countdown_inverse,
+    )
 
 
 def bottom_info(value=None, size=80, width_max=0.7, inverse=False):

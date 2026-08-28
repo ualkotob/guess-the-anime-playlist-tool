@@ -145,6 +145,10 @@ def show_settings_popup():
                         from _app_scripts.queue_round.lightning_rounds import cover_image_overlay
                         cover_image_overlay.serpapi_limited = False
                         cover_image_overlay.serpapi_limited_count = 0
+                elif after == "trim_themes_cache":
+                    if _orig[s["key"]] != _schema_val(s):
+                        from _app_scripts.playback import cache_download
+                        cache_download.evict_cache_for_size(0)
 
             save_btn.config(text="SAVED!", bg="darkgreen")
             settings_window.after(300, lambda: save_btn.config(text="SAVE SETTINGS", bg="black"))

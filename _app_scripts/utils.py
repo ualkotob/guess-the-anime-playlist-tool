@@ -305,6 +305,20 @@ def get_song_by_slug(data, slug):
     return {}  # Return empty list if no match
 
 
+def theme_artist_needs_resolution(theme, resolution_status=None):
+    """Return whether a blank artist should remain in Missing Artists."""
+    intentional_blank = {
+        "instrumental_or_score",
+        "no_credited_performer",
+    }
+    return (
+        theme.get("artist") == []
+        and (
+            resolution_status or theme.get("artist_resolution_status")
+        ) not in intentional_blank
+    )
+
+
 # ---------------------------------------------------------------------------
 # Settings sync / diff helpers
 # ---------------------------------------------------------------------------

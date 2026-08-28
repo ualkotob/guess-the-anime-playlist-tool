@@ -20,11 +20,61 @@ from tkinter import messagebox
 
 import requests
 
+from _app_scripts import utils
 import _app_scripts.ui.windowing as windowing
 import _app_scripts.data.config_io as config_io
 import _app_scripts.data.metadata_io as metadata_io
 import _app_scripts.ui.lists as lists
 import _app_scripts.directory.scan as directory_scan
+
+
+METADATA_PACKAGE_FILES = (
+    ('metadata/file_metadata.json', 'file_metadata'),
+    ('metadata/file_metadata_overrides.json', 'file_metadata_overrides'),
+    ('metadata/anime_metadata.json', 'anime_metadata'),
+    ('metadata/anime_metadata_overrides.json', 'anime_metadata_overrides'),
+    ('metadata/anidb_metadata.json', 'anidb_metadata'),
+    ('metadata/ai_metadata.json', 'ai_metadata'),
+    ('metadata/anilist_metadata.json', 'anilist_metadata'),
+)
+
+
+def _merge_package_entries(current_dict, imported_data):
+    """Merge one package store with package entries taking precedence.
+
+    Metadata packages are release snapshots: an entry present in the package
+    must replace the same local entry, while entries that exist only locally
+    are retained.
+    """
+    new_count = sum(key not in current_dict for key in imported_data)
+    current_dict.update(imported_data)
+    return new_count
+
+
+def _persist_imported_metadata():
+    """Persist an import before reloading it from disk.
+
+    This must be synchronous.  A debounced save followed by ``load_metadata``
+    reloads the old files and discards the freshly imported in-memory data.
+    """
+    metadata_io.save_metadata(immediate=True)
+    metadata_io.load_metadata()
+
+
+def _merge_package_store(name, imported_data):
+    """Apply a package store without changing the user's override stores."""
+    if name.endswith("_overrides"):
+        # Overrides in an exported package are publisher corrections. Fold
+        # them into the release data; load_metadata() will subsequently apply
+        # this user's own override files at the highest precedence.
+        base_name = name.removesuffix("_overrides")
+        current_dict = getattr(state.metadata, base_name)
+        new_count = sum(key not in current_dict for key in imported_data)
+        utils.deep_merge(current_dict, imported_data)
+        return new_count
+
+    current_dict = getattr(state.metadata, name)
+    return _merge_package_entries(current_dict, imported_data)
 
 
 def import_data_from_package(source, is_local=False, prompt=True):
@@ -96,16 +146,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
                 zipf.extractall(temp_dir)
 
             # Import metadata files
-            metadata_files = [
-                ('metadata/file_metadata.json', 'file_metadata', lambda d: state.metadata.file_metadata),
-                ('metadata/file_metadata_overrides.json', 'file_metadata_overrides', lambda d: state.metadata.file_metadata_overrides),
-                ('metadata/anime_metadata.json', 'anime_metadata', lambda d: state.metadata.anime_metadata),
-                ('metadata/anidb_metadata.json', 'anidb_metadata', lambda d: state.metadata.anidb_metadata),
-                ('metadata/ai_metadata.json', 'ai_metadata', lambda d: state.metadata.ai_metadata),
-                ('metadata/anilist_metadata.json', 'anilist_metadata', lambda d: state.metadata.anilist_metadata),
-            ]
-
-            for file_path, name, get_dict in metadata_files:
+            for file_path, name in METADATA_PACKAGE_FILES:
                 try:
                     if not import_window.winfo_exists():
                         return
@@ -125,27 +166,9 @@ def import_data_from_package(source, is_local=False, prompt=True):
                     else:
                         continue  # File not in package, skip
 
-                    # Merge with existing data
-                    current_dict = get_dict(None)
-                    count = 0
-                    for key, value in imported_data.items():
-                        if key not in current_dict:
-                            count += 1
-                        current_dict[key] = value
-
-                    # Update the global variable based on which file it is
-                    if name == 'file_metadata':
-                        state.metadata.file_metadata.update(imported_data)
-                    elif name == 'file_metadata_overrides':
-                        state.metadata.file_metadata_overrides.update(imported_data)
-                    elif name == 'anime_metadata':
-                        state.metadata.anime_metadata.update(imported_data)
-                    elif name == 'anidb_metadata':
-                        state.metadata.anidb_metadata.update(imported_data)
-                    elif name == 'ai_metadata':
-                        state.metadata.ai_metadata.update(imported_data)
-                    elif name == 'anilist_metadata':
-                        state.metadata.anilist_metadata.update(imported_data)
+                    # Merge with existing data. Package entries are the newer
+                    # release data and therefore win over matching local ones.
+                    count = _merge_package_store(name, imported_data)
 
                     imported_items.append(f"{name}: {len(imported_data)} entries ({count} new)")
 
@@ -154,9 +177,11 @@ def import_data_from_package(source, is_local=False, prompt=True):
 
             # Save all metadata
             if imported_items:
-                metadata_io.save_metadata()
-                # Reload metadata and refresh directory to show imported data
-                metadata_io.load_metadata()
+                # Persist synchronously before reloading. save_metadata() is
+                # normally debounced, which previously caused this reload to
+                # restore the old on-disk data and lose the entire import.
+                _persist_imported_metadata()
+                # Refresh directory/list views to show imported data.
                 directory_scan.scan_directory()
                 if state.lists.list_loaded == "playlist":
                     lists.show_playlist(True)

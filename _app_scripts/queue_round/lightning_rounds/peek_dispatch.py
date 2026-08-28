@@ -174,6 +174,7 @@ def destroy_peek():
     grow_overlay.toggle_grow_overlay(destroy=True)
     filter_overlay.toggle_filter_vf(destroy=True)
     audio_toggles.toggle_mute(False)
+    osd_text.set_countdown_muted(False)
 
 
 def toggle_peek_round():

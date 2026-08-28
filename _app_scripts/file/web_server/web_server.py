@@ -131,6 +131,7 @@ _current_marks: dict = {}     # {tagged, favorited, blind, peek, mute_peek} for 
 _current_toggles: dict = {}   # {blind, peek, mute, censors, shortcuts, dock, censor_count}
 _host_action_callback = None  # callable(action, data) set by main app for remote control
 _on_buzz_callback = None       # callable(rank: int, name: str) called when a player buzzes in
+_on_buzzer_reset_callback = None  # callable() clears host-side buzzer timers/popups
 _on_skip_grant_callback = None # callable(name: str) called when skip grant changes (empty = cleared)
 _on_skip_decline_callback = None # callable(name: str, declined: bool); empty name clears all
 _on_vote_skip_changed_callback = None # callable(name: str, voted: bool); empty name clears all
@@ -374,6 +375,11 @@ def _reset_buzzer(open_after_reset: bool = False):
   _buzzer_open = bool(open_after_reset)
   _buzzer_locked = False
   _buzzer_opened_at_ms = int(time.time() * 1000) if _buzzer_open else None
+  if _on_buzzer_reset_callback is not None:
+    try:
+      _on_buzzer_reset_callback()
+    except Exception:
+      pass
 
 
 def control_buzzer(cmd: str) -> bool:
@@ -406,6 +412,11 @@ def control_buzzer(cmd: str) -> bool:
     if _host_sids:
       for sid in list(_host_sids):
         _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+    if _on_buzzer_reset_callback is not None:
+      try:
+        _on_buzzer_reset_callback()
+      except Exception:
+        pass
   elif c == 'open':
     if not is_buzzer_round:
       return False
@@ -735,6 +746,14 @@ def push_question(title, info='', choices=None, drum=None, stepper=None, tags=No
     _emit_buzzer_state()
 
 
+def _sync_skip_grant_for_player(sid: str, name: str):
+    """Send the current grant state after a connection identifies itself."""
+    if not _socketio or not sid:
+        return
+    active = bool(name and name == _skip_grant_player)
+    _socketio.emit('skip_grant_update', {'active': active}, to=sid)
+
+
 def push_skip_grant(name: str):
     """Grant or revoke a one-time skip for a specific player.
     Pass empty string to clear the current grant."""
@@ -881,7 +900,7 @@ def set_vote_skip_enabled(enabled):
 
 
 def reset_vote_skip():
-    """Clear the current vote at a theme/session boundary."""
+    """Clear skip-related state at a theme/session boundary."""
     global _vote_skip_open, _vote_skip_resolved, _vote_skip_epoch
     with _vote_skip_lock:
         _vote_skip_epoch += 1
@@ -893,6 +912,7 @@ def reset_vote_skip():
             _on_vote_skip_changed_callback('', False)
         except Exception:
             pass
+    _clear_skip_declines()
     _broadcast_players_update()
 
 
@@ -1066,7 +1086,7 @@ def get_emojis():
     return items
 
 
-def push_timer(seconds: float, paused: bool = False):
+def push_timer(seconds: float, paused: bool = False, *, player: str = '', rank: int | None = None):
     """Show/update a visual countdown timer on all connected client screens.
 
     The client counts down locally from `seconds`.  Call this again with the
@@ -1076,6 +1096,10 @@ def push_timer(seconds: float, paused: bool = False):
     """
     global _timer_state
     _timer_state = {'seconds': max(0.0, float(seconds)), 'paused': bool(paused)}
+    if player:
+        _timer_state['player'] = str(player)
+    if rank is not None:
+        _timer_state['rank'] = int(rank)
     if FLASK_AVAILABLE and _socketio:
         _socketio.emit('timer_update', _timer_state)
 
@@ -1350,6 +1374,12 @@ def set_buzz_callback(fn):
     _on_buzz_callback = fn
 
 
+def set_buzzer_reset_callback(fn):
+    """Register a callable used to clear host-side buzzer answer state."""
+    global _on_buzzer_reset_callback
+    _on_buzzer_reset_callback = fn
+
+
 def set_skip_grant_callback(fn):
     """Register a callable(name: str) invoked when the skip grant changes. Empty string = cleared."""
     global _on_skip_grant_callback
@@ -1383,6 +1413,11 @@ def set_buzzer_lock_callback(fn):
 def get_skip_grant_player() -> str:
     """Return the name of the player currently holding the skip grant, or empty string."""
     return _skip_grant_player
+
+
+def has_skip_declined(name: str) -> bool:
+    """Return whether a player retains a declined-skip mark this question."""
+    return str(name or '').strip() in _skip_declined_players
 
 
 def start(port=8080, ngrok_domain=None, cloudflare_token=None, cloudflare_url=None):
@@ -1649,10 +1684,6 @@ def _build_app():
         emit('vote_skip_state', get_vote_skip_state(_req.sid))
         emit('emoji_status', {'muted': False, 'timed_out': False, 'timeout_until': 0, 'remaining_ms': 0})
         _emit_buzzer_state(to_sid=_req.sid)
-        # Send skip grant if this player is the granted one
-        name_on_connect = _connected_players.get(_req.sid, '')
-        if name_on_connect and name_on_connect == _skip_grant_player:
-            emit('skip_grant_update', {'active': True})
         # Send playback state to newly-connected hosts after they authenticate via claim_host
 
     @_socketio.on('disconnect')
@@ -1680,6 +1711,9 @@ def _build_app():
             _ip = _sid_client_ip(_req.sid)
             _player_meta[_req.sid] = {'join_ms': int(time.time() * 1000), 'ip': _ip, 'name': name}
         emit('emoji_status', _get_emoji_status(name))
+        # The raw connect event happens before set_name, so this is the first
+        # point where an offline player's retained skip grant can be restored.
+        _sync_skip_grant_for_player(_req.sid, name)
         _emit_host_messages(to_sid=_req.sid)
         _broadcast_players_update()
         if (_current_question and _current_question.get('buzzer_only') and _submitted_answers):
@@ -1710,6 +1744,7 @@ def _build_app():
             if _current_toggles:
                 emit('toggles_update', _current_toggles)
             emit('host_messages_update', {'messages': _host_visible_messages()})
+            emit('skip_grant_host_update', {'name': _skip_grant_player})
             _broadcast_players_update()
         else:
             emit('host_denied', {})

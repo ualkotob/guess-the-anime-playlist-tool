@@ -882,6 +882,24 @@ def is_title_window_up():
     return state.info_display._title_popup_intent
 
 
+def _schedule_revealed_session_history_publish():
+    """Publish after playback has finished logging a newly started theme."""
+    current = state.playback.currently_playing
+    entry_type = current.get("type", "theme")
+    filename = current.get("filename", "")
+
+    def _publish():
+        # Local import avoids strengthening the existing session-stats/info UI
+        # import cycle during application startup.
+        from _app_scripts.file import session_stats
+        session_stats.publish_revealed_session_history(entry_type, filename)
+
+    try:
+        state.widgets.root.after_idle(_publish)
+    except Exception:
+        _publish()
+
+
 def toggle_title_popup(show, info_type=None, instant=False):
     """Creates or destroys the title popup at the bottom middle of the screen."""
     global _title_popup_info_type_cache, _title_popup_last_mpv_size
@@ -898,6 +916,7 @@ def toggle_title_popup(show, info_type=None, instant=False):
         update_popout_title_button_text(show)
         if not state.info_display.title_info_only:
             web_server.set_info_public(True)
+            _schedule_revealed_session_history_publish()
     else:
         state.info_display.title_info_only = False
         state.info_display.artist_info_display = False

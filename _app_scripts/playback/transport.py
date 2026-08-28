@@ -120,6 +120,7 @@ def stop():
     lightning_manager.toggle_light_mode()
     state.lightning.light_round_started = False
     state.lightning.light_round_armed = False
+    osd_text.set_countdown_muted(False)
     osd_text.set_countdown()
     lightning_manager.set_light_round_number()
     blind_screen.set_black_screen(False)
@@ -348,6 +349,7 @@ def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"
     state.lightning.title_light_string = ""
     state.lightning.title_light_letters = None
     lightning_manager.clean_up_light_round(True)
+    osd_text.set_countdown_muted(False)
     peek_dispatch.stop_timed_reveal()  # clear any timed auto-reveal carried from the previous round
     state.lightning.light_round_started = False
     state.lightning.light_round_armed = True
@@ -725,7 +727,9 @@ def play_filename(playlist_entry, fullscreen=True):
             round_start_guard.after(500, player_play)
         elif peek_dispatch.peek_round_toggle or peek_dispatch.mute_peek_round_toggle:
             blind_screen.manual_blind = False
+            mute_reveal = peek_dispatch.mute_peek_round_toggle
             peek_dispatch.toggle_peek()
+            osd_text.set_countdown_muted(mute_reveal)
             if armed_auto_reveal:
                 # Fade this auto-queued reveal fully off over N seconds of playback.
                 peek_dispatch.start_timed_reveal(state.controls.auto_reveal_seconds)
@@ -843,8 +847,16 @@ def _tick_paused_lightning_answer(player):
         lightning_manager.update_light_round(player.get_time() / 1000)
 
 
-def play_pause():
+def play_pause(*, source="manual"):
     """Function to play/pause the video"""
+    if source != "buzzer":
+        # A manual transport action takes ownership away from any pending
+        # buzzer auto-resume.
+        try:
+            from _app_scripts.bonus import buzz
+            buzz.cancel_auto_resume()
+        except Exception:
+            pass
     state.controls.video_stopped = True
     if frame_round.frame_light_round_started:
         frame_round.frame_light_round_pause = not frame_round.frame_light_round_pause

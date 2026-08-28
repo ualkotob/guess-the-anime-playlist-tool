@@ -31,6 +31,7 @@ mismatch_visuals = None
 _mismatch_active = False
 _mismatch_vid_track_id = None   # track ID of the external video added via video-add
 _mismatch_orig_vid = None        # original video track ID before mismatch was applied
+_mismatch_reveal_pending = False # keep startup blind up until mpv renders the external track
 _mismatch_hwnd = 0   # unused (kept so references elsewhere don't error)
 _main_hwnd = 0
 _note_hwnd = 0
@@ -38,6 +39,30 @@ _note_hwnd = 0
 
 def _uninstall_mismatch_hook():
     pass  # removed — no longer needed
+
+
+def _reveal_mismatch_if_ready():
+    """Lift the startup blind only after mpv restarted on the decoy track."""
+    global _mismatch_reveal_pending
+
+    if not (_mismatch_active and _mismatch_reveal_pending):
+        return False
+
+    # ``playback-restart`` can also belong to an unrelated seek. Confirm that
+    # mpv has actually selected the external mismatch track before uncovering.
+    try:
+        if _mismatch_vid_track_id is None:
+            return False
+        if state.widgets.player._p.vid != _mismatch_vid_track_id:
+            return False
+    except Exception:
+        return False
+
+    from _app_scripts.playback import blind_screen
+
+    _mismatch_reveal_pending = False
+    blind_screen.set_black_screen(False)
+    return True
 
 
 def get_cached_sfw_themes():

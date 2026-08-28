@@ -373,11 +373,11 @@ def open_youtube_editor():
                 messagebox.showinfo("Duplicate", "This video already exists in the list.")
                 add_video_button.configure(text="ADD VIDEO FROM URL")
                 return
-            ydl_opts = {
-                'quiet': True,
-                'skip_download': True,
-                'format': 'best',
-            }
+            ydl_opts = youtube_control.get_youtube_ydl_options(
+                quiet=True,
+                skip_download=True,
+                format='bestvideo+bestaudio/best',
+            )
 
             try:
                 with YoutubeDL(ydl_opts) as ydl:

@@ -50,7 +50,7 @@ animethemes_cache: dict = {}
 last_tenrai_error = None
 _tenrai_request_lock = threading.Lock()
 _last_tenrai_request = 0.0
-_TENRAI_MIN_REQUEST_INTERVAL = 1 / 3  # Public tier: 3 requests/second.
+_TENRAI_MIN_REQUEST_INTERVAL = 0.5  # Leave headroom below the public rate limit.
 
 _igdb_token_cache: dict = {"token": None, "expires_at": 0}
 
@@ -852,6 +852,32 @@ def invalidate_file_metadata_cache():
     _file_metadata_cache_valid = False
 
 
+def _filename_theme_slug(filename):
+    """Return the OP/ED slug encoded in a conventional theme filename."""
+    basename = os.path.splitext(os.path.basename(filename))[0]
+    match = re.search(r"(?:^|-)(OP|ED)(\d+)(?=(?:v\d+)?(?:[-_.]|$))", basename, re.IGNORECASE)
+    if not match:
+        return None
+    return f"{match.group(1).upper()}{match.group(2)}"
+
+
+def _store_filename_lookup(key, candidate, *, overwrite_ties):
+    """Store a lookup candidate, preferring metadata that agrees with the filename."""
+    existing = filename_to_mal.get(key)
+    if existing is None:
+        filename_to_mal[key] = candidate
+        return
+
+    filename_slug = _filename_theme_slug(key)
+    existing_matches = existing.get("slug", "").upper() == filename_slug
+    candidate_matches = candidate.get("slug", "").upper() == filename_slug
+    if candidate_matches != existing_matches:
+        if candidate_matches:
+            filename_to_mal[key] = candidate
+    elif overwrite_ties:
+        filename_to_mal[key] = candidate
+
+
 
 
 def build_filename_to_mal_map():
@@ -866,20 +892,20 @@ def build_filename_to_mal_map():
         for slug, slug_data in themes.items():
             for version, version_data in slug_data.items():
                 for filename in version_data.keys():
-                    filename_to_mal[filename] = {
+                    lookup_data = {
                         "mal_id": mal_id,
                         "slug": slug,
                         "version": version
                     }
+                    # A file can occasionally be listed under multiple metadata
+                    # slugs.  In that case, prefer the slug encoded in its name
+                    # (for example, Foo-OP1.webm should resolve as OP1 even if it
+                    # is also present under ED1).
+                    _store_filename_lookup(filename, lookup_data, overwrite_ties=True)
                     actual_file_count += 1
                     # Also store base name without extension for lookup
                     base_name = os.path.splitext(filename)[0]
-                    if base_name not in filename_to_mal:
-                        filename_to_mal[base_name] = {
-                            "mal_id": mal_id,
-                            "slug": slug,
-                            "version": version
-                        }
+                    _store_filename_lookup(base_name, lookup_data, overwrite_ties=False)
     
     return actual_file_count
 
@@ -2240,6 +2266,4 @@ def refresh_all_igdb_metadata():
         messagebox.showinfo("IGDB Refresh Complete", f"Refreshed {refreshed}/{total} IGDB entries.\nFailed: {failed}")
 
     threading.Thread(target=worker, daemon=True).start()
-
-
 

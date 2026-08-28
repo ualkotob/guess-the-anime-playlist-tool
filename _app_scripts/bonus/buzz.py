@@ -14,6 +14,7 @@ import os
 import threading
 import time
 import tkinter as tk
+from tkinter import simpledialog
 
 from core.app_logging import get_logger
 from core.game_state import state
@@ -41,6 +42,65 @@ def _web_buzzer_reset():
     scoreboard_control.send_command("[CLEAR_BUZZ_ORDER]")
     for name in web_server.get_connected_player_names():
         scoreboard_control.send_command(f"[SERVED]{name}")
+
+
+def _web_buzzer_next():
+    """Finish the active answer window and serve the next queued buzz."""
+    advance_answer_queue()
+
+
+def _persist_buzzer_setting(key, value):
+    """Update the active buzzer settings, selected preset, and saved config."""
+    buzzer_settings = state.playback.bonus_settings.setdefault(
+        "buzzer", dict(bonus.BONUS_SETTINGS_DEFAULT["buzzer"]))
+    buzzer_settings[key] = value
+    selected = state.settings_presets.selected_bonus_settings
+    saved = state.settings_presets.saved_bonus_settings
+    if selected in saved:
+        saved[selected].setdefault(
+            "buzzer", dict(bonus.BONUS_SETTINGS_DEFAULT["buzzer"]))[key] = value
+    from _app_scripts.data import config_io
+    import _app_scripts.bonus.answers as bonus_answers
+    config_io.save_config()
+    bonus_answers._push_web_toggles()
+
+
+def set_pause_on_buzz(enabled):
+    _persist_buzzer_setting("pause_on_buzz", bool(enabled))
+
+
+def toggle_pause_on_buzz():
+    set_pause_on_buzz(not bool(_buzzer_settings().get("pause_on_buzz", False)))
+
+
+def set_answer_timer_seconds(seconds):
+    try:
+        seconds = max(0, min(300, int(seconds or 0)))
+    except (TypeError, ValueError):
+        seconds = 0
+    _persist_buzzer_setting("answer_timer_seconds", seconds)
+    if seconds <= 0:
+        reset_answer_queue()
+
+
+def prompt_answer_timer_seconds():
+    """Set the per-player timer from the desktop Bonus menu (0 disables it)."""
+    current = int(_answer_timer_seconds())
+    seconds = simpledialog.askinteger(
+        "Buzzer Timer",
+        "Seconds per player (0 disables the timer):",
+        initialvalue=current,
+        minvalue=0,
+        maxvalue=300,
+        parent=state.widgets.root,
+    )
+    if seconds is not None:
+        set_answer_timer_seconds(seconds)
+
+
+def answer_timer_menu_label():
+    seconds = int(_answer_timer_seconds())
+    return f"Bz Timer: {seconds}s" if seconds > 0 else "Bz Timer: Off"
 
 
 def _web_buzzer_open():
@@ -252,6 +312,355 @@ _buzz_preset_index = 1  # default: Double Ding
 
 BUZZ_TOAST_MAX_ALPHA = 0.9
 _buzz_toast_wins = []   # list of dicts: {win, base_y, cx, h}
+_buzz_answer_queue = []  # FIFO of {rank, name, card}
+_buzz_timer_after_id = None
+_buzz_timer_deadline = None
+_buzz_timer_generation = 0
+_buzz_last_display_second = None
+_buzz_pause_owned = False
+_buzz_pause_kind = None
+
+
+def _buzzer_settings():
+    return state.playback.bonus_settings.get("buzzer", bonus.BONUS_SETTINGS_DEFAULT["buzzer"])
+
+
+def _answer_timer_seconds():
+    try:
+        return max(0.0, min(300.0, float(_buzzer_settings().get("answer_timer_seconds", 0))))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _run_on_main_thread(fn):
+    """Schedule buzzer UI/playback work on Tk's owning thread."""
+    try:
+        state.widgets.root.after(0, fn)
+    except Exception:
+        pass
+
+
+def cancel_auto_resume():
+    """Give manual playback controls ownership of the current pause state."""
+    global _buzz_pause_owned, _buzz_pause_kind
+    _buzz_pause_owned = False
+    _buzz_pause_kind = None
+
+
+def _pause_for_answer_queue():
+    """Pause once for the queue and remember exactly what was changed."""
+    global _buzz_pause_owned, _buzz_pause_kind
+    if not _buzzer_settings().get("pause_on_buzz", False) or _buzz_pause_owned:
+        return
+    try:
+        from _app_scripts.playback import transport
+        from _app_scripts.queue_round.lightning_rounds import frame_round
+        if frame_round.frame_light_round_started:
+            if not frame_round.frame_light_round_pause:
+                transport.play_pause(source="buzzer")
+                _buzz_pause_owned = True
+                _buzz_pause_kind = "frame"
+        elif state.widgets.player.is_playing():
+            transport.play_pause(source="buzzer")
+            _buzz_pause_owned = True
+            _buzz_pause_kind = "player"
+    except Exception:
+        pass
+
+
+def _resume_owned_pause():
+    """Resume only when the buzzer still owns the pause it introduced."""
+    global _buzz_pause_owned, _buzz_pause_kind
+    if not _buzz_pause_owned:
+        return
+    kind = _buzz_pause_kind
+    _buzz_pause_owned = False
+    _buzz_pause_kind = None
+    try:
+        from _app_scripts.playback import transport
+        if kind == "frame":
+            from _app_scripts.queue_round.lightning_rounds import frame_round
+            if frame_round.frame_light_round_started and frame_round.frame_light_round_pause:
+                transport.play_pause(source="buzzer")
+        elif kind == "player" and not state.widgets.player.is_playing() and state.widgets.player.get_media():
+            transport.play_pause(source="buzzer")
+    except Exception:
+        pass
+
+
+def _queue_card_colors(name):
+    """Resolve scoreboard/player colors for a compact queue card."""
+    try:
+        import json as _json
+        merged_colors = {}
+        _sc_path = os.path.join(web_server._SCOREBOARD_DATA, 'scoreboard_colors.json')
+        if os.path.exists(_sc_path):
+            with open(_sc_path, 'r', encoding='utf-8') as _f:
+                merged_colors.update(_json.load(_f))
+        merged_colors.update(web_server._player_colors)
+        clr = merged_colors.get(name) or {}
+        return (
+            clr.get('bg', state.colors.OVERLAY_BACKGROUND_COLOR),
+            clr.get('text', state.colors.OVERLAY_TEXT_COLOR),
+        )
+    except Exception:
+        return state.colors.OVERLAY_BACKGROUND_COLOR, state.colors.OVERLAY_TEXT_COLOR
+
+
+def _show_buzz_queue_card(rank, name, *, active=False):
+    """Create a full active card or compact single-line waiting card."""
+    import _app_scripts.information.information_popup as information_popup
+
+    mx, my, mw, mh = information_popup._get_mpv_window_rect()
+    _sw = state.widgets.root.winfo_screenwidth()
+    _sh = state.widgets.root.winfo_screenheight()
+    mpv_frac = max(0.25, min(1.0, min(mw / max(_sw, 1), mh / max(_sh, 1))))
+    bg, fg = _queue_card_colors(name)
+    border_px = max(1, int(scl(3) * mpv_frac))
+
+    win = tk.Toplevel(state.widgets.root)
+    win.overrideredirect(True)
+    win.attributes('-topmost', True)
+    win.attributes('-alpha', BUZZ_TOAST_MAX_ALPHA)
+    win.configure(bg=fg)
+    outer = tk.Frame(win, bg=fg, padx=border_px, pady=border_px)
+    outer.pack(fill='both', expand=True)
+    inner = tk.Frame(
+        outer, bg=bg,
+        padx=max(6, int(scl(40 if active else 16) * mpv_frac)),
+        pady=max(3, int(scl(20 if active else 7) * mpv_frac)),
+    )
+    inner.pack(fill='both', expand=True)
+
+    if active:
+        rank_labels = {1: '1st – BUZZ IN', 2: '2nd – BUZZ IN', 3: '3rd – BUZZ IN'}
+        rank_text = rank_labels.get(rank, f'#{rank} – BUZZ IN')
+        rank_size = max(9, int(scl(24, 'UI') * mpv_frac))
+        main_size = max(20, int(scl(48, 'UI') * mpv_frac))
+        rank_label = tk.Label(inner, text=rank_text, anchor='center',
+                              font=('Segoe UI', rank_size, 'bold'), fg=fg, bg=bg)
+        rank_label.grid(row=0, column=0, columnspan=2, sticky='ew')
+        name_label = tk.Label(inner, text=name, anchor='w',
+                              font=('Segoe UI', main_size, 'bold'), fg=fg, bg=bg)
+        name_label.grid(row=1, column=0, sticky='ew', padx=(0, 24))
+        status_label = tk.Label(inner, text='0', width=3, anchor='e',
+                                font=('Consolas', main_size, 'bold'), fg=fg, bg=bg)
+        status_label.grid(row=1, column=1, sticky='e')
+        inner.grid_columnconfigure(0, weight=1)
+    else:
+        font_size = max(11, int(scl(25, 'UI') * mpv_frac))
+        rank_label = tk.Label(inner, text=f'#{rank}', width=4, anchor='w',
+                              font=('Segoe UI', font_size, 'bold'), fg=fg, bg=bg)
+        rank_label.grid(row=0, column=0, sticky='w')
+        name_label = tk.Label(inner, text=name, width=18, anchor='w',
+                              font=('Segoe UI', font_size, 'bold'), fg=fg, bg=bg)
+        name_label.grid(row=0, column=1, sticky='ew', padx=(4, 10))
+        status_label = tk.Label(inner, text='WAIT', width=5, anchor='e',
+                                font=('Consolas', font_size, 'bold'), fg=fg, bg=bg)
+        status_label.grid(row=0, column=2, sticky='e')
+        inner.grid_columnconfigure(1, weight=1)
+    win.update_idletasks()
+
+    return {
+        'win': win, 'outer': outer, 'inner': inner,
+        'rank_label': rank_label, 'name_label': name_label,
+        'status_label': status_label, 'bg': bg, 'fg': fg,
+        'active': bool(active),
+        'w': win.winfo_width(), 'h': win.winfo_height(),
+        'mpv_rect': (mx, my, mw, mh), 'mpv_frac': mpv_frac,
+    }
+
+
+def _layout_buzz_queue_cards():
+    """Anchor the active card at the bottom and stack waiting rows upward."""
+    if not _buzz_answer_queue:
+        return
+    first_card = next((item.get('card') for item in _buzz_answer_queue if item.get('card')), None)
+    if not first_card:
+        return
+    mx, my, mw, mh = first_card['mpv_rect']
+    mpv_frac = first_card['mpv_frac']
+    pp = _buzzer_settings().get(
+        'player_buzz_popup_properties', bonus.BONUS_SETTINGS_DEFAULT['buzzer']['player_buzz_popup_properties'])
+    margin = int(scl(int(pp.get('margin', 40))) * mpv_frac)
+    gap = max(2, int(scl(int(pp.get('gap', 10))) * mpv_frac))
+    y = my + mh - margin
+    for item in _buzz_answer_queue:
+        card = item.get('card')
+        if not card or not card['win'].winfo_exists():
+            continue
+        y -= card['h']
+        x = mx + (mw - card['w']) // 2
+        card['win'].geometry(f'+{x}+{y}')
+        y -= gap
+
+
+def _refresh_buzz_queue_cards(remaining=None):
+    for index, item in enumerate(_buzz_answer_queue):
+        card = item.get('card')
+        if not card or not card['win'].winfo_exists():
+            continue
+        active = index == 0
+        card['status_label'].configure(text=str(max(0, int(remaining))) if active and remaining is not None else 'WAIT')
+        try:
+            card['win'].attributes('-alpha', BUZZ_TOAST_MAX_ALPHA if active else min(0.68, BUZZ_TOAST_MAX_ALPHA))
+        except Exception:
+            pass
+
+
+def _destroy_queue_card(item):
+    card = item.get('card') if item else None
+    if card:
+        try:
+            card['win'].destroy()
+        except Exception:
+            pass
+
+
+def _promote_active_queue_card():
+    """Replace the first waiting row with the full-size active timer card."""
+    if not _buzz_answer_queue or not _buzzer_settings().get("player_buzz_popup", True):
+        return
+    active = _buzz_answer_queue[0]
+    card = active.get('card')
+    if card and card.get('active'):
+        return
+    _destroy_queue_card(active)
+    try:
+        active['card'] = _show_buzz_queue_card(active['rank'], active['name'], active=True)
+    except Exception:
+        active['card'] = None
+
+
+def _cancel_timer_callback():
+    global _buzz_timer_after_id
+    if _buzz_timer_after_id is not None:
+        try:
+            state.widgets.root.after_cancel(_buzz_timer_after_id)
+        except Exception:
+            pass
+    _buzz_timer_after_id = None
+
+
+def _finish_answer_queue():
+    global _buzz_timer_deadline, _buzz_last_display_second
+    _cancel_timer_callback()
+    _buzz_timer_deadline = None
+    _buzz_last_display_second = None
+    web_server.clear_timer()
+    _resume_owned_pause()
+
+
+def _start_active_answer():
+    global _buzz_timer_deadline, _buzz_timer_generation, _buzz_last_display_second
+    if not _buzz_answer_queue:
+        _finish_answer_queue()
+        return
+    seconds = _answer_timer_seconds()
+    if seconds <= 0:
+        reset_answer_queue()
+        return
+    _cancel_timer_callback()
+    _buzz_timer_generation += 1
+    generation = _buzz_timer_generation
+    _buzz_timer_deadline = time.monotonic() + seconds
+    _buzz_last_display_second = None
+    _pause_for_answer_queue()
+    active = _buzz_answer_queue[0]
+    web_server.push_timer(seconds, paused=False, player=active['name'], rank=active['rank'])
+    _tick_answer_timer(generation)
+
+
+def _tick_answer_timer(generation):
+    global _buzz_timer_after_id, _buzz_last_display_second
+    if generation != _buzz_timer_generation or not _buzz_answer_queue or _buzz_timer_deadline is None:
+        return
+    remaining = max(0.0, _buzz_timer_deadline - time.monotonic())
+    display_second = max(0, int(remaining + 0.999))
+    if display_second != _buzz_last_display_second:
+        _buzz_last_display_second = display_second
+        _refresh_buzz_queue_cards(display_second)
+    if remaining <= 0:
+        _advance_answer_queue_main()
+        return
+    _buzz_timer_after_id = state.widgets.root.after(100, lambda: _tick_answer_timer(generation))
+
+
+def _enqueue_timed_buzz(rank, name):
+    item = {'rank': int(rank), 'name': str(name), 'card': None}
+    if _buzzer_settings().get("player_buzz_popup", True):
+        try:
+            item['card'] = _show_buzz_queue_card(
+                item['rank'], item['name'], active=not _buzz_answer_queue)
+        except Exception:
+            item['card'] = None
+    _buzz_answer_queue.append(item)
+    _layout_buzz_queue_cards()
+    if len(_buzz_answer_queue) == 1:
+        _start_active_answer()
+    else:
+        _refresh_buzz_queue_cards(_buzz_last_display_second)
+
+
+def _advance_answer_queue_main():
+    global _buzz_timer_generation
+    _cancel_timer_callback()
+    _buzz_timer_generation += 1
+    if _buzz_answer_queue:
+        finished = _buzz_answer_queue.pop(0)
+        _destroy_queue_card(finished)
+    _promote_active_queue_card()
+    _layout_buzz_queue_cards()
+    if _buzz_answer_queue:
+        _start_active_answer()
+    else:
+        _finish_answer_queue()
+
+
+def advance_answer_queue():
+    """Advance a timed buzzer queue early (the Bz Next action)."""
+    _run_on_main_thread(_advance_answer_queue_main)
+
+
+def _reset_answer_queue_main():
+    global _buzz_timer_generation, _buzz_timer_deadline, _buzz_last_display_second
+    _cancel_timer_callback()
+    _buzz_timer_generation += 1
+    _buzz_timer_deadline = None
+    _buzz_last_display_second = None
+    for item in list(_buzz_answer_queue):
+        _destroy_queue_card(item)
+    _buzz_answer_queue.clear()
+    web_server.clear_timer()
+    _resume_owned_pause()
+
+
+def reset_answer_queue():
+    """Cancel all timed answer windows and remove their persistent cards."""
+    _run_on_main_thread(_reset_answer_queue_main)
+
+
+def _handle_buzz_ui(rank, name, received_at):
+    waited = time.monotonic() - received_at
+    if waited >= 0.15:
+        get_logger().warning("buzz UI for '%s' waited %.2fs for the main loop", name, waited)
+    if _answer_timer_seconds() > 0:
+        _enqueue_timed_buzz(rank, name)
+        return
+    if _buzzer_settings().get("pause_on_buzz", False):
+        try:
+            from _app_scripts.playback import transport
+            from _app_scripts.queue_round.lightning_rounds import frame_round
+            if frame_round.frame_light_round_started:
+                should_pause = not frame_round.frame_light_round_pause
+            else:
+                should_pause = state.widgets.player.is_playing()
+            if should_pause:
+                transport.play_pause(source="buzzer")
+        except Exception:
+            pass
+    if _buzzer_settings().get("player_buzz_popup", True):
+        _show_buzz_toast(rank, name)
 
 
 def _show_buzz_toast(rank, name):
@@ -409,20 +818,10 @@ def _play_buzz_sound(rank, name):
     bonus_defaults = bonus.BONUS_SETTINGS_DEFAULT
     _buz = state.playback.bonus_settings.get("buzzer", bonus_defaults["buzzer"])
     if name != 'Test':
-        if _buz.get("player_buzz_popup", True):
-            # Measure how long the toast sat in Tk's queue waiting for the main
-            # loop — the host-side portion of perceived buzzer lag (network
-            # transit excluded). Logged so laggy sessions are diagnosable.
-            _received = time.monotonic()
-
-            def _toast_with_lag_check():
-                _waited = time.monotonic() - _received
-                if _waited >= 0.15:
-                    get_logger().warning(
-                        "buzz toast for '%s' waited %.2fs for the main loop", name, _waited)
-                _show_buzz_toast(rank, name)
-
-            state.widgets.root.after(0, _toast_with_lag_check)
+        # UI and playback mutation must happen on Tk's thread. Timed buzzes are
+        # enqueued here; untimed buzzes retain the original transient toast.
+        _received = time.monotonic()
+        _run_on_main_thread(lambda: _handle_buzz_ui(rank, name, _received))
     def _make_wav_segments(segments):
         import wave, struct, math, io, random
         rate = 44100
