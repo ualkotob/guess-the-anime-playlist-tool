@@ -23,7 +23,7 @@ from core.game_state import state
 
 CATALOG_URL = "https://api.animethemes.moe/anime"
 PAGE_SIZE = 100
-PROJECTION_VERSION = 1
+PROJECTION_VERSION = 2
 CATALOG_MARKER = "animethemes_catalog"
 CATALOG_OWNED_MARKER = "animethemes_catalog_owned"
 
@@ -297,7 +297,9 @@ def _minimal_anime_metadata(anime: dict) -> dict:
         "eng_title": None,
         "synonyms": [],
         "series": _names(anime, "series"),
-        "aired": "N/A",
+        # AnimeThemes provides a season and year, not an exact air-date range.
+        # Keep this absent so consumers correctly fall back to ``season``.
+        "aired": None,
         "season": f"{season} {year}".strip().capitalize(),
         "score": None,
         "rank": None,
@@ -342,8 +344,19 @@ def _merge_anime_metadata(key: str, anime: dict) -> None:
     for song in incoming["songs"]:
         slug = str(song.get("slug"))
         incoming_slugs.add(slug)
-        merged = dict(old_songs.get(slug) or {})
+        previous = old_songs.get(slug) or {}
+        merged = dict(previous)
         merged.update(song)
+        # A provider refresh must not erase a curated value merely because
+        # the upstream relationship is blank. Metadata packages commonly use
+        # this path to supply artists that AnimeThemes does not yet credit.
+        for field in ("title", "artist"):
+            if song.get(field) in (None, "", []) and previous.get(field) not in (
+                None,
+                "",
+                [],
+            ):
+                merged[field] = previous[field]
         if slug not in old_songs:
             merged[CATALOG_OWNED_MARKER] = True
         merged_songs.append(merged)
@@ -354,6 +367,7 @@ def _merge_anime_metadata(key: str, anime: dict) -> None:
     for field in (
         "title",
         "series",
+        "aired",
         "season",
         "type",
         "studios",
@@ -536,4 +550,3 @@ def registered_projection_version() -> int:
         if isinstance(entry, dict)
     )
     return max(versions, default=0)
-

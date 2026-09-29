@@ -804,31 +804,43 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'queue_theme':
             fn = str(data.get('filename', '')).strip()
             if fn:
+                theme_entry = entry_paths.make_theme_reference(
+                    fn, data.get('mal_id'), data.get('slug'), data.get('version')
+                )
                 if state.metadata.playlist.get('infinite', False):
-                    search_ops.add_theme_next(fn, prevent_duplicates=True)
+                    search_ops.add_theme_next(theme_entry, prevent_duplicates=True)
                     config_io.save_config()
                     metadata_display.up_next_text()
                 else:
-                    web_search._queue_theme_standard(fn)
+                    web_search._queue_theme_standard(theme_entry)
                 bonus_answers._push_web_toggles()
 
         elif action == 'queue_theme_only':
             fn = str(data.get('filename', '')).strip()
             if fn:
-                web_search._queue_theme_standard(fn)
+                theme_entry = entry_paths.make_theme_reference(
+                    fn, data.get('mal_id'), data.get('slug'), data.get('version')
+                )
+                web_search._queue_theme_standard(theme_entry)
                 bonus_answers._push_web_toggles()
 
         elif action == 'play_theme_now':
             fn = str(data.get('filename', '')).strip()
             if fn:
-                metadata_display.play_video_from_filename(fn)
+                theme_entry = entry_paths.make_theme_reference(
+                    fn, data.get('mal_id'), data.get('slug'), data.get('version')
+                )
+                metadata_display.play_video_from_filename(theme_entry)
                 metadata_display.up_next_text()
                 bonus_answers._push_web_toggles()
 
         elif action == 'add_theme':
             fn = str(data.get('filename', '')).strip()
             if fn:
-                search_ops.add_theme_next(fn, prevent_duplicates=True)
+                theme_entry = entry_paths.make_theme_reference(
+                    fn, data.get('mal_id'), data.get('slug'), data.get('version')
+                )
+                search_ops.add_theme_next(theme_entry, prevent_duplicates=True)
                 config_io.save_config()
                 metadata_display.up_next_text()
                 cache_download.prefetch_next_themes()

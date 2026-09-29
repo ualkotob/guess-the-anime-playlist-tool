@@ -755,6 +755,12 @@ def fetch_anilist_metadata(anilist_id=None, mal_id=None):
 
 def aired_to_season_year(aired_str, start=True):
     """Converts an aired string to 'Season Year' format based on the start or end date."""
+    missing_values = {"", "n/a", "na", "none", "unknown", "not available"}
+    if aired_str is None:
+        return "N/A"
+    aired_str = str(aired_str).strip()
+    if aired_str.casefold() in missing_values:
+        return "N/A"
     
     _MONTHS = {
         "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -810,6 +816,8 @@ def aired_to_season_year(aired_str, start=True):
             chosen_part = parts[0].strip() if start else (parts[1].strip() if len(parts) > 1 else "?")
         else:
             chosen_part = aired_str.strip()
+        if chosen_part.casefold() in missing_values:
+            return "N/A"
         if chosen_part == "?":
             from datetime import datetime
             aired_date = datetime.now()
@@ -927,6 +935,7 @@ fetched_metadata = set()
 _file_metadata_base_cache = {}
 _file_metadata_cache_valid = False
 filename_to_mal = {}
+filename_to_mal_candidates = {}
 
 
 def invalidate_file_metadata_cache():
@@ -940,8 +949,10 @@ def invalidate_metadata_cache(filenames=None):
     if filenames is None:
         _metadata_cache.clear()
         return
-    for filename in filenames:
-        _metadata_cache.pop(filename, None)
+    physical_filenames = {entry_paths.get_clean_filename(name) for name in filenames}
+    for cache_key in list(_metadata_cache):
+        if entry_paths.get_clean_filename(cache_key) in physical_filenames:
+            _metadata_cache.pop(cache_key, None)
 
 
 def _filename_theme_slug(filename):
@@ -953,29 +964,111 @@ def _filename_theme_slug(filename):
     return f"{match.group(1).upper()}{match.group(2)}"
 
 
+def _is_main_series_lookup(candidate):
+    """Return whether a shared file candidate represents its named series."""
+    mal_id = candidate.get("mal_id")
+    anime_data = (
+        state.metadata.anime_metadata.get(mal_id)
+        or state.metadata.anime_metadata.get(str(mal_id))
+        or {}
+    )
+    file_data = (
+        state.metadata.file_metadata.get(mal_id)
+        or state.metadata.file_metadata.get(str(mal_id))
+        or {}
+    )
+
+    def _title_key(value):
+        return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+    titles = {
+        _title_key(anime_data.get("title")),
+        _title_key(anime_data.get("eng_title")),
+        _title_key(file_data.get("name")),
+    }
+    titles.discard("")
+    series = anime_data.get("series") or []
+    if isinstance(series, str):
+        series = [series]
+    series_titles = {_title_key(value) for value in series}
+    series_titles.discard("")
+    return bool(titles & series_titles)
+
+
+def _filename_lookup_priority(key, candidate):
+    """Rank competing metadata records for a file, highest priority first."""
+    filename_slug = _filename_theme_slug(key)
+    slug = str(candidate.get("slug") or "").upper()
+    return (
+        bool(filename_slug and slug == filename_slug),
+        not bool(candidate.get("anisongdb_alternate")),
+        _is_main_series_lookup(candidate),
+        slug.startswith("OP"),
+    )
+
+
 def _store_filename_lookup(key, candidate, *, overwrite_ties):
-    """Store a lookup candidate, preferring metadata that agrees with the filename."""
+    """Store the preferred metadata candidate for a potentially shared file."""
     existing = filename_to_mal.get(key)
     if existing is None:
         filename_to_mal[key] = candidate
         return
 
-    filename_slug = _filename_theme_slug(key)
-    existing_matches = existing.get("slug", "").upper() == filename_slug
-    candidate_matches = candidate.get("slug", "").upper() == filename_slug
-    if candidate_matches != existing_matches:
-        if candidate_matches:
-            filename_to_mal[key] = candidate
-    elif bool(existing.get("anisongdb_alternate")) != bool(
-        candidate.get("anisongdb_alternate")
+    candidate_priority = _filename_lookup_priority(key, candidate)
+    existing_priority = _filename_lookup_priority(key, existing)
+    if candidate_priority > existing_priority or (
+        overwrite_ties and candidate_priority == existing_priority
     ):
-        # One AniSongDB media file can occasionally be linked to multiple
-        # anime/slugs. A gap/source-pool registration must win over a covered
-        # theme's alternate-only registration for global filename lookup.
-        if not candidate.get("anisongdb_alternate"):
-            filename_to_mal[key] = candidate
-    elif overwrite_ties:
         filename_to_mal[key] = candidate
+
+
+def _store_filename_candidate(key, candidate):
+    """Retain every logical owner of a physical video filename."""
+    candidates = filename_to_mal_candidates.setdefault(key, [])
+    identity = (
+        str(candidate.get("mal_id")),
+        str(candidate.get("slug")),
+        str(candidate.get("version")),
+    )
+    if not any(
+        (
+            str(existing.get("mal_id")),
+            str(existing.get("slug")),
+            str(existing.get("version")),
+        ) == identity
+        for existing in candidates
+    ):
+        candidates.append(candidate)
+
+
+def get_theme_references(filename):
+    """Return one logical entry per anime/theme that owns ``filename``."""
+    if not filename_to_mal:
+        build_filename_to_mal_map()
+    physical_filename = entry_paths.get_clean_filename(filename)
+    candidates = filename_to_mal_candidates.get(physical_filename)
+    if not candidates:
+        candidates = filename_to_mal_candidates.get(
+            os.path.splitext(physical_filename)[0], []
+        )
+    if len(candidates) <= 1:
+        return [physical_filename]
+    candidates = sorted(
+        candidates,
+        key=lambda candidate: _filename_lookup_priority(
+            physical_filename, candidate
+        ),
+        reverse=True,
+    )
+    return [
+        entry_paths.make_theme_reference(
+            physical_filename,
+            candidate.get("mal_id"),
+            candidate.get("slug"),
+            candidate.get("version"),
+        )
+        for candidate in candidates
+    ]
 
 
 
@@ -983,8 +1076,9 @@ def _store_filename_lookup(key, candidate, *, overwrite_ties):
 def build_filename_to_mal_map():
     """Build lookup map from filename to MAL ID/slug/version for fast access.
     Returns the count of actual files (not including base name lookups)."""
-    global filename_to_mal
+    global filename_to_mal, filename_to_mal_candidates
     filename_to_mal = {}
+    filename_to_mal_candidates = {}
     actual_file_count = 0
     
     for mal_id, mal_data in state.metadata.file_metadata.items():
@@ -1005,10 +1099,12 @@ def build_filename_to_mal_map():
                     # slugs.  In that case, prefer the slug encoded in its name
                     # (for example, Foo-OP1.webm should resolve as OP1 even if it
                     # is also present under ED1).
+                    _store_filename_candidate(filename, lookup_data)
                     _store_filename_lookup(filename, lookup_data, overwrite_ties=True)
                     actual_file_count += 1
                     # Also store base name without extension for lookup
                     base_name = os.path.splitext(filename)[0]
+                    _store_filename_candidate(base_name, lookup_data)
                     _store_filename_lookup(base_name, lookup_data, overwrite_ties=False)
     
     return actual_file_count
@@ -1022,14 +1118,16 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     if not filename:
         return {}
 
-    if not (refresh or fetch) and filename in _metadata_cache:
-        return _metadata_cache[filename]
+    metadata_entry = filename
+    physical_filename = entry_paths.get_clean_filename(filename)
+    if not (refresh or fetch) and metadata_entry in _metadata_cache:
+        return _metadata_cache[metadata_entry]
 
-    file_data = get_file_metadata_by_name(filename)
-    if not file_data and not ("-OP" in filename or "-ED" in filename):
-        return fetch_metadata(filename, refetch=refresh) if fetch else {}
+    file_data = get_file_metadata_by_name(metadata_entry)
+    if not file_data and not ("-OP" in physical_filename or "-ED" in physical_filename):
+        return fetch_metadata(physical_filename, refetch=refresh) if fetch else {}
     if not file_data:
-        return fetch_metadata(filename, refetch=refresh) if fetch else {}
+        return fetch_metadata(physical_filename, refetch=refresh) if fetch else {}
     properties = file_data.get("file_properties") or {}
     if properties.get("source") == "ANISONGDB" and not anisongdb.has_catalog():
         try:
@@ -1048,7 +1146,7 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     )
     ai_data = state.metadata.ai_metadata.get(mal_id, {}) if mal_id else {}
     re_queue_lightning_mode = False
-    if anime_data and "-[ID]" not in filename and mal_id:
+    if anime_data and "-[ID]" not in physical_filename and mal_id:
         if refresh and mal_id not in fetched_metadata and (refresh_all or (state.controls.auto_refresh_toggle and fetch)):
             fetched_metadata.add(mal_id)
             refresh_tenrai_data(mal_id, anime_data)
@@ -1073,8 +1171,8 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
         result["igdb"] = file_data["igdb"]
     # Normal list/playlist lookups stay lightweight. The raw catalog retains
     # the complete record, which explicit fetch/detail paths expand on demand.
-    anisongdb.apply_full_metadata(filename, result, include_full=False)
-    _metadata_cache[filename] = result
+    anisongdb.apply_full_metadata(physical_filename, result, include_full=False)
+    _metadata_cache[metadata_entry] = result
     if re_queue_lightning_mode:
         lightning_manager.queue_next_lightning_mode()
     return result
@@ -1090,14 +1188,21 @@ def get_file_metadata_by_name(filename):
     
     if not filename_to_mal:
         build_filename_to_mal_map()
-    
-    # Try exact match first
-    lookup_data = filename_to_mal.get(filename)
-    
-    # Try base name without extension
-    if not lookup_data:
-        base_name = os.path.splitext(filename)[0]
-        lookup_data = filename_to_mal.get(base_name)
+
+    reference = entry_paths.parse_theme_reference(filename)
+    physical_filename = entry_paths.get_clean_filename(filename)
+    if reference:
+        lookup_data = {
+            "mal_id": reference["mal_id"],
+            "slug": reference["slug"],
+            "version": reference["version"],
+        }
+    else:
+        # Try exact match first, then the base name without its extension.
+        lookup_data = filename_to_mal.get(physical_filename)
+        if not lookup_data:
+            base_name = os.path.splitext(physical_filename)[0]
+            lookup_data = filename_to_mal.get(base_name)
     
     if not lookup_data:
         return None
@@ -1106,9 +1211,27 @@ def get_file_metadata_by_name(filename):
     slug = lookup_data["slug"]
     version = lookup_data["version"]
     # Get the full MAL entry
-    mal_entry = state.metadata.file_metadata.get(mal_id)
+    mal_entry = (
+        state.metadata.file_metadata.get(mal_id)
+        or state.metadata.file_metadata.get(str(mal_id))
+    )
     if not mal_entry:
         return None
+
+    # A themes-row click may not have an explicit version even though the
+    # catalog stores the file under version "1". Recover it within the already
+    # selected anime/slug instead of falling back to the global filename owner.
+    if reference and version is None:
+        physical_stem = os.path.splitext(physical_filename)[0]
+        for stored_version, files in (
+            mal_entry.get("themes", {}).get(slug, {})
+        ).items():
+            if any(
+                os.path.splitext(stored_filename)[0] == physical_stem
+                for stored_filename in files
+            ):
+                version = stored_version
+                break
     
     # Return MAL entry with current file info added
     result = dict(mal_entry)  # Copy the entry
@@ -1125,7 +1248,17 @@ def get_file_metadata_by_name(filename):
         version_str = str(version) if version is not None else "null"
         if version_str in versions:
             files = versions[version_str]
-            file_props = files.get(filename, {})
+            file_props = files.get(physical_filename)
+            if file_props is None:
+                physical_stem = os.path.splitext(physical_filename)[0]
+                file_props = next(
+                    (
+                        properties
+                        for stored_filename, properties in files.items()
+                        if os.path.splitext(stored_filename)[0] == physical_stem
+                    ),
+                    {},
+                )
             result["file_properties"] = file_props
     
     return result
@@ -1140,6 +1273,7 @@ def get_version_from_filename(filename):
     
     # Fallback to filename parsing
     try:
+        filename = entry_paths.get_clean_filename(filename)
         parts = filename.split("-")
         if len(parts) >= 2:
             version_part = parts[1].split(".")[0]
@@ -1354,6 +1488,12 @@ def _clear_absence_for_provider_id(provider, identity, source):
 def _mal_metadata_missing(data):
     """Return whether an anime row is only a stub rather than fetched MAL data."""
     if not isinstance(data, dict) or not data.get("title"):
+        return True
+    # AnimeThemes' catalog projection supplies useful placeholder fields for
+    # browsing, but it is not a completed MAL lookup.  Key-presence checks
+    # alone cannot distinguish it because the projection intentionally has the
+    # same shape as enriched anime metadata.
+    if data.get(animethemes_catalog.CATALOG_OWNED_MARKER):
         return True
     # AniSongDB projections intentionally provide a useful title/season, but
     # not these MAL fields. Checking key presence (rather than truthiness)
@@ -2281,6 +2421,10 @@ def refresh_tenrai_data(mal_id, data, label=""):
         data["synopsis"] = tenrai_data.get("synopsis", "N/A")
         data["cover"] = tenrai_data.get("images", {}).get("jpg", {}).get("large_image_url")
         data["trailer"] = youtube_control.extract_youtube_id_from_trailer(tenrai_data.get("trailer", {}))
+        # The row now contains fetched MAL metadata rather than only the
+        # browsable AnimeThemes projection. Keep the general catalog marker so
+        # its songs/videos can still be maintained, but stop queueing MAL.
+        data.pop(animethemes_catalog.CATALOG_OWNED_MARKER, None)
         
         metadata_io.save_metadata()
         print(f"\r{label}Refreshing Tenrai data for {data['title']}...COMPLETE")

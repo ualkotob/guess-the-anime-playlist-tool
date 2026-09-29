@@ -378,6 +378,8 @@ def get_pop_time_groups(refetch=False):
                 if meta:
                     if meta.get("aired"):
                         season = metadata_fetch.aired_to_season_year(meta.get("aired"), False)
+                        if season == "N/A":
+                            season = meta.get("season", "9999")
                     else:
                         season = meta.get("season", "9999")[-4:]
                     yr = season[-4:]
@@ -1020,6 +1022,8 @@ def create_virtual_groups_for_random(sorted_groups):
             meta = metadata_fetch.get_metadata(entry.replace("[EXTRA]", ""))
             if meta and meta.get("aired"):
                 season = metadata_fetch.aired_to_season_year(meta.get("aired"), False)
+                if season == "N/A":
+                    season = meta.get("season", "9999")
             else:
                 season = meta.get("season", "9999")[-4:] if meta else "9999"
             yr = season[-4:]

@@ -40,6 +40,11 @@ METADATA_PACKAGE_FILES = (
     ('metadata/anilist_metadata.json', 'anilist_metadata'),
 )
 
+_PROVIDER_CATALOG_STORES = (
+    'animethemes_metadata',
+    'anisongdb_metadata',
+)
+
 
 def _merge_package_entries(current_dict, imported_data):
     """Merge one package store with package entries taking precedence.
@@ -53,22 +58,65 @@ def _merge_package_entries(current_dict, imported_data):
     return new_count
 
 
-def _persist_imported_metadata():
-    """Persist an import before reloading it from disk.
-
-    This must be synchronous.  A debounced save followed by ``load_metadata``
-    reloads the old files and discards the freshly imported in-memory data.
-    """
-    if state.metadata.animethemes_metadata:
+def _sync_imported_catalog(name):
+    """Project one newly imported provider catalog into app metadata."""
+    if name == 'animethemes_metadata' and state.metadata.animethemes_metadata:
         from _app_scripts.theme import animethemes
 
         animethemes.build_indexes(force=True)
         animethemes.sync_catalog_to_metadata()
-    if state.metadata.anisongdb_metadata:
+    elif name == 'anisongdb_metadata' and state.metadata.anisongdb_metadata:
         from _app_scripts.theme import anisongdb
 
         anisongdb.build_indexes(force=True)
         anisongdb.sync_catalog_to_metadata()
+
+
+def _apply_package_stores(imported_stores):
+    """Apply a package in source-to-release precedence order.
+
+    Raw provider catalogs are projected first.  The package's normal metadata
+    snapshots and publisher overrides are then applied over that projection,
+    so a curated correction (for example, an artist missing upstream) cannot
+    be immediately replaced by the raw catalog bundled in the same package.
+    The recipient's own override dictionaries are never changed here and are
+    re-applied by ``load_metadata`` after the result is saved.
+    """
+    counts = {}
+
+    for name in _PROVIDER_CATALOG_STORES:
+        if name not in imported_stores:
+            continue
+        counts[name] = _merge_package_store(name, imported_stores[name])
+        _sync_imported_catalog(name)
+
+    normal_stores = (
+        name
+        for _file_path, name in METADATA_PACKAGE_FILES
+        if name not in _PROVIDER_CATALOG_STORES and not name.endswith('_overrides')
+    )
+    for name in normal_stores:
+        if name in imported_stores:
+            counts[name] = _merge_package_store(name, imported_stores[name])
+
+    override_stores = (
+        name
+        for _file_path, name in METADATA_PACKAGE_FILES
+        if name.endswith('_overrides')
+    )
+    for name in override_stores:
+        if name in imported_stores:
+            counts[name] = _merge_package_store(name, imported_stores[name])
+
+    return counts
+
+
+def _persist_imported_metadata():
+    """Persist an already-applied import before reloading it from disk.
+
+    This must be synchronous.  A debounced save followed by ``load_metadata``
+    reloads the old files and discards the freshly imported in-memory data.
+    """
     metadata_io.save_animethemes_metadata()
     metadata_io.save_anisongdb_metadata()
     metadata_io.save_metadata(immediate=True)
@@ -123,6 +171,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
         """Perform the actual import operation."""
 
         imported_items = []
+        imported_stores = {}
         errors = []
         temp_dir = None
         package_deleted = False
@@ -180,17 +229,24 @@ def import_data_from_package(source, is_local=False, prompt=True):
                     else:
                         continue  # File not in package, skip
 
-                    # Merge with existing data. Package entries are the newer
-                    # release data and therefore win over matching local ones.
-                    count = _merge_package_store(name, imported_data)
-
-                    imported_items.append(f"{name}: {len(imported_data)} entries ({count} new)")
+                    if not isinstance(imported_data, dict):
+                        raise ValueError("metadata file must contain a JSON object")
+                    imported_stores[name] = imported_data
 
                 except Exception as e:
                     errors.append(f"Failed to import {name}: {e}")
 
             # Save all metadata
-            if imported_items:
+            if imported_stores:
+                # Provider projections are supplementary. Apply them before
+                # the release snapshots so curated package fields win.
+                counts = _apply_package_stores(imported_stores)
+                imported_items.extend(
+                    f"{name}: {len(imported_stores[name])} entries "
+                    f"({counts[name]} new)"
+                    for _file_path, name in METADATA_PACKAGE_FILES
+                    if name in imported_stores
+                )
                 # Persist synchronously before reloading. save_metadata() is
                 # normally debounced, which previously caused this reload to
                 # restore the old on-disk data and lose the entire import.

@@ -141,7 +141,7 @@ def _play_name_key(f):
     [ART]…, [SNG]…, [ID]nnn) and the file extension so that files renamed
     to add or change an ID tag still count as the same file.
     """
-    base = os.path.splitext(f)[0]
+    base = os.path.splitext(entry_paths.get_clean_filename(f))[0]
     return re.sub(r'\[(?:MAL|IGDB|ADB|ALT|ART|SNG|ID)\][^[]*', '', base).strip('-').strip()
 
 def _build_web_series_themes(data, playing_filename):
@@ -509,7 +509,7 @@ def _push_web_up_next():
             detail = f"Duration: {yt_duration}" if yt_duration else ""
             web_server.push_up_next({"title": yt_title, "detail": detail, "mode_label": mode_label})
         else:
-            d = metadata_fetch.get_metadata(next_filename)
+            d = metadata_fetch.get_metadata(playlist_entry)
             title = get_display_title(d)
             slug = utils.format_slug(d.get("slug", ""))
             version_num = d.get("version")
@@ -617,7 +617,7 @@ def update_up_next_display(widget, clear=False):
                         if yt_duration:
                             next_up_text += f"\nDuration: {yt_duration}"
                     else:
-                        next_up_data = metadata_fetch.get_metadata(next_filename)
+                        next_up_data = metadata_fetch.get_metadata(playlist_entry)
                         version_num = next_up_data.get("version")
                         if version_num and version_num not in ["1", "null"]:
                             version_num = f"v{version_num}"
@@ -640,7 +640,7 @@ def update_up_next_display(widget, clear=False):
                     if state.playback.youtube_queue:
                         next_up_text = state.playback.youtube_queue.get("filename")
                     elif search_ops.search_queue:
-                        next_up_text = search_ops.search_queue
+                        next_up_text = entry_paths.get_clean_filename(search_ops.search_queue)
                     else:
                         playlist_entry = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"] + 1]
                         next_up_text = entry_paths.get_clean_filename(playlist_entry)
@@ -1040,12 +1040,18 @@ def prioritize_theme_files(filenames):
         return filenames[0]
     
     # Prioritize local files over streamable ones
-    local_files = [f for f in filenames if f in state.metadata.directory_files]
+    local_files = [
+        f for f in filenames
+        if entry_paths.get_clean_filename(f) in state.metadata.directory_files
+    ]
     if local_files:
         filenames = local_files
     
     # Prioritize files with censors
-    files_with_censors = [f for f in filenames if censors.get_file_censors(f)]
+    files_with_censors = [
+        f for f in filenames
+        if censors.get_file_censors(entry_paths.get_clean_filename(f))
+    ]
     if files_with_censors:
         filenames = files_with_censors
     

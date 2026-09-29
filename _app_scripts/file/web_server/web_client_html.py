@@ -11610,10 +11610,12 @@ HTML = r"""<!DOCTYPE html>
       if (overlay) overlay.classList.remove('active');
     }
 
-    function _themeActionRegister(filename, label) {
+    function _themeActionRegister(filename, label, malId=null, slug=null, version=null) {
       if (!filename) return '';
       const id = String(_themeActionSeq++);
-      _themeActionMap[id] = { filename, label: label || '' };
+      _themeActionMap[id] = {
+        filename, label: label || '', mal_id: malId, slug: slug, version: version
+      };
       return id;
     }
 
@@ -11658,12 +11660,18 @@ HTML = r"""<!DOCTYPE html>
     function _themeActionRun(mode) {
       if (!_isHost || !_themeActionTarget || !_themeActionTarget.filename) return;
       const fn = _themeActionTarget.filename;
+      const identity = {
+        filename: fn,
+        mal_id: _themeActionTarget.mal_id,
+        slug: _themeActionTarget.slug,
+        version: _themeActionTarget.version
+      };
       if (mode === 'play') {
-        socket.emit('host_action', { action: 'play_theme_now', filename: fn });
+        socket.emit('host_action', Object.assign({ action: 'play_theme_now' }, identity));
       } else if (mode === 'queue') {
-        socket.emit('host_action', { action: 'queue_theme_only', filename: fn });
+        socket.emit('host_action', Object.assign({ action: 'queue_theme_only' }, identity));
       } else if (mode === 'add') {
-        socket.emit('host_action', { action: 'add_theme', filename: fn });
+        socket.emit('host_action', Object.assign({ action: 'add_theme' }, identity));
       }
       _closeThemeActionPrompt();
     }
@@ -11722,7 +11730,7 @@ HTML = r"""<!DOCTYPE html>
                   const playsHtml = (fileOption.plays > 0 || fileOption.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + fileOption.plays + 'x' + (fileOption.plays_ago != null ? ' (' + fileOption.plays_ago + ' ago)' : '') + (fileOption.lightning_plays ? ' (' + fileOption.lightning_plays + ' L)' : '') + '</span>' : '';
                   const vFilename = String(fileOption.filename || '').trim();
                   const vActionId = (_isHost && vFilename)
-                    ? _themeActionRegister(vFilename, anime.title + ' – ' + slugText + (vText ? ' ' + vText : ''))
+                    ? _themeActionRegister(vFilename, anime.title + ' – ' + slugText + (vText ? ' ' + vText : ''), anime.anime_id, theme.slug, v.version)
                     : '';
                   const vActionBtn = vActionId
                     ? '<button class="mt-action-btn" data-taid="' + vActionId + '" title="Theme actions">&#9654;</button>'
@@ -11744,7 +11752,7 @@ HTML = r"""<!DOCTYPE html>
                 const propsHtml = fileOption.file_props ? ' <span class="mt-props">' + _escHtml(fileOption.file_props) + '</span>' : '';
                 const themeFilename = String(fileOption.filename || '').trim();
                 const themeActionId = (_isHost && themeFilename)
-                  ? _themeActionRegister(themeFilename, anime.title + ' – ' + slugText)
+                  ? _themeActionRegister(themeFilename, anime.title + ' – ' + slugText, anime.anime_id, theme.slug, null)
                   : '';
                 const tActionBtn = themeActionId
                   ? '<button class="mt-action-btn" data-taid="' + themeActionId + '" title="Theme actions">&#9654;</button>'

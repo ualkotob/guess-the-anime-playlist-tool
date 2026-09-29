@@ -105,12 +105,13 @@ TUTORIAL_CONTENT = [
         "content": [
             ("h1",  "Metadata & Import"),
             ("p",   "Metadata provides full informaiton for each theme, like full titles, song names, etc. "
-                    "Without metadata, the app can only show file names, and some features are unavailable."),
+                    "You can build the playable catalog directly from AnimeThemes and AniSongDB; the imported "
+                    "metadata package adds richer ratings, tags, characters, and other information."),
             ("h2",  "Importing Metadata"),
             ("ul",  [
                 "Upon first launch and when it's updated, you should be prompted to import metadata from GitHub on startup.",
                 "If you want to trigger this manually you can use FILE → Import → Import Data (from GitHub).",
-                "This data provides animethemes files with their data, and is also required to be able to stream/download themes."
+                "This package is optional enrichment. AnimeThemes and AniSongDB catalog refreshes can register streamable themes without it."
             ]),
             ("h2",  "Metadata Sources"),
             ("ul",  [
@@ -131,7 +132,9 @@ TUTORIAL_CONTENT = [
                             "you can use THEME → Fetch Theme Data to grab metadata for that theme. It must follow the rules below to succeed."),
                     ("h2",  "Files from animethemes.moe"),
                     ("ul",  [
-                        "These files are compatible without any further changes, as long as you do not change the filename from how it was when downloaded."
+                        "Use FILE â†’ Refresh Metadata â†’ Refresh AnimeThemes Catalog once to download the complete playable catalog.",
+                        "The refresh works without imported metadata or local files. Use a playlist option that includes streaming themes to browse and play the remote catalog.",
+                        "Downloaded AnimeThemes files are compatible without any further changes, as long as you keep their original filenames."
                     ]),
                     ("h2",  "Files from AniSongDB / Anime Music Quiz"),
                     ("ul",  [

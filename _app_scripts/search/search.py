@@ -153,22 +153,23 @@ def search_playlist(search_term):
     results = []
     artist_results = []
     for filename in playlist_ops.get_directory_files(include_non_local=True):
-        metadata = metadata_fetch.get_metadata(filename)
         filename_trim = filename.lower().replace(".webm", "").replace(".mp4", "")
-        title = metadata.get("title", "").lower()
-        english_title = (metadata.get("eng_title") or "").lower()
-        studios = ", ".join(metadata.get("studios") or []).lower()
-        season = re.sub(r"\s+", " ", str(metadata.get("season") or "").lower()).strip()
-        studio_match = bool(studios and search_term in studios)
-        season_match = bool(_season_query_enabled and season and search_term_norm in season)
-        if (english_title or title).startswith(search_term):
-            priority_results.append(filename)
-        elif (search_term in filename_trim) or (title and search_term in title) or (english_title and search_term in english_title) or studio_match or season_match:
-            results.append(filename)
-        else:
-            song_string = information_popup.get_song_string(metadata, artist_limit=None).lower()
-            if song_string and search_term in song_string:
-                artist_results.append(filename)
+        for theme_entry in metadata_fetch.get_theme_references(filename):
+            metadata = metadata_fetch.get_metadata(theme_entry)
+            title = metadata.get("title", "").lower()
+            english_title = (metadata.get("eng_title") or "").lower()
+            studios = ", ".join(metadata.get("studios") or []).lower()
+            season = re.sub(r"\s+", " ", str(metadata.get("season") or "").lower()).strip()
+            studio_match = bool(studios and search_term in studios)
+            season_match = bool(_season_query_enabled and season and search_term_norm in season)
+            if (english_title or title).startswith(search_term):
+                priority_results.append(theme_entry)
+            elif (search_term in filename_trim) or (title and search_term in title) or (english_title and search_term in english_title) or studio_match or season_match:
+                results.append(theme_entry)
+            else:
+                song_string = information_popup.get_song_string(metadata, artist_limit=None).lower()
+                if song_string and search_term in song_string:
+                    artist_results.append(theme_entry)
 
     def _slug_sort_key(file):
         meta = metadata_fetch.get_metadata(file)

@@ -151,6 +151,16 @@ def check_for_local_metadata_package():
             import_data_from_package(LOCAL_METADATA_PACKAGE, is_local=True, prompt=False)
 
 
+def _persist_metadata_for_export():
+    """Flush every package-backed store before reading files into a zip."""
+    from _app_scripts.data import metadata_io
+
+    metadata_io.save_metadata_overrides()
+    metadata_io.save_animethemes_metadata()
+    metadata_io.save_anisongdb_metadata()
+    metadata_io.save_metadata(immediate=True)
+
+
 def export_metadata_package():
     """Export all metadata files into a consolidated zip package."""
     try:
@@ -164,6 +174,11 @@ def export_metadata_package():
 
         if not export_path:
             return  # User cancelled
+
+        # Export the current in-memory state, not whichever compressed files
+        # happened to be on disk before a pending debounced save completed.
+        # This is especially important for freshly added song artists.
+        _persist_metadata_for_export()
 
         # List of files to include in package
         files_to_export = [

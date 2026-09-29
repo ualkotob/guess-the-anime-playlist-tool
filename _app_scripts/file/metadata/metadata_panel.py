@@ -999,7 +999,7 @@ def update_song_information(data, mal, slug=None, scroll_to=None, scroll_anchor_
                     middle_column.insert(tk.END, "\n", "blank")
 
 
-def _render_file_props(column, files, playing_f):
+def _render_file_props(column, files, playing_f, mal_id=None, slug=None, version=None):
     """Render file property label (single file) or clickable buttons (multiple files)."""
     for f in files:
         props_label = metadata_display.get_file_props_label(f) or "[ALT]"
@@ -1013,6 +1013,9 @@ def _render_file_props(column, files, playing_f):
                 column,
                 f,
                 display_label,
+                mal_id=mal_id,
+                slug=slug,
+                version=version,
                 relief="flat",
                 font=(None, scl(9, "UI"), "bold") if is_playing else (None, scl(9, "UI")),
             ))
@@ -1022,20 +1025,27 @@ def _refresh_current_theme_list():
     if data:
         update_series_song_information(data, data.get("mal"), rerender=True)
 
-def _create_theme_play_button(column, filename, text, **kwargs):
+def _create_theme_play_button(
+    column, filename, text, *, mal_id=None, slug=None, version=None, **kwargs
+):
+    theme_entry = entry_paths.make_theme_reference(
+        filename, mal_id, slug, version
+    )
     btn = tk.Button(
         column,
         text=text,
         borderwidth=0,
         pady=0,
-        command=lambda f=filename: metadata_display.play_video_from_filename(f),
+        command=lambda entry=theme_entry: metadata_display.play_video_from_filename(entry),
         bg="black",
         fg="white",
         **kwargs,
     )
     btn.bind(
         "<Button-3>",
-        lambda event, f=filename: lists._theme_context_menu(f, _refresh_current_theme_list),
+        lambda event, entry=theme_entry: lists._theme_context_menu(
+            entry, _refresh_current_theme_list
+        ),
     )
     return btn
 
@@ -1064,7 +1074,14 @@ def add_op_ed(theme, column, slug, title, mal_id):
             filename = metadata_display.get_theme_filename(mal_id, theme_slug)
         # ▶ button or fallback
         if filename:
-            column.window_create(tk.END, window=_create_theme_play_button(column, filename, get_filename_icon(filename)))
+            column.window_create(tk.END, window=_create_theme_play_button(
+                column,
+                filename,
+                get_filename_icon(filename),
+                mal_id=mal_id,
+                slug=theme_slug,
+                version=versions[0].get('version') if versions else None,
+            ))
             column.insert(tk.END, metadata_display.get_file_marks(filename), format)
         else:
             column.insert(tk.END, no_file_icon, format)
@@ -1120,7 +1137,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
             # Also update main metadata live
             for s in anime_metadata[mal_id]["songs"]:
                 if s.get("slug") == theme_slug:
-                    s["artist"] = [artist_input]
+                    s["artist"] = artist_input
             metadata_io.save_metadata_overrides()
             metadata_io.save_metadata()
             filename = currently_playing.get("filename")
@@ -1157,7 +1174,14 @@ def add_op_ed(theme, column, slug, title, mal_id):
             if all_ver_files:
                 if not version_text:
                     column.insert(tk.END, "\n", format)
-                _render_file_props(column, all_ver_files, currently_playing.get('filename'))
+                _render_file_props(
+                    column,
+                    all_ver_files,
+                    currently_playing.get('filename'),
+                    mal_id,
+                    theme_slug,
+                    version_num,
+                )
         else:
             # Multiple versions - display with individual play buttons
             for i, version in enumerate(versions):
@@ -1174,7 +1198,14 @@ def add_op_ed(theme, column, slug, title, mal_id):
                     version_format = "highlight"
 
                 if version_filename:
-                    column.window_create(tk.END, window=_create_theme_play_button(column, version_filename, get_filename_icon(version_filename)))
+                    column.window_create(tk.END, window=_create_theme_play_button(
+                        column,
+                        version_filename,
+                        get_filename_icon(version_filename),
+                        mal_id=mal_id,
+                        slug=theme_slug,
+                        version=version_num,
+                    ))
                     column.insert(tk.END, metadata_display.get_file_marks(version_filename), version_format)
                 else:
                     column.insert(tk.END, no_versions_icon, version_format)
@@ -1189,7 +1220,14 @@ def add_op_ed(theme, column, slug, title, mal_id):
                         version_text += f" {' '.join(flags)}"
                 column.insert(tk.END, version_text, version_format)
                 all_ver_files = metadata_display.get_theme_filenames(mal_id, theme_slug, version_num, need_version=True)
-                _render_file_props(column, all_ver_files, currently_playing.get('filename'))
+                _render_file_props(
+                    column,
+                    all_ver_files,
+                    currently_playing.get('filename'),
+                    mal_id,
+                    theme_slug,
+                    version_num,
+                )
         column.insert(tk.END, "", "white")
     else:
         version_text = ""
@@ -1204,7 +1242,13 @@ def add_op_ed(theme, column, slug, title, mal_id):
         if all_theme_files:
             if not version_text:
                 column.insert(tk.END, "\n", format)
-            _render_file_props(column, all_theme_files, currently_playing.get('filename'))
+            _render_file_props(
+                column,
+                all_theme_files,
+                currently_playing.get('filename'),
+                mal_id,
+                theme_slug,
+            )
 
     if theme.get("special"):
         column.insert(tk.END, " (SPECIAL)", format)

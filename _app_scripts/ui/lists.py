@@ -44,22 +44,23 @@ def _theme_context_menu(filename, refresh_func, play_func=None, remove_func=None
     remove_func: optional callable with no args; when provided, a "Remove from
                  Playlist" item is appended at the bottom.
     """
-    filename = entry_paths.get_clean_filename(filename)
+    theme_entry = filename
+    filename = entry_paths.get_clean_filename(theme_entry)
     m = tk.Menu(state.widgets.root, tearoff=0, bg="black", fg="white",
                 activebackground=state.colors.HIGHLIGHT_COLOR, activeforeground="white", font=MENU_FONT)
 
     # Play Now
     if play_func is None:
-        play_func = lambda f=filename: metadata_display.play_video_from_filename(f)
+        play_func = lambda entry=theme_entry: metadata_display.play_video_from_filename(entry)
     m.add_command(label="     Play Now", command=play_func)
 
     m.add_separator()
 
     # Queue Next / Un-Queue Next
-    is_queued = search_ops.search_queue == filename
+    is_queued = search_ops.search_queue == theme_entry
     queue_label = "✓  Queue Next" if is_queued else "     Queue Next"
-    def _toggle_queue(f=filename):
-        search_ops.search_queue = None if search_ops.search_queue == f else f
+    def _toggle_queue(entry=theme_entry):
+        search_ops.search_queue = None if search_ops.search_queue == entry else entry
         if search_ops.search_queue and not state.widgets.player.is_playing():
             transport.play_video()
             return
@@ -68,8 +69,8 @@ def _theme_context_menu(filename, refresh_func, play_func=None, remove_func=None
     m.add_command(label=queue_label, command=_toggle_queue)
 
     # Add Next
-    def _add_next(f=filename):
-        state.metadata.playlist["playlist"].insert(state.metadata.playlist["current_index"] + 1, f)
+    def _add_next(entry=theme_entry):
+        state.metadata.playlist["playlist"].insert(state.metadata.playlist["current_index"] + 1, entry)
         metadata_display.up_next_text()
         config_io.save_config()
     m.add_command(label="     Add Next", command=_add_next)
@@ -179,7 +180,7 @@ def get_title(key, value):
                 display_name = lightning_icon + filename
         else:
             # Regular theme file handling
-            data = metadata_fetch.get_metadata(filename)
+            data = metadata_fetch.get_metadata(value)
             if data:
                 title = metadata_display.get_display_title(data)
                 display_name = title + " " + data.get("slug")
@@ -211,11 +212,11 @@ def get_title(key, value):
 
 def set_field_queue(index):
     if state.lists.last_themes_listed and index >= 0:
-        filename = entry_paths.get_clean_filename(state.lists.last_themes_listed[index])
-        if search_ops.search_queue == filename:
+        theme_entry = state.lists.last_themes_listed[index]
+        if search_ops.search_queue == theme_entry:
             search_ops.search_queue = None
         else:
-            search_ops.search_queue = filename
+            search_ops.search_queue = theme_entry
             if not state.widgets.player.is_playing():
                 transport.play_video()
                 return
@@ -225,8 +226,8 @@ def set_field_queue(index):
 
 def add_field_to_playlist(index):
     if state.lists.last_themes_listed and index >= 0:
-        filename = entry_paths.get_clean_filename(state.lists.last_themes_listed[index])
-        _theme_context_menu(filename, lambda: show_field_themes(True))
+        theme_entry = state.lists.last_themes_listed[index]
+        _theme_context_menu(theme_entry, lambda: show_field_themes(True))
 
 
 def show_playlist(update = False):

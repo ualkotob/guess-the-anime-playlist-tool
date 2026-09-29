@@ -617,7 +617,7 @@ def play_filename(playlist_entry, fullscreen=True):
     global skip_limit, animethemes_stream
     _pe_str = playlist_entry.get('filename', playlist_entry.get('filepath', '')) if isinstance(playlist_entry, dict) else playlist_entry
     filename = entry_paths.get_clean_filename(_pe_str)
-    data = metadata_fetch.get_metadata(filename, fetch=state.config.auto_fetch_missing)
+    data = metadata_fetch.get_metadata(_pe_str, fetch=state.config.auto_fetch_missing)
     
     local_filepath = entry_paths.get_file_path(playlist_entry)
     result = cache_download.resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen)

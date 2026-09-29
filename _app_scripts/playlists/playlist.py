@@ -625,9 +625,9 @@ def sort_playlist(index):
         return (float("inf"), float("inf"))
 
     playlist["playlist"].sort(key=lambda filename: (
-        extract_season_data(entry_paths.get_clean_filename(filename)) if key == "season" else
-        float(metadata_fetch.get_metadata(entry_paths.get_clean_filename(filename)).get(key, 0) or 0) if key in {"members", "score"} else
-        metadata_fetch.get_metadata(entry_paths.get_clean_filename(filename)).get(key, "").lower() if isinstance(metadata_fetch.get_metadata(entry_paths.get_clean_filename(filename)).get(key), str) else "",
+        extract_season_data(filename) if key == "season" else
+        float(metadata_fetch.get_metadata(filename).get(key, 0) or 0) if key in {"members", "score"} else
+        metadata_fetch.get_metadata(filename).get(key, "").lower() if isinstance(metadata_fetch.get_metadata(filename).get(key), str) else "",
         filename.lower()
     ), reverse=reverse)
     transport.update_current_index(0)
