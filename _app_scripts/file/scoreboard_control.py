@@ -18,6 +18,8 @@ import time
 
 import requests
 
+from core.game_state import state
+
 # ── Paths (resolved relative to the project root, not the cwd) ────────────────
 # When frozen by PyInstaller (--onefile), __file__ points into a temp extraction
 # directory. sys.executable is always the real exe / script location.
@@ -73,7 +75,7 @@ def send_command(cmd):
             s.connect(("localhost", 5555))
             s.sendall(cmd.encode())
             s.close()
-            if not _colors_sent:
+            if not _colors_sent and state.config.SYNC_SCOREBOARD_COLORS:
                 _colors_sent = True
                 send_colors()
             if not _align_sent:
@@ -156,8 +158,10 @@ def send_colors(bg=None, text=None):
     """Send colour settings to the scoreboard.
 
     With no arguments the stored callback values are used; explicit *bg*/*text*
-    override them.
+    override them. The sync setting is the authoritative gate for every send.
     """
+    if not state.config.SYNC_SCOREBOARD_COLORS:
+        return False
     if bg is None or text is None:
         if _colors_getter:
             _bg, _txt = _colors_getter()
@@ -165,6 +169,8 @@ def send_colors(bg=None, text=None):
             text = text or _txt
     if bg and text:
         send_command(f"[COLORS][BACK]{bg}[TEXT]{text}")
+        return True
+    return False
 
 
 def send_score(player_name, delta):

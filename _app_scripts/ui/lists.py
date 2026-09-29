@@ -196,7 +196,7 @@ def get_title(key, value):
                 display_name = lightning_icon + display_name
         
         if filename not in state.metadata.directory_files and "SEARCHING" not in filename:
-            if cache_download.is_animethemes_stream_file(filename):
+            if cache_download.is_remote_theme_file(filename):
                 display_name = metadata_panel.stream_icon + display_name
             else:
                 display_name = "❌" + display_name

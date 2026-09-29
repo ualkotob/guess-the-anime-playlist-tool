@@ -42,6 +42,8 @@ class MediaPlayer:
         self._c_core_idle = True
         self._c_width = None
         self._c_height = None
+        self._c_disp_width = None
+        self._c_disp_height = None
         self._c_osd_width = 0
         self._c_osd_height = 0
         try:
@@ -51,6 +53,7 @@ class MediaPlayer:
             self._p.observe_property('core-idle', self._on_core_idle)
             self._p.observe_property('width', self._on_width)
             self._p.observe_property('height', self._on_height)
+            self._p.observe_property('video-params', self._on_video_params)
             self._p.observe_property('osd-width', self._on_osd_width)
             self._p.observe_property('osd-height', self._on_osd_height)
         except Exception:
@@ -65,6 +68,60 @@ class MediaPlayer:
     def _on_height(self, _name, value):     self._c_height = value
     def _on_osd_width(self, _name, value):  self._c_osd_width = int(value or 0)
     def _on_osd_height(self, _name, value): self._c_osd_height = int(value or 0)
+
+    def invalidate_video_geometry(self):
+        """Forget the cached size of the file that is being replaced.
+
+        mpv keeps serving the outgoing file's `width`/`video-params` until the
+        incoming one has been decoded, so anything laid out during the load
+        window (the reveal cover is drawn *before* the load so no frame can
+        leak) would otherwise be sized for the file that just ended — a 4:3
+        video covered by a 16:9 cover never shows its left/right edges.
+        Until the observers refresh, `get_display_aspect()` reports 0.0, which
+        `letterbox_rect` treats as "unknown" and expands to the full canvas:
+        over-covering is safe, under-covering leaks frames.
+        """
+        self._c_width = self._c_height = None
+        self._c_disp_width = self._c_disp_height = None
+
+    def refresh_video_geometry(self):
+        """Direct-read the current file's size into the cache; return True if known.
+
+        Called once per file from the playback-restart hook. The observers
+        normally fill this in first, but mpv only emits `video-params` when the
+        value *changes*, so a file whose size matches the previous one could
+        leave the cache empty after `invalidate_video_geometry()`.
+        """
+        if self._c_disp_width and self._c_disp_height:
+            return True
+        try:
+            params = self._p.video_params or {}
+            self._c_disp_width  = int(params['dw']) or None
+            self._c_disp_height = int(params['dh']) or None
+        except Exception:
+            pass
+        if not (self._c_disp_width and self._c_disp_height):
+            try:
+                self._c_width  = self._p.width or None
+                self._c_height = self._p.height or None
+            except Exception:
+                pass
+        return bool(self.get_display_size()[0])
+
+    def _on_video_params(self, _name, value):
+        """Cache the decoder's aspect-corrected display size (video-params/dw+dh).
+
+        `video-params` is the decoder's output *before* the vf chain, so the
+        filter-peek/zoom filters never perturb it. dw/dh already have the
+        container's pixel aspect ratio applied — the only reliable way to tell
+        an anamorphic 720x480 DVD rip (16:9) from a 4:3 one, since both report
+        width=720, height=480.
+        """
+        try:
+            self._c_disp_width  = int(value['dw']) or None
+            self._c_disp_height = int(value['dh']) or None
+        except Exception:
+            self._c_disp_width = self._c_disp_height = None
 
     # ---- Core playback ----
     def play(self):
@@ -184,6 +241,22 @@ class MediaPlayer:
     def video_get_size(self, track=0) -> tuple:
         return self.get_video_size()
 
+    def get_display_size(self) -> tuple:
+        """Return (w, h) of the video as mpv *displays* it — the stored size with
+        the container's pixel aspect ratio applied. Use this, never the stored
+        size, for on-screen geometry (censor boxes, overlays, letterbox rects).
+        Falls back to the stored size until mpv reports video-params; served
+        from the observer cache, so it is safe on the seek-tick hot path."""
+        w, h = self._c_disp_width, self._c_disp_height
+        if w and h:
+            return (int(w), int(h))
+        return self.get_video_size()
+
+    def get_display_aspect(self) -> float:
+        """Display aspect ratio (w / h) of the current video, or 0.0 if unknown."""
+        w, h = self.get_display_size()
+        return (w / h) if (w and h) else 0.0
+
     def get_osd_size(self) -> tuple:
         """Return (osd_w, osd_h) from the observer cache — safe for per-tick use."""
         return (self._c_osd_width, self._c_osd_height)
@@ -215,6 +288,9 @@ class MediaPlayer:
                 # (matches the direct-read behavior, where both were None here).
                 self._c_time_pos = None
                 self._c_duration = None
+                # The incoming file's geometry is not known yet; mpv would keep
+                # reporting the outgoing file's until it has been decoded.
+                self.invalidate_video_geometry()
                 if isinstance(path_or_none, (tuple, list)) and len(path_or_none) == 2:
                     video_url, audio_url = path_or_none
                     options = [f'audio-file={audio_url}']

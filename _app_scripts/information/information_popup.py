@@ -604,27 +604,12 @@ def _get_osd_video_rect():
     if not osd_w or not osd_h:
         return 0, 0, 0, 0, 0, 0
     try:
-        vw, vh = state.widgets.player.video_get_size(0)
+        # Display aspect, not stored pixels: anamorphic DVD rips store 720x480
+        # whether they show as 4:3 or 16:9.
+        video_ar = state.widgets.player.get_display_aspect()
     except Exception:
-        vw, vh = 0, 0
-    if vw and vh:
-        if (vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478):
-            video_ar = 16.0 / 9.0
-        else:
-            video_ar = vw / vh
-        osd_ar = osd_w / osd_h
-        if video_ar >= osd_ar:
-            disp_w = osd_w
-            disp_h = int(osd_w / video_ar)
-            vid_x = 0
-            vid_y = (osd_h - disp_h) // 2
-        else:
-            disp_h = osd_h
-            disp_w = int(osd_h * video_ar)
-            vid_x = (osd_w - disp_w) // 2
-            vid_y = 0
-    else:
-        vid_x, vid_y, disp_w, disp_h = 0, 0, osd_w, osd_h
+        video_ar = 0.0
+    vid_x, vid_y, disp_w, disp_h = utils.letterbox_rect(osd_w, osd_h, video_ar)
     return osd_w, osd_h, vid_x, vid_y, disp_w, disp_h
 
 

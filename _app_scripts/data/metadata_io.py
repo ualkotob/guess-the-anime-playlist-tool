@@ -21,6 +21,8 @@ from core.paths import (
     FILE_METADATA_FILE,
     FILE_METADATA_OVERRIDES_FILE,
     ANIME_METADATA_FILE,
+    ANIMETHEMES_METADATA_FILE,
+    ANISONGDB_METADATA_FILE,
     ANIME_METADATA_OVERRIDES_FILE,
     ANIDB_METADATA_FILE,
     AI_METADATA_FILE,
@@ -121,6 +123,32 @@ def save_metadata_overrides():
     save_metadata_atomic(ANIME_METADATA_OVERRIDES_FILE, state.metadata.anime_metadata_overrides)
 
 
+def save_anisongdb_metadata():
+    """Persist the raw AniSongDB catalog separately from translated metadata."""
+    metadata_folder = os.path.dirname(ANISONGDB_METADATA_FILE)
+    if metadata_folder:
+        os.makedirs(metadata_folder, exist_ok=True)
+    save_metadata_compressed(
+        ANISONGDB_METADATA_FILE,
+        state.metadata.anisongdb_metadata,
+        encoding="utf-8",
+        ensure_ascii=False,
+    )
+
+
+def save_animethemes_metadata():
+    """Persist the raw AnimeThemes catalog separately from its projection."""
+    metadata_folder = os.path.dirname(ANIMETHEMES_METADATA_FILE)
+    if metadata_folder:
+        os.makedirs(metadata_folder, exist_ok=True)
+    save_metadata_compressed(
+        ANIMETHEMES_METADATA_FILE,
+        state.metadata.animethemes_metadata,
+        encoding="utf-8",
+        ensure_ascii=False,
+    )
+
+
 def load_theme_artist_resolutions():
     """Load reviewed blank-artist statuses for app and playlist consumers."""
     state.metadata.theme_artist_resolutions.clear()
@@ -212,6 +240,71 @@ def load_metadata():
         state.metadata.ai_metadata.update(data)
         suffix = " (compressed)" if is_compressed else ""
         print(f"Loaded ai metadata for {len(state.metadata.ai_metadata)} entries...{suffix}")
+
+    # AnimeThemes is the primary self-bootstrapping remote catalog.  Load or
+    # rebuild its projection before AniSongDB calculates coverage and gaps.
+    data, is_compressed = load_metadata_compressed(
+        ANIMETHEMES_METADATA_FILE,
+        encoding="utf-8",
+        name="AnimeThemes metadata",
+    )
+    if data is not None:
+        state.metadata.animethemes_metadata.clear()
+        state.metadata.animethemes_metadata.update(data)
+        suffix = " (compressed)" if is_compressed else ""
+        anime_count = len(data.get("anime", []))
+        print(f"Loaded AnimeThemes catalog with {anime_count} anime...{suffix}")
+        from _app_scripts.theme import animethemes
+
+        animethemes.build_indexes(force=True)
+        count = animethemes.registered_video_count()
+        projection_current = (
+            animethemes.registered_projection_version()
+            >= animethemes.PROJECTION_VERSION
+        )
+        if count and projection_current:
+            print(f"Loaded {count} AnimeThemes video sources...")
+        else:
+            count = animethemes.sync_catalog_to_metadata()
+            print(f"Registered {count} AnimeThemes video sources...")
+            save_metadata()
+
+    # Retain AniSongDB's complete catalog independently, then project gap
+    # sources and selectable alternatives for themes covered elsewhere.
+    data, is_compressed = load_metadata_compressed(
+        ANISONGDB_METADATA_FILE,
+        encoding="utf-8",
+        name="AniSongDB metadata",
+    )
+    if data is not None:
+        state.metadata.anisongdb_metadata.clear()
+        state.metadata.anisongdb_metadata.update(data)
+        suffix = " (compressed)" if is_compressed else ""
+        print(f"Loaded AniSongDB catalog with {len(data.get('songs', []))} songs...{suffix}")
+        from _app_scripts.theme import anisongdb
+
+        anisongdb.build_indexes(force=True)
+        count = anisongdb.registered_gap_count()
+        projection_current = (
+            anisongdb.registered_projection_version() >= anisongdb.PROJECTION_VERSION
+        )
+        if count and projection_current:
+            # Refresh/import writes provider projections together with the raw
+            # catalog. Rebuilding the same ~24k rows on every startup was both
+            # redundant and a major startup delay.
+            alternates = anisongdb.registered_alternate_count()
+            print(
+                f"Loaded {count} AniSongDB gap video sources and "
+                f"{alternates} covered-theme alternatives..."
+            )
+        else:
+            count = anisongdb.sync_catalog_to_metadata()
+            alternates = anisongdb.registered_alternate_count()
+            print(
+                f"Registered {count} AniSongDB gap video sources and "
+                f"{alternates} covered-theme alternatives..."
+            )
+            save_metadata()
 
 
 REVIEW_MODIFIER = 500

@@ -33,6 +33,8 @@ METADATA_PACKAGE_FILES = (
     ('metadata/file_metadata_overrides.json', 'file_metadata_overrides'),
     ('metadata/anime_metadata.json', 'anime_metadata'),
     ('metadata/anime_metadata_overrides.json', 'anime_metadata_overrides'),
+    ('metadata/animethemes_metadata.json', 'animethemes_metadata'),
+    ('metadata/anisongdb_metadata.json', 'anisongdb_metadata'),
     ('metadata/anidb_metadata.json', 'anidb_metadata'),
     ('metadata/ai_metadata.json', 'ai_metadata'),
     ('metadata/anilist_metadata.json', 'anilist_metadata'),
@@ -57,6 +59,18 @@ def _persist_imported_metadata():
     This must be synchronous.  A debounced save followed by ``load_metadata``
     reloads the old files and discards the freshly imported in-memory data.
     """
+    if state.metadata.animethemes_metadata:
+        from _app_scripts.theme import animethemes
+
+        animethemes.build_indexes(force=True)
+        animethemes.sync_catalog_to_metadata()
+    if state.metadata.anisongdb_metadata:
+        from _app_scripts.theme import anisongdb
+
+        anisongdb.build_indexes(force=True)
+        anisongdb.sync_catalog_to_metadata()
+    metadata_io.save_animethemes_metadata()
+    metadata_io.save_anisongdb_metadata()
     metadata_io.save_metadata(immediate=True)
     metadata_io.load_metadata()
 
@@ -87,7 +101,7 @@ def import_data_from_package(source, is_local=False, prompt=True):
         confirm = messagebox.askyesno(
             "Import Metadata Package",
             f"This will download and merge metadata from {source_text}\n\n"
-            f"All metadata files (anime, anidb, ai, anilist) will be merged with your existing data.{delete_text}\n\n"
+            f"All metadata files (anime, AniSongDB, AniDB, AI, AniList) will be merged with your existing data.{delete_text}\n\n"
             "Continue?"
         )
 

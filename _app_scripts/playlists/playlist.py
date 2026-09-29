@@ -272,7 +272,7 @@ def new_playlist(playlis, name=None):
     if playlis and len(playlis) > 0:
         first_entry = playlis[0]
         first_filename = entry_paths.get_clean_filename(first_entry)
-        if (cache_download.is_animethemes_stream_file(first_filename)
+        if (cache_download.is_remote_theme_file(first_filename)
                 and not cache_download.check_file_availability(first_filename)):
             threading.Thread(
                 target=lambda: cache_download.download_to_cache(first_filename, silent=False),
@@ -306,7 +306,7 @@ def create_infinite_playlist(include_non_local=None):
     if playlist["playlist"] and len(playlist["playlist"]) > 0:
         first_entry = playlist["playlist"][0]
         first_filename = entry_paths.get_clean_filename(first_entry)
-        if (cache_download.is_animethemes_stream_file(first_filename)
+        if (cache_download.is_remote_theme_file(first_filename)
                 and not cache_download.check_file_availability(first_filename)):
             threading.Thread(
                 target=lambda: cache_download.download_to_cache(first_filename, silent=False),
@@ -539,9 +539,11 @@ def deduplicate_theme_versions(filenames, keep_versions=False):
             deduplicated_set.add(best_file)
 
     result = []
+    result_set = set()
     for filename in filenames:
-        if filename in deduplicated_set and filename not in result:
+        if filename in deduplicated_set and filename not in result_set:
             result.append(filename)
+            result_set.add(filename)
 
     return result
 
@@ -555,7 +557,11 @@ def get_directory_files(include_non_local=False, deduplicate_files=False, dedupl
         for f in filename_to_mal:
             if '.' not in f:
                 continue
-            if f in directory_files or not cache_download.is_animethemes_stream_file(f):
+            if (
+                f in directory_files
+                or cache_download.is_anisongdb_alternate_file(f)
+                or not cache_download.is_remote_theme_file(f)
+            ):
                 continue
             non_local_files.append(f)
         all_files = list(directory_files.keys()) + non_local_files

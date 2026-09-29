@@ -299,6 +299,28 @@ def choose_peek_direction():
     peek_light_direction = new_dir
 
 
+def redraw_active_reveal():
+    """Re-lay out the active reveal overlay at its last drawn parameters.
+
+    Every renderer positions its panels against the letterboxed video rect, so
+    a draw made while that rect was unknown or belonged to another file has to
+    be redone once the real one is available. Called from the playback-restart
+    hook: a queued reveal round draws its cover *before* the file is loaded so
+    no frame can leak, and at that point mpv has not yet reported the incoming
+    file's size. The filter variants are applied by mpv to the video itself, so
+    they need no re-layout.
+    """
+    if peek_overlay.peek_overlay1:
+        peek_overlay.toggle_peek_overlay(**peek_overlay.last_peek_params)
+    elif edge_overlay.edge_overlay_box:
+        edge_overlay.toggle_edge_overlay(
+            block_percent=edge_overlay.last_edge_block_percent)
+    elif grow_overlay.grow_overlay_boxes:
+        grow_overlay.toggle_grow_overlay(
+            block_percent=grow_overlay.last_grow_block_percent,
+            position=grow_overlay.grow_position or "center")
+
+
 def render_reveal_progress(progress):
     """Re-render whichever reveal overlay is currently active at ``progress``
     using the lightning question-phase mapping. Shared by the lightning ticker

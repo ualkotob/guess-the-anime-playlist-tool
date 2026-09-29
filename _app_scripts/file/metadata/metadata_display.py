@@ -92,6 +92,27 @@ def open_animethemes_anime_page(slug):
     url = f"https://animethemes.moe/anime/{slug}"
     webbrowser.open(url)
 
+def open_anisongdb_page():
+    """Open AniSongDB's search UI.
+
+    AniSongDB does not currently expose stable browser detail routes for its
+    ANN, ANN-song, or AMQ-song IDs, so the external-site entry opens its
+    official search page instead of constructing a URL that would 404.
+    """
+    webbrowser.open("https://anisongdb.com/")
+
+def has_anisongdb_identity(data):
+    """Return whether metadata is linked to an AniSongDB anime or song row."""
+    data = data or {}
+    return any(
+        data.get(key) is not None
+        for key in (
+            "anisongdb_ann_id",
+            "anisongdb_ann_song_id",
+            "anisongdb_amq_song_id",
+        )
+    )
+
 def open_anidb_page(anidb_id):
     url = f"https://anidb.net/anime/{anidb_id}"
     webbrowser.open(url)
@@ -143,6 +164,26 @@ def _build_web_series_themes(data, playing_filename):
             filename, None, (), _cur_idx, prepared_history=_play_history
         )[0]
 
+    def _serialize_file(filename):
+        play_info = _file_play_info(filename)
+        return {
+            "filename": filename,
+            "plays": play_info["count"],
+            "plays_ago": play_info["ago"],
+            "lightning_plays": play_info["lightning"],
+            "favorited": bool(playlist_marks.check_favorited(filename)),
+            "file_props": get_file_props_label(filename),
+            "is_playing": filename == playing_filename,
+        }
+
+    def _ordered_file_options(primary, filenames):
+        ordered = list(dict.fromkeys(filenames))
+        if primary:
+            if primary in ordered:
+                ordered.remove(primary)
+            ordered.insert(0, primary)
+        return [_serialize_file(filename) for filename in ordered]
+
     def _serialize_anime(anime_dict, anime_id, is_playing_anime):
         mal_key = str(anime_id)
         theme_list = list(anime_dict.get("songs", []))
@@ -182,10 +223,17 @@ def _build_web_series_themes(data, playing_filename):
                         v_num = v.get("version")
                         if len(versions) == 1:
                             v_fn = get_theme_filename(mal_key, theme_slug, v_num)
+                            v_filenames = get_theme_filenames(mal_key, theme_slug, v_num)
                         else:
                             v_fn = get_theme_filename(mal_key, theme_slug, v_num, need_version=True)
+                            v_filenames = get_theme_filenames(
+                                mal_key, theme_slug, v_num, need_version=True
+                            )
                             if v_num == 1 and not v_fn:
                                 v_fn = get_theme_filename(mal_key, theme_slug, None, need_version=True)
+                                v_filenames = get_theme_filenames(
+                                    mal_key, theme_slug, None, need_version=True
+                                )
 
                         is_playing_ver = False
                         if is_playing_theme and v_fn:
@@ -195,31 +243,41 @@ def _build_web_series_themes(data, playing_filename):
                             except (TypeError, ValueError):
                                 is_playing_ver = (v_fn == playing_filename)
 
-                        v_play_info = _file_play_info(v_fn)
+                        v_files = _ordered_file_options(v_fn, v_filenames)
+                        primary_file = v_files[0] if v_files else None
                         serialized_versions.append({
                             "version": v_num,
                             "episodes": v.get("episodes"),
                             "flags": _get_version_flags(v),
                             "filename": v_fn,
-                            "plays": v_play_info["count"],
-                            "plays_ago": v_play_info["ago"],
-                            "lightning_plays": v_play_info["lightning"],
-                            "favorited": bool(playlist_marks.check_favorited(v_fn)) if v_fn else False,
-                            "file_props": get_file_props_label(v_fn) if v_fn else "",
-                            "is_playing": bool(is_playing_ver),
+                            "plays": primary_file["plays"] if primary_file else 0,
+                            "plays_ago": primary_file["plays_ago"] if primary_file else None,
+                            "lightning_plays": primary_file["lightning_plays"] if primary_file else 0,
+                            "favorited": primary_file["favorited"] if primary_file else False,
+                            "file_props": primary_file["file_props"] if primary_file else "",
+                            "is_playing": bool(
+                                is_playing_ver
+                                or any(file_info["is_playing"] for file_info in v_files)
+                            ),
+                            "files": v_files,
                         })
 
                 _th_artists = theme.get("artist") or []
-                theme_play_info = _file_play_info(fn)
+                theme_files = _ordered_file_options(
+                    fn, get_theme_filenames(mal_key, theme_slug)
+                )
+                primary_theme_file = theme_files[0] if theme_files else None
                 themes_out.append({
                     "slug": theme_slug,
                     "overall_suffix": overall_suffix,
                     "title": theme.get("title"),
                     "filename": fn,
-                    "plays": theme_play_info["count"],
-                    "plays_ago": theme_play_info["ago"],
-                    "lightning_plays": theme_play_info["lightning"],
-                    "favorited": bool(playlist_marks.check_favorited(fn)) if fn else False,
+                    "plays": primary_theme_file["plays"] if primary_theme_file else 0,
+                    "plays_ago": primary_theme_file["plays_ago"] if primary_theme_file else None,
+                    "lightning_plays": primary_theme_file["lightning_plays"] if primary_theme_file else 0,
+                    "favorited": primary_theme_file["favorited"] if primary_theme_file else False,
+                    "file_props": primary_theme_file["file_props"] if primary_theme_file else "",
+                    "files": theme_files,
                     "artists": _th_artists,
                     "artists_str": metadata_fetch.get_artists_string(_th_artists, total=False),
                     "is_playing": bool(is_playing_theme),
@@ -777,6 +835,8 @@ def get_overall_theme_number(filename):
         return None
     
     target_slug = data.get("slug")
+    if not target_slug:
+        return None
     slug_extra = get_slug_extra(target_slug)
     theme_type = target_slug[:2]  # "OP" or "ED"
     if theme_type not in ["OP", "ED"]:
@@ -796,9 +856,10 @@ def get_overall_theme_number(filename):
     else:
         related_anime = get_all_theme_from_series(data)
     
-    is_parody = "Parody" in data.get("themes", [])
+    is_parody = "Parody" in (data.get("themes") or [])
 
     def clean_title(title):
+        title = title or ""
         for end in [" (TV)", " 1st", ":", " no Kajitsu"]:
             title = title.split(end)[0]
         return title
@@ -813,7 +874,7 @@ def get_overall_theme_number(filename):
         theme_gap = 0
         anime_title = clean_title(anime.get("title"))
         anime_display_title = clean_title(get_display_title(anime))
-        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in anime.get("themes")) and information_popup.get_format(data) == information_popup.get_format(anime)):
+        if (has_same_start(data.get("title"), anime.get("title"), length=1) or has_same_start(get_display_title(data), get_display_title(anime), length=1)) and not is_game(anime) and (is_parody == ("Parody" in (anime.get("themes") or [])) and information_popup.get_format(data) == information_popup.get_format(anime)):
             if not base_title or not display_base_title:
                 if anime_title in data.get("title"):
                     base_title = anime_title
@@ -861,6 +922,8 @@ def get_slug_extra(slug):
     return slug_extra
 
 def has_same_start(s1, s2, length=3):
+    if not isinstance(s1, str) or not isinstance(s2, str):
+        return False
     return s1[:length].lower() == s2[:length].lower()
 
 def get_filenames_from_artist(match):
@@ -1029,7 +1092,7 @@ def _collect_theme_filenames(mal_id, slug, version=None, need_version=False):
         # Always include "null"-versioned files (local files with no explicit version tag)
         if version_str == "null":
             for filename in files_dict.keys():
-                if filename in state.metadata.directory_files or cache_download.is_animethemes_stream_file(filename):
+                if filename in state.metadata.directory_files or cache_download.is_remote_theme_file(filename):
                     found_filenames.append(filename)
             continue
         file_version = int(version_str) if version_str.isdigit() else None
@@ -1042,7 +1105,7 @@ def _collect_theme_filenames(mal_id, slug, version=None, need_version=False):
             if not (version == 1 and version_str == "1"):
                 continue
         for filename in files_dict.keys():
-            if filename in state.metadata.directory_files or cache_download.is_animethemes_stream_file(filename):
+            if filename in state.metadata.directory_files or cache_download.is_remote_theme_file(filename):
                 found_filenames.append(filename)
     return found_filenames
 
@@ -1065,22 +1128,20 @@ def get_theme_filenames(mal_id, slug, version=None, need_version=False):
     found_filenames = list(dict.fromkeys(_collect_theme_filenames(mal_id, slug, version, need_version)))
     if not found_filenames:
         return []
-    local_files = [f for f in found_filenames if f in state.metadata.directory_files]
-    if local_files:
-        found_filenames = local_files
     files_with_props = []
     for f in found_filenames:
         file_data = metadata_fetch.get_file_metadata_by_name(f)
         props = file_data.get("file_properties", {}) if file_data else {}
         files_with_props.append((f, props))
     def sort_key(item):
-        _, props = item
+        filename, props = item
+        local = 1 if filename in state.metadata.directory_files else 0
         res = props.get("resolution", 0)
         if not isinstance(res, (int, float)):
             res = 0
         lyrics = 1 if props.get("lyrics") else 0
         not_nc = 1 if not props.get("nc") else 0
-        return (-res, -lyrics, -not_nc)
+        return (-local, -res, -lyrics, -not_nc)
     files_with_props.sort(key=sort_key)
     return [f for f, _ in files_with_props]
 

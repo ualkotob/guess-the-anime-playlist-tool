@@ -65,7 +65,7 @@ _atomic_json_write = utils._atomic_json_write
 # render it; the save/load loops below reference the local `SETTINGS_SCHEMA`.
 # =============================================
 SETTINGS_SCHEMA = [
-    {"key": "volume_level",                    "config_key": "volume_level",                    "label": "Volume Level:",              "type": "int",      "default": 100,   "width": 10, "state": "controls", "tooltip": "Master volume level for all audio playback (0-100)."},
+    {"key": "volume_level",                    "config_key": "volume_level",                    "label": "Volume Level:",              "type": "int",      "default": 100,   "width": 10, "min": 0, "max": 200, "state": "controls", "tooltip": "Master volume level for all audio playback (0-200)."},
     {"key": "stream_volume_boost",             "config_key": "stream_volume_boost",             "label": "Stream Volume Boost:",       "type": "int",      "default": 0,     "width": 10, "state": "controls", "tooltip": "Additional volume boost specifically for stream audio from YouTube clips/trailers."},
     {"key": "bgm_volume","config_key": "bgm_volume","label": "BGM Volume:",     "type": "float",    "default": 1.0,   "width": 10, "min": 0.0, "max": 1.5, "state": "controls", "tooltip": "Volume multiplier for background music (0.0 - 1.5). Scales the dB curve output."},
     {"key": "themes_cache_size",               "config_key": "themes_cache_size",               "label": "Themes Cache Size (MB):",    "type": "int",      "default": 500,   "width": 10, "min": 0,   "state": "config", "after_save": "trim_themes_cache", "tooltip": "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."},
@@ -103,6 +103,7 @@ SETTINGS_SCHEMA = [
     # Scoreboard
     {"key": "LAUNCH_SCOREBOARD_ON_STARTUP", "config_key": "launch_scoreboard_on_startup", "label": "Auto-start Scoreboard:", "type": "bool", "default": False, "requires_scoreboard": True, "state": "config", "tooltip": "Automatically launch the scoreboard when the app starts."},
     {"key": "AUTO_EXIT_SCOREBOARD",         "config_key": "auto_exit_scoreboard",         "label": "Auto-exit Scoreboard:",  "type": "bool", "default": False, "requires_scoreboard": True, "state": "config", "tooltip": "Automatically close the scoreboard when this app exits."},
+    {"key": "SYNC_SCOREBOARD_COLORS", "config_key": "sync_scoreboard_colors", "label": "Sync Scoreboard Colors:", "type": "bool", "default": True, "requires_scoreboard": True, "state": "config", "tooltip": "Keep the scoreboard's background and text colors synchronized with the app. When disabled, the app never sends colors to the scoreboard."},
     # Web server
     {"key": "WEB_SERVER_ENABLED", "config_key": "web_server_enabled", "label": "Auto-start Web Server:", "type": "bool", "default": False, "requires_tunnel": True, "state": "config", "tooltip": "Automatically start the web answer server when the app launches. Can also be started/stopped manually from the Bonus Questions menu."},
     {"key": "NGROK_DOMAIN",       "config_key": "ngrok_domain",       "label": "Ngrok Domain:",          "type": "str",      "default": "", "width": 30, "requires_ngrok": True, "state": "config", "tooltip": "Your ngrok static domain (e.g. your-name.ngrok-free.app). Exposes the web server publicly. Requires ngrok.exe on PATH."},
@@ -331,6 +332,13 @@ def load_config():
             _type_cast = {"int": int, "float": float, "bool": bool}
             for _s in SETTINGS_SCHEMA:
                 _val = config.get(_s["config_key"], _s["default"])
+                if (
+                    _s["key"] == "SYNC_SCOREBOARD_COLORS"
+                    and _s["config_key"] not in config
+                ):
+                    _val = config.get(
+                        "apply_scoreboard_colors_each_theme", _s["default"]
+                    )
                 _cast = _type_cast.get(_s["type"])
                 _v = _cast(_val) if _cast else _val
                 setattr(getattr(state, _s["state"]), _s["key"], _v)
@@ -411,7 +419,8 @@ def load_config():
             state.colors.INVERSE_OVERLAY_BACKGROUND_COLOR = config.get("text_color", "white")
             state.colors.INVERSE_OVERLAY_TEXT_COLOR = config.get("back_color", "black")
             state.colors.MIDDLE_OVERLAY_BACKGROUND_COLOR = utils.interpolate_color(state.colors.OVERLAY_BACKGROUND_COLOR, state.colors.INVERSE_OVERLAY_BACKGROUND_COLOR, 0.6)
-            scoreboard_control.send_colors(state.colors.OVERLAY_BACKGROUND_COLOR, state.colors.OVERLAY_TEXT_COLOR)
+            if state.config.SYNC_SCOREBOARD_COLORS:
+                scoreboard_control.send_colors(state.colors.OVERLAY_BACKGROUND_COLOR, state.colors.OVERLAY_TEXT_COLOR)
             state.update_timestamps.metadata_last_updated = config.get("metadata_last_updated", 0)
             state.update_timestamps.censors_last_updated = config.get("censors_last_updated", 0)
             # Popout layout — None means "use default"

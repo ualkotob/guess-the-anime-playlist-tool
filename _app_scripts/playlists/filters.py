@@ -40,9 +40,14 @@ INT_INF = float('inf')
 
 filter_popup = None
 DEFAULT_INFINITE_FILTER_NAME = "Default Infinite Playlist Filter"
+DEFAULT_THEME_TYPE = "Opening + Ending"
+THEME_TYPE_OPTIONS = [DEFAULT_THEME_TYPE, "Opening", "Ending", "Insert", "All"]
+ANISONGDB_RISK_WITHOUT_CENSORS = "ASDB NSFW (Without Censors)"
+ANISONGDB_RISK_WITH_CENSORS = "ASDB NSFW (With Censors)"
 DEFAULT_INFINITE_FILTER = {
     "themes_exclude": [
         "OVERLAP (Without Censors)", "NSFW (Without Censors)",
+        ANISONGDB_RISK_WITHOUT_CENSORS,
         "TRANSITION (Without Censors)", "MOVIE EDs (Without Censors)",
     ],
     "playlist_filter_exclude": ["Tagged Themes", "New Themes"],
@@ -52,6 +57,7 @@ THEME_FILTER_OPTIONS = [
     "DUPLICATES", "LATER VERSIONS",
     "OVERLAP (Without Censors)", "OVERLAP (With Censors)",
     "NSFW (Without Censors)", "NSFW (With Censors)",
+    ANISONGDB_RISK_WITHOUT_CENSORS, ANISONGDB_RISK_WITH_CENSORS,
     "SPOILER (Without Censors)", "SPOILER (With Censors)",
     "TRANSITION (Without Censors)", "TRANSITION (With Censors)",
     "MOVIE EDs (Without Censors)", "MOVIE EDs (With Censors)",
@@ -172,11 +178,13 @@ def normalize_filter(filters, *, strict=False):
                 normalized["keywords"] = value
 
     theme_type = source.get("theme_type")
-    if theme_type not in (None, "", "Both"):
-        if theme_type in {"Opening", "Ending"}:
+    if theme_type not in (None, "", "Both", DEFAULT_THEME_TYPE):
+        if theme_type in {"Opening", "Ending", "Insert", "All"}:
             normalized["theme_type"] = theme_type
         else:
-            errors.append("theme_type must be Both, Opening, or Ending")
+            errors.append(
+                "theme_type must be Opening + Ending, Opening, Ending, Insert, or All"
+            )
 
     for key in FILTER_FLOAT_KEYS | FILTER_INT_KEYS:
         if key not in source or source.get(key) in (None, ""):
@@ -251,12 +259,46 @@ def get_filter_name(key, value):
     return value.get("name")
 
 
+def upgrade_default_infinite_filter(filter_dict):
+    """Add new safety defaults only when a filter is the untouched old default."""
+    if not isinstance(filter_dict, dict):
+        return False
+    migrated_filter = copy.deepcopy(filter_dict)
+    utils._migrate_theme_flags(migrated_filter)
+    if migrated_filter == DEFAULT_INFINITE_FILTER:
+        if filter_dict == DEFAULT_INFINITE_FILTER:
+            return False
+        filter_dict.clear()
+        filter_dict.update(copy.deepcopy(DEFAULT_INFINITE_FILTER))
+        return True
+    legacy_default = copy.deepcopy(DEFAULT_INFINITE_FILTER)
+    legacy_default["themes_exclude"].remove(ANISONGDB_RISK_WITHOUT_CENSORS)
+    if migrated_filter != legacy_default:
+        return False
+    filter_dict.clear()
+    filter_dict.update(copy.deepcopy(DEFAULT_INFINITE_FILTER))
+    return True
+
+
 
 def ensure_default_infinite_filter_saved():
-    """Create the default infinite playlist filter preset if it is missing."""
+    """Create the default preset, or safely upgrade an untouched old default."""
     existing_filters = get_all_filters()
     for filter_data in existing_filters.values():
         if filter_data.get("name") == DEFAULT_INFINITE_FILTER_NAME:
+            if upgrade_default_infinite_filter(filter_data.get("filter")):
+                filter_path = os.path.join(
+                    FILTERS_FOLDER, f"{DEFAULT_INFINITE_FILTER_NAME}.json"
+                )
+                utils._atomic_json_write(
+                    filter_path,
+                    {
+                        "name": DEFAULT_INFINITE_FILTER_NAME,
+                        "filter": copy.deepcopy(DEFAULT_INFINITE_FILTER),
+                    },
+                    indent=4,
+                )
+                return True
             return False
     os.makedirs(FILTERS_FOLDER, exist_ok=True)
     filter_path = os.path.join(FILTERS_FOLDER, f"{DEFAULT_INFINITE_FILTER_NAME}.json")
@@ -333,6 +375,106 @@ def filters():
     show_filter_popup()
 
 
+def _season_sort_key(season):
+    try:
+        part, year = season.split()
+        return int(year), {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}.get(part, 99)
+    except (AttributeError, TypeError, ValueError):
+        return 9999, 99
+
+
+def _aggregate_filter_metadata(playlis):
+    """Collect filter options and numeric ranges in one pass over each title.
+
+    A playlist can contain several video versions and several themes for the
+    same anime. All fields used here are anime-level fields, so processing the
+    first file for each metadata entry is sufficient and avoids repeatedly
+    walking the same (potentially very large) song list.
+    """
+    if not metadata_fetch.filename_to_mal:
+        metadata_fetch.build_filename_to_mal_map()
+
+    seasons = set()
+    artists = set()
+    studios = set()
+    tags = set()
+    numeric_values = {
+        "score": [],
+        "rank": [],
+        "members": [],
+        "popularity": [],
+    }
+    seen_entries = set()
+
+    for filename in playlis:
+        lookup = metadata_fetch.filename_to_mal.get(filename)
+        if lookup is None:
+            lookup = metadata_fetch.filename_to_mal.get(os.path.splitext(filename)[0])
+        identity = (
+            ("metadata", str(lookup.get("mal_id")))
+            if isinstance(lookup, dict) and lookup.get("mal_id") is not None
+            else ("file", filename)
+        )
+        if identity in seen_entries:
+            continue
+        seen_entries.add(identity)
+
+        data = metadata_fetch.get_metadata(filename)
+        if not data:
+            continue
+        season = data.get("season")
+        if season:
+            seasons.add(season)
+
+        for key, values in numeric_values.items():
+            value = data.get(key)
+            if value is None:
+                continue
+            try:
+                values.append(float(value) if key == "score" else int(value))
+            except (TypeError, ValueError, OverflowError):
+                continue
+
+        for song in data.get("songs") or []:
+            if not isinstance(song, dict):
+                continue
+            artists.update(
+                artist
+                for artist in (song.get("artist") or [])
+                if isinstance(artist, str) and artist
+            )
+        studios.update(
+            studio
+            for studio in (data.get("studios") or [])
+            if isinstance(studio, str) and studio
+        )
+        tags.update(
+            tag
+            for tag in information_popup.get_tags(data)
+            if isinstance(tag, str) and tag
+        )
+
+    def value_range(key, fallback_min=0, fallback_max=0):
+        values = numeric_values[key]
+        return {
+            "min": min(values) if values else fallback_min,
+            "max": max(values) if values else fallback_max,
+        }
+
+    return {
+        "seasons": sorted(seasons, key=_season_sort_key),
+        "artists": sorted(artists, key=str.lower),
+        "studios": sorted(studios, key=str.lower),
+        "tags": sorted(tags, key=str.lower),
+        "ranges": {
+            "score": value_range("score", 0, 10),
+            "rank": value_range("rank"),
+            "members": value_range("members"),
+            "popularity": value_range("popularity"),
+        },
+    }
+
+
 def show_filter_popup():
     """Opens a properly formatted, scrollable popup for filtering the playlist."""
     global filter_popup
@@ -342,6 +484,8 @@ def show_filter_popup():
         playlis = playlist_ops.get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=False, deduplicate_versions=False)
     else:
         playlis = playlist["playlist"]
+    aggregate = _aggregate_filter_metadata(playlis)
+    ranges = aggregate["ranges"]
 
     def update_score_range(event=None):
         min_score = min_score_slider.get()
@@ -374,8 +518,9 @@ def show_filter_popup():
         scrollbar = tk.Scrollbar(label_and_list, command=listbox.yview, bg="black")
         scrollbar.pack(side="right", fill="y")
         listbox.config(yscrollcommand=scrollbar.set)
-        for item in data:
-            listbox.insert(tk.END, item)
+        if data:
+            listbox.insert(tk.END, *data)
+        listbox._filter_indices = {item: index for index, item in enumerate(data)}
 
         def on_mousewheel(event):
             listbox.yview_scroll(-1 if event.delta > 0 else 1, "units")
@@ -435,10 +580,10 @@ def show_filter_popup():
 
     tk.Label(theme_type_frame, text="THEME TYPE:", bg=BACKGROUND_COLOR, fg="white").pack(side="left", padx=(0, 7))
 
-    theme_var = tk.StringVar(value="Both")
+    theme_var = tk.StringVar(value=DEFAULT_THEME_TYPE)
     theme_type_combobox = ttk.Combobox(
         theme_type_frame, textvariable=theme_var,
-        values=["Both", "Opening", "Ending"], width=20,
+        values=THEME_TYPE_OPTIONS, width=20,
         style="Black.TCombobox", state="readonly",
     )
     theme_type_combobox.pack(side="left", fill="x", expand=True)
@@ -446,23 +591,29 @@ def show_filter_popup():
     score_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
     score_frame.pack(fill="x", pady=5)
     tk.Label(score_frame, text="SCORE\nRANGE", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
-    lowest_score = get_lowest_parameter("score", playlis)
-    highest_score = get_highest_parameter("score", playlis)
+    lowest_score = ranges["score"]["min"]
+    highest_score = ranges["score"]["max"]
     min_score_slider = tk.Scale(score_frame, from_=0, to=10, resolution=0.1, orient="horizontal", bg="black", fg="white", command=update_score_range)
     min_score_slider.pack(fill="x")
     max_score_slider = tk.Scale(score_frame, from_=0, to=10, resolution=0.1, orient="horizontal", bg="black", fg="white", command=update_score_range)
     max_score_slider.pack(fill="x")
 
-    rank_entry = filter_entry_range("RANK               ", left_column, get_highest_parameter("rank", playlis), get_lowest_parameter("rank", playlis))
-    members_entry = filter_entry_range("MEMBERS       ", left_column, get_lowest_parameter("members", playlis), get_highest_parameter("members", playlis))
-    popularity_entry = filter_entry_range("POPULARITY  ", left_column, get_highest_parameter("popularity", playlis), get_lowest_parameter("popularity", playlis))
+    lowest_rank, highest_rank = ranges["rank"]["min"], ranges["rank"]["max"]
+    lowest_members, highest_members = ranges["members"]["min"], ranges["members"]["max"]
+    lowest_popularity = ranges["popularity"]["min"]
+    highest_popularity = ranges["popularity"]["max"]
+    rank_entry = filter_entry_range("RANK               ", left_column, highest_rank, lowest_rank)
+    members_entry = filter_entry_range("MEMBERS       ", left_column, lowest_members, highest_members)
+    popularity_entry = filter_entry_range(
+        "POPULARITY  ", left_column, highest_popularity, lowest_popularity
+    )
 
     season_frame = tk.Frame(left_column, bg=BACKGROUND_COLOR)
     season_frame.pack(fill="x", pady=(5, 10))
 
     tk.Label(season_frame, text="AIRED:   ", bg=BACKGROUND_COLOR, fg="white").pack(side="left")
 
-    all_seasons = get_all_seasons(playlis)
+    all_seasons = aggregate["seasons"]
 
     season_start_var = tk.StringVar()
     season_end_var = tk.StringVar()
@@ -489,9 +640,13 @@ def show_filter_popup():
     themes_include_listbox = filter_entry_listbox("THEMES\nINCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     themes_exclude_listbox = filter_entry_listbox("THEMES\nEXCLUDE\n(OR)", left_column, theme_exclude_options, height=4)
     playlist_exclude_listbox = filter_entry_listbox("PLAYLISTS\nEXCLUDE\n(OR)", right_column, available_playlists, height=4)
-    artists_listbox = filter_entry_listbox("ARTISTS\nINCLUDE\n(OR)", right_column, get_all_artists(playlis))
-    studio_listbox = filter_entry_listbox("STUDIOS\nINCLUDE\n(OR)", right_column, get_all_studios(playlis))
-    all_tags = get_all_tags(playlis)
+    artists_listbox = filter_entry_listbox(
+        "ARTISTS\nINCLUDE\n(OR)", right_column, aggregate["artists"]
+    )
+    studio_listbox = filter_entry_listbox(
+        "STUDIOS\nINCLUDE\n(OR)", right_column, aggregate["studios"]
+    )
+    all_tags = aggregate["tags"]
     tags_listbox = filter_entry_listbox("TAGS\nINCLUDE\n(OR)", right_column, all_tags)
     tags_and_listbox = filter_entry_listbox("TAGS\nINCLUDE\n(AND)", right_column, all_tags)
     excluded_tags_listbox = filter_entry_listbox("TAGS\nEXCLUDE\n(OR)", right_column, all_tags)
@@ -502,23 +657,26 @@ def show_filter_popup():
             filter_data["playlist_filter"] = [filter_data["playlist_filter"]]
         keywords_entry.delete("1.0", tk.END)
         keywords_entry.insert("1.0", filter_data.get("keywords", ""))
-        theme_var.set(filter_data.get("theme_type", "Both"))
+        selected_theme_type = filter_data.get("theme_type", DEFAULT_THEME_TYPE)
+        if selected_theme_type == "Both":
+            selected_theme_type = DEFAULT_THEME_TYPE
+        theme_var.set(selected_theme_type)
         min_score_slider.set(filter_data.get("score_min", lowest_score))
         max_score_slider.set(filter_data.get("score_max", highest_score))
         rank_entry["min"].delete(0, tk.END)
-        rank_entry["min"].insert(0, filter_data.get("rank_min", get_highest_parameter("rank", playlis)))
+        rank_entry["min"].insert(0, filter_data.get("rank_min", highest_rank))
         rank_entry["max"].delete(0, tk.END)
-        rank_entry["max"].insert(0, filter_data.get("rank_max", get_lowest_parameter("rank", playlis)))
+        rank_entry["max"].insert(0, filter_data.get("rank_max", lowest_rank))
         season_start_var.set(filter_data.get("season_min", all_seasons[0] if all_seasons else ""))
         season_end_var.set(filter_data.get("season_max", all_seasons[-1] if all_seasons else ""))
         members_entry["min"].delete(0, tk.END)
-        members_entry["min"].insert(0, filter_data.get("members_min", get_lowest_parameter("members", playlis)))
+        members_entry["min"].insert(0, filter_data.get("members_min", lowest_members))
         members_entry["max"].delete(0, tk.END)
-        members_entry["max"].insert(0, filter_data.get("members_max", get_highest_parameter("members", playlis)))
+        members_entry["max"].insert(0, filter_data.get("members_max", highest_members))
         popularity_entry["min"].delete(0, tk.END)
-        popularity_entry["min"].insert(0, filter_data.get("popularity_min", get_highest_parameter("popularity", playlis)))
+        popularity_entry["min"].insert(0, filter_data.get("popularity_min", highest_popularity))
         popularity_entry["max"].delete(0, tk.END)
-        popularity_entry["max"].insert(0, filter_data.get("popularity_max", get_lowest_parameter("popularity", playlis)))
+        popularity_entry["max"].insert(0, filter_data.get("popularity_max", lowest_popularity))
         for listbox, key in [
             (playlist_listbox, "playlist_filter"),
             (playlist_and_listbox, "playlist_filter_and"),
@@ -534,9 +692,10 @@ def show_filter_popup():
             listbox.selection_clear(0, tk.END)
             if not force_defaults and key in filter_data:
                 values = filter_data[key]
-                for i in range(listbox.size()):
-                    if listbox.get(i) in values:
-                        listbox.selection_set(i)
+                for value in values:
+                    index = listbox._filter_indices.get(value)
+                    if index is not None:
+                        listbox.selection_set(index)
 
     set_default_values()
 
@@ -555,12 +714,14 @@ def show_filter_popup():
         if playlist_and_listbox.curselection(): f["playlist_filter_and"] = [playlist_and_listbox.get(i) for i in playlist_and_listbox.curselection()]
         if playlist_exclude_listbox.curselection(): f["playlist_filter_exclude"] = [playlist_exclude_listbox.get(i) for i in playlist_exclude_listbox.curselection()]
         if keywords_entry.get("1.0", "end-1c").strip() != "": f['keywords'] = str(keywords_entry.get("1.0", "end-1c").strip())
-        if theme_var.get() != "Both": f['theme_type'] = str(theme_var.get())
+        if theme_var.get() != DEFAULT_THEME_TYPE: f['theme_type'] = str(theme_var.get())
         if float(min_score_slider.get()) != round(lowest_score, 1): f['score_min'] = float(min_score_slider.get())
         if float(max_score_slider.get()) != round(highest_score, 1): f['score_max'] = float(max_score_slider.get())
-        f = assign_filter_range_value(f, 'rank', rank_entry, get_highest_parameter("rank", playlis), get_lowest_parameter("rank", playlis))
-        f = assign_filter_range_value(f, 'members', members_entry, get_lowest_parameter("members", playlis), get_highest_parameter("members", playlis))
-        f = assign_filter_range_value(f, 'popularity', popularity_entry, get_highest_parameter("popularity", playlis), get_lowest_parameter("popularity", playlis))
+        f = assign_filter_range_value(f, 'rank', rank_entry, highest_rank, lowest_rank)
+        f = assign_filter_range_value(f, 'members', members_entry, lowest_members, highest_members)
+        f = assign_filter_range_value(
+            f, 'popularity', popularity_entry, highest_popularity, lowest_popularity
+        )
         if all_seasons and season_start_var.get() != all_seasons[0]: f["season_min"] = season_start_var.get()
         if all_seasons and season_end_var.get() != all_seasons[-1]: f["season_max"] = season_end_var.get()
         if themes_exclude_listbox.curselection(): f["themes_exclude"] = [themes_exclude_listbox.get(i) for i in themes_exclude_listbox.curselection()]
@@ -679,14 +840,13 @@ def get_highest_parameter(parameter, playlis=None):
 
 
 def get_all_artists(playlis):
-    artists = []
+    artists = set()
     for filename in playlis:
         data = metadata_fetch.get_metadata(filename)
         if data:
             for song in data.get('songs', []):
                 for artist in song.get("artist", []):
-                    if artist not in artists:
-                        artists.append(artist)
+                    artists.add(artist)
     return sorted(artists, key=str.lower)
 
 
@@ -795,14 +955,6 @@ def _editor_source_and_filter():
     return list(live), {}
 
 
-def _season_sort_key(season):
-    try:
-        part, year = season.split()
-        return int(year), {"Winter": 0, "Spring": 1, "Summer": 2, "Fall": 3}.get(part, 99)
-    except (AttributeError, TypeError, ValueError):
-        return 9999, 99
-
-
 def get_filter_editor_context(saved_name=None):
     """Build the host web editor's filter, option lists, and source token."""
     source, current_filter = _editor_source_and_filter()
@@ -813,42 +965,7 @@ def get_filter_editor_context(saved_name=None):
             raise FilterValidationError(["The selected saved filter no longer exists"])
         current_filter = selected_filter
 
-    seasons = set()
-    artists = set()
-    studios = set()
-    tags = set()
-    scores = []
-    ranks = []
-    members = []
-    popularity = []
-    for filename in source:
-        data = metadata_fetch.get_metadata(filename)
-        if not data:
-            continue
-        season = data.get("season")
-        if season:
-            seasons.add(season)
-        try:
-            if data.get("score") is not None:
-                scores.append(float(data["score"]))
-        except (TypeError, ValueError):
-            pass
-        for key, target in (("rank", ranks), ("members", members), ("popularity", popularity)):
-            try:
-                if data.get(key) is not None:
-                    target.append(int(data[key]))
-            except (TypeError, ValueError):
-                pass
-        for song in data.get("songs", []):
-            artists.update(a for a in song.get("artist", []) if isinstance(a, str) and a)
-        studios.update(s for s in data.get("studios", []) if isinstance(s, str) and s)
-        tags.update(t for t in information_popup.get_tags(data) if isinstance(t, str) and t)
-
-    def _range(values, fallback_min=0, fallback_max=0):
-        return {
-            "min": min(values) if values else fallback_min,
-            "max": max(values) if values else fallback_max,
-        }
+    aggregate = _aggregate_filter_metadata(source)
 
     saved_filters = sorted(
         (data.get("name") for data in get_all_filters().values() if data.get("name")),
@@ -866,18 +983,13 @@ def get_filter_editor_context(saved_name=None):
         "saved_filters": saved_filters,
         "options": {
             "playlists": playlists,
-            "seasons": sorted(seasons, key=_season_sort_key),
-            "artists": sorted(artists, key=str.lower),
-            "studios": sorted(studios, key=str.lower),
-            "tags": sorted(tags, key=str.lower),
+            "seasons": aggregate["seasons"],
+            "artists": aggregate["artists"],
+            "studios": aggregate["studios"],
+            "tags": aggregate["tags"],
             "theme_rules": list(THEME_FILTER_OPTIONS),
         },
-        "ranges": {
-            "score": _range(scores, 0, 10),
-            "rank": _range(ranks),
-            "members": _range(members),
-            "popularity": _range(popularity),
-        },
+        "ranges": aggregate["ranges"],
     }
 
 
@@ -1006,7 +1118,11 @@ def evaluate_filter(filters, playlis=None):
     has_playlist_filter_and = "playlist_filter_and" in filters
     has_playlist_filter_exclude = "playlist_filter_exclude" in filters
     has_keywords = "keywords" in filters
-    has_theme_type = "theme_type" in filters
+    # Theme-type filtering is always active. Historically an absent value (or
+    # the legacy value "Both") meant openings and endings; keep that behavior
+    # while making inserts explicitly opt-in.
+    filter_theme_type = filters.get("theme_type", DEFAULT_THEME_TYPE)
+    has_theme_type = filter_theme_type != "All"
     has_score_min = "score_min" in filters
     has_score_max = "score_max" in filters
     has_rank_min = "rank_min" in filters
@@ -1034,7 +1150,6 @@ def evaluate_filter(filters, playlis=None):
     filter_members_max = filters.get("members_max")
     filter_popularity_min = filters.get("popularity_min")
     filter_popularity_max = filters.get("popularity_max")
-    filter_theme_type = filters.get("theme_type")
     filter_season_min_tuple = utils._season_to_tuple(filters["season_min"]) if has_season_min else None
     filter_season_max_tuple = utils._season_to_tuple(filters["season_max"]) if has_season_max else None
 
@@ -1054,6 +1169,10 @@ def evaluate_filter(filters, playlis=None):
         themes_include_set = set(filters.get("themes_include", []))
         all_theme_filter_flags = themes_exclude_set | themes_include_set
         needs_nsfw_check = "NSFW (With Censors)" in all_theme_filter_flags or "NSFW (Without Censors)" in all_theme_filter_flags
+        needs_anisongdb_risk_check = (
+            ANISONGDB_RISK_WITH_CENSORS in all_theme_filter_flags
+            or ANISONGDB_RISK_WITHOUT_CENSORS in all_theme_filter_flags
+        )
         needs_overlap_check = "OVERLAP (With Censors)" in all_theme_filter_flags or "OVERLAP (Without Censors)" in all_theme_filter_flags
         needs_spoiler_check = "SPOILER (With Censors)" in all_theme_filter_flags or "SPOILER (Without Censors)" in all_theme_filter_flags
         needs_transition_check = "TRANSITION (With Censors)" in all_theme_filter_flags or "TRANSITION (Without Censors)" in all_theme_filter_flags
@@ -1155,8 +1274,19 @@ def evaluate_filter(filters, playlis=None):
                 continue
 
         if has_theme_type:
-            theme_type = utils.format_slug(data.get("slug"))
-            if filter_theme_type not in theme_type:
+            slug = str(data.get("slug") or "").upper()
+            if slug.startswith("OP"):
+                theme_type = "Opening"
+            elif slug.startswith("ED"):
+                theme_type = "Ending"
+            elif slug.startswith("IN"):
+                theme_type = "Insert"
+            else:
+                theme_type = "Other"
+            if filter_theme_type == DEFAULT_THEME_TYPE:
+                if theme_type not in {"Opening", "Ending"}:
+                    continue
+            elif filter_theme_type != theme_type:
                 continue
 
         if has_tags_include or has_tags_include_and or has_tags_exclude:
@@ -1216,6 +1346,31 @@ def evaluate_filter(filters, playlis=None):
                     if has_censors is None:
                         has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("MOVIE EDs (With Censors)" if has_censors else "MOVIE EDs (Without Censors)")
+
+            if needs_anisongdb_risk_check:
+                file_properties = data.get("file_properties") or {}
+                is_anisongdb_video = (
+                    str(file_properties.get("source") or "").upper() == "ANISONGDB"
+                )
+                anisongdb_risk_labels = set()
+                for field in ("anisongdb_genres", "anisongdb_tags", "genres"):
+                    values = data.get(field) or []
+                    if isinstance(values, str):
+                        values = [values]
+                    anisongdb_risk_labels.update(
+                        str(value).casefold() for value in values
+                    )
+                has_anisongdb_risk = bool(
+                    {"ecchi", "nudity", "hentai"} & anisongdb_risk_labels
+                )
+                if is_anisongdb_video and has_anisongdb_risk:
+                    if has_censors is None:
+                        has_censors = bool(censors.get_file_censors(filename))
+                    theme_flags.add(
+                        ANISONGDB_RISK_WITH_CENSORS
+                        if has_censors
+                        else ANISONGDB_RISK_WITHOUT_CENSORS
+                    )
 
             if has_themes_exclude and not theme_flags.isdisjoint(themes_exclude_set):
                 continue

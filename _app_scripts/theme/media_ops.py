@@ -47,7 +47,7 @@ def delete_file_by_filename(filename):
 
             file_metadata = state.metadata.file_metadata
             metadata_updated = False
-            if file_data and not cache_download.is_animethemes_stream_file(filename):
+            if file_data and not cache_download.is_remote_theme_file(filename):
                 mal_id = file_data.get("mal")
                 slug = file_data.get("slug")
                 version = str(file_data.get("version")) if file_data.get("version") is not None else "null"

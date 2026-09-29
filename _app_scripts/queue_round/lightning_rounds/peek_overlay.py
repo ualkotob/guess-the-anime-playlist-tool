@@ -25,6 +25,10 @@ import _app_scripts.playback.osd_text as osd_text
 peek_overlay1     = None  # sentinel — True while peek panels are active
 peek_overlay2     = None  # sentinel — second panel, kept symmetric with overlay1
 peeking           = False
+# Last accepted draw arguments — replayed by peek_dispatch.redraw_active_reveal()
+# when the video rect changes (new file decoded, OSD resized) so the re-layout
+# keeps the round's current position instead of snapping back to the defaults.
+last_peek_params  = {"direction": "right", "progress": 0, "gap": 1}
 _PEEK_ASS_OSD_ID  = 50    # unique ID for osd-overlay (ASS-based) peek panels
 
 
@@ -51,6 +55,7 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
             pass
         from . import peek_dispatch
         peek_dispatch.gap_modifier = 0
+        last_peek_params.update(direction="right", progress=0, gap=1)
         peeking = False
         peek_overlay1 = None
         peek_overlay2 = None
@@ -58,6 +63,8 @@ def toggle_peek_overlay(destroy=False, direction="right", progress=0, gap=1):
 
     if not 0 <= progress <= 100:
         return
+
+    last_peek_params.update(direction=direction, progress=progress, gap=gap)
 
     if peek_overlay1 is None:
         peek_overlay1 = True  # sentinel — not a Tkinter window

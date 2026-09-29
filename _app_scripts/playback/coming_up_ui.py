@@ -104,7 +104,9 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
         title_wrapped = '\n'.join(wrapped_title_lines)
 
     # Wrap details preserving explicit newlines, word-wrapping each segment independently
-    wrap_max = round(osd_w * 0.80)
+    # Details share the same capped box as the title. Wrapping them against a
+    # wider viewport let long tag rows visibly escape the popup background.
+    wrap_max = max_box_w - 2 * pad_x
     details_wrapped = details
     if details and details.strip():
         wrapped_lines = []
@@ -135,7 +137,7 @@ def _render_coming_up_frame(title_text, details, pil_image, y, osd_w, osd_h, alp
     if title_wrapped:                                widths.append(_measure_w(title_wrapped,   fs_title))
     if details_wrapped and details_wrapped.strip():  widths.append(_measure_w(details_wrapped, fs_details))
     if pil_image:                                    widths.append(img_w_osd)
-    box_w = (round(max(widths) * 0.91) if widths else fs_title) + 2 * pad_x
+    box_w = (max(widths) if widths else fs_title) + 2 * pad_x
     box_w = min(box_w, max_box_w)
 
     _coming_up_osd_box_h = box_h

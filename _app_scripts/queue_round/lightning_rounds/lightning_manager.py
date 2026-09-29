@@ -75,6 +75,75 @@ def _prefetched_youtube_media_ready(youtube_url, require_download):
     return bool(cached_stream and cached_stream[0])
 
 
+def _fixed_youtube_media_ready(youtube_url, require_download):
+    """Wait for a fixed round's exact video instead of changing round type."""
+    if _prefetched_youtube_media_ready(youtube_url, require_download):
+        return True
+    if not youtube_url:
+        return False
+
+    video_id = youtube_control.extract_youtube_id_from_url(youtube_url)
+    busy = (
+        youtube_url in youtube_control._yt_stream_resolutions_in_progress
+        or (video_id and video_id in youtube_control._yt_cache_downloads_in_progress)
+    )
+    if busy:
+        youtube_control._yt_cache_wait_popup(
+            youtube_url,
+            timeout=None,
+            require_download=require_download,
+        )
+        return _prefetched_youtube_media_ready(youtube_url, require_download)
+
+    if require_download:
+        cache_path = youtube_control._get_yt_cache_path(youtube_url)
+        cache_mb = int(
+            state.playback.lightning_mode_settings.get("_misc_settings", {}).get(
+                "download_cache_mb", 0
+            )
+        )
+        effective_cache_mb = cache_mb if cache_mb > 0 else 500
+        if youtube_control._start_yt_cache_download(
+            youtube_url, cache_path, effective_cache_mb
+        ):
+            youtube_control._yt_cache_wait_popup(
+                youtube_url,
+                timeout=None,
+                require_download=True,
+            )
+            return _prefetched_youtube_media_ready(youtube_url, True)
+        return False
+
+    # A play-now playlist may not have had a prefetch window. Resolve its exact
+    # URL synchronously so absence is confirmed before the round is skipped.
+    direct_stream, _length = youtube_control.get_youtube_stream_url(youtube_url)
+    return bool(direct_stream)
+
+
+def _skip_unavailable_fixed_media(filename, youtube_url):
+    """Advance a fixed playlist when its prescribed video cannot be used."""
+    fixed_round = state.lightning.fixed_current_round
+    if not fixed_round or fixed_round.get("_media_skip_pending"):
+        return False
+    fixed_round["_media_skip_pending"] = True
+    print(
+        "Fixed-round YouTube media is unavailable; skipping the round: "
+        f"{youtube_url or '(missing URL)'}"
+    )
+    state.lightning.light_round_started = False
+    state.lightning.light_round_armed = False
+
+    def _advance():
+        if (
+            fixed_round is state.lightning.fixed_current_round
+            and filename == state.playback.currently_playing.get("filename")
+        ):
+            transport.play_video(state.metadata.playlist["current_index"])
+
+    round_start_guard.after(100, _advance)
+    return True
+
+
 def _select_variety_media_fallback(failed_mode):
     """Re-arm this round with a non-YouTube Variety type."""
     global lightning_queue
@@ -112,11 +181,14 @@ def _fallback_failed_lightning_stream(filename):
 
     failed_mode = state.lightning.light_mode
     failed_url = streaming.currently_streaming[1]
+    fixed_round = state.lightning.fixed_current_round
     print(
         "YouTube lightning stream failed to load; falling back to the theme: "
         f"{failed_url}"
     )
     restored = streaming.fallback_to_theme(state.lightning.light_round_start_time)
+    if fixed_round:
+        return _skip_unavailable_fixed_media(filename, failed_url)
     if restored and _select_variety_media_fallback(failed_mode):
         return True
     audio_toggles.toggle_mute(False)
@@ -1382,11 +1454,13 @@ def update_light_round(time):
                 _always_dl_clip = ffmpeg_check.is_ffmpeg_available() and state.playback.lightning_mode_settings.get("_misc_settings", {}).get("always_download_clip", False)
                 if state.lightning.fixed_current_round:
                     url, name, channel = state.lightning.fixed_current_round.get("clip_url"), state.lightning.fixed_current_round.get("clip_title"), state.lightning.fixed_current_round.get("clip_author")
-                    if _prefetched_youtube_media_ready(url, _always_dl_clip):
+                    if _fixed_youtube_media_ready(url, _always_dl_clip):
                         length = streaming.stream_url(url, name, channel)
                     else:
-                        print("YouTube lightning media was not ready after prefetch; falling back to the theme.")
-                        length = 0
+                        _skip_unavailable_fixed_media(
+                            state.playback.currently_playing.get("filename"), url
+                        )
+                        return
                 else:
                     clip_variants = state.playback.lightning_mode_settings.get("clip", {}).get("variants", {})
                     trailer_enabled = clip_variants.get("trailer")
@@ -1515,6 +1589,11 @@ def update_light_round(time):
                             )
                     wait_for_stream(state.playback.currently_playing.get("filename"), 0)
                 else:
+                    if state.lightning.fixed_current_round:
+                        _skip_unavailable_fixed_media(
+                            state.playback.currently_playing.get("filename"), url
+                        )
+                        return
                     if _select_variety_media_fallback(state.lightning.light_mode):
                         return
                     if variety_round.last_variety_forced:
@@ -1551,15 +1630,21 @@ def queue_next_lightning_mode():
         fixed_data = None
         next_fixed_round = None
         if state.lightning.fixed_lightning_queue or state.lightning.fixed_lightning_round_playlist_data:
-            fixed_data = state.lightning.fixed_lightning_round_playlist_data or state.lightning.fixed_lightning_queue
+            active_fixed_data = state.lightning.fixed_lightning_round_playlist_data
+            fixed_data = active_fixed_data or state.lightning.fixed_lightning_queue
+            next_fixed_index = (
+                fixed_data.get("current_index", 0) + 1
+                if active_fixed_data
+                else 0
+            )
 
-            if fixed_data.get("current_index", 0)+1 >= len(fixed_data.get("rounds", [])):
+            if next_fixed_index >= len(fixed_data.get("rounds", [])):
                 return
-            next_fixed_round = fixed_data.get("rounds", [])[fixed_data.get("current_index", -1)+1]
+            next_fixed_round = fixed_data.get("rounds", [])[next_fixed_index]
             next_filename = next_fixed_round.get("theme")
         else:
             next_index = state.metadata.playlist["current_index"] + 1
-            if next_index < len(state.metadata.playlist["playlist"]) and (entry_paths.get_file_path(state.metadata.playlist["playlist"][next_index]) or cache_download.is_animethemes_stream_file(state.metadata.playlist["playlist"][next_index])):
+            if next_index < len(state.metadata.playlist["playlist"]) and (entry_paths.get_file_path(state.metadata.playlist["playlist"][next_index]) or cache_download.is_remote_theme_file(entry_paths.get_clean_filename(state.metadata.playlist["playlist"][next_index]))):
                 next_filename = entry_paths.get_clean_filename(state.metadata.playlist["playlist"][next_index])
             else:
                 return

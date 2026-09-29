@@ -82,7 +82,7 @@ TUTORIAL_CONTENT = [
                 "title": "First Steps",
                 "content": [
                     ("h1",  "First Steps"),
-                    ("p",   "This program supports playing local downloaded themes, and streaming/downloading themes from animethemes.moe. "
+                    ("p",   "This program supports playing local downloaded themes, and streaming/downloading themes from AnimeThemes and AniSongDB. "
                             "If you do not have local files, you can ignore the steps for local files and metadata fetching. Skip directly to playlist creation."),
                     ("h2",  "Overview to get started quick"),
                     ("ul",  [
@@ -114,8 +114,8 @@ TUTORIAL_CONTENT = [
             ]),
             ("h2",  "Metadata Sources"),
             ("ul",  [
-                "Metadata is from animethemes, myanimelist, anilist, and anidb.",
-                "animethemes: Song Name and Artist information.",
+                "Metadata is from AnimeThemes, AniSongDB, MyAnimeList, AniList, and AniDB.",
+                "AnimeThemes and AniSongDB: Song, artist, and streamable theme information.",
                 "myanimelist: Basic anime information, cover, trailer, members, and score.",
                 "anilist: Members, score, ranks, character, and tag information.",
                 "anidb: Episodes, characters, and tags."
@@ -133,6 +133,16 @@ TUTORIAL_CONTENT = [
                     ("ul",  [
                         "These files are compatible without any further changes, as long as you do not change the filename from how it was when downloaded."
                     ]),
+                    ("h2",  "Files from AniSongDB / Anime Music Quiz"),
+                    ("ul",  [
+                        "Use FILE → Refresh Metadata → Refresh AniSongDB Catalog once to download the complete catalog.",
+                        "AniSongDB/AMQ video files use an opaque media ID followed by .webm, such as megmfn.webm. Current catalog IDs are 6 or 16 alphanumeric characters.",
+                        "These native media basenames are detected directly and do not need an AnimeThemes-style name.",
+                        "You may also identify a renamed file with [ASDB]123 or [AMQ]123 using its AMQ song ID, or [ANNSONG]123 using its ANN song ID.",
+                        "The ID-style filename selects AniSongDB as the likely source first, and the catalog then confirms the exact song.",
+                        "The app retains the full catalog record and stores AniSongDB, AMQ, ANN, MAL, AniList, aniDB, and Kitsu IDs where available.",
+                        "AniSongDB HQ/MQ videos use the same streaming, cache, and download controls as AnimeThemes videos. The catalog is stored separately. Videos for MAL/theme-slug gaps are available to playlists; when AnimeThemes or a local file already covers the theme, the AniSongDB video appears as an alternate in the theme/version list without being added to normal playlist source pools."
+                    ]),
                     ("h2",  "Files not from animethemes.moe, but have entries on myanimelist",),
                     ("ul",  [
                         "Name these following the following format:",
@@ -145,6 +155,7 @@ TUTORIAL_CONTENT = [
                         "For example, for https://myanimelist.net/anime/12345/Example_Anime, the MAL ID is 12345.",
                         "The [ART] and [SNG] tags are for the theme's artist and song name. These are optional, but recommended to add."
                         "Anidb and Anilist data is fetched based on the MAL ID, but [ADB] and [ALT] tags can be added if it's not fetching the correct data.",
+                        "When [SNG] or [ART] is missing, the app can use the MAL ID and OP/ED slug to fill it from AniSongDB when the match is unambiguous. Explicit tags always take priority.",
                     ]),
                     ("h2",  "Game Themes"),
                     ("ul",  [
@@ -352,7 +363,7 @@ TUTORIAL_CONTENT = [
                                 "score_boost: This boosts themes based on their score, making higher scored themes more likely to appear. The boost is based on how much higher the score is from the min_score. Set multiplier to 0 to disable.",
                                 "group_series: This causes themes from the same series(Like Dr. Stone Season 4, and Season 1), to appear in the same difficulty groups. This causes themes from lower popularities to appear in easier difficulties if they are from the same series as a popular theme. When disabled, themes from later seasons play less if not the same popularity.",
                                 "tag_cooldown: This adds a cooldown to themes with the same tag. For example, if you set it to 3, after playing a theme with the 'mecha' tag, it won't play another theme with the 'mecha' tag for at least 3 more themes. Set to 0 to disable.",
-                                "include_non_local_files: This setting allows you to include themes that are not downloaded on your computer, but are available to stream from AnimeThemes.moe. These themes will be marked with a streaming tag in the playlist.",
+                                "include_non_local_files: This setting allows you to include registered themes that are not downloaded on your computer, but are available from AnimeThemes or AniSongDB. These themes will be marked with a streaming tag in the playlist.",
                                 "deduplicate_files: This setting deduplicates files with multiple formats, so you don't play the 480p version of a theme if a 720p version exists.",
                                 "deduplicate_versions: This will deduplicate different versions for themes, picking the one with the best format, or just the first one if they are the same. Versions are on the same cooldown as each other, so even when it's disabled a different version of a theme won't appear until its file cooldown is up.",
                                 "preload_track_count: This controls how many tracks are preloaded ahead. This is mostly useful if you are streaming themes, and should probably not be edited. The preloaded themes don't appear in the playlist, and are fetched in the background."

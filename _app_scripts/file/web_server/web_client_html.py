@@ -3103,7 +3103,7 @@ HTML = r"""<!DOCTYPE html>
             <div class="ctrl-filter-field">
               <label for="ctrl-filter-theme-type">Theme type</label>
               <select id="ctrl-filter-theme-type" class="ctrl-filter-select" data-filter-key="theme_type" onchange="_ctrlFilterScalarChanged(this)">
-                <option value="Both">Both</option><option value="Opening">Opening</option><option value="Ending">Ending</option>
+                <option value="Opening + Ending">Opening + Ending</option><option value="Opening">Opening</option><option value="Ending">Ending</option><option value="Insert">Insert</option><option value="All">All</option>
               </select>
             </div>
             <div class="ctrl-filter-field wide">
@@ -9240,7 +9240,7 @@ HTML = r"""<!DOCTYPE html>
     function _ctrlFilterScalarChanged(el) {
       const key = el.dataset.filterKey;
       const value = String(el.value || '').trim();
-      if (!value || (key === 'theme_type' && value === 'Both')) delete _ctrlFilterDraft[key];
+      if (!value || (key === 'theme_type' && (value === 'Both' || value === 'Opening + Ending'))) delete _ctrlFilterDraft[key];
       else _ctrlFilterDraft[key] = value;
       _ctrlFilterMarkChanged();
     }
@@ -9480,7 +9480,7 @@ HTML = r"""<!DOCTYPE html>
       });
       document.querySelectorAll('#ctrl-filter-editor-box [data-filter-key]').forEach(el => {
         const key = el.dataset.filterKey;
-        el.value = key === 'theme_type' ? (_ctrlFilterDraft[key] || 'Both') : (_ctrlFilterDraft[key] ?? '');
+        el.value = key === 'theme_type' ? (_ctrlFilterDraft[key] === 'Both' ? 'Opening + Ending' : (_ctrlFilterDraft[key] || 'Opening + Ending')) : (_ctrlFilterDraft[key] ?? '');
       });
       _ctrlFilterSetupSliders();
       Object.keys(_ctrlFilterPickerDefs).forEach(_ctrlFilterRenderPicker);
@@ -11324,12 +11324,24 @@ HTML = r"""<!DOCTYPE html>
         outer: for (const anime of d.series_themes) {
           for (const sec of (anime.sections || [])) {
             for (const theme of (sec.themes || [])) {
-              if (theme.filename === d.filename) { _ctResolved = theme; break outer; }
               for (const v of (theme.versions || [])) {
-                if (v.filename === d.filename) {
-                  _ctResolved = Object.assign({}, theme, { version: v.version, episodes: v.episodes, flags: v.flags, file_props: v.file_props });
+                const versionFile = (v.files || []).find(file => file.filename === d.filename);
+                if (versionFile || v.filename === d.filename) {
+                  _ctResolved = Object.assign({}, theme, {
+                    version: v.version,
+                    episodes: v.episodes,
+                    flags: v.flags,
+                    filename: (versionFile && versionFile.filename) || v.filename,
+                    file_props: (versionFile && versionFile.file_props) || v.file_props,
+                    favorited: versionFile ? versionFile.favorited : v.favorited,
+                  });
                   break outer;
                 }
+              }
+              const themeFile = (theme.files || []).find(file => file.filename === d.filename);
+              if (themeFile || theme.filename === d.filename) {
+                _ctResolved = Object.assign({}, theme, themeFile || {});
+                break outer;
               }
             }
           }
@@ -11679,11 +11691,6 @@ HTML = r"""<!DOCTYPE html>
             const slugCls = 'mt-slug' + (theme.is_playing ? ' playing' : '');
             const slugText = theme.slug + (theme.overall_suffix || '');
             const titleText = ': ' + (theme.title ? theme.title : '????');
-            const themeFilename = String(theme.filename || '').trim();
-            const hasVersions = !!(theme.versions && theme.versions.length);
-            const themeActionId = (_isHost && !hasVersions && themeFilename)
-              ? _themeActionRegister(themeFilename, anime.title + ' – ' + slugText)
-              : '';
             let html = '<div class="mt-theme' + (theme.is_playing ? ' playing' : '') + '"><div class="mt-main-row"><span class="' + slugCls + '">' + _escHtml(slugText) + '</span>' +
               '<span class="mt-title">' + _escHtml(titleText) + '</span></div>';
             if (theme.artists && theme.artists.length) {
@@ -11702,35 +11709,50 @@ HTML = r"""<!DOCTYPE html>
             }
             if (theme.versions && theme.versions.length) {
               theme.versions.forEach(v => {
-                const vCls = 'mt-ver' + (v.is_playing ? ' playing' : '');
                 const subRowClass = _isHost ? 'mt-sub-row' : 'mt-sub-row mt-sub-row-indent';
                 let vText = v.version ? 'v' + v.version : '';
                 if (v.episodes) vText += (vText ? ': ' : '') + '(Eps: ' + v.episodes + ')';
                 if (v.flags && v.flags.length) vText += (vText ? ' ' : '') + v.flags.join(' ');
-                const propsHtml = v.file_props ? ' <span class="mt-props">' + _escHtml(v.file_props) + '</span>' : '';
-                const playsHtml = (v.plays > 0 || v.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + v.plays + 'x' + (v.plays_ago != null ? ' (' + v.plays_ago + ' ago)' : '') + (v.lightning_plays ? ' (' + v.lightning_plays + ' L)' : '') + '</span>' : '';
-                const vFilename = String(v.filename || '').trim();
-                const vActionId = (_isHost && vFilename)
-                  ? _themeActionRegister(vFilename, anime.title + ' – ' + slugText + (vText ? ' ' + vText : ''))
-                  : '';
-                const vActionBtn = vActionId
-                  ? '<button class="mt-action-btn" data-taid="' + vActionId + '" title="Theme actions">&#9654;</button>'
-                  : '';
-                const vFavHtml = favMarkHtml(!!v.favorited, (v.is_playing ? 'leading playing' : 'leading'));
-                if (vText || propsHtml || playsHtml || vActionBtn || vFavHtml)
-                  html += '<div class="' + subRowClass + '">' + vActionBtn + vFavHtml + '<span class="' + vCls + '">' + _escHtml(vText) + propsHtml + playsHtml + '</span></div>';
+                const fileOptions = (v.files && v.files.length) ? v.files : [v];
+                fileOptions.forEach((fileOption, optionIndex) => {
+                  const isPlayingFile = !!fileOption.is_playing;
+                  const vCls = 'mt-ver' + (isPlayingFile ? ' playing' : '');
+                  const rowText = optionIndex === 0 ? vText : '↳';
+                  const propsHtml = fileOption.file_props ? ' <span class="mt-props">' + _escHtml(fileOption.file_props) + '</span>' : '';
+                  const playsHtml = (fileOption.plays > 0 || fileOption.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + fileOption.plays + 'x' + (fileOption.plays_ago != null ? ' (' + fileOption.plays_ago + ' ago)' : '') + (fileOption.lightning_plays ? ' (' + fileOption.lightning_plays + ' L)' : '') + '</span>' : '';
+                  const vFilename = String(fileOption.filename || '').trim();
+                  const vActionId = (_isHost && vFilename)
+                    ? _themeActionRegister(vFilename, anime.title + ' – ' + slugText + (vText ? ' ' + vText : ''))
+                    : '';
+                  const vActionBtn = vActionId
+                    ? '<button class="mt-action-btn" data-taid="' + vActionId + '" title="Theme actions">&#9654;</button>'
+                    : '';
+                  const vFavHtml = favMarkHtml(!!fileOption.favorited, (isPlayingFile ? 'leading playing' : 'leading'));
+                  if (rowText || propsHtml || playsHtml || vActionBtn || vFavHtml)
+                    html += '<div class="' + subRowClass + '">' + vActionBtn + vFavHtml + '<span class="' + vCls + '">' + _escHtml(rowText) + propsHtml + playsHtml + '</span></div>';
+                });
               });
             } else {
               const subRowClass = _isHost ? 'mt-sub-row' : 'mt-sub-row mt-sub-row-indent';
               let vText = '';
               if (theme.episodes) vText += '(Eps: ' + theme.episodes + ')';
               if (theme.flags && theme.flags.length) vText += (vText ? ' ' : '') + theme.flags.join(' ');
-              const tActionBtn = themeActionId
-                ? '<button class="mt-action-btn" data-taid="' + themeActionId + '" title="Theme actions">&#9654;</button>'
-                : '';
-              const themeFavHtml = favMarkHtml(!!theme.favorited, theme.is_playing ? 'leading playing' : 'leading');
-              const themePlaysHtml = (theme.plays > 0 || theme.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + theme.plays + 'x' + (theme.plays_ago != null ? ' (' + theme.plays_ago + ' ago)' : '') + (theme.lightning_plays ? ' (' + theme.lightning_plays + ' L)' : '') + '</span>' : '';
-              if (vText || tActionBtn || themeFavHtml || themePlaysHtml) html += '<div class="' + subRowClass + '">' + tActionBtn + themeFavHtml + '<span class="mt-ver">' + _escHtml(vText) + themePlaysHtml + '</span></div>';
+              const fileOptions = (theme.files && theme.files.length) ? theme.files : [theme];
+              fileOptions.forEach((fileOption, optionIndex) => {
+                const isPlayingFile = !!fileOption.is_playing;
+                const rowText = optionIndex === 0 ? vText : '↳';
+                const propsHtml = fileOption.file_props ? ' <span class="mt-props">' + _escHtml(fileOption.file_props) + '</span>' : '';
+                const themeFilename = String(fileOption.filename || '').trim();
+                const themeActionId = (_isHost && themeFilename)
+                  ? _themeActionRegister(themeFilename, anime.title + ' – ' + slugText)
+                  : '';
+                const tActionBtn = themeActionId
+                  ? '<button class="mt-action-btn" data-taid="' + themeActionId + '" title="Theme actions">&#9654;</button>'
+                  : '';
+                const themeFavHtml = favMarkHtml(!!fileOption.favorited, isPlayingFile ? 'leading playing' : 'leading');
+                const themePlaysHtml = (fileOption.plays > 0 || fileOption.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + fileOption.plays + 'x' + (fileOption.plays_ago != null ? ' (' + fileOption.plays_ago + ' ago)' : '') + (fileOption.lightning_plays ? ' (' + fileOption.lightning_plays + ' L)' : '') + '</span>' : '';
+                if (rowText || propsHtml || tActionBtn || themeFavHtml || themePlaysHtml) html += '<div class="' + subRowClass + '">' + tActionBtn + themeFavHtml + '<span class="mt-ver' + (isPlayingFile ? ' playing' : '') + '">' + _escHtml(rowText) + propsHtml + themePlaysHtml + '</span></div>';
+              });
             }
             if (theme.special) html += ' <span class="mt-flags">(SPECIAL)</span>';
             html += '</div>';
@@ -11895,6 +11917,8 @@ HTML = r"""<!DOCTYPE html>
           links.push({ label: 'AniList', icon: '\ud83d\udd17', url: 'https://anilist.co/anime/' + d.anilist_id });
         if (d.animethemes_slug)
           links.push({ label: 'AnimeThemes', icon: '\ud83c\udfb5', url: 'https://animethemes.moe/anime/' + d.animethemes_slug });
+        if (d.anisongdb_ann_id != null || d.anisongdb_ann_song_id != null || d.anisongdb_amq_song_id != null)
+          links.push({ label: 'AniSongDB', icon: '\ud83c\udfb5', url: 'https://anisongdb.com/' });
         if (!links.length) return '<span style="color:#555">No links available.</span>';
         return links.map(l =>
           '<a class="meta-link-row" href="' + _escHtml(l.url) + '" target="_blank" rel="noopener noreferrer">' +

@@ -14,6 +14,8 @@ local `_ROOT_DIR` instead.
 FILE_METADATA_FILE            = "metadata/file_metadata.json"
 FILE_METADATA_OVERRIDES_FILE  = "metadata/file_metadata_overrides.json"
 ANIME_METADATA_FILE           = "metadata/anime_metadata.json"
+ANIMETHEMES_METADATA_FILE     = "metadata/animethemes_metadata.json"
+ANISONGDB_METADATA_FILE       = "metadata/anisongdb_metadata.json"
 ANIDB_METADATA_FILE           = "metadata/anidb_metadata.json"
 AI_METADATA_FILE              = "metadata/ai_metadata.json"
 ANIME_METADATA_OVERRIDES_FILE = "metadata/anime_metadata_overrides.json"

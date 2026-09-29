@@ -274,6 +274,7 @@ def get_pop_time_groups(refetch=False):
         group_limits = difficulty_ranges[playlist["difficulty"]]
         sorted_groups = [[] for _ in range(3)]
         cached_skipped_themes = []
+        filters.upgrade_default_infinite_filter(playlist.get("filter"))
 
         directory_options = (
             filters.filter_playlist(playlist["filter"])
@@ -655,6 +656,22 @@ def _select_speculative_track(snap):
     tag_failed_files = []
     max_tag_tries = min(len(groups[p][t]) // 3, 5) if (p < len(groups) and t < len(groups[p])) else 0
     _hist_entry_cache = {}
+    _group_op_ed_cache = {}
+
+    def _group_op_ed_counts(group_index, subgroup_index):
+        """Count a large candidate cell once per selection, not once per retry."""
+        key = (group_index, subgroup_index)
+        if key not in _group_op_ed_cache:
+            if (
+                group_index < len(groups)
+                and subgroup_index < len(groups[group_index])
+            ):
+                _group_op_ed_cache[key] = session_stats.get_op_ed_counts(
+                    groups[group_index][subgroup_index]
+                )
+            else:
+                _group_op_ed_cache[key] = (0, 0)
+        return _group_op_ed_cache[key]
 
     op_count, ed_count = session_stats.get_op_ed_counts(snap["last50"])
     series_boost_cache = {}
@@ -676,10 +693,7 @@ def _select_speculative_track(snap):
     _force_accept = False
 
     while not selected_file:
-        if p < len(groups) and t < len(groups[p]):
-            group_op_count, group_ed_count = session_stats.get_op_ed_counts(groups[p][t])
-        else:
-            group_op_count, group_ed_count = 0, 0
+        group_op_count, group_ed_count = _group_op_ed_counts(p, t)
         if group_ed_count == 0 or (ed_count + op_count) == 0:
             need_op = False
         else:
@@ -811,6 +825,7 @@ def _select_speculative_track(snap):
         if not groups[p][t]:
             _refill_count += 1
             groups, shows_files_map = get_pop_time_groups()
+            _group_op_ed_cache.clear()
             if p < len(groups) and t < len(groups[p]) and groups[p][t]:
                 random.shuffle(groups[p][t])
                 tag_cooldown_failures = 0
@@ -1038,7 +1053,10 @@ def compute_cooldowns(groups, refetch=False):
             all_files = [f for subgroup in group for f in subgroup]
             unique_files = set(f.replace("[EXTRA]", "") for f in all_files)
             file_count = len(unique_files)
-            unique_series = set(metadata_display.series_cache_key(metadata_fetch.get_metadata(f.replace("[EXTRA]", ""))) for f in all_files)
+            unique_series = {
+                metadata_display.series_cache_key(metadata_fetch.get_metadata(f))
+                for f in unique_files
+            }
             series_count = len(unique_series)
 
             base_s_cd = series_count

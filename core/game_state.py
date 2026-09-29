@@ -34,6 +34,8 @@ class GameState:
             file_metadata={},               # replaced once with FileMetadataDict at startup
             file_metadata_overrides={},
             anime_metadata={},
+            animethemes_metadata={},
+            anisongdb_metadata={},
             anidb_metadata={},
             ai_metadata={},
             anime_metadata_overrides={},
@@ -218,6 +220,7 @@ class GameState:
             end_session_txt="",             # custom end-session display text
             LAUNCH_SCOREBOARD_ON_STARTUP=False,
             AUTO_EXIT_SCOREBOARD=False,
+            SYNC_SCOREBOARD_COLORS=True,
             WEB_SERVER_ENABLED=False,
             NGROK_DOMAIN="",
             CLOUDFLARE_TUNNEL_TOKEN="",

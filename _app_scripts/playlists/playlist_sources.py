@@ -1,5 +1,5 @@
 """External-source playlist generators: build playlists from AniList users,
-AnimeThemes playlists, and saved session logs, plus the startup auto-update
+AnimeThemes and saved session logs, plus the startup auto-update
 ("living playlist") pass that refreshes saved source-backed playlists.
 
 Extracted from playlist.py. These resolve external data to local files and
@@ -209,7 +209,7 @@ def generate_session_log_playlist(include_non_local=None):
                         # Local files take priority: keep them at the front so
                         # candidates[0] resolves to a local file when one exists.
                         mal_slug_to_files.setdefault((mal_id, slug), []).insert(0, fname)
-                    elif include_non_local and cache_download.is_animethemes_stream_file(fname):
+                    elif include_non_local and cache_download.is_remote_theme_file(fname):
                         mal_slug_to_files.setdefault((mal_id, slug), []).append(fname)
 
     def _unformat_slug(fmt):
@@ -265,7 +265,7 @@ def generate_session_log_playlist(include_non_local=None):
                 if filename_hint and (
                     filename_hint in directory_files
                     or (include_non_local
-                        and cache_download.is_animethemes_stream_file(filename_hint))
+                        and cache_download.is_remote_theme_file(filename_hint))
                 ):
                     found = filename_hint
                 elif title is not None and slug:

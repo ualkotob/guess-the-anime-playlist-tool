@@ -34,6 +34,8 @@ import _app_scripts.utils as utils
 import _app_scripts.data.metadata_io as metadata_io
 import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.theme.marks as playlist_marks
+import _app_scripts.theme.anisongdb as anisongdb
+import _app_scripts.theme.animethemes as animethemes_catalog
 import _app_scripts.playback.ffmpeg_check as ffmpeg_check
 import _app_scripts.directory.scan as directory_scan
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
@@ -47,10 +49,17 @@ import _app_scripts.queue_round.lightning_rounds.lightning_manager as lightning_
 
 animethemes_cache: dict = {}
 
+last_arm_lookup_succeeded = False
+last_anilist_status = None
 last_tenrai_error = None
+last_tenrai_status = None
 _tenrai_request_lock = threading.Lock()
 _last_tenrai_request = 0.0
 _TENRAI_MIN_REQUEST_INTERVAL = 0.5  # Leave headroom below the public rate limit.
+
+_MISSING_METADATA_RETRY_DAYS = 30
+_MISSING_METADATA_RETRY_SECONDS = _MISSING_METADATA_RETRY_DAYS * 24 * 60 * 60
+_FETCH_FAILURES_KEY = "metadata_fetch_failures"
 
 _igdb_token_cache: dict = {"token": None, "expires_at": 0}
 
@@ -72,6 +81,8 @@ def set_credentials(igdb_client_id: str, igdb_client_secret: str) -> None:
 def fetch_arm_ids(mal_id):
     """Looks up AniList, aniDB, and Kitsu IDs for a given MAL ID via arm-server.
     Returns a dict with keys: 'anilist', 'anidb', 'kitsu' (all strings), or empty dict on failure."""
+    global last_arm_lookup_succeeded
+    last_arm_lookup_succeeded = False
     try:
         response = requests.get(
             "https://arm.haglund.dev/api/v2/ids",
@@ -81,6 +92,9 @@ def fetch_arm_ids(mal_id):
         if response.status_code != 200:
             return {}
         data = response.json()
+        last_arm_lookup_succeeded = isinstance(data, dict)
+        if not last_arm_lookup_succeeded:
+            return {}
         result = {}
         if data.get("anilist"):
             result["anilist"] = str(data["anilist"])
@@ -99,6 +113,16 @@ def fetch_arm_ids(mal_id):
 # ---------------------------------------------------------------------------
 
 def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
+    catalog_match = animethemes_catalog.find_anime(
+        filename=filename,
+        mal_id=mal_id,
+        split=split,
+    )
+    if catalog_match:
+        if filename:
+            animethemes_cache[filename] = catalog_match
+        return catalog_match
+
     url = "https://api.animethemes.moe/anime"
     if filename:
         if split:
@@ -135,8 +159,9 @@ def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
 # ---------------------------------------------------------------------------
 
 def fetch_tenrai_metadata(mal_id):
-    global last_tenrai_error, _last_tenrai_request
+    global last_tenrai_error, last_tenrai_status, _last_tenrai_request
     last_tenrai_error = None
+    last_tenrai_status = None
     url = f"https://api.tenrai.org/v1/anime/{mal_id}/full"
     try:
         with _tenrai_request_lock:
@@ -148,22 +173,33 @@ def fetch_tenrai_metadata(mal_id):
         if response.status_code == 200:
             data = response.json()
             if data.get("data"):
+                last_tenrai_status = "success"
                 return data["data"]
             last_tenrai_error = f"Tenrai returned 200 but no data payload for MAL {mal_id}"
+            last_tenrai_status = "transient"
             return None
 
-        if response.status_code == 429:
+        if response.status_code == 404:
+            last_tenrai_status = "not_found"
+            last_tenrai_error = f"Tenrai request failed (404) for MAL {mal_id}"
+        elif response.status_code == 429:
+            last_tenrai_status = "transient"
             retry_after = response.headers.get("Retry-After")
             last_tenrai_error = f"Tenrai rate-limited (429) for MAL {mal_id}" + (f", Retry-After={retry_after}s" if retry_after else "")
         elif 500 <= response.status_code <= 599:
+            last_tenrai_status = "transient"
             last_tenrai_error = f"Tenrai server error ({response.status_code}) for MAL {mal_id}"
         else:
+            last_tenrai_status = "transient"
             last_tenrai_error = f"Tenrai request failed ({response.status_code}) for MAL {mal_id}"
     except requests.exceptions.Timeout:
+        last_tenrai_status = "transient"
         last_tenrai_error = f"Tenrai timeout for MAL {mal_id}"
     except requests.exceptions.RequestException as e:
+        last_tenrai_status = "transient"
         last_tenrai_error = f"Tenrai network error for MAL {mal_id}: {e}"
     except Exception as e:
+        last_tenrai_status = "transient"
         last_tenrai_error = f"Unexpected Tenrai error for MAL {mal_id}: {e}"
 
     return None
@@ -345,7 +381,25 @@ def fetch_igdb_metadata(igdb_id):
 # AniDB
 # ---------------------------------------------------------------------------
 
+
+class AniDBResponseError(RuntimeError):
+    """AniDB returned a valid HTTP response containing an API error."""
+
+
+class AniDBCooldownError(AniDBResponseError):
+    """AniDB explicitly reported that this client/IP is temporarily banned."""
+
+
+def _valid_provider_id(value):
+    """Return whether a linked AniList/AniDB ID is a positive integer."""
+    text = str(value or "").strip()
+    return text.isdigit() and int(text) > 0
+
+
 def fetch_anidb_metadata(aid):
+    if not _valid_provider_id(aid):
+        raise AniDBResponseError(f"Invalid AniDB ID: {aid}")
+
     url = "http://api.anidb.net:9001/httpapi"
     params = {
         "request": "anime",
@@ -355,11 +409,27 @@ def fetch_anidb_metadata(aid):
         "aid": str(aid)
     }
 
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, timeout=30)
     if not response.ok:
+        if response.status_code in (403, 429):
+            raise AniDBCooldownError(
+                f"AniDB access blocked ({response.status_code})"
+            )
         raise Exception(f"AniDB request failed: {response.status_code}")
 
     root = ET.fromstring(response.text)
+    if root.tag.casefold() == "error":
+        error_code = str(root.get("code") or "").strip()
+        error_message = " ".join("".join(root.itertext()).split()) or "Unknown error"
+        if error_code == "500" or "banned" in error_message.casefold():
+            raise AniDBCooldownError(
+                f"AniDB temporarily banned this client ({error_message})"
+            )
+        code_suffix = f" [{error_code}]" if error_code else ""
+        raise AniDBResponseError(f"AniDB API error{code_suffix}: {error_message}")
+    if root.tag.casefold() != "anime":
+        raise AniDBResponseError(f"Unexpected AniDB response: <{root.tag}>")
+
     result = {}
 
     ### TAGS ###
@@ -489,6 +559,8 @@ def fetch_anilist_metadata(anilist_id=None, mal_id=None):
     """Fetches detailed metadata for a specific AniList anime ID, or by MAL ID.
     When mal_id is given the AniList ID is discovered from the response.
     Returns (resolved_anilist_id_str, metadata_dict), or (None, None) on failure."""
+    global last_anilist_status
+    last_anilist_status = None
     if anilist_id is not None:
         lookup_field = "id: $id"
         variables = {"id": int(anilist_id)}
@@ -562,13 +634,22 @@ def fetch_anilist_metadata(anilist_id=None, mal_id=None):
         )
 
         if response.status_code != 200:
-            print(f"AniList API error: {response.text}")
+            lookup_label = (
+                f"MAL {mal_id}" if mal_id is not None else f"AniList {anilist_id}"
+            )
+            if response.status_code == 404:
+                last_anilist_status = "not_found"
+                print(f"AniList has no anime entry for {lookup_label}.", end=" ")
+            else:
+                last_anilist_status = "transient"
+                print(f"AniList API error for {lookup_label}: {response.text}")
             return None, None
 
         data = response.json()
         media = data.get("data", {}).get("Media")
         
         if not media:
+            last_anilist_status = "not_found"
             return None, None
 
         # Resolve the AniList ID from the response (works for both lookup modes)
@@ -659,9 +740,11 @@ def fetch_anilist_metadata(anilist_id=None, mal_id=None):
                 
                 metadata["characters"].append(character_data)
 
+        last_anilist_status = "success"
         return resolved_anilist_id, metadata
 
     except Exception as e:
+        last_anilist_status = "transient"
         print(f"Failed to fetch AniList metadata: {e}")
         return None, None
 
@@ -852,6 +935,15 @@ def invalidate_file_metadata_cache():
     _file_metadata_cache_valid = False
 
 
+def invalidate_metadata_cache(filenames=None):
+    """Clear merged metadata results for all files or selected filenames."""
+    if filenames is None:
+        _metadata_cache.clear()
+        return
+    for filename in filenames:
+        _metadata_cache.pop(filename, None)
+
+
 def _filename_theme_slug(filename):
     """Return the OP/ED slug encoded in a conventional theme filename."""
     basename = os.path.splitext(os.path.basename(filename))[0]
@@ -874,6 +966,14 @@ def _store_filename_lookup(key, candidate, *, overwrite_ties):
     if candidate_matches != existing_matches:
         if candidate_matches:
             filename_to_mal[key] = candidate
+    elif bool(existing.get("anisongdb_alternate")) != bool(
+        candidate.get("anisongdb_alternate")
+    ):
+        # One AniSongDB media file can occasionally be linked to multiple
+        # anime/slugs. A gap/source-pool registration must win over a covered
+        # theme's alternate-only registration for global filename lookup.
+        if not candidate.get("anisongdb_alternate"):
+            filename_to_mal[key] = candidate
     elif overwrite_ties:
         filename_to_mal[key] = candidate
 
@@ -891,11 +991,15 @@ def build_filename_to_mal_map():
         themes = mal_data.get("themes", {})
         for slug, slug_data in themes.items():
             for version, version_data in slug_data.items():
-                for filename in version_data.keys():
+                for filename, properties in version_data.items():
                     lookup_data = {
                         "mal_id": mal_id,
                         "slug": slug,
-                        "version": version
+                        "version": version,
+                        "anisongdb_alternate": bool(
+                            isinstance(properties, dict)
+                            and properties.get("anisongdb_alternate")
+                        ),
                     }
                     # A file can occasionally be listed under multiple metadata
                     # slugs.  In that case, prefer the slug encoded in its name
@@ -921,18 +1025,27 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     if not (refresh or fetch) and filename in _metadata_cache:
         return _metadata_cache[filename]
 
-    if not ("-OP" in filename or "-ED" in filename):
-        return {}
-
     file_data = get_file_metadata_by_name(filename)
+    if not file_data and not ("-OP" in filename or "-ED" in filename):
+        return fetch_metadata(filename, refetch=refresh) if fetch else {}
     if not file_data:
         return fetch_metadata(filename, refetch=refresh) if fetch else {}
+    properties = file_data.get("file_properties") or {}
+    if properties.get("source") == "ANISONGDB" and not anisongdb.has_catalog():
+        try:
+            anisongdb.ensure_catalog(download=fetch or refresh)
+        except Exception as exc:
+            print(f"AniSongDB catalog lookup failed: {exc}")
 
     mal_id = file_data.get('mal')
     anidb_id = file_data.get('anidb')
     anilist_id = file_data.get('anilist')
     anime_data = state.metadata.anime_metadata.get(mal_id) or {}
-    anidb_data = state.metadata.anidb_metadata.get(anidb_id, {}) if anidb_id else {}
+    anidb_data = (
+        state.metadata.anidb_metadata.get(str(anidb_id), {})
+        if _valid_provider_id(anidb_id)
+        else {}
+    )
     ai_data = state.metadata.ai_metadata.get(mal_id, {}) if mal_id else {}
     re_queue_lightning_mode = False
     if anime_data and "-[ID]" not in filename and mal_id:
@@ -941,8 +1054,8 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
             refresh_tenrai_data(mal_id, anime_data)
             if state.lightning.light_mode:
                 re_queue_lightning_mode = True
-        if refresh and fetch and anidb_id and (anidb_id not in state.metadata.anidb_metadata or state.controls.auto_refresh_toggle) and not anidb_cooldown and (variety_round.variety_light_mode_enabled or state.lightning.light_mode in ['characters', 'tags', 'episodes', 'names'] or (state.lightning.light_mode and "c." in state.lightning.light_mode)):
-            refresh_anidb_data(anidb_id, anime_data)
+        if refresh and fetch and _valid_provider_id(anidb_id) and (str(anidb_id) not in state.metadata.anidb_metadata or state.controls.auto_refresh_toggle) and not anidb_cooldown and (variety_round.variety_light_mode_enabled or state.lightning.light_mode in ['characters', 'tags', 'episodes', 'names'] or (state.lightning.light_mode and "c." in state.lightning.light_mode)):
+            refresh_anidb_data(str(anidb_id), anime_data)
             re_queue_lightning_mode = True
         if refresh and fetch and anilist_id and state.controls.auto_refresh_toggle and str(anilist_id) in state.metadata.anilist_metadata:
             # Refresh AniList metadata when auto refresh is enabled
@@ -958,6 +1071,9 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
     # Ensure igdb from state.metadata.file_metadata is never lost to a null in state.metadata.anime_metadata
     if not result.get("igdb") and file_data.get("igdb"):
         result["igdb"] = file_data["igdb"]
+    # Normal list/playlist lookups stay lightweight. The raw catalog retains
+    # the complete record, which explicit fetch/detail paths expand on demand.
+    anisongdb.apply_full_metadata(filename, result, include_full=False)
     _metadata_cache[filename] = result
     if re_queue_lightning_mode:
         lightning_manager.queue_next_lightning_mode()
@@ -1006,7 +1122,7 @@ def get_file_metadata_by_name(filename):
     themes = mal_entry.get("themes", {})
     if slug in themes:
         versions = themes[slug]
-        version_str = str(version) if version else "1"
+        version_str = str(version) if version is not None else "null"
         if version_str in versions:
             files = versions[version_str]
             file_props = files.get(filename, {})
@@ -1108,16 +1224,20 @@ def reorder_file_metadata_entry(mal_id):
         ordered_entry["name"] = entry["name"]
     
     # 2. IDs
-    for key in ["mal", "anidb", "anilist"]:
+    for key in ["mal", "anidb", "anilist", "kitsu", "anisongdb_ann_id"]:
         if key in entry:
             ordered_entry[key] = entry[key]
     
-    # 3. AnimThemes IDs (optional)
+    # 3. Provider retry state (optional)
+    if _FETCH_FAILURES_KEY in entry:
+        ordered_entry[_FETCH_FAILURES_KEY] = entry[_FETCH_FAILURES_KEY]
+
+    # 4. AnimThemes IDs (optional)
     for key in ["animethemes_id", "animethemes_slug"]:
         if key in entry:
             ordered_entry[key] = entry[key]
-    
-    # 4. Themes last
+
+    # 5. Themes last
     if "themes" in entry:
         ordered_entry["themes"] = entry["themes"]
     
@@ -1128,12 +1248,265 @@ anidb_cooldown = False
 fetching_metadata = {}
 
 
-def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False):
-    global anidb_cooldown, anidb_delay
+def _theme_song_hints(data, slug):
+    """Return an existing song title and artist list for one theme slug."""
+    for theme in (data or {}).get("animethemes", []):
+        if theme.get("slug") != slug:
+            continue
+        song = theme.get("song") or {}
+        artists = [
+            artist.get("name")
+            for artist in song.get("artists") or []
+            if isinstance(artist, dict) and artist.get("name")
+        ]
+        return song.get("title"), artists
+    return None, []
+
+
+def _append_manual_song_theme(data, slug, title, artists):
+    """Append the file-specific answer row after provider-wide theme rows."""
+    if not slug or (not title and not artists):
+        return
+    data.setdefault("animethemes", []).append({
+        "type": slug[:2],
+        "slug": slug,
+        "song": {
+            "title": title,
+            "artists": [{"name": artist} for artist in artists],
+        },
+        "animethemeentries": [],
+    })
+
+
+def _metadata_failure_deferred(file_data, source, identity, *, now=None):
+    """Return whether a confirmed absence is still inside its retry window."""
+    if not isinstance(file_data, dict):
+        return False
+    record = (file_data.get(_FETCH_FAILURES_KEY) or {}).get(source)
+    if not isinstance(record, dict) or record.get("status") != "not_found":
+        return False
+    if str(record.get("identity")) != str(identity):
+        return False
+    try:
+        retry_after = float(record.get("retry_after"))
+    except (TypeError, ValueError):
+        return False
+    return retry_after > (time.time() if now is None else now)
+
+
+def _record_metadata_absence(file_data, source, identity, *, now=None):
+    """Persist a confirmed provider absence and return whether data changed."""
+    if not isinstance(file_data, dict):
+        return False
+    checked_at = int(time.time() if now is None else now)
+    record = {
+        "status": "not_found",
+        "identity": str(identity),
+        "checked_at": checked_at,
+        "retry_after": checked_at + _MISSING_METADATA_RETRY_SECONDS,
+    }
+    failures = file_data.setdefault(_FETCH_FAILURES_KEY, {})
+    changed = failures.get(source) != record
+    failures[source] = record
+    return changed
+
+
+def _clear_metadata_absence(file_data, source):
+    """Remove stale negative state after a provider becomes available."""
+    if not isinstance(file_data, dict):
+        return False
+    failures = file_data.get(_FETCH_FAILURES_KEY)
+    if not isinstance(failures, dict) or source not in failures:
+        return False
+    failures.pop(source, None)
+    if not failures:
+        file_data.pop(_FETCH_FAILURES_KEY, None)
+    return True
+
+
+def _file_entries_for_provider_id(provider, identity):
+    """Yield every file-metadata row referring to one provider identity."""
+    identity = str(identity)
+    for entry_key, file_data in state.metadata.file_metadata.items():
+        if not isinstance(file_data, dict):
+            continue
+        value = file_data.get(provider)
+        if provider == "mal":
+            value = value or entry_key
+        if str(value) == identity:
+            yield file_data
+
+
+def _record_absence_for_provider_id(provider, identity, source):
+    return sum(
+        _record_metadata_absence(file_data, source, identity)
+        for file_data in _file_entries_for_provider_id(provider, identity)
+    )
+
+
+def _clear_absence_for_provider_id(provider, identity, source):
+    return sum(
+        _clear_metadata_absence(file_data, source)
+        for file_data in _file_entries_for_provider_id(provider, identity)
+    )
+
+
+def _mal_metadata_missing(data):
+    """Return whether an anime row is only a stub rather than fetched MAL data."""
+    if not isinstance(data, dict) or not data.get("title"):
+        return True
+    # AniSongDB projections intentionally provide a useful title/season, but
+    # not these MAL fields. Checking key presence (rather than truthiness)
+    # avoids repeatedly fetching legitimate null values from the API.
+    return any(
+        key not in data
+        for key in ("aired", "members", "studios", "synopsis")
+    )
+
+
+def _anilist_metadata_missing(anilist_id):
+    if not _valid_provider_id(anilist_id):
+        return True
+    data = state.metadata.anilist_metadata.get(str(anilist_id))
+    return not isinstance(data, dict) or any(
+        key not in data for key in ("title", "tags", "characters")
+    )
+
+
+def _anidb_metadata_missing(anidb_id):
+    if not _valid_provider_id(anidb_id):
+        return True
+    data = state.metadata.anidb_metadata.get(str(anidb_id))
+    return not isinstance(data, dict) or any(
+        key not in data for key in ("tags", "characters", "episode_info")
+    )
+
+
+def _linked_metadata_complete(file_data, anime_data):
+    """Return whether a known theme has all three linked metadata sources."""
+    if _mal_metadata_missing(anime_data):
+        return False
+    anilist_id = file_data.get("anilist")
+    anidb_id = file_data.get("anidb")
+    if not _valid_provider_id(anilist_id) or not _valid_provider_id(anidb_id):
+        return False
+    return not _anilist_metadata_missing(anilist_id) and not _anidb_metadata_missing(anidb_id)
+
+
+def _linked_id_resolution_status(missing_before, file_data):
+    """Describe which absent provider IDs were resolved by a lookup attempt."""
+    labels = {"anilist": "AniList", "anidb": "AniDB"}
+    resolved = [
+        labels[key] for key in missing_before if _valid_provider_id(file_data.get(key))
+    ]
+    unavailable = [
+        labels[key]
+        for key in missing_before
+        if not _valid_provider_id(file_data.get(key))
+    ]
+
+    if unavailable:
+        parts = []
+        if resolved:
+            parts.append(f"Resolved {', '.join(resolved)}")
+        parts.append(f"{', '.join(unavailable)} unavailable")
+        marker = "⚠" if resolved else "✗"
+        return f"{marker} {'; '.join(parts)}", False
+
+    return f"✓ Resolved {', '.join(resolved)}", True
+
+
+def _collect_missing_metadata_targets():
+    """Collect missing linked metadata once per known anime.
+
+    The source set is file_metadata rather than directory_files so a
+    metadata-only/streaming library receives the same enrichment as local
+    downloads. Physical files with no registration are handled separately by
+    ``fetch_all_metadata``.
+    """
+    mal_targets = []
+    anilist_targets = []
+    anidb_targets = []
+    resolve_id_targets = []
+    seen_mal = set()
+    seen_anilist = set()
+    seen_anidb = set()
+    deferred = 0
+
+    for entry_key, file_data in state.metadata.file_metadata.items():
+        if not isinstance(file_data, dict):
+            continue
+        mal_id = file_data.get("mal") or entry_key
+        mal_id = str(mal_id)
+        if not mal_id.isdigit() or mal_id in seen_mal:
+            continue
+        seen_mal.add(mal_id)
+
+        anime_data = state.metadata.anime_metadata.get(mal_id)
+        if _mal_metadata_missing(anime_data):
+            if _metadata_failure_deferred(file_data, "tenrai", mal_id):
+                deferred += 1
+            else:
+                mal_targets.append((mal_id, anime_data))
+
+        raw_anilist_id = file_data.get("anilist")
+        raw_anidb_id = file_data.get("anidb")
+        anilist_id = str(raw_anilist_id) if _valid_provider_id(raw_anilist_id) else None
+        anidb_id = str(raw_anidb_id) if _valid_provider_id(raw_anidb_id) else None
+        if anilist_id is not None:
+            anilist_id = str(anilist_id)
+            if _anilist_metadata_missing(anilist_id) and anilist_id not in seen_anilist:
+                seen_anilist.add(anilist_id)
+                if _metadata_failure_deferred(
+                    file_data, "anilist_metadata", anilist_id
+                ):
+                    deferred += 1
+                else:
+                    anilist_targets.append(anilist_id)
+        if anidb_id is not None:
+            anidb_id = str(anidb_id)
+            if _anidb_metadata_missing(anidb_id) and anidb_id not in seen_anidb:
+                seen_anidb.add(anidb_id)
+                anidb_targets.append((anidb_id, mal_id))
+        missing_link_sources = []
+        if not anilist_id:
+            if _metadata_failure_deferred(file_data, "linked_anilist", mal_id):
+                deferred += 1
+            else:
+                missing_link_sources.append("anilist")
+        if not anidb_id:
+            if _metadata_failure_deferred(file_data, "linked_anidb", mal_id):
+                deferred += 1
+            else:
+                missing_link_sources.append("anidb")
+        if missing_link_sources:
+            resolve_id_targets.append((mal_id, file_data))
+
+    return {
+        "mal": mal_targets,
+        "anilist": anilist_targets,
+        "anidb": anidb_targets,
+        "resolve_ids": resolve_id_targets,
+        "known_anime": len(seen_mal),
+        "deferred": deferred,
+    }
+
+
+def fetch_metadata(filename=None, refetch=False, label="", batch_mode=False):
+    """Fetch one file's metadata and always release its in-flight marker."""
     if filename is None:
         playlist_entry = entry_paths.get_clean_filename(state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]])
         filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
         refetch = True
+
+    try:
+        return _fetch_metadata_impl(filename, refetch, label, batch_mode)
+    finally:
+        fetching_metadata.pop(filename, None)
+
+
+def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
+    global anidb_cooldown, anidb_delay
 
     print(f"{label}Fetching metadata for {filename}...", end="", flush=True)
 
@@ -1146,8 +1519,12 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         version = lookup_data["version"]
         
         anime_data = state.metadata.anime_metadata.get(mal_id)
-        if anime_data and anime_data.get("title"):
-            file_data = get_file_metadata_by_name(filename)
+        file_data = get_file_metadata_by_name(filename) or {}
+        if (
+            anime_data
+            and anime_data.get("title")
+            and _linked_metadata_complete(file_data, anime_data)
+        ):
             anidb_id = file_data.get('anidb')
             anilist_id = file_data.get('anilist')
             
@@ -1164,6 +1541,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                 "version": version
             }
             data.update(anime_data)
+            anisongdb.apply_full_metadata(filename, data)
             
             if state.playback.currently_playing.get('filename') == filename:
                 state.playback.currently_playing["data"] = data
@@ -1172,15 +1550,49 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
             return data
     
-    slug = filename.split("-")[1].split(".")[0].split("v")[0] if "-" in filename else None
+    slug = _filename_theme_slug(filename)
     version = None
     mal_id = None
     anidb_id = None
     anilist_id = None
     anime_themes = None
     is_animethemes_file = False
+    anisong_song = None
+    anisong_fallback_song = None
+    filename_source = anisongdb.classify_filename(filename)
+
+    # Classify from the filename first. AniSongDB candidates are then confirmed
+    # against the catalog; obvious manual files never enter either provider.
+    try:
+        if filename_source == anisongdb.SOURCE_ANISONGDB:
+            anisong_song = anisongdb.find_song(filename, download_catalog=True)
+        elif filename_source != anisongdb.SOURCE_MANUAL and anisongdb.has_catalog():
+            anisong_song = anisongdb.find_song(filename)
+    except Exception as exc:
+        print(f" [AniSongDB lookup failed: {exc}]", end="")
+
+    if anisong_song:
+        anisongdb.register_detected_file(filename, anisong_song)
+        anime_row = anisongdb.normalize_song(anisong_song).get("anime", {})
+        linked_ids = anime_row.get("linked_ids", {})
+        mal_id = str(linked_ids.get("myanimelist")) if linked_ids.get("myanimelist") is not None else None
+        anidb_id = str(linked_ids.get("anidb")) if linked_ids.get("anidb") is not None else None
+        anilist_id = str(linked_ids.get("anilist")) if linked_ids.get("anilist") is not None else None
+        slug = anisongdb.theme_slug(anisong_song)
+        version = 1
+        anime_themes = {
+            "name": anime_row.get("animeJPName") or anime_row.get("animeENName"),
+            "season": anime_row.get("animeVintage"),
+            "media_format": anime_row.get("animeType"),
+            "animethemes": [],
+        }
     
-    if "[IGDB]" in filename:
+    elif filename_source == anisongdb.SOURCE_ANISONGDB:
+        # It had AniSongDB's structure but could not be confirmed. Do not send
+        # it to AnimeThemes under a misleading basename.
+        anime_themes = {}
+
+    elif re.search(r"\[IGDB\]", filename, re.IGNORECASE):
         # --- IGDB game/VN file ---
         filename_metadata = get_filename_metadata(filename)
         igdb_id = filename_metadata.get("igdb_id")
@@ -1301,7 +1713,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         fetching_metadata.pop(filename, None)
         return data
 
-    elif (not "[MAL]" in filename) and (not "[ID]" in filename):
+    elif filename_source != anisongdb.SOURCE_MANUAL:
         # AnimThemes file
         is_animethemes_file = True
         anime_themes = fetch_animethemes_metadata(filename)
@@ -1336,7 +1748,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         mal_id = get_external_site_id(anime_themes, "MyAnimeList")
         anidb_id = get_external_site_id(anime_themes, "aniDB")
         anilist_id = get_external_site_id(anime_themes, "AniList")
-    elif ("[MAL]" in filename):
+    elif re.search(r"\[MAL\]", filename, re.IGNORECASE):
         # Manual [MAL] file
         filename_metadata = get_filename_metadata(filename)
         mal_id = filename_metadata.get('mal_id')
@@ -1365,26 +1777,48 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                 anime_themes = fetch_animethemes_metadata(file) or anime_themes
                 anidb_id = anidb_id or get_external_site_id(anime_themes, "aniDB")
                 anilist_id = anilist_id or get_external_site_id(anime_themes, "AniList")
-        if filename_metadata.get("song"):
-            artists_group = []
-            for art in (filename_metadata.get("artist") or "N/A").split('+'):
-                artists_group.append(
-                    {"name":art}
+        existing_title, existing_artists = _theme_song_hints(anime_themes, slug)
+        explicit_title = filename_metadata.get("song")
+        explicit_artists = [
+            artist.strip()
+            for artist in (filename_metadata.get("artist") or "").split("+")
+            if artist.strip()
+        ]
+        title_hint = explicit_title or existing_title
+        artist_hints = explicit_artists or existing_artists
+        missing_answer_data = not title_hint or not artist_hints
+        if mal_id and slug and (anisongdb.has_catalog() or missing_answer_data):
+            try:
+                anisong_fallback_song = anisongdb.resolve_song_for_mal_slug(
+                    mal_id,
+                    slug,
+                    title=title_hint,
+                    artists=artist_hints,
+                    download_catalog=missing_answer_data,
                 )
-            anime_themes["animethemes"].append({
-                "type": slug[:2] if slug else None,
-                "slug": slug,
-                "song": {
-                    "title": filename_metadata.get("song", "N/A"),
-                    "artists": artists_group
-                }
-            })
+            except Exception as exc:
+                print(f" [AniSongDB MAL/slug lookup failed: {exc}]", end="")
+
+        fallback_data = (
+            anisongdb.song_metadata(anisong_fallback_song)
+            if anisong_fallback_song
+            else {}
+        )
+        final_title = explicit_title or existing_title or fallback_data.get("title")
+        final_artists = explicit_artists or existing_artists or fallback_data.get("artist") or []
+        if anisong_fallback_song or explicit_title or explicit_artists:
+            _append_manual_song_theme(
+                anime_themes,
+                slug,
+                final_title,
+                final_artists,
+            )
         if filename_metadata.get("season"):
             anime_themes["season"] = filename_metadata["season"]
             anime_themes["year"] = filename_metadata["year"]
     else:
         # [ID] file
-        mal_id = re.search(r"\[ID](.*?)(?=\[|$|\.)", filename).group(1)
+        mal_id = re.search(r"\[ID](.*?)(?=\[|$|\.)", filename, re.IGNORECASE).group(1)
         version = get_version_from_filename(filename)
         # Try to fetch AnimThemes metadata by MAL ID
         anime_themes = fetch_animethemes_metadata(mal_id=mal_id)
@@ -1448,7 +1882,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                         mal_entry["themes"][theme_slug][version_key][video_basename] = video_props
         
         # For [ID] and [MAL] files, add this file to the themes structure
-        if ("[ID]" in filename or "[MAL]" in filename) and slug:
+        if re.search(r"\[(?:ID|MAL)\]", filename, re.IGNORECASE) and slug:
             if slug not in mal_entry["themes"]:
                 mal_entry["themes"][slug] = {}
             
@@ -1461,6 +1895,14 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                 video_properties = extract_video_file_properties(filename)
                 video_properties["source"] = "LOCAL"
                 mal_entry["themes"][slug][version_key][filename] = video_properties
+            if anisong_fallback_song:
+                file_properties = mal_entry["themes"][slug][version_key][filename]
+                file_properties.update(anisongdb.file_identity(anisong_fallback_song))
+                mal_entry["anisongdb_ann_id"] = anisong_fallback_song.get("annId")
+                fallback_ids = anisongdb.linked_ids(anisong_fallback_song)
+                for key in ("anidb", "anilist", "kitsu"):
+                    if fallback_ids.get(key) is not None and not mal_entry.get(key):
+                        mal_entry[key] = str(fallback_ids[key])
         
         # Fetch and store anime metadata
         anime_data = state.metadata.anime_metadata.get(mal_id)
@@ -1475,7 +1917,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             mal_entry["name"] = anime_data.get("title")
         
         # Cache invalidation now automatic via FileMetadataDict
-        if refetch or not anime_data or not anime_data.get("title"):
+        if refetch or _mal_metadata_missing(anime_data):
             tenrai_data = fetch_tenrai_metadata(mal_id)
             if tenrai_data:
                 anime_data = {
@@ -1541,7 +1983,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                 _tenrai_reason = f" ({last_tenrai_error})" if last_tenrai_error else ""
                 print(f" [META DBG] Tenrai missing/unavailable for MAL {mal_id}{_tenrai_reason}; using minimal AniThemes-derived metadata", end="")
         anilist_fetched = False
-        if not anilist_id and mal_id and (refetch or mal_id not in state.metadata.file_metadata or not state.metadata.file_metadata[mal_id].get("anilist")):
+        if not _valid_provider_id(anilist_id) and mal_id and (refetch or mal_id not in state.metadata.file_metadata or not _valid_provider_id(state.metadata.file_metadata[mal_id].get("anilist"))):
             # No AniList ID known yet — try to resolve it from the MAL ID
             try:
                 resolved_id, anilist_data = fetch_anilist_metadata(mal_id=mal_id)
@@ -1552,7 +1994,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                     # Back-populate anilist and anidb IDs into state.metadata.file_metadata
                     if mal_id in state.metadata.file_metadata:
                         state.metadata.file_metadata[mal_id]["anilist"] = resolved_id
-                    if not anidb_id and anilist_data.get("anidb_id"):
+                    if not _valid_provider_id(anidb_id) and anilist_data.get("anidb_id"):
                         anidb_id = anilist_data["anidb_id"]
                         if mal_id in state.metadata.file_metadata:
                             state.metadata.file_metadata[mal_id]["anidb"] = anidb_id
@@ -1563,14 +2005,18 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             except Exception as e:
                 print(f" [AniList MAL-lookup ✗: {e}]", end="")
 
-        if anidb_id:
+        if _valid_provider_id(anidb_id):
+            anidb_id = str(anidb_id)
             anidb_data = state.metadata.anidb_metadata.get(anidb_id, {})
             if refetch or not anidb_data.get("characters") or not anidb_data.get("tags") or not anidb_data.get("episode_info"):
                 if not anidb_cooldown:
-                    anidb = fetch_anidb_metadata(anidb_id)
-                    if anidb["tags"] == [] and anidb["characters"] == [] and anidb["episodes"] == []:
+                    try:
+                        anidb = fetch_anidb_metadata(anidb_id)
+                    except AniDBCooldownError as exc:
                         anidb_cooldown = True
-                        print("[aniDB cooldown reached!]")
+                        print(f"[AniDB cooldown: {exc}]")
+                    except AniDBResponseError as exc:
+                        print(f"[AniDB unavailable: {exc}]")
                     else:
                         anidb_delay = 5
                         anidb_entry = {
@@ -1595,6 +2041,11 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
                 print(f" [AniList ✗: {e}]", end="")
         
         if anime_data:
+            if anisong_song:
+                # A Tenrai refresh may replace the dict. Restore AniSongDB's
+                # source-specific anime fields and exact song identity.
+                anisongdb.register_detected_file(filename, anisong_song)
+                anime_data = state.metadata.anime_metadata.get(mal_id, anime_data)
             # Get new songs from the current fetch
             new_songs = get_theme_list(anime_themes, slug, version)
             # Avoid duplicates by slug (new wins), then sort
@@ -1604,6 +2055,9 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
             # Store updated anime_data back into state.metadata.anime_metadata before saving
             # This ensures overrides can be applied to the updated data
             state.metadata.anime_metadata[mal_id] = anime_data
+            if anisong_fallback_song:
+                anisongdb.merge_song_metadata(mal_id, anisong_fallback_song)
+                anime_data = state.metadata.anime_metadata[mal_id]
         
         if not batch_mode:
             metadata_io.save_metadata()
@@ -1662,6 +2116,7 @@ def fetch_metadata(filename = None, refetch = False, label="", batch_mode=False)
         anidb_data = state.metadata.anidb_metadata.get(anidb_id, {}) if anidb_id else {}
         if anidb_data:
             data = {**anidb_data, **data}  # data keys win over anidb_data
+        anisongdb.apply_full_metadata(filename, data)
         
         if state.playback.currently_playing.get('filename') == filename:
             state.playback.currently_playing["data"] = data
@@ -1749,15 +2204,25 @@ def get_theme_list(data, file_slug=None, file_version=None):
 
 
 def get_filename_metadata(filename):
-    """Extracts MAL ID, IGDB ID, artist, and song name from a filename with optional bracketed tags."""
-    metadata = {"mal_id": None, "anidb_id": None, "igdb_id": None, "artist": None, "song": None}
+    """Extract IDs, artist, and song name from optional bracketed tags."""
+    metadata = {
+        "mal_id": None,
+        "anidb_id": None,
+        "igdb_id": None,
+        "anisongdb_amq_song_id": None,
+        "anisongdb_ann_song_id": None,
+        "artist": None,
+        "song": None,
+    }
     
-    mal_match = re.search(r"\[MAL](\d+)", filename)
-    anidb_match = re.search(r"\[ADB](\d+)", filename)
-    anilist_match = re.search(r"\[ALT](\d+)", filename)
-    igdb_match = re.search(r"\[IGDB]([A-Za-z0-9][A-Za-z0-9-]*)", filename)
-    artist_match = re.search(r"\[ART](.*?)(?=\[|$|\.)", filename)
-    song_match = re.search(r"\[SNG](.*?)(?=\[|$|\.)", filename)
+    mal_match = re.search(r"\[MAL](\d+)", filename, re.IGNORECASE)
+    anidb_match = re.search(r"\[ADB](\d+)", filename, re.IGNORECASE)
+    anilist_match = re.search(r"\[ALT](\d+)", filename, re.IGNORECASE)
+    igdb_match = re.search(r"\[IGDB]([A-Za-z0-9][A-Za-z0-9-]*)", filename, re.IGNORECASE)
+    artist_match = re.search(r"\[ART](.*?)(?=\[|$|\.)", filename, re.IGNORECASE)
+    song_match = re.search(r"\[SNG](.*?)(?=\[|$|\.)", filename, re.IGNORECASE)
+    amq_match = re.search(r"\[(?:ASDB|AMQ)](\d+)", filename, re.IGNORECASE)
+    ann_song_match = re.search(r"\[ANNSONG](\d+)", filename, re.IGNORECASE)
     
     if mal_match:
         metadata["mal_id"] = mal_match.group(1)
@@ -1776,6 +2241,12 @@ def get_filename_metadata(filename):
     
     if song_match:
         metadata["song"] = song_match.group(1).strip()
+
+    if amq_match:
+        metadata["anisongdb_amq_song_id"] = amq_match.group(1)
+
+    if ann_song_match:
+        metadata["anisongdb_ann_song_id"] = ann_song_match.group(1)
 
     season_year = get_last_two_folders(state.metadata.directory_files.get(filename))
     season = season_year[1]
@@ -1826,31 +2297,39 @@ def refresh_anidb_data(anidb_id, data, label=""):
         fetch_string = "Fetching"
     print(f"{label}{fetch_string} aniDB data for {data['title']}...", end="", flush=True)
     
-    anidb = fetch_anidb_metadata(anidb_id)
-    if anidb:
-        if anidb["tags"] == [] and anidb["characters"] == []:
-            anidb_cooldown = True
-            print(f"\rRefreshing aniDB data for {data['title']}...FAILED[aniDB cooldown reached!]")
-        else:
-            mal_id = data.get("mal")
-            
-            anidb_entry = {
-                "tags": anidb["tags"],
-                "characters": anidb["characters"],
-                "episode_info": anidb["episodes"]
-            }
-            
-            if mal_id:
-                state.metadata.anidb_metadata[anidb_id] = {"mal_id": mal_id}
-                state.metadata.anidb_metadata[anidb_id].update(anidb_entry)
-            else:
-                state.metadata.anidb_metadata[anidb_id] = anidb_entry
-                
-            metadata_io.save_metadata()
-            anidb_delay = 5
-            print(f"\r{label}{fetch_string} aniDB data for {data['title']}...COMPLETE")
+    try:
+        anidb = fetch_anidb_metadata(anidb_id)
+    except AniDBCooldownError as exc:
+        anidb_cooldown = True
+        print(
+            f"\r{label}{fetch_string} aniDB data for {data['title']}..."
+            f"FAILED [{exc}]"
+        )
+        return False
+    except AniDBResponseError as exc:
+        print(
+            f"\r{label}{fetch_string} aniDB data for {data['title']}..."
+            f"FAILED [{exc}]"
+        )
+        return False
+
+    mal_id = data.get("mal")
+    anidb_entry = {
+        "tags": anidb["tags"],
+        "characters": anidb["characters"],
+        "episode_info": anidb["episodes"],
+    }
+
+    if mal_id:
+        state.metadata.anidb_metadata[anidb_id] = {"mal_id": mal_id}
+        state.metadata.anidb_metadata[anidb_id].update(anidb_entry)
     else:
-        print(f"\r{label}{fetch_string} aniDB data for {data['title']}...FAILED")
+        state.metadata.anidb_metadata[anidb_id] = anidb_entry
+
+    metadata_io.save_metadata()
+    anidb_delay = 5
+    print(f"\r{label}{fetch_string} aniDB data for {data['title']}...COMPLETE")
+    return True
 
 
 def get_artists_string(artists, total = False, limit=None):
@@ -1879,66 +2358,113 @@ def get_artists_string(artists, total = False, limit=None):
 anidb_delay = 0
 
 def fetch_all_metadata(delay=0):
-    """Fetches missing metadata for the entire directory, spacing out API calls."""
-    confirm = messagebox.askyesno("Fetch All Missing Metadata", "Are you sure you want to fetch all missing metadata?")
+    """Fetch missing MAL, AniList, and AniDB data for every known anime."""
+    directory_scan.scan_directory()
+    preview = _collect_missing_metadata_targets()
+    unregistered_files = sum(
+        1
+        for filename in state.metadata.directory_files
+        if not get_file_metadata_by_name(filename)
+    )
+    known_missing = sum(
+        len(preview[key])
+        for key in ("mal", "anilist", "anidb", "resolve_ids")
+    )
+    if not known_missing and not unregistered_files:
+        deferred_note = (
+            f"\n\n{preview['deferred']:,} confirmed unavailable checks are "
+            f"deferred for up to {_MISSING_METADATA_RETRY_DAYS} days."
+            if preview["deferred"]
+            else ""
+        )
+        messagebox.showinfo(
+            "Fetch All Missing Metadata",
+            "No currently retryable MAL, AniList, AniDB, or file metadata "
+            f"was found.{deferred_note}",
+        )
+        return
+
+    anidb_hours = len(preview["anidb"]) * 5 / 3600
+    confirm = messagebox.askyesno(
+        "Fetch All Missing Metadata",
+        "Fetch missing MAL, AniList, and AniDB metadata for every known "
+        "theme?\n\n"
+        f"MAL entries: {len(preview['mal']):,}\n"
+        f"AniList entries: {len(preview['anilist']):,}\n"
+        f"AniDB entries: {len(preview['anidb']):,}\n"
+        f"Missing ID mappings: {len(preview['resolve_ids']):,}\n"
+        f"Deferred unavailable checks: {preview['deferred']:,}\n"
+        f"Unregistered local files: {unregistered_files:,}\n\n"
+        "This includes local files and metadata-only streaming themes. "
+        "The work is saved as it progresses and can be resumed by running "
+        "this again. Confirmed unavailable records are retried automatically "
+        f"after {_MISSING_METADATA_RETRY_DAYS} days. Large AniSongDB collections "
+        "can take a long time. "
+        f"The currently missing AniDB entries alone require at least about "
+        f"{anidb_hours:.1f} hours because its API must be queried slowly.",
+    )
     if not confirm:
         return  # User canceled
-    directory_scan.scan_directory()
     # Lazy import: infinite imports metadata_fetch, so a module-level import
     # here would create a cycle.
     import _app_scripts.playlists.infinite as infinite
     infinite.reset_infinite_caches()
     def fetch_all_metadata_worker():
-        global anidb_delay
+        global anidb_cooldown, anidb_delay
+        # A cooldown belongs to the previous run, not the lifetime of the app.
+        # Retrying the command later should not require restarting the process.
+        anidb_cooldown = False
         total_checked = 0
         total_fetched = 0
         total_skipped = 0
         total_missing = 0
         save_new_theme = False
 
-        refresh_tenrai = []
-        refresh_anidb = []
-        refresh_anilist = []
+        def progress_label():
+            processed = total_fetched + total_skipped
+            return f"[{processed + 1}/{total_missing}]"
+
+        targets = _collect_missing_metadata_targets()
+        refresh_tenrai = list(targets["mal"])
+        refresh_anidb = list(targets["anidb"])
+        refresh_anilist = list(targets["anilist"])
+        resolve_ids = list(targets["resolve_ids"])
         fetch_data = []
-        print(f"{len(state.metadata.directory_files)} files found in directory, checking for missing metadata...")
+        files_since_last_save = 0
+        print(
+            f"{targets['known_anime']} known anime and "
+            f"{len(state.metadata.directory_files)} local files found; "
+            "checking for missing linked metadata..."
+        )
         for filename in state.metadata.directory_files:
             total_checked += 1
             file_data = get_file_metadata_by_name(filename)
-            if file_data:
-                mal_id = file_data.get('mal')
-                anidb_id = file_data.get('anidb')
-                anilist_id = file_data.get('anilist')
-                
-                if mal_id in state.metadata.anime_metadata:
-                    if not state.metadata.anime_metadata.get(mal_id, {}).get("title"):
-                        tenrai_append = [mal_id, state.metadata.anime_metadata.get(mal_id)]
-                        if tenrai_append not in refresh_tenrai:
-                            refresh_tenrai.append(tenrai_append)
-                            total_missing += 1
-                
-                if anilist_id and str(anilist_id) not in state.metadata.anilist_metadata:
-                    if anilist_id not in refresh_anilist:
-                        refresh_anilist.append(str(anilist_id))
-                        total_missing += 1
-
-                if anidb_id and (not anidb_id in state.metadata.anidb_metadata):
-                    if anidb_cooldown:
-                        total_skipped += 1
-                    else:
-                        anidb_append = [anidb_id, state.metadata.anime_metadata.get(mal_id)]
-                        if anidb_append not in refresh_anidb:
-                            refresh_anidb.append(anidb_append)
-                            total_missing += 1
-            else:
+            if not file_data:
                 fetch_data.append(filename)
-                total_missing += 1
+        total_checked += targets["known_anime"]
+        total_missing = (
+            len(fetch_data)
+            + len(refresh_tenrai)
+            + len(refresh_anidb)
+            + len(refresh_anilist)
+            + len(resolve_ids)
+        )
         
         if total_missing > 0:
             if fetch_data:
                 save_new_theme = messagebox.askyesno("Save Missing Entries To New Themes", "Would you like to save all missing entries to the 'New Themes' state.metadata.playlist? Entries in the 'New Themes' will not appear in infinite playlists until removed from the 'New Themes' state.metadata.playlist. (Select 'NO' if unsure)")
             
             BATCH_SAVE_INTERVAL = 100
-            files_since_last_save = 0
+
+            def note_metadata_changes(change_count=1):
+                nonlocal files_since_last_save
+                if not change_count:
+                    return
+                files_since_last_save += change_count
+                if files_since_last_save >= BATCH_SAVE_INTERVAL:
+                    metadata_io.save_metadata()
+                    build_filename_to_mal_map()
+                    files_since_last_save = 0
             
             for filename in fetch_data:
                 needs_api_call = True
@@ -1972,79 +2498,418 @@ def fetch_all_metadata(delay=0):
                     time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
                     anidb_delay = 0
                 try:
-                    fetch_metadata(filename, label=f"[{total_fetched+1}/{total_missing}]", batch_mode=True)  # Call your existing metadata function
-                    if save_new_theme:
+                    result = fetch_metadata(
+                        filename,
+                        label=progress_label(),
+                        batch_mode=True,
+                    )
+                    if result and save_new_theme:
                         playlist_marks.toggle_theme("New Themes", filename=filename, quiet=True)
-                    total_fetched += 1
-                    files_since_last_save += 1
-                    
-                    # Periodic save every BATCH_SAVE_INTERVAL files
-                    if files_since_last_save >= BATCH_SAVE_INTERVAL:
-                        metadata_io.save_metadata()
-                        build_filename_to_mal_map()
-                        files_since_last_save = 0
-                except Exception as e:
-                    print(e)
-                    time.sleep(3)  # Delay to avoid API rate limits
-                    total_skipped += 1
-            for file_refresh in refresh_tenrai:
-                try:
-                    refresh_tenrai_data(file_refresh[0], file_refresh[1], label=f"[{total_fetched+1}/{total_missing}]")
-                    total_fetched += 1
-                except Exception as e:
-                    print(e)
-                    time.sleep(3)  # Delay to avoid API rate limits
-                    total_skipped += 1
-            for file_anidb_refresh in refresh_anidb:
-                try:
-                    if total_fetched > 0 and delay+anidb_delay > 0: 
-                        time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
-                        anidb_delay = 0
-                    if not anidb_cooldown:
-                        if file_anidb_refresh[0] not in state.metadata.anidb_metadata:
-                            refresh_anidb_data(file_anidb_refresh[0], file_anidb_refresh[1], label=f"[{total_fetched+1}/{total_missing}]")
+                    if result:
                         total_fetched += 1
+                        note_metadata_changes()
                     else:
                         total_skipped += 1
                 except Exception as e:
                     print(e)
                     time.sleep(3)  # Delay to avoid API rate limits
                     total_skipped += 1
-            
+
+            # Resolve absent AniList/AniDB IDs before fetching those stores.
+            # AniSongDB entries normally already have both IDs; this also
+            # repairs older/manual registrations that only have a MAL ID.
+            queued_anilist = set(refresh_anilist)
+            queued_anidb = {str(item[0]) for item in refresh_anidb}
+            for mal_id, file_entry in resolve_ids:
+                try:
+                    invalid_id_changes = 0
+                    for key in ("anilist", "anidb"):
+                        value = file_entry.get(key)
+                        if value not in (None, "") and not _valid_provider_id(value):
+                            file_entry.pop(key, None)
+                            invalid_id_changes += 1
+                    missing_before = tuple(
+                        key
+                        for key in ("anilist", "anidb")
+                        if not _valid_provider_id(file_entry.get(key))
+                    )
+                    deferred_before = {
+                        key: _metadata_failure_deferred(
+                            file_entry, f"linked_{key}", mal_id
+                        )
+                        for key in missing_before
+                    }
+                    print(
+                        f"{progress_label()} Resolving linked IDs "
+                        f"for MAL {mal_id}...",
+                        end=" ",
+                        flush=True,
+                    )
+                    linked_ids = fetch_arm_ids(mal_id)
+                    resolved_id_changes = 0
+                    for key in ("anilist", "anidb", "kitsu"):
+                        value = linked_ids.get(key)
+                        if value and (
+                            (key == "kitsu" and not file_entry.get(key))
+                            or (
+                                key in ("anilist", "anidb")
+                                and not _valid_provider_id(file_entry.get(key))
+                            )
+                        ):
+                            file_entry[key] = str(value)
+                            resolved_id_changes += 1
+                    attempted_anilist_fallback = False
+                    if (
+                        not _valid_provider_id(file_entry.get("anilist"))
+                        and not deferred_before.get("anilist", False)
+                    ):
+                        attempted_anilist_fallback = True
+                        resolved_anilist_id, anilist_data = fetch_anilist_metadata(
+                            mal_id=mal_id
+                        )
+                        if resolved_anilist_id and anilist_data:
+                            file_entry["anilist"] = str(resolved_anilist_id)
+                            resolved_id_changes += 1
+                            state.metadata.anilist_metadata[
+                                str(resolved_anilist_id)
+                            ] = anilist_data
+                            if (
+                                anilist_data.get("anidb_id")
+                                and not _valid_provider_id(file_entry.get("anidb"))
+                            ):
+                                file_entry["anidb"] = str(anilist_data["anidb_id"])
+                                resolved_id_changes += 1
+
+                    status_changes = 0
+                    for key in missing_before:
+                        if _valid_provider_id(file_entry.get(key)):
+                            status_changes += _clear_metadata_absence(
+                                file_entry, f"linked_{key}"
+                            )
+                        elif deferred_before.get(key, False):
+                            continue
+                        elif key == "anidb" and last_arm_lookup_succeeded:
+                            status_changes += _record_metadata_absence(
+                                file_entry, "linked_anidb", mal_id
+                            )
+                        elif (
+                            key == "anilist"
+                            and attempted_anilist_fallback
+                            and last_anilist_status == "not_found"
+                        ):
+                            status_changes += _record_metadata_absence(
+                                file_entry, "linked_anilist", mal_id
+                            )
+                    note_metadata_changes(
+                        status_changes + resolved_id_changes + invalid_id_changes
+                    )
+                    anilist_id = (
+                        str(file_entry.get("anilist"))
+                        if _valid_provider_id(file_entry.get("anilist"))
+                        else None
+                    )
+                    anidb_id = (
+                        str(file_entry.get("anidb"))
+                        if _valid_provider_id(file_entry.get("anidb"))
+                        else None
+                    )
+                    if (
+                        anilist_id
+                        and _anilist_metadata_missing(anilist_id)
+                        and str(anilist_id) not in queued_anilist
+                    ):
+                        queued_anilist.add(str(anilist_id))
+                        refresh_anilist.append(str(anilist_id))
+                        total_missing += 1
+                    if (
+                        anidb_id
+                        and _anidb_metadata_missing(anidb_id)
+                        and str(anidb_id) not in queued_anidb
+                    ):
+                        queued_anidb.add(str(anidb_id))
+                        refresh_anidb.append((str(anidb_id), mal_id))
+                        total_missing += 1
+                    status, fully_resolved = _linked_id_resolution_status(
+                        missing_before, file_entry
+                    )
+                    print(status)
+                    if fully_resolved:
+                        total_fetched += 1
+                    else:
+                        total_skipped += 1
+                    time.sleep(0.25)
+                except Exception as e:
+                    print(f"✗ Error: {e}")
+                    total_skipped += 1
+
+            for file_refresh in refresh_tenrai:
+                try:
+                    mal_id, anime_data = file_refresh
+                    if not isinstance(anime_data, dict):
+                        anime_data = {
+                            "mal": mal_id,
+                            "title": (
+                                state.metadata.file_metadata.get(mal_id, {}).get("name")
+                                or f"MAL ID: {mal_id}"
+                            ),
+                            "songs": [],
+                        }
+                        state.metadata.anime_metadata[mal_id] = anime_data
+                    refresh_tenrai_data(
+                        mal_id,
+                        anime_data,
+                        label=progress_label(),
+                    )
+                    if _mal_metadata_missing(anime_data):
+                        if last_tenrai_status == "not_found":
+                            note_metadata_changes(
+                                _record_absence_for_provider_id(
+                                    "mal", mal_id, "tenrai"
+                                )
+                            )
+                        total_skipped += 1
+                    else:
+                        note_metadata_changes(
+                            _clear_absence_for_provider_id(
+                                "mal", mal_id, "tenrai"
+                            )
+                        )
+                        total_fetched += 1
+                except Exception as e:
+                    print(e)
+                    time.sleep(3)  # Delay to avoid API rate limits
+                    total_skipped += 1
             for anilist_id in refresh_anilist:
                 try:
-                    if anilist_id not in state.metadata.anilist_metadata:
-                        print(f"[{total_fetched+1}/{total_missing}] Fetching AniList metadata for ID {anilist_id}...", end=" ", flush=True)
+                    if _anilist_metadata_missing(anilist_id):
+                        print(f"{progress_label()} Fetching AniList metadata for ID {anilist_id}...", end=" ", flush=True)
                         _, anilist_data = fetch_anilist_metadata(anilist_id=anilist_id)
                         if anilist_data:
                             state.metadata.anilist_metadata[anilist_id] = anilist_data
+                            note_metadata_changes(
+                                _clear_absence_for_provider_id(
+                                    "anilist", anilist_id, "anilist_metadata"
+                                )
+                            )
+                            mal_id = str(anilist_data.get("mal_id") or "")
+                            file_entry = state.metadata.file_metadata.get(mal_id)
+                            linked_anidb_id = anilist_data.get("anidb_id")
+                            if (
+                                isinstance(file_entry, dict)
+                                and linked_anidb_id
+                                and not file_entry.get("anidb")
+                            ):
+                                linked_anidb_id = str(linked_anidb_id)
+                                file_entry["anidb"] = linked_anidb_id
+                                if (
+                                    _anidb_metadata_missing(linked_anidb_id)
+                                    and linked_anidb_id not in queued_anidb
+                                ):
+                                    queued_anidb.add(linked_anidb_id)
+                                    refresh_anidb.append((linked_anidb_id, mal_id))
+                                    total_missing += 1
                             print(f"✓ ({anilist_data.get('title', 'Unknown')})")
             
                             # Save all metadata after fetching
                             metadata_io.save_metadata()
+                            total_fetched += 1
                         else:
+                            if last_anilist_status == "not_found":
+                                note_metadata_changes(
+                                    _record_absence_for_provider_id(
+                                        "anilist",
+                                        anilist_id,
+                                        "anilist_metadata",
+                                    )
+                                )
                             print("✗ Failed")
-                        total_fetched += 1
+                            total_skipped += 1
                         time.sleep(1.0)
+                    else:
+                        # A preceding ID-resolution lookup may have populated
+                        # this store after the initial work list was built.
+                        note_metadata_changes(
+                            _clear_absence_for_provider_id(
+                                "anilist", anilist_id, "anilist_metadata"
+                            )
+                        )
+                        total_fetched += 1
                 except Exception as e:
                     print(f"✗ Error: {e}")
                     time.sleep(1.0)
                     total_skipped += 1
 
+            # AniDB is deliberately last: its mandatory pacing makes it much
+            # slower than MAL/AniList, so the faster stores finish even if the
+            # user stops and resumes the job before AniDB completes.
+            for anidb_index, file_anidb_refresh in enumerate(refresh_anidb):
+                try:
+                    if anidb_cooldown:
+                        remaining = len(refresh_anidb) - anidb_index
+                        print(
+                            f"AniDB cooldown reached; leaving {remaining:,} "
+                            "AniDB metadata requests queued for the next run."
+                        )
+                        break
+                    if total_fetched > 0 and delay+anidb_delay > 0:
+                        time.sleep(delay+anidb_delay)  # Delay to avoid API rate limits
+                        anidb_delay = 0
+                    anidb_id, mal_id = file_anidb_refresh
+                    if _anidb_metadata_missing(anidb_id):
+                        anime_data = state.metadata.anime_metadata.get(mal_id) or {
+                            "mal": mal_id,
+                            "title": f"MAL ID: {mal_id}",
+                        }
+                        refresh_anidb_data(
+                            anidb_id,
+                            anime_data,
+                            label=progress_label(),
+                        )
+                    if _anidb_metadata_missing(anidb_id):
+                        total_skipped += 1
+                    else:
+                        total_fetched += 1
+                except Exception as e:
+                    print(e)
+                    time.sleep(3)  # Delay to avoid API rate limits
+                    total_skipped += 1
+
         # After all fetching is done, save any remaining unsaved changes
-        if total_fetched > 0 and files_since_last_save > 0:
-            metadata_io.save_metadata()
+        if files_since_last_save > 0:
+            metadata_io.save_metadata(immediate=True)
             build_filename_to_mal_map()
         elif total_fetched > 0:
+            metadata_io.save_metadata(immediate=True)
             if not filename_to_mal:
                 build_filename_to_mal_map()
 
-        print("Metadata fetching complete! - Checked:" + str(total_checked) + " Missing:" + str(total_fetched+total_skipped) + " Skipped:" + str(total_skipped))
+        print(
+            "Metadata fetching complete! - Checked:"
+            + str(total_checked)
+            + " Processed:"
+            + str(total_fetched + total_skipped)
+            + " Completed:"
+            + str(total_fetched)
+            + " Skipped/Unavailable:"
+            + str(total_skipped)
+        )
         if save_new_theme and total_fetched > 0:
             print(f"{total_fetched} files saved to state.metadata.playlist '{"New Themes"}'.")
 
     # Run in a separate thread so it doesn’t freeze the UI
     threading.Thread(target=fetch_all_metadata_worker, daemon=True).start()
+
+
+def refresh_anisongdb_catalog():
+    """Download AniSongDB's catalog and refresh gap/alternative videos."""
+    confirm = messagebox.askyesno(
+        "Refresh AniSongDB Catalog",
+        "Download AniSongDB's complete catalog for file detection and full "
+        "song metadata?\n\n"
+        "Uncovered themes will be registered for playlists and streaming. For "
+        "themes already covered by AnimeThemes or a local file, the AniSongDB "
+        "video will be available as an alternate in the theme/version list. "
+        "The full source catalog will be retained locally in its own compressed "
+        "metadata file.",
+    )
+    if not confirm:
+        return
+
+    def worker():
+        try:
+            print("Refreshing AniSongDB catalog...", flush=True)
+            catalog = anisongdb.fetch_catalog()
+            anisongdb.replace_catalog(catalog)
+            registered = anisongdb.sync_catalog_to_metadata()
+            preferred_gaps = len(anisongdb.gap_filenames())
+            alternates = anisongdb.registered_alternate_count()
+            metadata_io.save_anisongdb_metadata()
+            metadata_io.save_metadata(immediate=True)
+            directory_scan.scan_directory()
+            print(
+                "AniSongDB catalog refresh complete! - "
+                f"Songs: {len(catalog.get('songs', []))} "
+                f"Gap themes: {preferred_gaps} Video sources: {registered} "
+                f"Covered alternatives: {alternates}"
+            )
+            messagebox.showinfo(
+                "AniSongDB Refresh Complete",
+                f"Loaded {len(catalog.get('songs', [])):,} songs. Registered "
+                f"{preferred_gaps:,} uncovered themes with {registered:,} "
+                f"playable video sources and {alternates:,} selectable "
+                "alternatives for covered themes.",
+            )
+        except Exception as exc:
+            print(f"AniSongDB catalog refresh failed: {exc}")
+            messagebox.showerror("AniSongDB Refresh Failed", str(exc))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def refresh_animethemes_catalog():
+    """Download AnimeThemes' paginated catalog and register every video."""
+    confirm = messagebox.askyesno(
+        "Refresh AnimeThemes Catalog",
+        "Download the complete playable AnimeThemes catalog?\n\n"
+        "This works without an imported metadata package or local theme files. "
+        "Anime titles, songs, artists, theme versions, and remote videos will "
+        "be registered for searching, streaming, and downloading.\n\n"
+        "The catalog currently requires about 50 API requests. Existing local, "
+        "manual, enriched, and AniSongDB metadata will be preserved.",
+    )
+    if not confirm:
+        return
+
+    def worker():
+        try:
+            print("Refreshing AnimeThemes catalog...", flush=True)
+
+            def report_progress(page, anime_count):
+                print(
+                    f"AnimeThemes catalog page {page}: "
+                    f"{anime_count:,} anime received...",
+                    flush=True,
+                )
+
+            catalog = animethemes_catalog.fetch_catalog(
+                progress_callback=report_progress,
+            )
+            # Do not replace usable local state until every page has arrived
+            # and passed validation.
+            animethemes_catalog.replace_catalog(catalog)
+            registered = animethemes_catalog.sync_catalog_to_metadata()
+
+            gap_count = 0
+            alternate_count = 0
+            if anisongdb.has_catalog():
+                # AnimeThemes is the primary source. Recompute AniSongDB gaps
+                # and alternatives against the newly refreshed coverage.
+                anisongdb.sync_catalog_to_metadata()
+                gap_count = len(anisongdb.gap_filenames())
+                alternate_count = anisongdb.registered_alternate_count()
+
+            metadata_io.save_animethemes_metadata()
+            metadata_io.save_metadata(immediate=True)
+            directory_scan.scan_directory()
+            anime_count = len(catalog.get("anime", []))
+            print(
+                "AnimeThemes catalog refresh complete! - "
+                f"Anime: {anime_count} Video registrations: {registered} "
+                f"AniSongDB gaps: {gap_count} "
+                f"AniSongDB alternatives: {alternate_count}"
+            )
+            messagebox.showinfo(
+                "AnimeThemes Refresh Complete",
+                f"Loaded {anime_count:,} anime and registered {registered:,} "
+                "playable video sources.\n\n"
+                "The catalog is now available to search and to playlists that "
+                "include streaming themes.",
+            )
+        except Exception as exc:
+            print(f"AnimeThemes catalog refresh failed: {exc}")
+            messagebox.showerror("AnimeThemes Refresh Failed", str(exc))
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def refresh_all_anilist_metadata(delay=2):
@@ -2266,4 +3131,3 @@ def refresh_all_igdb_metadata():
         messagebox.showinfo("IGDB Refresh Complete", f"Refreshed {refreshed}/{total} IGDB entries.\nFailed: {failed}")
 
     threading.Thread(target=worker, daemon=True).start()
-

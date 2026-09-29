@@ -164,7 +164,7 @@ def update_extra_metadata(column=None):
                         if is_cached:
                             dl_btn.config(command=lambda b=dl_btn, f=filename: cache_download.move_cached_file_to_directory(f, b))
                         else:
-                            dl_btn.config(command=lambda b=dl_btn, f=filename: cache_download.download_animethemes_file(f, b))
+                            dl_btn.config(command=lambda b=dl_btn, f=filename: cache_download.download_theme_file(f, b))
                         column.window_create(tk.END, window=dl_btn)
                         column.insert(tk.END, " ")
                     else:
@@ -674,6 +674,9 @@ def update_metadata():
                         "igdb_id": data.get("igdb"),
                         "igdb_slug": data.get("igdb_slug"),
                         "animethemes_slug": data.get("animethemes_slug"),
+                        "anisongdb_ann_id": data.get("anisongdb_ann_id"),
+                        "anisongdb_ann_song_id": data.get("anisongdb_ann_song_id"),
+                        "anisongdb_amq_song_id": data.get("anisongdb_amq_song_id"),
                         "cover": data.get("cover"),
                     }
                 if playlist.get("infinite"):
@@ -1213,7 +1216,7 @@ def get_filename_icon(filename):
     directory_files = state.metadata.directory_files
     if filename in directory_files:
         return "▶"
-    elif cache_download.is_animethemes_stream_file(filename):
+    elif cache_download.is_remote_theme_file(filename):
         return stream_icon
     else:
         return "❌"

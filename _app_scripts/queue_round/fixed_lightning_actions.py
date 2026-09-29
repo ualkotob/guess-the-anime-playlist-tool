@@ -52,7 +52,8 @@ def load_fixed_lightning_rounds(filter_missing_themes=False):
 
                     for round_data in data.get("rounds", []):
                         theme = round_data.get("theme", "")
-                        if not filter_missing_themes or entry_paths.get_clean_filename(theme) in state.metadata.directory_files or cache_download.is_animethemes_stream_file(theme):
+                        clean_theme = entry_paths.get_clean_filename(theme)
+                        if not filter_missing_themes or clean_theme in state.metadata.directory_files or cache_download.is_remote_theme_file(clean_theme):
                             duration = round_data.get("duration", lightning_settings.lightning_mode_settings_default.get(round_data.get("type", "regular"), {}).get("length", 12))
                             answer_duration = round_data.get("answer_duration", 8)
 
@@ -123,6 +124,7 @@ def _play_fixed_lightning_round_now(index, randomize=False):
     if randomize:
         random.shuffle(ri.get("rounds", []))
     _fl_set_queue_and_notify(ri)
+    lightning_manager.queue_next_lightning_mode()
     show_fixed_lightning_list(update=True)
     metadata_display.up_next_text()
     transport.play_video()

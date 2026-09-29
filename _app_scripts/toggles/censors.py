@@ -26,6 +26,7 @@ import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
 import _app_scripts.data.config_io as config_io
 import _app_scripts.ui.windowing as windowing
 import _app_scripts.file.tooltip as tooltip
+import _app_scripts.utils as utils
 
 # ---------------------------------------------------------------------------
 # Collaborators reached directly via module attr: play_next from the transport
@@ -116,27 +117,12 @@ def _commit_censor_osd():
         _, _, video_x, video_y, video_w, video_h = information_popup._get_effective_video_rect()
     else:
         try:
-            vw, vh = state.widgets.player.video_get_size(0)
+            # Display aspect, not stored pixels: anamorphic DVD rips store
+            # 720x480 whether they show as 4:3 or 16:9.
+            ar = state.widgets.player.get_display_aspect()
         except Exception:
-            vw, vh = 0, 0
-        if vw and vh:
-            if (vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478):
-                ar = 16 / 9
-            else:
-                ar = vw / vh
-            osd_ar = osd_w / osd_h
-            if ar >= osd_ar:
-                video_w = osd_w
-                video_h = int(osd_w / ar)
-                video_x = 0
-                video_y = (osd_h - video_h) // 2
-            else:
-                video_h = osd_h
-                video_w = int(osd_h * ar)
-                video_x = (osd_w - video_w) // 2
-                video_y = 0
-        else:
-            video_x, video_y, video_w, video_h = 0, 0, osd_w, osd_h
+            ar = 0.0
+        video_x, video_y, video_w, video_h = utils.letterbox_rect(osd_w, osd_h, ar)
 
     def _to_ass_color(color_str):
         try:
@@ -839,23 +825,13 @@ class RectangleDrawerOverlay:
 
         # Compute video rect
         try:
-            vw, vh = state.widgets.player.video_get_size(0)
+            # Same display-aspect source as the censor renderer, so a box drawn
+            # here lands on the same pixels when it is played back.
+            video_ar = state.widgets.player.get_display_aspect()
         except Exception:
-            vw, vh = 0, 0
-        if vw and vh:
-            video_ar = 16/9 if ((vw == 720 and vh in (480, 478)) or (vw == 716 and vh == 478)) else vw/vh
-            win_ar = mpv_w / mpv_h if mpv_h else 1
-            if video_ar >= win_ar:
-                self.video_w = mpv_w
-                self.video_h = int(mpv_w / video_ar)
-                self.video_x, self.video_y = 0, (mpv_h - self.video_h) // 2
-            else:
-                self.video_h = mpv_h
-                self.video_w = int(mpv_h * video_ar)
-                self.video_x, self.video_y = (mpv_w - self.video_w) // 2, 0
-        else:
-            self.video_x = self.video_y = 0
-            self.video_w, self.video_h = mpv_w, mpv_h
+            video_ar = 0.0
+        (self.video_x, self.video_y,
+         self.video_w, self.video_h) = utils.letterbox_rect(mpv_w, mpv_h, video_ar)
 
         if self.video_x > 0 or self.video_y > 0:
             self.canvas.create_rectangle(

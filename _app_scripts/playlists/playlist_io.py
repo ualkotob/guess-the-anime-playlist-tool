@@ -25,6 +25,7 @@ import _app_scripts.playlists.playlist as playlist_ops
 import _app_scripts.playlists.infinite as infinite
 
 playlist_loaded = False
+ANISONGDB_GAP_PLAYLIST_NAME = "AniSongDB OP-ED Gaps"
 
 
 def save():
@@ -34,6 +35,42 @@ def save():
 
 def save_as():
     save_playlist_as(state.widgets.root)
+
+
+def create_anisongdb_gap_playlist(*, confirm_overwrite=True, notify=True):
+    """Create an editable snapshot of preferred AniSongDB OP/ED gap videos."""
+    from _app_scripts.theme import anisongdb
+
+    os.makedirs(PLAYLISTS_FOLDER, exist_ok=True)
+    filename = os.path.join(PLAYLISTS_FOLDER, f"{ANISONGDB_GAP_PLAYLIST_NAME}.json")
+    if confirm_overwrite and os.path.exists(filename):
+        if not messagebox.askyesno(
+            "Replace AniSongDB Gap Playlist",
+            "Replace the existing AniSongDB OP/ED gap playlist with a fresh snapshot?\n\n"
+            "Any themes you removed from the saved playlist will be added again if they are "
+            "still gaps.",
+            parent=state.widgets.root,
+        ):
+            return None
+
+    files = anisongdb.gap_filenames(
+        preferred_only=True,
+        theme_types={"OP", "ED"},
+    )
+    data = copy.deepcopy(playlist_ops.BLANK_PLAYLIST)
+    data["name"] = ANISONGDB_GAP_PLAYLIST_NAME
+    data["playlist"] = files
+    utils._atomic_json_write(filename, data, indent=4)
+    print(f"Created {filename} with {len(files)} AniSongDB OP/ED gaps.")
+    if notify:
+        messagebox.showinfo(
+            "AniSongDB Gap Playlist Created",
+            f"Created {ANISONGDB_GAP_PLAYLIST_NAME} with {len(files):,} themes.\n\n"
+            "It is a normal editable playlist; removing and saving themes records your "
+            "review progress.",
+            parent=state.widgets.root,
+        )
+    return filename, len(files)
 
 
 def _write_playlist(name):

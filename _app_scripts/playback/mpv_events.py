@@ -16,7 +16,7 @@ from core.game_state import state
 from _app_scripts.playback import coming_up_ui, blind_screen, transport
 from _app_scripts.queue_round.lightning_rounds import (
     filter_overlay, edge_overlay, peek_overlay, grow_overlay,
-    mismatch_round, round_start_guard,
+    mismatch_round, peek_dispatch, round_start_guard,
 )
 
 # --- module-owned state ---
@@ -108,6 +108,14 @@ def _on_playback_restart(_):
         _root = state.widgets.root
         if not _root:
             return
+        # The incoming file's geometry is now decodable. Seed the cache here so
+        # every overlay re-laid-out below measures this file, not the one it
+        # replaced — mpv only emits `video-params` on a change, so a file that
+        # matches the previous size would otherwise leave the cache empty.
+        try:
+            state.widgets.player.refresh_video_geometry()
+        except Exception:
+            pass
         # Start sampling directly from the mpv callback, where the incoming
         # frame is already renderable. This runs in a worker and does not hold
         # playback or wait for the Tk event queue.
@@ -159,6 +167,12 @@ def _on_playback_restart(_):
                 round_start_guard.after(
                     5, _refresh_starting_censor_color, token=round_token
                 )
+            # Re-lay out the reveal cover against this file's video rect. It was
+            # drawn before the load so no frame could leak, and mpv was still
+            # reporting the outgoing file's size then — a cover sized for 16:9
+            # never uncovers a 4:3 video's left/right edges. Unconditional:
+            # lightning reveal rounds start from the same pre-load draw.
+            peek_dispatch.redraw_active_reveal()
             # For non-lightning reveal rounds: reapply active peek overlay then lift blind
             if not state.lightning.light_mode and not state.lightning.light_round_started:
                 _fvf = filter_overlay.filter_vf_active
@@ -169,10 +183,6 @@ def _on_playback_restart(_):
                 # Reapply ASS-based overlays (osd dims are now valid)
                 if _fvf and _fvf_var:
                     filter_overlay.toggle_filter_vf(_fvf_var, filter_overlay._filter_vf_last_progress[0])
-                if _eo:
-                    edge_overlay.toggle_edge_overlay(block_percent=99)
-                if _po:
-                    peek_overlay.toggle_peek_overlay()
                 # If any peek overlay is active and we put up a pre-load black screen, lift it
                 if _bo and (_fvf or _eo or _po or _go):
                     round_start_guard.after(

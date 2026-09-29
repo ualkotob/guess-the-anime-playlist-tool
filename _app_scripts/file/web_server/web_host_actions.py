@@ -286,7 +286,7 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'seek_near_end':
             state.widgets.root.after(0, lambda: web_search._invoke_registry_by_id("skip_to_end_ff"))
         elif action == 'set_volume':
-            vol = max(0, min(100, int(data.get('volume', 100))))
+            vol = max(0, min(200, int(data.get('volume', 100))))
             audio_toggles.set_volume(vol)
         elif action == 'set_bgm_modifier':
             state.controls.bgm_volume = max(0.0, min(1.5, float(data.get('modifier', 1.0))))

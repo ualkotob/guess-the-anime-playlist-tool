@@ -1,4 +1,4 @@
-"""AnimThemes file download and local cache management.
+"""Remote-theme download and local cache management.
 
 Owns all download state and the periodic UI-update polling loop. Runtime cache
 settings are read directly off state.config / core.app_meta at call time.
@@ -24,6 +24,7 @@ import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.file.metadata.metadata_panel as metadata_panel
 import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.playback.transport as transport
+from _app_scripts.theme import anisongdb
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -61,12 +62,56 @@ def is_downloading(filename):
 
 
 # ---------------------------------------------------------------------------
-# AnimThemes URL helper
+# Remote theme source helpers
 # ---------------------------------------------------------------------------
 
 def get_animethemes_stream_url(filename):
-    """Return the AnimThemes CDN URL for *filename*."""
+    """Return the AnimeThemes CDN URL for *filename*."""
     return f"https://v.animethemes.moe/{filename}"
+
+
+def _remote_file_properties(filename):
+    data = metadata_fetch.get_file_metadata_by_name(filename) or {}
+    properties = data.get("file_properties") or {}
+    return properties if isinstance(properties, dict) else {}
+
+
+def get_theme_stream_url(filename):
+    """Return the preferred registered source URL for a remote theme."""
+    urls = get_theme_stream_urls(filename)
+    return urls[0] if urls else None
+
+
+def get_anisongdb_stream_url(filename):
+    """Return the AniSongDB URL registered for a gap or fallback source."""
+    properties = _remote_file_properties(filename)
+    url = properties.get("anisongdb_stream_url")
+    if not url and str(properties.get("source", "")).upper() == "ANISONGDB":
+        url = properties.get("stream_url")
+    if isinstance(url, str) and url.startswith(("https://", "http://")):
+        return url
+    return None
+
+
+def get_theme_stream_urls(filename):
+    """Return remote source URLs in preferred/fallback order."""
+    properties = _remote_file_properties(filename)
+    candidates = [properties.get("stream_url")]
+    if is_animethemes_stream_file(filename):
+        candidates.append(get_animethemes_stream_url(filename))
+    candidates.append(get_anisongdb_stream_url(filename))
+    fallback_urls = properties.get("anisongdb_fallback_stream_urls", [])
+    if isinstance(fallback_urls, list):
+        candidates.extend(fallback_urls)
+    urls = []
+    for url in candidates:
+        if (
+            isinstance(url, str)
+            and url.startswith(("https://", "http://"))
+            and url not in urls
+        ):
+            urls.append(url)
+    return urls
 
 
 # ---------------------------------------------------------------------------
@@ -317,42 +362,59 @@ def _finalize_cached_file(filename, rel_path, cache_path):
 # Core download engine
 # ---------------------------------------------------------------------------
 
-def _download_animethemes_file_to_path(filename, dest_path, progress_callback=None):
-    """Low-level streaming download of an AnimThemes file to *dest_path*.
+def _download_theme_file_to_path(filename, dest_path, progress_callback=None):
+    """Low-level streaming download of a remote theme to *dest_path*.
 
     Returns True on success, False on failure / cancellation.
     """
     try:
-        url = get_animethemes_stream_url(filename)
+        urls = get_theme_stream_urls(filename)
+        if not urls:
+            raise ValueError(f"No remote theme source is registered for {filename}")
         headers = {
             "User-Agent": (
                 f"GuessTheAnime/{APP_VERSION} "
                 "(https://github.com/ualkotob/guess-the-anime-playlist-tool)"
             )
         }
-        response = requests.get(url, stream=True, timeout=30, headers=headers)
-        response.raise_for_status()
+        last_error = None
+        for url in urls:
+            try:
+                response = requests.get(url, stream=True, timeout=30, headers=headers)
+                response.raise_for_status()
 
-        total_size = int(response.headers.get("content-length", 0))
-        downloaded = 0
+                total_size = int(response.headers.get("content-length", 0))
+                downloaded = 0
 
-        with open(dest_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if download_cancel_flags.get(filename):
-                    print(f"Download cancelled: {filename}")
-                    return False
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback and total_size > 0:
-                        progress_callback(
-                            downloaded / 1024 / 1024,
-                            total_size / 1024 / 1024,
-                        )
-        return True
+                with open(dest_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if download_cancel_flags.get(filename):
+                            print(f"Download cancelled: {filename}")
+                            return False
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if progress_callback and total_size > 0:
+                                progress_callback(
+                                    downloaded / 1024 / 1024,
+                                    total_size / 1024 / 1024,
+                                )
+                return True
+            except Exception as exc:
+                last_error = exc
+                try:
+                    if os.path.exists(dest_path):
+                        os.remove(dest_path)
+                except OSError:
+                    pass
+        raise last_error
     except Exception as e:
         print(f"Download error for {filename}: {e}")
         return False
+
+
+# Backward compatibility for third-party callers using the old private name.
+_download_animethemes_file_to_path = _download_theme_file_to_path
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +668,7 @@ def download_to_cache(filename, silent=False):
             if download_cancel_flags.get(filename):
                 return
 
-            success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
+            success = _download_theme_file_to_path(filename, dest_path, progress_callback)
 
             if download_cancel_flags.get(filename):
                 if os.path.exists(dest_path):
@@ -665,8 +727,8 @@ def download_to_cache(filename, silent=False):
 # Direct download to themes directory (non-cache path)
 # ---------------------------------------------------------------------------
 
-def download_animethemes_file(filename, button=None):
-    """Download *filename* directly into the themes directory (year/season/ structure)."""
+def download_theme_file(filename, button=None):
+    """Download a remote theme into the themes directory (year/season/ structure)."""
     def update_button(text):
         if button and isinstance(button, tk.Button):
             try:
@@ -684,7 +746,7 @@ def download_animethemes_file(filename, button=None):
             def progress_callback(mb_downloaded, mb_total):
                 update_button(f"{mb_downloaded:.1f}/{mb_total:.1f} MB")
 
-            success = _download_animethemes_file_to_path(filename, dest_path, progress_callback)
+            success = _download_theme_file_to_path(filename, dest_path, progress_callback)
 
             if not success:
                 update_button("Error")
@@ -713,6 +775,11 @@ def download_animethemes_file(filename, button=None):
             messagebox.showerror("Download Error", f"Failed to download {filename}:\n\n{e}")
 
     threading.Thread(target=do_download, daemon=True).start()
+
+
+def download_animethemes_file(filename, button=None):
+    """Backward-compatible alias for :func:`download_theme_file`."""
+    return download_theme_file(filename, button)
 
 
 def move_cached_file_to_directory(filename, button=None):
@@ -786,11 +853,51 @@ def move_cached_file_to_directory(filename, button=None):
 # ---------------------------------------------------------------------------
 
 def is_animethemes_stream_file(filename):
-    """Return True if *filename* is an AnimThemes .webm theme (not a local ID/MAL/IGDB file)."""
-    not_animethemes_strings = ["[ID]", "[MAL]", "[IGDB]"]
-    if any(s in filename for s in not_animethemes_strings) or ".webm" not in filename.lower():
+    """Return True if *filename* follows the AnimeThemes remote-file convention."""
+    if not isinstance(filename, str):
+        return False
+    properties = _remote_file_properties(filename)
+    if str(properties.get("source", "")).upper() == "ANISONGDB":
+        return False
+    if anisongdb.classify_filename(filename) in {
+        anisongdb.SOURCE_ANISONGDB,
+        anisongdb.SOURCE_MANUAL,
+    }:
+        return False
+    not_animethemes_strings = [
+        "[ID]", "[MAL]", "[IGDB]", "[ASDB]", "[AMQ]", "[ANNSONG]", "ASDB-",
+    ]
+    upper_filename = filename.upper()
+    if any(s in upper_filename for s in not_animethemes_strings) or ".webm" not in filename.lower():
         return False
     return True
+
+
+def is_anisongdb_stream_file(filename):
+    """Return True when *filename* is registered to an AniSongDB media URL."""
+    if not isinstance(filename, str):
+        return False
+    properties = _remote_file_properties(filename)
+    return (
+        str(properties.get("source", "")).upper() == "ANISONGDB"
+        and bool(properties.get("stream_url"))
+    )
+
+
+def is_anisongdb_alternate_file(filename):
+    """Return True for a selectable backup that should not enter source pools."""
+    if not isinstance(filename, str):
+        return False
+    properties = _remote_file_properties(filename)
+    return (
+        str(properties.get("source", "")).upper() == "ANISONGDB"
+        and bool(properties.get("anisongdb_alternate"))
+    )
+
+
+def is_remote_theme_file(filename):
+    """Return True for any supported non-local theme source."""
+    return is_anisongdb_stream_file(filename) or is_animethemes_stream_file(filename)
 
 
 def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
@@ -811,15 +918,15 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
     # Explicit filepath already embedded in the playlist entry (e.g. streaming fallback)
     if isinstance(playlist_entry, dict) and 'filepath' in playlist_entry:
         filepath = playlist_entry['filepath']
-        is_stream = bool(filepath and filepath.startswith('https://v.animethemes.moe/'))
+        is_stream = bool(filepath and filepath.startswith(('https://', 'http://')))
         return (filepath, is_stream)
 
     # Use the pre-resolved local filepath supplied by the caller
     filepath = local_filepath
     is_stream = False
 
-    # Fallback chain for animethemes files not found locally
-    if not filepath and is_animethemes_stream_file(filename):
+    # Fallback chain for supported remote themes not found locally
+    if not filepath and is_remote_theme_file(filename):
         cached_path = get_cached_file_path(filename)
         if cached_path:
             filepath = cached_path
@@ -830,8 +937,8 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
                 return None
             else:
                 # Cache full or other issue — stream directly
-                filepath = get_animethemes_stream_url(filename)
-                is_stream = True
+                filepath = get_theme_stream_url(filename)
+                is_stream = bool(filepath)
 
     # Update play count for cached files
     if filepath and not is_stream:
@@ -866,7 +973,7 @@ def get_file_status(filename):
     is_cached = get_cached_file_path(filename) is not None
     local_path = entry_paths.get_directory_file_path(filename)
     is_local = bool(local_path and os.path.exists(local_path))
-    is_stream = is_animethemes_stream_file(filename) and not is_local if filename else False
+    is_stream = is_remote_theme_file(filename) and not is_local if filename else False
     return {"is_cached": is_cached, "is_local": is_local, "is_stream": is_stream}
 
 
@@ -901,7 +1008,7 @@ def prefetch_next_themes():
     for fn in upcoming:
         if new_started >= MAX_NEW_DOWNLOADS:
             break
-        if not is_animethemes_stream_file(fn):
+        if not is_remote_theme_file(fn):
             continue
         if fn in active_downloads:
             continue
@@ -922,7 +1029,7 @@ def prefetch_next_themes():
         )
         if next_idx < len(rounds):
             next_fn = rounds[next_idx].get("theme")
-            if (next_fn and is_animethemes_stream_file(next_fn)
+            if (next_fn and is_remote_theme_file(next_fn)
                     and not check_file_availability(next_fn)):
                 download_to_cache(next_fn, silent=True)
 
@@ -986,7 +1093,7 @@ def check_download_ui_updates():
             # Streaming has taken over, so stop the redundant background
             # download and remove its progress window immediately.
             cancel_download(fn)
-            stream_url = get_animethemes_stream_url(fn)
+            stream_url = get_theme_stream_url(fn)
             streaming_entry = (
                 play_info["playlist_entry"].copy()
                 if isinstance(play_info["playlist_entry"], dict)

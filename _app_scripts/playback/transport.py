@@ -61,7 +61,7 @@ import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
 
 
 # --- transport-internal mutable flags (migrated from main module globals) ---
-animethemes_stream = None       # True while the current file is an AnimeThemes stream
+animethemes_stream = None       # True while the current theme is a remote stream
 background_music_rounds = 0      # lightning rounds counted toward background-music rotation
 skip_limit = 0                  # consecutive auto-skip guard (missing/unplayable files)
 playlist_loaded = False         # set by a fresh playlist load; consumed by play_next/play_video
@@ -72,6 +72,15 @@ playing_next_error = False      # shared with main.update_seek_bar (read/written
 def set_rules(type=None):
     """Thin wrapper migrated from main (scoreboard rules + web toggle push)."""
     scoreboard_control.set_rules(state.config.scoreboard_rules, type, web_server, bonus_answers._push_web_toggles)
+
+
+def _sync_scoreboard_theme_colors():
+    """Sync app colors at theme boundaries when scoreboard syncing is enabled."""
+    if state.config.SYNC_SCOREBOARD_COLORS:
+        scoreboard_control.send_colors(
+            state.colors.OVERLAY_BACKGROUND_COLOR,
+            state.colors.OVERLAY_TEXT_COLOR,
+        )
 
 
 def add_session_history():
@@ -591,7 +600,7 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
     if isinstance(playlist_entry, dict) and '_stream_url' in playlist_entry:
         stream_url = playlist_entry['_stream_url']
     else:
-        stream_url = cache_download.get_animethemes_stream_url(filename)
+        stream_url = cache_download.get_theme_stream_url(filename)
     
     # Create modified entry with filepath
     if isinstance(playlist_entry, dict):
@@ -743,6 +752,7 @@ def play_filename(playlist_entry, fullscreen=True):
             blind_screen.manual_blind = False
             player_play()
             round_start_guard.after(0, blind_screen.set_black_screen, False)
+    _sync_scoreboard_theme_colors()
     blind_screen.blind_round_toggle = False
     peek_dispatch.peek_round_toggle = False
     peek_dispatch.mute_peek_round_toggle = False

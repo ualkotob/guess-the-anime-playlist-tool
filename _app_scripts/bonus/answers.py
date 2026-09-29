@@ -81,11 +81,10 @@ def _apply_web_team_assignments(scores_data):
 
     Team names arrive in scoreboard_scores.json (the scoreboard exports its
     sheet's TEAM column directly). Some scoreboard versions instead export a
-    numeric internal team ID, and a freshly submitted web assignment can also
-    race the next scores-file refresh. In either case, use the assignment that
-    the web host persisted when it sent PLAYER_SET_TEAM. A displayable team in
-    the scores export remains authoritative so changes made in the scoreboard
-    app are still reflected on the web.
+    numeric internal team ID. Only those numeric IDs are resolved through the
+    assignment that the web host persisted when it sent PLAYER_SET_TEAM. A
+    blank exported team is authoritative: it means the player is not currently
+    on a team and must not inherit an assignment from an earlier session.
     """
     if not scores_data:
         return scores_data
@@ -96,7 +95,7 @@ def _apply_web_team_assignments(scores_data):
         p = dict(player)
         name = str(p.get('name', '') or '').strip()
         exported_team = str(p.get('team', '') or '').strip()
-        if not exported_team or _looks_like_scoreboard_team_id(exported_team):
+        if _looks_like_scoreboard_team_id(exported_team):
             p['team'] = str(web_assignments.get(name, '') or '').strip()
         players.append(p)
     copied['players'] = players

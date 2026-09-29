@@ -66,6 +66,8 @@ def convert_infinity_markers(obj):
 _THEME_FLAG_MIGRATIONS = {
     "OVERLAP": "OVERLAP (Without Censors)",
     "SPOILER": "SPOILER (Without Censors)",
+    "ANISONGDB ECCHI/NUDITY (Without Censors)": "ASDB NSFW (Without Censors)",
+    "ANISONGDB ECCHI/NUDITY (With Censors)": "ASDB NSFW (With Censors)",
 }
 
 
@@ -184,6 +186,40 @@ def load_metadata_compressed(filepath, encoding='utf-8', name="metadata"):
             return json.load(f), False
 
     return None, False
+
+
+# ---------------------------------------------------------------------------
+# Video geometry helpers
+# ---------------------------------------------------------------------------
+
+def letterbox_rect(container_w, container_h, video_ar):
+    """Return (x, y, w, h) of a `video_ar` (width / height) video centred inside
+    a container, matching how mpv letterboxes/pillarboxes the frame it renders.
+
+    `video_ar` must come from the *display* aspect ratio
+    (``player.get_display_aspect()``), not from the stored pixel dimensions:
+    anamorphic sources store 720x480 whether they display as 4:3 or 16:9.
+    A falsy/invalid `video_ar` yields the full container.
+    """
+    try:
+        container_w = int(container_w)
+        container_h = int(container_h)
+        video_ar = float(video_ar)
+    except (TypeError, ValueError):
+        return 0, 0, 0, 0
+    if container_w <= 0 or container_h <= 0:
+        return 0, 0, 0, 0
+    if video_ar <= 0:
+        return 0, 0, container_w, container_h
+    if video_ar >= container_w / container_h:
+        # Wider than the container: full width, letterboxed top and bottom.
+        vid_w = container_w
+        vid_h = int(container_w / video_ar)
+        return 0, (container_h - vid_h) // 2, vid_w, vid_h
+    # Narrower than the container: full height, pillarboxed left and right.
+    vid_h = container_h
+    vid_w = int(container_h * video_ar)
+    return (container_w - vid_w) // 2, 0, vid_w, vid_h
 
 
 # ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ session_data = []
 session_start_time = None
 _last_web_revealed_theme_entry = None
 _last_web_session_lines = None
+_FIXED_PLAYLIST_RELOAD_WINDOW_SECONDS = 5 * 60
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +232,41 @@ def get_unique_themes_from_entries(data=None):
     return unique_themes
 
 
+def _count_fixed_playlists(data):
+    """Count fixed playlists, collapsing quick reloads of the same playlist."""
+    last_start_by_playlist = {}
+    count = 0
+    for entry in data:
+        if entry.get("type") != "fixed_rounds_start":
+            continue
+
+        name = str(entry.get("playlist_name", "") or "").strip().casefold()
+        creator = str(entry.get("creator", "") or "").strip().casefold()
+        key = (name, creator)
+        timestamp = entry.get("timestamp")
+        parsed = None
+        try:
+            if isinstance(timestamp, (int, float)):
+                parsed = float(timestamp)
+            elif isinstance(timestamp, str):
+                fmt = "%Y-%m-%d %H:%M:%S" if len(timestamp) > 8 else "%H:%M:%S"
+                parsed = datetime.strptime(timestamp, fmt).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            parsed = None
+
+        previous = last_start_by_playlist.get(key)
+        is_quick_reload = (
+            parsed is not None
+            and previous is not None
+            and 0 <= parsed - previous <= _FIXED_PLAYLIST_RELOAD_WINDOW_SECONDS
+        )
+        if not is_quick_reload:
+            count += 1
+        if parsed is not None:
+            last_start_by_playlist[key] = parsed
+    return count
+
+
 def get_session_summary_counts(data=None):
     """Return shared session summary counts for text export and end-session OSD."""
     if data is None:
@@ -247,10 +283,7 @@ def get_session_summary_counts(data=None):
             1 for entry in data
             if entry.get("lightning_mode") and not entry.get("fixed_playlist")
         ),
-        "fixed_playlist_count": sum(
-            1 for entry in data
-            if entry.get("type") == "fixed_rounds_start"
-        ),
+        "fixed_playlist_count": _count_fixed_playlists(data),
         "youtube_count": sum(
             1 for entry in data
             if entry.get("type") == "youtube"
@@ -408,12 +441,14 @@ def generate_text_from_session_data(data=None):
             )
         elif entry_type == "scoreboard_score":
             player = entry.get("player", "")
+            team = str(entry.get("team", "") or "").strip()
             delta = entry.get("delta", 0)
             old_score = entry.get("old_score", 0)
             new_score = entry.get("new_score", 0)
             delta_str = "PT" if delta == 1 else "PTs"
             session_string = (
-                f"{session_string} [SCOREBOARD] {player} {delta:+g} "
+                f"{session_string} [SCOREBOARD] "
+                f"{'[' + team + '] ' if team else ''}{player} {delta:+g} "
                 f"{delta_str} ({old_score} \u2192 {new_score})"
             )
         elif entry_type == "bonus_question":

@@ -336,7 +336,7 @@ def is_theme_missing(theme_filename):
     if clean_theme in state.metadata.directory_files:
         return False
     # Check if it's a valid stream
-    return not cache_download.is_animethemes_stream_file(theme_filename)
+    return not cache_download.is_remote_theme_file(clean_theme)
 
 def should_show_field(field_name, round_data):
     """Check if a field should be shown based on show_if conditions"""

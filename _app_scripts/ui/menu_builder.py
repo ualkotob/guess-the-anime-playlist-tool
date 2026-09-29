@@ -462,9 +462,9 @@ def _cp_is_local_file():
     return bool(f and f in state.metadata.directory_files and os.path.exists(state.metadata.directory_files.get(f, "")))
 
 def _cp_is_stream():
-    """Return True if the currently playing file is an AnimeThemes stream (not locally stored)."""
+    """Return True if the currently playing theme is remote (not locally stored)."""
     f = state.playback.currently_playing.get("filename", "")
-    return bool(f and cache_download.is_animethemes_stream_file(f) and not _cp_is_local_file())
+    return bool(f and cache_download.is_remote_theme_file(f) and not _cp_is_local_file())
 
 def download_current_theme():
     """Download or move the currently playing theme to the local directory."""
@@ -474,7 +474,7 @@ def download_current_theme():
     if cache_download.get_cached_file_path(f) is not None:
         cache_download.move_cached_file_to_directory(f, None)
     else:
-        cache_download.download_animethemes_file(f, None)
+        cache_download.download_theme_file(f, None)
 
 def _open_toolbar_menu(name: str, button: tk.Button, section_key: str):
     """Open a registry-backed toolbar dropdown with toggle behaviour.

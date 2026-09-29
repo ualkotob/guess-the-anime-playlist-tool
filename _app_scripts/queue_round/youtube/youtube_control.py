@@ -54,6 +54,9 @@ YOUTUBE_CENSORS_FOLDER       = os.path.join(_ROOT_DIR, "youtube", "censors")
 
 # Stream-URL cache: url → (direct_url, duration_s, title, channel)
 _cached_streams: dict = {}
+# Source URLs currently being resolved by yt-dlp. Fixed playlists use this to
+# distinguish unavailable media from a prefetch worker that is still busy.
+_yt_stream_resolutions_in_progress: set = set()
 
 # Active YT-to-cache downloads (vid_id strings)
 _yt_cache_downloads_in_progress: set = set()
@@ -407,14 +410,15 @@ def _evict_yt_cache(max_mb):
                 pass
 
 
-def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
+def _yt_cache_download_bg(youtube_url, cache_path, max_mb, _claimed=False):
     """Background thread: download youtube_url to cache_path via yt-dlp, then evict."""
     if YoutubeDL is None:
         return
     vid_id = os.path.splitext(os.path.basename(cache_path))[0]
-    if vid_id in _yt_cache_downloads_in_progress:
-        return
-    _yt_cache_downloads_in_progress.add(vid_id)
+    if not _claimed:
+        if vid_id in _yt_cache_downloads_in_progress:
+            return
+        _yt_cache_downloads_in_progress.add(vid_id)
     try:
         os.makedirs(YOUTUBE_CACHE_FOLDER, exist_ok=True)
         part_path = cache_path + ".part"
@@ -459,9 +463,29 @@ def _yt_cache_download_bg(youtube_url, cache_path, max_mb):
         _yt_download_progress.pop(vid_id, None)
 
 
+def _start_yt_cache_download(youtube_url, cache_path, max_mb):
+    """Start a cache download with its busy marker set before the thread runs."""
+    if not youtube_url or not cache_path or YoutubeDL is None:
+        return False
+    vid_id = os.path.splitext(os.path.basename(cache_path))[0]
+    if vid_id in _yt_cache_downloads_in_progress:
+        return True
+    _yt_cache_downloads_in_progress.add(vid_id)
+    try:
+        threading.Thread(
+            target=_yt_cache_download_bg,
+            args=(youtube_url, cache_path, max_mb, True),
+            daemon=True,
+        ).start()
+    except Exception:
+        _yt_cache_downloads_in_progress.discard(vid_id)
+        return False
+    return True
+
+
 # ── YT-cache wait popup ───────────────────────────────────────────────────────
 
-def _yt_cache_wait_popup(youtube_url, timeout=120):
+def _yt_cache_wait_popup(youtube_url, timeout=120, require_download=True):
     """Show a blocking popup (root.wait_window) while a YT cache download finishes.
 
     Returns True if the cache file is ready when the popup closes, False otherwise.
@@ -476,8 +500,22 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
     cache_path = os.path.join(YOUTUBE_CACHE_FOLDER, f"{vid_id}.mp4")
 
     # Already done — no popup needed
-    if vid_id not in _yt_cache_downloads_in_progress:
-        return os.path.exists(cache_path)
+    def _media_ready():
+        if os.path.exists(cache_path) and not os.path.exists(cache_path + ".part"):
+            return True
+        if require_download:
+            return False
+        cached = _cached_streams.get(youtube_url)
+        return bool(cached and cached[0])
+
+    def _work_in_progress():
+        return (
+            youtube_url in _yt_stream_resolutions_in_progress
+            or vid_id in _yt_cache_downloads_in_progress
+        )
+
+    if not _work_in_progress():
+        return _media_ready()
 
     bg_color, fg_color, border_color = "#1e1e1e", "white", "#444"
 
@@ -492,7 +530,7 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
     inner_frame.pack(fill="both", expand=True)
 
     tk.Label(
-        inner_frame, text="Downloading clip…", font=("Arial", 12, "bold"),
+        inner_frame, text="Preparing fixed-round video…", font=("Arial", 12, "bold"),
         bg=bg_color, fg=fg_color,
     ).pack(pady=(15, 5))
 
@@ -521,15 +559,15 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
 
     def _poll():
         elapsed = time.time() - start_t
-        if vid_id not in _yt_cache_downloads_in_progress:
-            result[0] = os.path.exists(cache_path)
+        if not _work_in_progress():
+            result[0] = _media_ready()
             try:
                 popup.destroy()
             except Exception:
                 pass
             return
-        if elapsed >= timeout:
-            status_var.set("Timed out — falling back to stream.")
+        if timeout is not None and elapsed >= timeout:
+            status_var.set("Timed out — skipping this round.")
             popup.after(1000, popup.destroy)
             return
         prog = _yt_download_progress.get(vid_id)
@@ -563,7 +601,7 @@ def _yt_cache_wait_popup(youtube_url, timeout=120):
             pass
 
     tk.Button(
-        inner_frame, text="Skip (stream instead)", font=("Arial", 10),
+        inner_frame, text="Skip this round", font=("Arial", 10),
         bg="#333", fg=fg_color, activebackground="#555",
         command=_on_cancel, relief=tk.FLAT,
     ).pack(pady=(0, 12))
@@ -589,14 +627,15 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
     Returns (stream_url, duration) or (stream_url, duration, title, channel)
     depending on *include_other_info*.  Falls back to (None, 0[, "", ""]) on error.
     """
-    try:
-        if youtube_url in _cached_streams:
-            cached = _cached_streams[youtube_url]
-            if include_other_info and len(cached) > 2:
-                return cached
-            elif not include_other_info:
-                return cached[:2]
+    if youtube_url in _cached_streams:
+        cached = _cached_streams[youtube_url]
+        if include_other_info and len(cached) > 2:
+            return cached
+        elif not include_other_info:
+            return cached[:2]
 
+    _yt_stream_resolutions_in_progress.add(youtube_url)
+    try:
         if YoutubeDL is None:
             return (None, 0, "", "") if include_other_info else (None, 0)
 
@@ -641,6 +680,8 @@ def get_youtube_stream_url(youtube_url, include_other_info=False):
     except Exception:
         _cached_streams[youtube_url] = (None, 0, "", "")
         return (None, 0, "", "") if include_other_info else (None, 0)
+    finally:
+        _yt_stream_resolutions_in_progress.discard(youtube_url)
 
 
 # ── YouTube video download ────────────────────────────────────────────────────
