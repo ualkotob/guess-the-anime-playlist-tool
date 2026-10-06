@@ -99,6 +99,15 @@ def _apply_package_stores(imported_stores):
         if name in imported_stores:
             counts[name] = _merge_package_store(name, imported_stores[name])
 
+    # Older release snapshots can overwrite the projection made above. Repair
+    # their schema before applying publisher corrections and personal overrides.
+    from _app_scripts.theme import anisongdb
+
+    if anisongdb.has_catalog():
+        anisongdb.build_indexes(force=True)
+        if anisongdb.registered_projection_version() < anisongdb.PROJECTION_VERSION:
+            anisongdb.sync_catalog_to_metadata()
+
     override_stores = (
         name
         for _file_path, name in METADATA_PACKAGE_FILES

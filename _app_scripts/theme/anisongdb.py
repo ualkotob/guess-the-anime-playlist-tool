@@ -12,6 +12,7 @@ import os
 import re
 from collections import Counter, defaultdict
 from copy import deepcopy
+from decimal import Decimal
 
 import requests
 
@@ -26,14 +27,14 @@ DIST_BASE_URLS = {
     "europe": "https://eudist.animemusicquiz.com/",
 }
 DEFAULT_DIST_REGION = "na-east"
-PROJECTION_VERSION = 3
+PROJECTION_VERSION = 5
 
 _TAGGED_AMQ_RE = re.compile(r"\[(?:ASDB|AMQ)\](\d+)", re.IGNORECASE)
 _TAGGED_ANN_RE = re.compile(r"\[ANNSONG\](\d+)", re.IGNORECASE)
 _LEGACY_RE = re.compile(r"^ASDB-\d+-(?:OP|ED)\d+-(\d+)", re.IGNORECASE)
 _NATIVE_MEDIA_RE = re.compile(r"^(?:[a-z0-9]{6}|[a-z0-9]{16})\.webm$", re.IGNORECASE)
 _MANUAL_FILE_RE = re.compile(r"\[(?:MAL|ID|IGDB)\]", re.IGNORECASE)
-_ANIMETHEMES_FILE_RE = re.compile(r"-(?:OP|ED)\d+(?:v\d+)?(?:[-.\[]|$)", re.IGNORECASE)
+_ANIMETHEMES_FILE_RE = re.compile(r"-(?:OP|ED)\d+(?:\.\d+)?(?:v\d+)?(?:[-.\[]|$)", re.IGNORECASE)
 _VIDEO_EXTENSIONS = (".webm", ".mp4", ".mkv")
 
 SOURCE_ANISONGDB = "anisongdb"
@@ -45,6 +46,7 @@ _indexes = {}
 _index_signature = None
 _catalog_attempted = False
 _artist_display_aliases = None
+_mapped_slugs = {}
 
 
 def _catalog() -> dict:
@@ -165,7 +167,7 @@ def media_url(basename: str, region: str = DEFAULT_DIST_REGION) -> str:
 
 def build_indexes(*, force=False) -> dict:
     """Build native-media and ID indexes over the retained catalog."""
-    global _indexes, _index_signature
+    global _indexes, _index_signature, _mapped_slugs
     catalog = _catalog()
     songs = catalog.get("songs") if isinstance(catalog, dict) else None
     signature = (id(catalog), id(songs), len(songs) if isinstance(songs, list) else -1)
@@ -194,6 +196,22 @@ def build_indexes(*, force=False) -> dict:
 
     _indexes = indexes
     _index_signature = signature
+    # Restore the saved cross-provider numbering once when loading a catalog.
+    # The original source slug distinguishes repeated uses of a shared song ID.
+    _mapped_slugs = {}
+    for anime in state.metadata.anime_metadata.values():
+        if not isinstance(anime, dict):
+            continue
+        for song in anime.get("songs") or []:
+            if not isinstance(song, dict) or not song.get("anisongdb_source_slug"):
+                continue
+            key = (
+                str(song.get("anisongdb_ann_id")),
+                str(song.get("anisongdb_ann_song_id")),
+                str(song.get("anisongdb_amq_song_id")),
+                song["anisongdb_source_slug"],
+            )
+            _mapped_slugs[key] = song.get("slug")
     return indexes
 
 
@@ -257,7 +275,7 @@ def _song_type(song: dict) -> tuple[str | None, int]:
     return kind, int(match.group(2) or number)
 
 
-def theme_slug(song: dict) -> str | None:
+def _source_theme_slug(song: dict) -> str | None:
     kind, number = _song_type(song)
     if kind in ("OP", "ED"):
         return f"{kind}{number}"
@@ -265,6 +283,20 @@ def theme_slug(song: dict) -> str | None:
         unique_id = song.get("annSongId") or song.get("amqSongId")
         return f"IN{unique_id}" if unique_id is not None else None
     return None
+
+
+def _song_key(song: dict) -> tuple:
+    return (
+        str(song.get("annId")),
+        str(song.get("annSongId")),
+        str(song.get("amqSongId")),
+        _source_theme_slug(song),
+    )
+
+
+def theme_slug(song: dict) -> str | None:
+    """Return the saved app slot, retaining the upstream slot independently."""
+    return _mapped_slugs.get(_song_key(song)) or _source_theme_slug(song)
 
 
 def _artist_record(artist_id, line_up_id=-1) -> dict:
@@ -321,6 +353,7 @@ def file_identity(song: dict) -> dict:
         "anisongdb_ann_id": song.get("annId"),
         "anisongdb_ann_song_id": song.get("annSongId"),
         "anisongdb_amq_song_id": song.get("amqSongId"),
+        "anisongdb_source_slug": _source_theme_slug(song),
     }
 
 
@@ -410,25 +443,38 @@ def canonical_artist_name(name: str) -> str:
 
 
 def songs_for_mal_slug(mal_id, slug: str) -> list[dict]:
-    """Return catalog candidates for a MAL anime and OP/ED/IN slug."""
+    """Return catalog candidates for a MAL anime and saved app slot."""
     if not ensure_catalog():
         return []
-    match = re.fullmatch(r"(OP|ED|IN)(\d+)", str(slug or ""), re.IGNORECASE)
-    if not match:
-        return []
-    expected_kind = match.group(1).upper()
-    expected_number = int(match.group(2))
-    candidates = []
-    for song in build_indexes()["mal"].get(str(mal_id), []):
-        kind, number = _song_type(song)
-        if kind != expected_kind:
-            continue
-        if kind in ("OP", "ED") and number != expected_number:
-            continue
-        if kind == "IN" and song.get("annSongId") != expected_number:
-            continue
-        candidates.append(song)
-    return candidates
+    return [
+        song for song in build_indexes()["mal"].get(str(mal_id), [])
+        if str(theme_slug(song) or "").upper() == str(slug or "").upper()
+    ]
+
+
+def _song_artist_keys(song: dict) -> set[str]:
+    values = [song.get("songArtist")]
+    for artist in _expand_credits(song.get("artists")):
+        values.extend(artist.get("names") or [])
+    return {
+        key for value in values
+        for key in (_match_key(value), _match_key(canonical_artist_name(str(value or ""))))
+        if key
+    }
+
+
+def _matches_theme(song: dict, title=None, artists=None) -> bool:
+    """Known titles and performers must agree; recording qualifiers matter."""
+    if _match_key(title) and _match_key(song.get("songName")) != _match_key(title):
+        return False
+    values = [artists] if isinstance(artists, str) else (artists or [])
+    artist_keys = {
+        key for value in values
+        for key in (_match_key(value), _match_key(canonical_artist_name(str(value))))
+        if key
+    }
+    source_keys = _song_artist_keys(song) if artist_keys else set()
+    return not artist_keys or not source_keys or bool(artist_keys & source_keys)
 
 
 def resolve_song_for_mal_slug(
@@ -439,49 +485,28 @@ def resolve_song_for_mal_slug(
     artists=None,
     download_catalog=False,
 ) -> dict | None:
-    """Resolve a manual file without guessing across genuinely different songs."""
+    """Resolve song identity across source numbering without accepting conflicts."""
     if not ensure_catalog(download=download_catalog):
         return None
-    candidates = songs_for_mal_slug(mal_id, slug)
+    match = re.fullmatch(r"(OP|ED|IN)(\d+(?:\.\d+)?)", str(slug or ""), re.IGNORECASE)
+    if not match:
+        return None
+    kind = match.group(1).upper()
+    slot_candidates = songs_for_mal_slug(mal_id, slug)
+    # With a known title, the number cannot restrict the search. Without one,
+    # the saved slot remains the only evidence for a manually named file.
+    pool = build_indexes()["mal"].get(str(mal_id), []) if title and kind != "IN" else slot_candidates
+    candidates = [
+        song for song in pool
+        if _song_type(song)[0] == kind
+        and not song.get("isDub") and not song.get("isRebroadcast")
+        and _matches_theme(song, title, artists)
+    ]
     if not candidates:
         return None
-
-    title_key = _match_key(title)
-    artist_values = [artists] if isinstance(artists, str) else (artists or [])
-    artist_keys = {
-        key
-        for value in artist_values
-        for key in (
-            _match_key(value),
-            _match_key(canonical_artist_name(str(value))),
-        )
-        if key
-    }
-    if title_key:
-        matched = [song for song in candidates if _match_key(song.get("songName")) == title_key]
-        if matched:
-            candidates = matched
-    if artist_keys:
-        matched = []
-        for song in candidates:
-            full = normalize_song(song)
-            raw_artist = song.get("songArtist")
-            candidate_keys = {
-                _match_key(raw_artist),
-                _match_key(canonical_artist_name(str(raw_artist or ""))),
-            }
-            for artist in full.get("artists", []):
-                for name in artist.get("names") or []:
-                    candidate_keys.add(_match_key(name))
-                    candidate_keys.add(_match_key(canonical_artist_name(name)))
-            if artist_keys & candidate_keys:
-                matched.append(song)
-        if matched:
-            candidates = matched
-
-    normal = [song for song in candidates if not song.get("isDub") and not song.get("isRebroadcast")]
-    if normal:
-        candidates = normal
+    in_slot = [song for song in candidates if song in slot_candidates]
+    if in_slot:
+        candidates = in_slot
     if len(candidates) == 1:
         return candidates[0]
 
@@ -549,6 +574,7 @@ def song_metadata(song: dict) -> dict:
         "anisongdb_ann_song_id": song.get("annSongId"),
         "anisongdb_amq_song_id": song.get("amqSongId"),
         "anisongdb_category": song.get("songCategory"),
+        "anisongdb_source_slug": _source_theme_slug(song),
         "anisongdb_difficulty": song.get("songDifficulty"),
         "anisongdb_length": song.get("songLength"),
         "anisongdb_is_dub": song.get("isDub"),
@@ -584,25 +610,22 @@ def _merge_anime_metadata(mal_id: str, song: dict) -> None:
     if not isinstance(anime.get("songs"), list):
         anime["songs"] = []
     songs = anime["songs"]
-    song_id = incoming.get("anisongdb_amq_song_id")
     existing = next(
-        (item for item in songs if item.get("anisongdb_amq_song_id") == song_id),
+        (item for item in songs if item.get("slug") == incoming.get("slug")),
         None,
     )
-    if existing is None:
-        existing = next(
-            (item for item in songs if item.get("slug") == incoming.get("slug")),
-            None,
-        )
     if existing is None:
         incoming["anisongdb_only"] = True
         songs.append(incoming)
     else:
+        credits = existing.setdefault("anisongdb_credits", {})
         for key, value in incoming.items():
             if value not in (None, "", []) and (
                 key.startswith("anisongdb_") or not existing.get(key)
             ):
                 existing[key] = value
+                if key in ("composer", "arranger"):
+                    credits[key] = deepcopy(value)
 
 
 def merge_song_metadata(mal_id, song: dict) -> None:
@@ -646,6 +669,7 @@ def _register_file(
         "anisongdb_ann_id": song.get("annId"),
         "anisongdb_ann_song_id": song.get("annSongId"),
         "anisongdb_amq_song_id": song.get("amqSongId"),
+        "anisongdb_source_slug": _source_theme_slug(song),
     }
     fallback_urls = [
         media_url(other_basename)
@@ -806,13 +830,14 @@ def registered_alternate_count() -> int:
 
 
 def registered_projection_version() -> int:
-    """Return the newest persisted AniSongDB projection schema version."""
+    """Return the oldest projection version, including mixed package imports."""
     versions = (
         entry.get("anisongdb_projection_version", 0)
         for entry in state.metadata.file_metadata.values()
         if isinstance(entry, dict)
+        and ("anisongdb_projection_version" in entry or "anisongdb_ann_id" in entry)
     )
-    return max(versions, default=0)
+    return min(versions, default=0)
 
 
 def _enrich_covered_files(coverage: set[tuple[str, str]]) -> list[str]:
@@ -905,12 +930,120 @@ def _refresh_runtime_lookup(filenames: list[str], *, clear_all=False) -> None:
     playlist.invalidate_deduplicated_cache()
 
 
+def _assign_theme_slugs(coverage: set[tuple[str, str]]) -> None:
+    """Align songs to established slots and number additional songs in order."""
+    global _mapped_slugs
+    indexes = build_indexes()
+    _mapped_slugs = {}
+    covered_slots = defaultdict(set)
+    for mal_id, slug in coverage:
+        covered_slots[mal_id].add(slug)
+    for mal_id, source_songs in indexes["mal"].items():
+        anime = state.metadata.anime_metadata.get(mal_id, {})
+        songs = {
+            str(song.get("slug", "")).upper(): song
+            for song in anime.get("songs") or [] if isinstance(song, dict)
+        }
+        slots = set(songs) | covered_slots[mal_id]
+        for kind in ("OP", "ED"):
+            anchors = {
+                slug: songs.get(slug, {}) for slug in slots
+                if re.fullmatch(rf"{kind}\d+(?:\.\d+)?", slug)
+            }
+            rows = sorted(
+                (song for song in source_songs if _song_type(song)[0] == kind
+                 and not song.get("isDub") and not song.get("isRebroadcast")),
+                key=lambda song: (_song_type(song)[1], str(song.get("annSongId")), str(song.get("amqSongId"))),
+            )
+            for song in rows:
+                matches = []
+                for slug, theme in anchors.items():
+                    if not theme.get("title") and slug != _source_theme_slug(song):
+                        continue
+                    if _matches_theme(song, theme.get("title"), theme.get("artist")):
+                        matches.append(slug)
+                if _source_theme_slug(song) in matches:
+                    matches = [_source_theme_slug(song)]
+                if len(matches) == 1:
+                    _mapped_slugs[_song_key(song)] = matches[0]
+
+            occupied = {Decimal(slug[2:]) for slug in anchors}
+            previous = None
+            index = 0
+            while index < len(rows):
+                song = rows[index]
+                mapped = _mapped_slugs.get(_song_key(song))
+                if mapped:
+                    previous = Decimal(mapped[2:])
+                    index += 1
+                    continue
+                end = index
+                while end < len(rows) and _song_key(rows[end]) not in _mapped_slugs:
+                    end += 1
+                next_slot = (
+                    Decimal(_mapped_slugs[_song_key(rows[end])][2:])
+                    if end < len(rows) else None
+                )
+                lower = previous if previous is not None else (
+                    max(Decimal(0), next_slot - 1) if next_slot is not None else Decimal(0)
+                )
+                between = next_slot is not None and next_slot > lower
+                step = Decimal("0.1")
+                if between:
+                    while True:
+                        available = 0
+                        candidate = lower + step
+                        while candidate < next_slot and available < end - index:
+                            available += candidate not in occupied
+                            candidate += step
+                        if available >= end - index:
+                            break
+                        step /= 10
+                duplicate_slots = {}
+                for extra in rows[index:end]:
+                    duplicate_key = (
+                        _source_theme_slug(extra), _match_key(extra.get("songName")),
+                        _match_key(extra.get("songArtist")),
+                    )
+                    if duplicate_key in duplicate_slots:
+                        number = duplicate_slots[duplicate_key]
+                    else:
+                        number = lower + step if between else Decimal(int(lower) + 1)
+                        # With no anchors, retain an upstream gap in numbering.
+                        if not anchors:
+                            number = max(number, Decimal(_song_type(extra)[1]))
+                        while number in occupied:
+                            number += step if between else 1
+                        occupied.add(number)
+                        duplicate_slots[duplicate_key] = number
+                        lower = number
+                    _mapped_slugs[_song_key(extra)] = kind + format(number.normalize(), "f")
+                previous = lower
+                index = end
+
+
 def sync_catalog_to_metadata() -> int:
     """Project gaps plus selectable alternatives for covered themes."""
     if not has_catalog():
         return 0
+    # Retain detected MQ and renamed files as logical entries after rebuilding
+    # the preferred catalog videos. No physical file is moved or renamed.
+    detected_files = []
+    for entry in state.metadata.file_metadata.values():
+        for versions in entry.get("themes", {}).values():
+            for files in versions.values():
+                for filename, properties in files.items():
+                    if not isinstance(properties, dict) or properties.get("source") != "ANISONGDB":
+                        continue
+                    song = find_song(filename)
+                    if not song:
+                        song = build_indexes()["ann_song"].get(str(properties.get("anisongdb_ann_song_id")))
+                    videos = list(iter_videos(song)) if song else []
+                    if videos and filename.casefold() != videos[0][0].casefold():
+                        detected_files.append((filename, song))
     existing_coverage = _existing_non_anisongdb_coverage()
     clear_registered_metadata()
+    _assign_theme_slugs(existing_coverage)
     filenames = []
     for song in _catalog().get("songs", []):
         if not isinstance(song, dict) or song.get("isDub") or song.get("isRebroadcast"):
@@ -931,12 +1064,21 @@ def sync_catalog_to_metadata() -> int:
             )
         )
     alternate_filenames = _enrich_covered_files(existing_coverage)
+    for filename, song in detected_files:
+        covered = (_mal_id(song), theme_slug(song).upper()) in existing_coverage
+        register_song(song, filename=filename, is_gap=not covered, is_alternate=covered)
+    from _app_scripts.file.metadata.metadata_fetch import sort_songs
+
+    for anime in state.metadata.anime_metadata.values():
+        if isinstance(anime, dict) and isinstance(anime.get("songs"), list):
+            anime["songs"] = sort_songs(anime["songs"])
     _refresh_runtime_lookup(filenames + alternate_filenames, clear_all=True)
     return len(filenames)
 
 
 def clear_registered_metadata() -> None:
     """Remove stale provider projections without touching other source data."""
+    indexes = build_indexes()
     for mal_id, entry in list(state.metadata.file_metadata.items()):
         had_provider = entry.pop("anisongdb_ann_id", None) is not None
         entry.pop("anisongdb_projection_version", None)
@@ -946,6 +1088,10 @@ def clear_registered_metadata() -> None:
                 for filename, properties in list(files.items()):
                     if isinstance(properties, dict) and properties.get("source") == "ANISONGDB":
                         del files[filename]
+                    elif isinstance(properties, dict):
+                        for key in list(properties):
+                            if key.startswith("anisongdb_"):
+                                properties.pop(key, None)
                 if not files:
                     del versions[version]
             if not versions:
@@ -966,6 +1112,19 @@ def clear_registered_metadata() -> None:
             for song in songs:
                 if song.get("anisongdb_only"):
                     continue
+                credits = song.get("anisongdb_credits")
+                if not isinstance(credits, dict):
+                    # Version 4 did not track ownership. Remove only credits
+                    # that still exactly equal the previously attached source.
+                    old_source = indexes["ann_song"].get(str(song.get("anisongdb_ann_song_id")))
+                    if old_source and str(old_source.get("annId")) == str(song.get("anisongdb_ann_id")):
+                        old_metadata = song_metadata(old_source)
+                        credits = {key: old_metadata[key] for key in ("composer", "arranger")}
+                    else:
+                        credits = {}
+                for key, value in credits.items():
+                    if song.get(key) == value:
+                        song.pop(key, None)
                 for key in list(song):
                     if key.startswith("anisongdb_"):
                         song.pop(key, None)

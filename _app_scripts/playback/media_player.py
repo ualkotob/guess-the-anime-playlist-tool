@@ -11,6 +11,13 @@ on state.widgets.player.
 from core.app_logging import log_exception
 
 
+_STARTUP_COVER_FILTER_LABEL = "@gta-startup-cover"
+_STARTUP_COVER_FILTER = (
+    f"{_STARTUP_COVER_FILTER_LABEL}:"
+    "lavfi=[drawbox=color=black:t=fill]"
+)
+
+
 class MediaPlayer:
     """
     Unified media-player abstraction - Phase 2: mpv backend.
@@ -21,6 +28,14 @@ class MediaPlayer:
 
     def __init__(self, mpv_player):
         self._p = mpv_player          # underlying mpv.MPV instance
+        # A lightning/reveal load can ask mpv to replace every incoming frame
+        # with a solid fill. Unlike an OSD overlay, this happens in the video
+        # pipeline and therefore cannot disappear during mpv's per-file OSD
+        # reset. The normal blind-screen uncover removes it once the real
+        # round cover is ready.
+        self._startup_video_cover_active = False
+        self._startup_video_cover_brightness = 0.0
+        self._startup_video_cover_contrast = 0.0
         # Register double-click to toggle fullscreen (mirrors Player default behaviour)
         try:
             self._p.command('keybind', 'MBTN_LEFT_DBL', 'cycle fullscreen')
@@ -277,9 +292,33 @@ class MediaPlayer:
         except Exception:
             return None
 
-    def set_media(self, path_or_none, start_seconds=None):
-        """Load path/URL, optionally starting at a specific time, or stop."""
+    def release_startup_video_cover(self):
+        """Restore video output after the persistent startup cover is safe."""
+        if not getattr(self, "_startup_video_cover_active", False):
+            return
+        try:
+            self._p.command(
+                "vf", "remove", _STARTUP_COVER_FILTER_LABEL
+            )
+        except Exception:
+            pass
+        brightness = getattr(self, "_startup_video_cover_brightness", 0.0)
+        contrast = getattr(self, "_startup_video_cover_contrast", 0.0)
+        try:
+            self._p.brightness = brightness
+            self._p.contrast = contrast
+        except Exception:
+            try:
+                self._p.command("set", "brightness", str(brightness))
+                self._p.command("set", "contrast", str(contrast))
+            except Exception:
+                pass
+        self._startup_video_cover_active = False
+
+    def set_media(self, path_or_none, start_seconds=None, cover_video=False):
+        """Load media, optionally starting covered or at a specific time."""
         if path_or_none is None:
+            self.release_startup_video_cover()
             self.unload()
         else:
             try:
@@ -291,18 +330,49 @@ class MediaPlayer:
                 # The incoming file's geometry is not known yet; mpv would keep
                 # reporting the outgoing file's until it has been decoded.
                 self.invalidate_video_geometry()
+                options = []
+                if cover_video:
+                    if not getattr(self, "_startup_video_cover_active", False):
+                        try:
+                            self._startup_video_cover_brightness = float(
+                                self._p.brightness or 0.0
+                            )
+                        except Exception:
+                            self._startup_video_cover_brightness = 0.0
+                        try:
+                            self._startup_video_cover_contrast = float(
+                                self._p.contrast or 0.0
+                            )
+                        except Exception:
+                            self._startup_video_cover_contrast = 0.0
+                    self._startup_video_cover_active = True
+                    # The labeled drawbox replaces the decoded image with a
+                    # solid frame before presentation. Contrast/brightness are
+                    # a hardware-output fallback if lavfi cannot initialize.
+                    options.append("brightness=-100")
+                    options.append("contrast=-100")
+                    options.append(f"vf={_STARTUP_COVER_FILTER}")
+                else:
+                    self.release_startup_video_cover()
+
                 if isinstance(path_or_none, (tuple, list)) and len(path_or_none) == 2:
                     video_url, audio_url = path_or_none
-                    options = [f'audio-file={audio_url}']
+                    options.insert(0, f'audio-file={audio_url}')
                     if start_seconds is not None and start_seconds > 0:
                         options.append(f'start={start_seconds}')
                     self._p.command(
                         'loadfile', str(video_url), 'replace', '-1', ','.join(options)
                     )
                 elif start_seconds is not None and start_seconds > 0:
+                    options.insert(0, f'start={start_seconds}')
                     self._p.command(
                         'loadfile', str(path_or_none), 'replace', '-1',
-                        f'start={start_seconds}'
+                        ','.join(options)
+                    )
+                elif options:
+                    self._p.command(
+                        'loadfile', str(path_or_none), 'replace', '-1',
+                        ','.join(options)
                     )
                 else:
                     self._p.play(str(path_or_none))

@@ -80,6 +80,8 @@ def get_directory_file_path(filename):
 
 def get_file_path(playlist_entry):
     """Return the full file path for a playlist entry, or None if missing."""
+    if isinstance(playlist_entry, dict):
+        playlist_entry = playlist_entry.get("filename", playlist_entry.get("filepath", ""))
     clean_entry = playlist_entry[3:] if playlist_entry.startswith("[L]") else playlist_entry
     reference = parse_theme_reference(clean_entry)
     if reference:

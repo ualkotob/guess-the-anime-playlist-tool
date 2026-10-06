@@ -8585,8 +8585,8 @@ HTML = r"""<!DOCTYPE html>
       const lineMeta = document.createElement('div');
       lineMeta.className = 'ctrl-popup-search-line meta';
       let metaHtml = _ctrlHighlightSearchText(metaText, _ctrlSearchQuery);
-      if (r.plays > 0 || r.lightning_plays > 0) metaHtml += ' <span class="mt-plays">Plays: ' + r.plays + 'x' + (r.plays_ago != null ? ' (' + r.plays_ago + ' ago)' : '') + (r.lightning_plays ? ' (' + r.lightning_plays + ' L)' : '') + '</span>';
-      if ((r.series_plays || 0) > (r.plays || 0) || (r.series_lightning_plays || 0) > (r.lightning_plays || 0)) metaHtml += ' <span class="mt-plays">Series: ' + r.series_plays + 'x' + (r.series_plays_ago != null ? ' (' + r.series_plays_ago + ' ago)' : '') + (r.series_lightning_plays ? ' (' + r.series_lightning_plays + ' L)' : '') + '</span>';
+      if (r.plays > 0 || r.lightning_plays > 0) metaHtml += ' <span class="mt-plays">Theme Plays: ' + r.plays + 'x' + (r.plays_ago != null ? ' (' + r.plays_ago + ' ago)' : '') + (r.lightning_plays ? ' (' + r.lightning_plays + ' L)' : '') + '</span>';
+      if (r.series_plays > 0 || r.series_lightning_plays > 0) metaHtml += ' <span class="mt-plays">Series Plays: ' + r.series_plays + 'x' + (r.series_plays_ago != null ? ' (' + r.series_plays_ago + ' ago)' : '') + (r.series_lightning_plays ? ' (' + r.series_lightning_plays + ' L)' : '') + '</span>';
       lineMeta.innerHTML = metaHtml;
       textCol.appendChild(lineSong);
       textCol.appendChild(lineArtist);
@@ -11446,7 +11446,7 @@ HTML = r"""<!DOCTYPE html>
         let fpStr = String(fp.count);
         if (fp.ago != null) fpStr += ` (${fp.ago} Ago)`;
         if (fp.lightning) fpStr += ` (${fp.lightning} L)`;
-        line('FILE PLAYS:', fpStr);
+        line('THEME PLAYS:', fpStr);
       }
       if (d.series_plays != null) {
         const sp = d.series_plays;
@@ -11727,7 +11727,7 @@ HTML = r"""<!DOCTYPE html>
                   const vCls = 'mt-ver' + (isPlayingFile ? ' playing' : '');
                   const rowText = optionIndex === 0 ? vText : '↳';
                   const propsHtml = fileOption.file_props ? ' <span class="mt-props">' + _escHtml(fileOption.file_props) + '</span>' : '';
-                  const playsHtml = (fileOption.plays > 0 || fileOption.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + fileOption.plays + 'x' + (fileOption.plays_ago != null ? ' (' + fileOption.plays_ago + ' ago)' : '') + (fileOption.lightning_plays ? ' (' + fileOption.lightning_plays + ' L)' : '') + '</span>' : '';
+                  const playsHtml = (fileOption.plays > 0 || fileOption.lightning_plays > 0) ? ' <span class="mt-plays">Theme Plays: ' + fileOption.plays + 'x' + (fileOption.plays_ago != null ? ' (' + fileOption.plays_ago + ' ago)' : '') + (fileOption.lightning_plays ? ' (' + fileOption.lightning_plays + ' L)' : '') + '</span>' : '';
                   const vFilename = String(fileOption.filename || '').trim();
                   const vActionId = (_isHost && vFilename)
                     ? _themeActionRegister(vFilename, anime.title + ' – ' + slugText + (vText ? ' ' + vText : ''), anime.anime_id, theme.slug, v.version)
@@ -11758,7 +11758,7 @@ HTML = r"""<!DOCTYPE html>
                   ? '<button class="mt-action-btn" data-taid="' + themeActionId + '" title="Theme actions">&#9654;</button>'
                   : '';
                 const themeFavHtml = favMarkHtml(!!fileOption.favorited, isPlayingFile ? 'leading playing' : 'leading');
-                const themePlaysHtml = (fileOption.plays > 0 || fileOption.lightning_plays > 0) ? ' <span class="mt-plays">Plays: ' + fileOption.plays + 'x' + (fileOption.plays_ago != null ? ' (' + fileOption.plays_ago + ' ago)' : '') + (fileOption.lightning_plays ? ' (' + fileOption.lightning_plays + ' L)' : '') + '</span>' : '';
+                const themePlaysHtml = (fileOption.plays > 0 || fileOption.lightning_plays > 0) ? ' <span class="mt-plays">Theme Plays: ' + fileOption.plays + 'x' + (fileOption.plays_ago != null ? ' (' + fileOption.plays_ago + ' ago)' : '') + (fileOption.lightning_plays ? ' (' + fileOption.lightning_plays + ' L)' : '') + '</span>' : '';
                 if (rowText || propsHtml || tActionBtn || themeFavHtml || themePlaysHtml) html += '<div class="' + subRowClass + '">' + tActionBtn + themeFavHtml + '<span class="mt-ver' + (isPlayingFile ? ' playing' : '') + '">' + _escHtml(rowText) + propsHtml + themePlaysHtml + '</span></div>';
               });
             }

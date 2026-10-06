@@ -719,6 +719,7 @@ def create_first_row_buttons():
             lists._close_list(state.widgets.right_column)
 
     search_ops.search_bar_entry.bind("<FocusIn>", on_search_focus_in)
+    search_ops.search_bar_entry.bind("<Button-1>", search_ops.on_search_click, add="+")
     search_ops.search_bar_entry.bind("<FocusOut>", on_search_focus_out)
     search_ops.search_bar_entry.bind("<KeyRelease>", on_search_key_release)
     search_ops.search_bar_entry.bind("<Return>", on_search_return)

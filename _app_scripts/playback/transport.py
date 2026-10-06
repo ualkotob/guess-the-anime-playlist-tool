@@ -219,6 +219,7 @@ def _load_incoming_media(filepath, start_seconds=None):
         or peek_dispatch.peek_round_toggle
         or peek_dispatch.mute_peek_round_toggle
     )
+    cover_video = bool(light_mode or queued_manual_cover)
     if light_mode:
         blind_screen.set_black_screen(True, smooth=False)
     elif queued_manual_cover:
@@ -231,7 +232,11 @@ def _load_incoming_media(filepath, start_seconds=None):
             True, smooth=False, color=pre_load_color
         )
     _pre_mute_incoming_lightning_media()
-    state.widgets.player.set_media(filepath, start_seconds=start_seconds)
+    state.widgets.player.set_media(
+        filepath,
+        start_seconds=start_seconds,
+        cover_video=cover_video,
+    )
 
 
 def set_skip_direction(dir):
@@ -595,12 +600,13 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
         filename = playlist_entry
     
     # Force streaming mode by setting filepath to stream URL
-    filename = entry_paths.get_clean_filename(filename) 
+    theme_entry = filename
+    filename = entry_paths.get_clean_filename(filename)
     stream_url = None
     if isinstance(playlist_entry, dict) and '_stream_url' in playlist_entry:
         stream_url = playlist_entry['_stream_url']
     else:
-        stream_url = cache_download.get_theme_stream_url(filename)
+        stream_url = cache_download.get_theme_stream_url(theme_entry)
     
     # Create modified entry with filepath
     if isinstance(playlist_entry, dict):
@@ -615,6 +621,7 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
 
 def play_filename(playlist_entry, fullscreen=True):
     global skip_limit, animethemes_stream
+    playlist_entry = cache_download.select_theme_entry(playlist_entry)
     _pe_str = playlist_entry.get('filename', playlist_entry.get('filepath', '')) if isinstance(playlist_entry, dict) else playlist_entry
     filename = entry_paths.get_clean_filename(_pe_str)
     data = metadata_fetch.get_metadata(_pe_str, fetch=state.config.auto_fetch_missing)
@@ -624,6 +631,26 @@ def play_filename(playlist_entry, fullscreen=True):
     if result is None:
         return False
     filepath, animethemes_stream = result
+
+    # A fallback download may have another provider's native filename. Use its
+    # metadata and censors for the video that actually reached the player.
+    actual_filename = (os.path.basename(filepath.split("?", 1)[0]) if animethemes_stream and filepath
+                       else cache_download.source_preferences.download_record(filepath).get("filename"))
+    if actual_filename and actual_filename != filename and metadata_fetch.get_file_metadata_by_name(actual_filename):
+        reference = entry_paths.parse_theme_reference(_pe_str)
+        original_data = metadata_fetch.get_file_metadata_by_name(_pe_str) or {}
+        actual_data = metadata_fetch.get_file_metadata_by_name(actual_filename) or {}
+        identity = reference or {"mal_id": original_data.get("mal"), "slug": original_data.get("slug"),
+                                 "version": original_data.get("version")}
+        needs_reference = reference or (str(actual_data.get("mal")), actual_data.get("slug")) != (
+            str(identity["mal_id"]), identity["slug"])
+        actual_entry = (entry_paths.make_theme_reference(actual_filename, identity["mal_id"], identity["slug"], identity["version"])
+                        if needs_reference else actual_filename)
+        if _pe_str.startswith("[L]"):
+            actual_entry = "[L]" + actual_entry
+        data = metadata_fetch.get_metadata(actual_entry, fetch=state.config.auto_fetch_missing)
+        filename = actual_filename
+        playlist_entry = {"filename": actual_entry, "filepath": filepath}
     
     if skip_limit <= 10:
         if not filepath or not (os.path.exists(filepath) or animethemes_stream):  # Check if file exists
@@ -800,6 +827,13 @@ def play_video_retry(retries, filename=None):
             state.widgets.root.after(retry_delay, play_video_retry, retries - 1, filename)  # Retry playback
             return
         else:
+            if animethemes_stream:
+                fallback = cache_download.downloaded_fallback_entry(
+                    state.playback.currently_playing.get("playlist_entry", filename)
+                )
+                if fallback is not None:
+                    play_filename(fallback)
+                    return
             play_video(state.metadata.playlist["current_index"] + state.seek.skip_direction)
     set_skip_direction(1)
     state.controls.video_stopped = False

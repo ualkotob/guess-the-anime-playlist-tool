@@ -154,6 +154,12 @@ def check_for_local_metadata_package():
 def _persist_metadata_for_export():
     """Flush every package-backed store before reading files into a zip."""
     from _app_scripts.data import metadata_io
+    from _app_scripts.theme import anisongdb
+
+    if anisongdb.has_catalog() and anisongdb.registered_projection_version() < anisongdb.PROJECTION_VERSION:
+        anisongdb.sync_catalog_to_metadata()
+        utils.deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
+        utils.deep_merge(state.metadata.file_metadata, state.metadata.file_metadata_overrides)
 
     metadata_io.save_metadata_overrides()
     metadata_io.save_animethemes_metadata()

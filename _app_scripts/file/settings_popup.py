@@ -120,6 +120,8 @@ def show_settings_popup():
                     val = float(var.get())
                 elif t == "bool":
                     val = var.get()
+                elif t == "choice":
+                    val = next(key for key, label in s["choices"].items() if label == var.get())
                 else:  # str, password, color, rules_file
                     val = var.get().strip()
                 if t in ("int", "float"):
@@ -131,6 +133,12 @@ def show_settings_popup():
 
             config_io.save_config()
             config_io.load_config()
+
+            if any(s.get("after_save") == "refresh_theme_sources" and _orig[s["key"]] != _schema_val(s)
+                   for s in config_io.SETTINGS_SCHEMA):
+                from _app_scripts.playlists import playlist as playlist_ops, infinite
+                playlist_ops.invalidate_deduplicated_cache()
+                infinite.reset_infinite_caches()
 
             # After-save callbacks
             for s in config_io.SETTINGS_SCHEMA:
@@ -157,7 +165,7 @@ def show_settings_popup():
             messagebox.showerror("Invalid Value", f"Settings must be valid numbers.\nError: {e}")
 
     # Create popup window
-    settings_window = tk.Toplevel(bg=BACKGROUND_COLOR)
+    settings_window = tk.Toplevel(root, bg=BACKGROUND_COLOR)
     settings_window.title("Configuration Settings")
     settings_window.resizable(False, False)
 
@@ -183,31 +191,52 @@ def show_settings_popup():
     cols_frame.pack(fill="x")
     col_left  = tk.Frame(cols_frame, bg=BACKGROUND_COLOR)
     col_right = tk.Frame(cols_frame, bg=BACKGROUND_COLOR)
-    col_left.pack(side="left", anchor="n", padx=(0, 20))
-    col_right.pack(side="left", anchor="n")
+    cols_frame.columnconfigure((0, 1), weight=1, uniform="preferences")
+    col_left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    col_right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+    for column in (col_left, col_right):
+        column.columnconfigure(1, weight=1)
 
     # tk vars keyed by schema key
     _setting_vars = {}
     # color dropdown widget refs (for shared delete_color)
     _color_dropdowns = {}
+    _setting_widgets = {}
+    _next_row = {col_left: 0, col_right: 0}
+
+    def _new_row(parent, label):
+        row = _next_row[parent]
+        _next_row[parent] += 1
+        parent.rowconfigure(row, minsize=36)
+        lbl = tk.Label(parent, text=label, bg=BACKGROUND_COLOR, fg="white", width=25, anchor="w")
+        lbl.grid(row=row, column=0, sticky="w", pady=4)
+        inputs = tk.Frame(parent, bg=BACKGROUND_COLOR)
+        inputs.grid(row=row, column=1, sticky="w", padx=(5, 0), pady=4)
+        return inputs, lbl
 
     def _render_simple_row(s, parent):
         """Auto-render a row for int / float / str / password / bool schema entries."""
-        frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
-        frame.pack(fill="x", pady=5)
-        lbl = tk.Label(frame, text=s["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-        lbl.pack(side="left")
+        frame, lbl = _new_row(parent, s["label"])
         if s.get("tooltip"):
             tooltip.ToolTip(lbl, s["tooltip"])
         t = s["type"]
         if t == "bool":
             cur = _schema_val(s)
             var = tk.BooleanVar(value=cur)
-            text_var = tk.StringVar(value="Enabled" if cur else "Disabled")
+            checkbox_label = s.get("checkbox_label")
+            text_var = tk.StringVar(value=checkbox_label or ("Enabled" if cur else "Disabled"))
             btn = tk.Checkbutton(frame, variable=var, textvariable=text_var,
                                  bg=BACKGROUND_COLOR, fg="white", selectcolor="black",
-                                 command=lambda v=var, tv=text_var: tv.set("Enabled" if v.get() else "Disabled"))
-            btn.pack(side="left", padx=(5, 0))
+                                 command=lambda v=var, tv=text_var, label=checkbox_label:
+                                     tv.set(label or ("Enabled" if v.get() else "Disabled")))
+            btn.pack(side="left")
+            _setting_widgets[s["key"]] = btn
+        elif t == "choice":
+            var = tk.StringVar(value=s["choices"].get(_schema_val(s), s["choices"][s["default"]]))
+            dropdown = ttk.Combobox(frame, textvariable=var, values=list(s["choices"].values()),
+                                    width=28, state="readonly")
+            dropdown.pack(side="left")
+            _setting_widgets[s["key"]] = dropdown
         else:
             var = tk.StringVar(value=str(_schema_val(s)))
             kw = {"textvariable": var, "bg": "black", "fg": "white",
@@ -216,19 +245,16 @@ def show_settings_popup():
             if t == "password":
                 kw["show"] = "*"
                 kw["justify"] = "left"
-            tk.Entry(frame, **kw).pack(side="left", padx=(5, 0))
+            tk.Entry(frame, **kw).pack(side="left")
         _setting_vars[s["key"]] = var
+        if s.get("tooltip") and s["key"] in _setting_widgets:
+            tooltip.ToolTip(_setting_widgets[s["key"]], s["tooltip"])
 
     def _render_skip_group(parent):
         """Render the four skip settings as a single consolidated row."""
         group = [s for s in config_io.SETTINGS_SCHEMA if s.get("group") == "skip_group"]
-        frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
-        frame.pack(fill="x", pady=5)
-        lbl = tk.Label(frame, text=group[0]["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-        lbl.pack(side="left")
+        inputs, lbl = _new_row(parent, group[0]["label"])
         tooltip.ToolTip(lbl, "Auto-skip settings: play duration, jump distance, and fade timing.")
-        inputs = tk.Frame(frame, bg=BACKGROUND_COLOR)
-        inputs.pack(side="left", padx=(5, 0))
         for sg in group:
             var = tk.StringVar(value=str(_schema_val(sg)))
             entry = tk.Entry(inputs, textvariable=var, bg="black", fg="white",
@@ -242,13 +268,8 @@ def show_settings_popup():
     def _render_startup_group(parent):
         """Render the three startup-check settings as one row of checkboxes."""
         group = [s for s in config_io.SETTINGS_SCHEMA if s.get("group") == "startup_group"]
-        frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
-        frame.pack(fill="x", pady=5)
-        lbl = tk.Label(frame, text=group[0]["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-        lbl.pack(side="left")
+        inputs, lbl = _new_row(parent, group[0]["label"])
         tooltip.ToolTip(lbl, "Which 'is something newer available?' checks run at startup.")
-        inputs = tk.Frame(frame, bg=BACKGROUND_COLOR)
-        inputs.pack(side="left", padx=(5, 0))
         for sg in group:
             var = tk.BooleanVar(value=_schema_val(sg))
             cb = tk.Checkbutton(inputs, variable=var, text=sg["short_label"],
@@ -261,14 +282,11 @@ def show_settings_popup():
 
     def _render_color_row(s, parent):
         """Render a color dropdown row with add/delete buttons."""
-        frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
-        frame.pack(fill="x", pady=5)
-        lbl = tk.Label(frame, text=s["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-        lbl.pack(side="left")
+        frame, lbl = _new_row(parent, s["label"])
         tooltip.ToolTip(lbl, s["tooltip"])
         var = tk.StringVar(value=_schema_val(s))
         dropdown = ttk.Combobox(frame, textvariable=var, values=state.colors.OVERLAY_COLOR_OPTIONS, width=15)
-        dropdown.pack(side="left", padx=(5, 2))
+        dropdown.pack(side="left", padx=(0, 2))
         _setting_vars[s["key"]] = var
         _color_dropdowns[s["key"]] = dropdown
         tk.Button(frame, text="➕", bg="black", fg="white", width=3,
@@ -284,14 +302,11 @@ def show_settings_popup():
 
     def _render_rules_file_row(s, parent):
         """Render the rules-file folder-scanned dropdown."""
-        frame = tk.Frame(parent, bg=BACKGROUND_COLOR)
-        frame.pack(fill="x", pady=5)
-        lbl = tk.Label(frame, text=s["label"], bg=BACKGROUND_COLOR, fg="white", width=20, anchor="w")
-        lbl.pack(side="left")
+        frame, lbl = _new_row(parent, s["label"])
         tooltip.ToolTip(lbl, s["tooltip"])
         var = tk.StringVar(value=_schema_val(s))
         ttk.Combobox(frame, textvariable=var, values=scoreboard_control.get_available_rules_files(),
-                     width=25, state="readonly").pack(side="left", padx=(5, 0))
+                     width=25, state="readonly").pack(side="left")
         _setting_vars[s["key"]] = var
 
     # Collect visible rows first so we can split evenly
@@ -336,6 +351,21 @@ def show_settings_popup():
             _render_rules_file_row(s, parent)
         else:
             _render_simple_row(s, parent)
+
+    def _update_excluded_downloads(*_args):
+        only = _setting_vars["theme_online_source"].get() in ("AnimeThemes only", "AniSongDB only")
+        _setting_widgets["theme_allow_excluded_downloads"].config(state="normal" if only else "disabled")
+
+    _setting_vars["theme_online_source"].trace_add("write", _update_excluded_downloads)
+    _update_excluded_downloads()
+
+    # Keep the row rhythm identical on monitors with larger font scaling too.
+    row_height = max(36, *(item.winfo_reqheight() + 8
+                          for column in (col_left, col_right) for widget in column.winfo_children()
+                          for item in (widget, *widget.winfo_children())))
+    for column in (col_left, col_right):
+        for row in range(max(_next_row.values())):
+            column.rowconfigure(row, minsize=row_height)
 
     # Buttons
     button_frame = tk.Frame(main_frame, bg=BACKGROUND_COLOR)

@@ -17,6 +17,7 @@ import _app_scripts.playback.cache_download as cache_download
 import _app_scripts.playback.transport as transport
 import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.theme.marks as playlist_marks
+from _app_scripts.theme import source_preferences
 import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.data.config_io as config_io
 import _app_scripts.playlists.playlist_io as playlist_io
@@ -559,7 +560,9 @@ def get_directory_files(include_non_local=False, deduplicate_files=False, dedupl
                 continue
             if (
                 f in directory_files
-                or cache_download.is_anisongdb_alternate_file(f)
+                or (cache_download.is_anisongdb_alternate_file(f)
+                    and source_preferences.online_sources()[0] != source_preferences.ANISONGDB
+                    and not source_preferences.available_path(f))
                 or not cache_download.is_remote_theme_file(f)
             ):
                 continue
@@ -567,6 +570,24 @@ def get_directory_files(include_non_local=False, deduplicate_files=False, dedupl
         all_files = list(directory_files.keys()) + non_local_files
     else:
         all_files = list(directory_files.keys())
+
+    all_files = [f for f in all_files if source_preferences.file_allowed(f, local_only=not include_non_local)]
+    if include_non_local:
+        # Keep provider alternatives from making a covered song appear twice.
+        groups = {}
+        for filename in all_files:
+            data = metadata_fetch.get_file_metadata_by_name(filename) or {}
+            key = (data.get("mal"), data.get("slug"), data.get("version")) if data.get("mal") and data.get("slug") else filename
+            groups.setdefault(key, []).append(filename)
+        retained = set()
+        for files in groups.values():
+            providers = {source_preferences.file_source(f) for f in files} - {None}
+            if len(providers) < 2:
+                retained.update(files)
+                continue
+            best_rank = min(source_preferences.selection_key(f) for f in files)
+            retained.update(f for f in files if source_preferences.selection_key(f) == best_rank)
+        all_files = [f for f in all_files if f in retained]
 
     if deduplicate_versions:
         return deduplicate_theme_versions(all_files, keep_versions=False)

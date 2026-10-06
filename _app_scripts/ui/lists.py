@@ -142,17 +142,7 @@ def show_field_themes(update = False, group=[], title=None, sort_key=None, name_
         meta = metadata_fetch.get_metadata(fname)
         slug = (meta.get("slug") or "").upper() if meta else ""
         title_key = (meta.get("eng_title") or meta.get("title") or fname).lower() if meta else fname.lower()
-        if slug.startswith("OP"):
-            slug_type = 0
-            num_str = slug[2:]
-        elif slug.startswith("ED"):
-            slug_type = 1
-            num_str = slug[2:]
-        else:
-            slug_type = 2
-            num_str = slug
-        slug_num = int(num_str) if num_str.isdigit() else 0
-        return (title_key, slug_type, slug_num)
+        return (title_key, metadata_fetch.song_slug_sort_key(slug))
     field_list.sort(key=sort_key if sort_key is not None else _field_slug_sort_key)
     state.lists.last_themes_listed = field_list
     selected = -1
@@ -1012,9 +1002,15 @@ def show_list(type, column, content, name_func, btn_func, selected, update = Tru
             update_persistent_button(button_index, -1, name_func, content, selected)
     
     if buttons_need_recreation:
-        # Don't steal focus from the search bar entry
+        # A delayed playlist/directory redraw can arrive after a search click.
+        # Preserve that Entry's focus even while a different list is displayed.
         is_search = type in ("search", "search_add")
-        if not (is_search and search_ops.search_bar_entry and search_ops.search_bar_entry.winfo_exists()):
+        entry = search_ops.search_bar_entry
+        preserve_search_focus = bool(
+            entry and entry.winfo_exists()
+            and (is_search or column.focus_get() == entry)
+        )
+        if not preserve_search_focus:
             column.focus_set()
     update_list_scrollbar()
 

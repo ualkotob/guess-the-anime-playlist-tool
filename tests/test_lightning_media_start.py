@@ -1,6 +1,7 @@
 import pytest
 
 from _app_scripts.playback import transport
+from _app_scripts.playback import blind_screen
 from _app_scripts.queue_round.lightning_rounds import (
     frame_round,
     lightning_manager,
@@ -23,8 +24,8 @@ class _OrderedPlayer:
     def audio_set_mute(self, muted):
         self.events.append(("mute", muted))
 
-    def set_media(self, filepath, start_seconds=None):
-        self.events.append(("load", filepath, start_seconds))
+    def set_media(self, filepath, start_seconds=None, cover_video=False):
+        self.events.append(("load", filepath, start_seconds, cover_video))
 
 
 class _DeferredRoot:
@@ -108,7 +109,7 @@ def test_lightning_cover_and_mute_are_applied_before_media_load(
     expected = [("blind", True, {"smooth": False})]
     if muted:
         expected.append(("mute", True))
-    expected.append(("load", "theme.webm", 1.25))
+    expected.append(("load", "theme.webm", 1.25, True))
     assert events == expected
 
 
@@ -129,7 +130,42 @@ def test_non_lightning_media_does_not_gain_a_startup_cover(monkeypatch):
 
     transport._load_incoming_media("theme.webm")
 
-    assert events == [("load", "theme.webm", None)]
+    assert events == [("load", "theme.webm", None, False)]
+
+
+def test_native_cover_is_released_before_the_blind_osd(monkeypatch):
+    events = []
+
+    class _CoveredPlayer:
+        def release_startup_video_cover(self):
+            events.append("release-native-cover")
+
+    class _Root:
+        def after(self, *_args):
+            pass
+
+    monkeypatch.setattr(blind_screen.state.widgets, "player", _CoveredPlayer())
+    monkeypatch.setattr(blind_screen.state.widgets, "root", _Root())
+    monkeypatch.setattr(blind_screen, "black_overlay", True)
+    monkeypatch.setattr(blind_screen, "_blind_osd_color_cache", "black")
+    monkeypatch.setattr(
+        blind_screen,
+        "_set_blind_osd_alpha",
+        lambda _color, alpha: events.append(("blind-alpha", alpha)),
+    )
+    monkeypatch.setattr(
+        blind_screen.information_popup,
+        "_unregister_mpv_tracked_window",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(blind_screen, "set_blind_enabled", lambda *_args: None)
+    monkeypatch.setattr(
+        blind_screen.censors, "_commit_censor_osd", lambda: None
+    )
+
+    blind_screen.set_black_screen(False)
+
+    assert events == ["release-native-cover", ("blind-alpha", 0)]
 
 
 def test_delayed_startup_callback_is_discarded_after_generation_changes(
@@ -411,6 +447,122 @@ def test_prefetched_download_must_be_complete_when_download_is_required(
         )
         is True
     )
+
+
+def test_fixed_media_waits_for_active_prefetch(monkeypatch):
+    source_url = "https://www.youtube.com/watch?v=abcdefghijk"
+    wait_calls = []
+    readiness = iter([False, True])
+    monkeypatch.setattr(
+        lightning_manager,
+        "_prefetched_youtube_media_ready",
+        lambda _url, _required: next(readiness),
+    )
+    monkeypatch.setattr(
+        lightning_manager.youtube_control,
+        "_yt_stream_resolutions_in_progress",
+        {source_url},
+    )
+    monkeypatch.setattr(
+        lightning_manager.youtube_control,
+        "_yt_cache_wait_popup",
+        lambda url, timeout, require_download: wait_calls.append(
+            (url, timeout, require_download)
+        ),
+    )
+
+    assert lightning_manager._fixed_youtube_media_ready(source_url, True) is True
+    assert wait_calls == [(source_url, None, True)]
+
+
+def test_unavailable_fixed_media_advances_instead_of_playing_theme(monkeypatch):
+    filename = "round.webm"
+    fixed_round = {"type": "clip"}
+    callbacks = []
+    played = []
+    monkeypatch.setattr(
+        lightning_manager.state.lightning, "fixed_current_round", fixed_round
+    )
+    monkeypatch.setattr(
+        lightning_manager.state.playback,
+        "currently_playing",
+        {"filename": filename},
+    )
+    monkeypatch.setitem(lightning_manager.state.metadata.playlist, "current_index", 3)
+    monkeypatch.setattr(
+        lightning_manager.round_start_guard,
+        "after",
+        lambda _delay, callback, *args: callbacks.append((callback, args)),
+    )
+    monkeypatch.setattr(
+        lightning_manager.transport,
+        "play_video",
+        lambda index: played.append(index),
+    )
+
+    assert lightning_manager._skip_unavailable_fixed_media(
+        filename, "https://www.youtube.com/watch?v=abcdefghijk"
+    )
+    callbacks[0][0](*callbacks[0][1])
+
+    assert played == [3]
+    assert lightning_manager.state.lightning.light_round_started is False
+
+
+def test_queued_fixed_playlist_prefetches_its_first_round(monkeypatch):
+    class _ImmediateThread:
+        def __init__(self, target, daemon=True):
+            del daemon
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    first_url = "https://www.youtube.com/watch?v=abcdefghijk"
+    calls = []
+    rounds = [
+        {"type": "clip", "theme": "first.webm", "clip_url": first_url},
+        {"type": "clip", "theme": "second.webm", "clip_url": "second"},
+    ]
+    monkeypatch.setattr(
+        lightning_manager.state.lightning,
+        "fixed_lightning_queue",
+        {"rounds": rounds},
+    )
+    monkeypatch.setattr(
+        lightning_manager.state.lightning,
+        "fixed_lightning_round_playlist_data",
+        None,
+    )
+    monkeypatch.setattr(
+        lightning_manager.state.playback,
+        "lightning_mode_settings",
+        {
+            "clip": {"variants": {"random_clip": False, "trailer": False}},
+            "_misc_settings": {},
+        },
+    )
+    monkeypatch.setattr(lightning_manager.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        lightning_manager.metadata_fetch, "get_metadata", lambda _filename: {}
+    )
+    monkeypatch.setattr(
+        lightning_manager.youtube_control,
+        "get_youtube_stream_url",
+        lambda url, include_other_info=False: (
+            calls.append(url) or ("direct", 60, "Clip", "Channel")
+        ),
+    )
+    monkeypatch.setattr(
+        lightning_manager.ffmpeg_check, "is_ffmpeg_available", lambda: False
+    )
+    monkeypatch.setattr(
+        lightning_manager.metadata_display, "up_next_text", lambda: None
+    )
+
+    lightning_manager.queue_next_lightning_mode()
+
+    assert calls == [first_url]
 
 
 def test_variety_unavailable_youtube_media_selects_another_type(monkeypatch):

@@ -88,3 +88,49 @@ def test_score_changes_remove_old_team_when_player_is_now_unassigned(tmp_path, m
     scoreboard_control.add_score_changes_to_session(session_data)
 
     assert "team" not in session_data[0]
+
+
+def test_score_change_detail_line_includes_team_name():
+    data = [_score("2026-08-28 12:00:00", "Alice", 5, "Team Rocket")]
+
+    lines = session_stats.generate_text_from_session_data(data)
+
+    assert any("[SCOREBOARD] [Team Rocket] Alice +5 PTs" in line for line in lines)
+
+
+def test_quick_reload_of_same_fixed_playlist_counts_once():
+    data = [
+        {
+            "timestamp": "2026-08-28 12:00:00",
+            "type": "fixed_rounds_start",
+            "playlist_name": "Opening Night",
+            "creator": "Host",
+        },
+        {
+            "timestamp": "2026-08-28 12:02:00",
+            "type": "fixed_rounds_start",
+            "playlist_name": "Opening Night",
+            "creator": "Host",
+        },
+    ]
+
+    assert session_stats.get_session_summary_counts(data)["fixed_playlist_count"] == 1
+
+
+def test_later_replay_of_same_fixed_playlist_counts_again():
+    data = [
+        {
+            "timestamp": "2026-08-28 12:00:00",
+            "type": "fixed_rounds_start",
+            "playlist_name": "Opening Night",
+            "creator": "Host",
+        },
+        {
+            "timestamp": "2026-08-28 12:06:00",
+            "type": "fixed_rounds_start",
+            "playlist_name": "Opening Night",
+            "creator": "Host",
+        },
+    ]
+
+    assert session_stats.get_session_summary_counts(data)["fixed_playlist_count"] == 2

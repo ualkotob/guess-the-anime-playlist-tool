@@ -206,6 +206,9 @@ class GameState:
             scoreboard_rules=None,          # loaded scoreboard rules dict (load_rules() output); written by config_io + web_host_actions, read by main set_rules()
             themes_cache_size=500,          # MB; read by cache_download for the cache cap
             auto_download_themes=False,     # save downloads to themes dir vs temp cache
+            theme_online_source="prefer_animethemes",
+            theme_downloaded_first=True,
+            theme_allow_excluded_downloads=True,
             skip_play_seconds=0,            # auto-skip play duration (0 = disabled)
             skip_jump_seconds=5,            # forward jump distance on skip
             SKIP_FADE_WINDOW_MS=350,        # ms fade-out before skip

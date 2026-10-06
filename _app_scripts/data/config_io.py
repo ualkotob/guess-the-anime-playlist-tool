@@ -14,6 +14,7 @@ import copy
 from datetime import datetime
 
 from _app_scripts import utils
+from _app_scripts.theme import source_preferences
 import _app_scripts.toggles.censors as censors
 import _app_scripts.playback.dock_player as dock_player
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
@@ -51,7 +52,7 @@ _atomic_json_write = utils._atomic_json_write
 #              {"state": "<cluster>"}; the load/save loops below dispatch via it)
 # config_key - JSON key in config.json
 # label      - Row label in settings popup (None = grouped row, no own label)
-# type       - int | float | bool | str | password | color | rules_file
+# type       - int | float | bool | str | password | color | rules_file | choice
 #              group="skip_group" entries are rendered together in one row
 # default    - Default when missing from config
 # tooltip    - ToolTip text in settings popup
@@ -70,6 +71,9 @@ SETTINGS_SCHEMA = [
     {"key": "bgm_volume","config_key": "bgm_volume","label": "BGM Volume:",     "type": "float",    "default": 1.0,   "width": 10, "min": 0.0, "max": 1.5, "state": "controls", "tooltip": "Volume multiplier for background music (0.0 - 1.5). Scales the dB curve output."},
     {"key": "themes_cache_size",               "config_key": "themes_cache_size",               "label": "Themes Cache Size (MB):",    "type": "int",      "default": 500,   "width": 10, "min": 0,   "state": "config", "after_save": "trim_themes_cache", "tooltip": "Maximum size of the themes cache folder in MB. Downloaded themes are cached for faster playback."},
     {"key": "auto_download_themes",             "config_key": "auto_download_themes",             "label": "Auto-Download Themes:",       "type": "bool",     "default": False,          "state": "config", "tooltip": "When enabled, downloaded themes are saved directly to your themes directory as permanent files instead of the temporary cache."},
+    {"key": "theme_online_source", "config_key": "theme_online_source", "label": "Online Source:", "type": "choice", "choices": source_preferences.SOURCE_CHOICES, "default": "prefer_animethemes", "state": "config", "after_save": "refresh_theme_sources", "tooltip": "Choose the preferred online source, with the other source as fallback, or restrict streaming and downloads to one source."},
+    {"key": "theme_downloaded_first", "config_key": "theme_downloaded_first", "label": "Downloaded Files:", "checkbox_label": "Use downloaded files first", "type": "bool", "default": True, "state": "config", "after_save": "refresh_theme_sources", "tooltip": "Use an available local or cached copy before streaming or downloading. Disable to try the preferred source first, even when another source's copy is downloaded."},
+    {"key": "theme_allow_excluded_downloads", "config_key": "theme_allow_excluded_downloads", "label": "Excluded Downloads:", "checkbox_label": "Allow downloaded copies", "type": "bool", "default": True, "state": "config", "after_save": "refresh_theme_sources", "tooltip": "With an 'only' source choice, allow existing downloaded copies from the excluded source. Disable to exclude those files too. No downloaded files are deleted."},
     # Skip group — 4 entries rendered as one row in the popup
     {"key": "skip_play_seconds",     "config_key": "skip_play_seconds",  "label": "Skip Play Settings:", "type": "float", "default": 0,   "width": 6, "min": 0, "group": "skip_group", "state": "config", "tooltip": "Play Seconds: Duration to play before auto-skip (0 = disabled)"},
     {"key": "skip_jump_seconds",     "config_key": "skip_jump_seconds",  "label": None,                  "type": "float", "default": 5,   "width": 6, "min": 0, "group": "skip_group", "state": "config", "tooltip": "Jump Seconds: Distance to jump forward when skip triggers"},
@@ -341,6 +345,8 @@ def load_config():
                     )
                 _cast = _type_cast.get(_s["type"])
                 _v = _cast(_val) if _cast else _val
+                if _s["type"] == "choice" and (not isinstance(_v, str) or _v not in _s["choices"]):
+                    _v = _s["default"]
                 setattr(getattr(state, _s["state"]), _s["key"], _v)
             state.config.host = config.get("host", "")
             _loaded_playlist = config.get("playlist", copy.deepcopy(playlist_ops.BLANK_PLAYLIST))

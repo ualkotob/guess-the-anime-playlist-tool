@@ -18,7 +18,7 @@ def test_persisted_web_team_replaces_numeric_scoreboard_team_id(monkeypatch):
     assert result["players"][0]["team"] == "Team Rocket"
 
 
-def test_persisted_web_team_survives_scores_file_refresh_race(monkeypatch):
+def test_blank_scoreboard_team_clears_persisted_assignment(monkeypatch):
     monkeypatch.setattr(
         answers,
         "_load_web_team_assignments",
@@ -28,7 +28,7 @@ def test_persisted_web_team_survives_scores_file_refresh_race(monkeypatch):
 
     result = answers._apply_web_team_assignments(scores)
 
-    assert result["players"][0]["team"] == "Team Rocket"
+    assert result["players"][0]["team"] == ""
 
 
 def test_displayable_scoreboard_team_wins_over_stale_web_assignment(monkeypatch):

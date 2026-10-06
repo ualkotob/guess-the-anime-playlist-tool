@@ -222,7 +222,7 @@ def generate_session_log_playlist(include_non_local=None):
     timestamp_re = re.compile(r'^\d{2}:\d{2}:\d{2}: ?')
     skip_markers = ('[YOUTUBE VIDEO', '[FIXED LIGHTNING ROUNDS', '[SCOREBOARD]', '[BONUS?')
     lightning_re = re.compile(r'^\[LIGHTNING ROUND #\d+\([^)]+\)\] - ')
-    slug_op_ed_re = re.compile(r'^(.*) - ((?:Opening|Ending)\s*\d+)(?=\s*(?:\(|$))')
+    slug_op_ed_re = re.compile(r'^(.*) - ((?:Opening|Ending)\s*\d+(?:\.\d+)?)(?=\s*(?:\(|$))')
     ext_re = re.compile(r'\s(\S+\.(?:webm|mkv|mp4|avi|mov))\s*$', re.IGNORECASE)
 
     matched = []

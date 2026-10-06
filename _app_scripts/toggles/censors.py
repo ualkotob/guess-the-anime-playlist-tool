@@ -7,7 +7,7 @@ import random as _random
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
 from PIL import ImageColor
 import numpy as np
 import pyperclip
@@ -1315,29 +1315,87 @@ def extract_title_and_slug_from_filename(filename):
     return None, None, None
 
 
-def find_similar_theme_censors(current_filename):
-    """Finds censors from files with the same title and slug but different versions/quality."""
-    current_title, current_slug, current_version = extract_title_and_slug_from_filename(current_filename)
+def _censor_theme_identity(filename):
+    """Return stable metadata identifiers used to match alternate theme files."""
+    file_data = metadata_fetch.get_file_metadata_by_name(filename) or {}
+    properties = file_data.get("file_properties") or {}
 
-    if not current_title or not current_slug:
+    def normalized(value, *, upper=False):
+        if value in (None, ""):
+            return None
+        value = str(value)
+        return value.upper() if upper else value
+
+    return {
+        "amq_song_id": normalized(
+            properties.get("anisongdb_amq_song_id")
+            or file_data.get("anisongdb_amq_song_id")
+        ),
+        "ann_song_id": normalized(
+            properties.get("anisongdb_ann_song_id")
+            or file_data.get("anisongdb_ann_song_id")
+        ),
+        "mal_id": normalized(file_data.get("mal") or file_data.get("mal_id")),
+        "slug": normalized(file_data.get("slug"), upper=True),
+    }
+
+
+def _same_censor_theme(current_filename, candidate_filename, current_identity=None):
+    """Return whether two files represent the same OP/ED/insert theme.
+
+    AniSongDB media names do not contain an anime title or theme slug, so use
+    provider IDs or the MAL/theme pair before falling back to legacy filename
+    parsing. Versions and resolutions are deliberately not part of the match.
+    """
+    current_identity = current_identity or _censor_theme_identity(current_filename)
+    candidate_identity = _censor_theme_identity(candidate_filename)
+
+    for key in ("amq_song_id", "ann_song_id"):
+        current_value = current_identity.get(key)
+        candidate_value = candidate_identity.get(key)
+        if current_value is not None and candidate_value is not None:
+            return current_value == candidate_value
+
+    current_mal = current_identity.get("mal_id")
+    current_slug = current_identity.get("slug")
+    candidate_mal = candidate_identity.get("mal_id")
+    candidate_slug = candidate_identity.get("slug")
+    if all((current_mal, current_slug, candidate_mal, candidate_slug)):
+        return current_mal == candidate_mal and current_slug == candidate_slug
+
+    current_title, current_slug, _current_version = extract_title_and_slug_from_filename(
+        current_filename
+    )
+    title, slug, _version = extract_title_and_slug_from_filename(candidate_filename)
+    return bool(
+        current_title
+        and current_slug
+        and title == current_title
+        and slug == current_slug
+    )
+
+
+def get_censor_sources(exclude_filename=None):
+    """Return non-empty censor sources, preserving normal lookup precedence."""
+    sources = {}
+    for source_list in (censor_list, *other_censor_lists):
+        for source_filename, source_censors in source_list.items():
+            if source_filename == exclude_filename or not source_censors:
+                continue
+            sources.setdefault(source_filename, source_censors)
+    return sources
+
+
+def find_similar_theme_censors(current_filename):
+    """Find censors for alternate files of the same metadata theme."""
+    if not current_filename:
         return {}
 
+    current_identity = _censor_theme_identity(current_filename)
     similar_censors = {}
-
-    for filename, censors in censor_list.items():
-        if filename == current_filename:
-            continue
-        title, slug, version = extract_title_and_slug_from_filename(filename)
-        if title == current_title and slug == current_slug:
-            similar_censors[filename] = censors
-
-    for c_list in other_censor_lists:
-        for filename, censors in c_list.items():
-            if filename == current_filename:
-                continue
-            title, slug, version = extract_title_and_slug_from_filename(filename)
-            if title == current_title and slug == current_slug:
-                similar_censors[filename] = censors
+    for filename, file_censors in get_censor_sources(current_filename).items():
+        if _same_censor_theme(current_filename, filename, current_identity):
+            similar_censors[filename] = file_censors
 
     return similar_censors
 
@@ -1349,6 +1407,22 @@ def _replace_censor_in_place(censor, values):
     """Replace editor values without invalidating callbacks holding *censor*."""
     censor.clear()
     censor.update(values)
+
+
+def _apply_color_result(censor, hex_color, label=None):
+    """Apply a color-picker result even if its original row was rebuilt."""
+    censor["color"] = hex_color
+    if label is None:
+        return
+
+    try:
+        if label.winfo_exists():
+            label.hex_color = hex_color
+            label.config(bg=hex_color, text="")
+    except tk.TclError:
+        # The row (or its editor window) may have been destroyed while the
+        # asynchronous color-picker overlay was open.
+        pass
 
 
 def _apply_rectangle_result(censor, rect_text):
@@ -1522,12 +1596,33 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
     def current_time_func():
         return state.seek.projected_player_time / 1000
 
-    def pick_color_func(label):
-        def set_color(hex_color):
-            label.hex_color = hex_color
-            label.config(bg=hex_color, text="")
-        ColorPickerOverlay(set_color)
+    def pick_color_func(target_censor):
+        # Preserve edits and the target record before the asynchronous picker
+        # opens. save_to_current() updates records in place, so this identity
+        # remains valid if paging or another action rebuilds the row widgets.
         save_to_current()
+
+        def set_color(hex_color):
+            target_index = next(
+                (index for index, censor in enumerate(current_censors)
+                 if censor is target_censor),
+                None,
+            )
+            if target_index is None:
+                return
+
+            # Resolve the current swatch rather than retaining the one that
+            # opened the picker; refresh_ui() may have rebuilt that entire row.
+            label = None
+            display_index = target_index - censor_page_offset
+            if 0 <= display_index < len(censor_entry_widgets):
+                color_widgets = censor_entry_widgets[display_index][4].winfo_children()
+                if color_widgets:
+                    label = color_widgets[0]
+
+            _apply_color_result(target_censor, hex_color, label)
+
+        ColorPickerOverlay(set_color)
 
     def pick_target_func(target_censor, size_var, pos_rot_var, shape_btn=None):
         initial = None
@@ -1686,7 +1781,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                 color_box = tk.Label(color_frame, text="AUTO" if not color else "", width=6, font=font_big, bg=color if color else "#333", fg=fg_color, relief="groove")
                 color_box.hex_color = color
                 color_box.pack(side="left", ipady=entry_ipady)
-                tk.Button(color_frame, text="PICK", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda b=color_box: pick_color_func(b)).pack(side="left", padx=2)
+                tk.Button(color_frame, text="PICK", width=5, font=font_big, bg=bg_color, fg=fg_color, command=lambda c=censor: pick_color_func(c)).pack(side="left", padx=2)
                 tk.Button(color_frame, text="\u27f3", width=2, font=font_big, bg=bg_color, fg=fg_color, command=lambda c=color_box: remove_color(c)).pack(side="left")
             color_frame.grid(row=display_idx+censor_start_row, column=4, padx=6, pady=row_pady)
 
@@ -1895,6 +1990,162 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
         remove_all_censor_boxes()
         apply_censors(state.widgets.player.get_time() / 1000, state.widgets.player.get_length() / 1000)
 
+    def import_censors_from_source(source_filename, sources):
+        global censor_page_offset
+        imported_censors = copy.deepcopy(sources[source_filename])
+        current_censors.extend(imported_censors)
+
+        total_censors = len(current_censors)
+        censor_page_offset = (
+            ((total_censors - 1) // CENSORS_PER_PAGE) * CENSORS_PER_PAGE
+            if total_censors
+            else 0
+        )
+        refresh_ui()
+
+    def open_censor_source_search(sources=None):
+        sources = sources or get_censor_sources(filename)
+        if not sources:
+            messagebox.showinfo(
+                "No Censor Sources",
+                "No other files with censors are available.",
+                parent=censor_editor,
+            )
+            return
+
+        source_search = tk.Toplevel(censor_editor)
+        source_search.title("Copy Censors From Another File")
+        source_search.configure(bg=_BACKGROUND_COLOR)
+        source_search.transient(censor_editor)
+        source_search.attributes("-topmost", bool(censor_editor_pinned[0]))
+        windowing.get_window_position_and_setup(
+            source_search, offset_x=40, offset_y=40
+        )
+
+        tk.Label(
+            source_search,
+            text="Search by anime, filename, MAL ID, or OP/ED number:",
+            font=font_big,
+            bg=_BACKGROUND_COLOR,
+            fg=fg_color,
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(
+            source_search,
+            textvariable=search_var,
+            width=80,
+            font=font_big,
+            bg=bg_color,
+            fg=fg_color,
+            insertbackground=fg_color,
+        )
+        search_entry.pack(fill="x", padx=12, pady=(0, 8), ipady=4)
+
+        list_frame = tk.Frame(source_search, bg=_BACKGROUND_COLOR)
+        list_frame.pack(fill="both", expand=True, padx=12)
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical")
+        source_listbox = tk.Listbox(
+            list_frame,
+            width=110,
+            height=18,
+            font=("Arial", 11),
+            bg=bg_color,
+            fg=fg_color,
+            selectbackground="#226622",
+            exportselection=False,
+            yscrollcommand=scrollbar.set,
+        )
+        scrollbar.config(command=source_listbox.yview)
+        source_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        source_records = []
+        for source_filename, source_censors in sources.items():
+            file_data = metadata_fetch.get_file_metadata_by_name(source_filename) or {}
+            mal_id = file_data.get("mal") or file_data.get("mal_id")
+            slug = file_data.get("slug")
+            anime_name = file_data.get("name")
+            details = " / ".join(
+                str(value)
+                for value in (
+                    anime_name,
+                    slug,
+                    f"MAL {mal_id}" if mal_id else None,
+                )
+                if value
+            )
+            count = len(source_censors)
+            label = f"{source_filename}  [{count} censor{'s' if count != 1 else ''}]"
+            if details:
+                label += f"  -  {details}"
+
+            search_values = [source_filename, anime_name, slug, mal_id]
+            anime_data = (
+                state.metadata.anime_metadata.get(str(mal_id), {}) if mal_id else {}
+            )
+            search_values.extend(
+                [anime_data.get("title"), anime_data.get("eng_title")]
+            )
+            synonyms = anime_data.get("synonyms") or []
+            if isinstance(synonyms, list):
+                search_values.extend(synonyms)
+            search_text = " ".join(
+                str(value).casefold() for value in search_values if value
+            )
+            source_records.append((source_filename, label, search_text))
+
+        source_records.sort(key=lambda record: record[1].casefold())
+        visible_records = []
+
+        def refresh_sources(*_args):
+            query_terms = search_var.get().casefold().split()
+            visible_records.clear()
+            source_listbox.delete(0, tk.END)
+            for record in source_records:
+                if all(term in record[2] for term in query_terms):
+                    visible_records.append(record)
+                    source_listbox.insert(tk.END, record[1])
+            if visible_records:
+                source_listbox.selection_set(0)
+                source_listbox.activate(0)
+
+        def copy_selected(_event=None):
+            selection = source_listbox.curselection()
+            if not selection:
+                return
+            source_filename = visible_records[selection[0]][0]
+            import_censors_from_source(source_filename, sources)
+            source_search.destroy()
+
+        search_var.trace_add("write", refresh_sources)
+        source_listbox.bind("<Double-Button-1>", copy_selected)
+        source_listbox.bind("<Return>", copy_selected)
+
+        button_frame = tk.Frame(source_search, bg=_BACKGROUND_COLOR)
+        button_frame.pack(fill="x", padx=12, pady=12)
+        tk.Button(
+            button_frame,
+            text="COPY SELECTED CENSORS",
+            width=28,
+            font=font_big,
+            bg="dark green",
+            fg=fg_color,
+            command=copy_selected,
+        ).pack(side="left")
+        tk.Button(
+            button_frame,
+            text="CANCEL",
+            width=12,
+            font=font_big,
+            bg=bg_color,
+            fg=fg_color,
+            command=source_search.destroy,
+        ).pack(side="right")
+
+        refresh_sources()
+        search_entry.focus_set()
+
     def import_previous_censors():
         similar_censors = _similar_censors_cache
         if not similar_censors:
@@ -1909,33 +2160,12 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
             if all_identical:
                 source_filename = list(similar_censors.keys())[0]
             else:
-                options = list(similar_censors.keys())
-                choice = simpledialog.askstring(
-                    "Choose Source",
-                    "Multiple versions found. Enter the number of the file to import from:\n" +
-                    "\n".join([f"{i+1}. {fname}" for i, fname in enumerate(options)]) +
-                    f"\n\nEnter 1-{len(options)}:"
-                )
-                try:
-                    choice_index = int(choice) - 1
-                    if 0 <= choice_index < len(options):
-                        source_filename = options[choice_index]
-                    else:
-                        return
-                except (ValueError, TypeError):
-                    return
+                open_censor_source_search(similar_censors)
+                return
         else:
             source_filename = list(similar_censors.keys())[0]
 
-        imported_censors = copy.deepcopy(similar_censors[source_filename])
-        current_censors.extend(imported_censors)
-
-        global censor_page_offset
-        total_censors = len(current_censors)
-        last_page_offset = ((total_censors - 1) // CENSORS_PER_PAGE) * CENSORS_PER_PAGE
-        censor_page_offset = last_page_offset
-
-        refresh_ui()
+        import_censors_from_source(source_filename, similar_censors)
 
     bottom_button_widgets = []
 
@@ -1984,7 +2214,25 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
 
         if show_import_button:
             import_button = tk.Button(censor_editor, text="IMPORT PREVIOUS CENSORS", width=30, font=font_big, bg="dark green", fg=fg_color, command=import_previous_censors)
-            import_button.grid(row=1000, column=0, columnspan=6, pady=12)
+            import_button.grid(row=1000, column=0, columnspan=3, pady=12)
             bottom_button_widgets.append(import_button)
+
+        if not current_has_censors and get_censor_sources(filename):
+            search_button = tk.Button(
+                censor_editor,
+                text="SEARCH OTHER CENSORS",
+                width=30,
+                font=font_big,
+                bg=bg_color,
+                fg=fg_color,
+                command=open_censor_source_search,
+            )
+            search_button.grid(
+                row=1000,
+                column=3 if show_import_button else 0,
+                columnspan=3,
+                pady=12,
+            )
+            bottom_button_widgets.append(search_button)
 
     refresh_ui()

@@ -33,6 +33,19 @@ class TestGetCleanFilename:
     def test_base_only_plain_filename(self):
         assert entry_paths.get_clean_filename("Show-OP1.webm", base_only=True) == "Show-OP1"
 
+    def test_shared_theme_reference_keeps_identity_and_physical_filename(self):
+        reference = entry_paths.make_theme_reference(
+            "Show-OP1.webm", "123", "OP1", "1"
+        )
+
+        assert entry_paths.parse_theme_reference(reference) == {
+            "mal_id": "123",
+            "slug": "OP1",
+            "version": "1",
+            "filename": "Show-OP1.webm",
+        }
+        assert entry_paths.get_clean_filename(reference) == "Show-OP1.webm"
+
 
 class TestGetFilePath:
     def test_directory_files_lookup(self, directory_files, monkeypatch):
@@ -44,6 +57,15 @@ class TestGetFilePath:
         directory_files["Show-OP1.webm"] = r"themes\Show-OP1.webm"
         monkeypatch.setattr(cache_download, "get_cached_file_path", lambda f: None)
         assert entry_paths.get_file_path("[L]Show-OP1.webm") == r"themes\Show-OP1.webm"
+
+    def test_shared_theme_reference_resolves_same_file(self, directory_files, monkeypatch):
+        directory_files["Show-OP1.webm"] = r"themes\Show-OP1.webm"
+        monkeypatch.setattr(cache_download, "get_cached_file_path", lambda f: None)
+        reference = entry_paths.make_theme_reference(
+            "Show-OP1.webm", "123", "OP1", "1"
+        )
+
+        assert entry_paths.get_file_path(reference) == r"themes\Show-OP1.webm"
 
     def test_webm_entry_resolves_converted_mp4(self, directory_files, monkeypatch):
         directory_files["Show-OP1.mp4"] = r"themes\Show-OP1.mp4"

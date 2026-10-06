@@ -64,9 +64,83 @@ def test_package_overrides_are_folded_into_release_data_not_user_overrides():
         state.metadata.anime_metadata_overrides.update(saved_overrides)
 
 
+def test_release_artist_correction_wins_over_bundled_catalog_projection(monkeypatch):
+    saved_anime = copy.deepcopy(state.metadata.anime_metadata)
+    saved_animethemes = copy.deepcopy(state.metadata.animethemes_metadata)
+    saved_overrides = copy.deepcopy(state.metadata.anime_metadata_overrides)
+    try:
+        state.metadata.anime_metadata.clear()
+        state.metadata.anime_metadata.update({
+            "1": {"songs": [{"slug": "OP1", "artist": []}]},
+        })
+        state.metadata.animethemes_metadata.clear()
+        state.metadata.anime_metadata_overrides.clear()
+        state.metadata.anime_metadata_overrides.update({
+            "1": {"songs": [{"slug": "OP1", "artist": ["User Artist"]}]},
+        })
+
+        from _app_scripts.theme import animethemes
+
+        monkeypatch.setattr(animethemes, "build_indexes", lambda *, force=False: None)
+
+        def project_stale_catalog():
+            state.metadata.anime_metadata["1"] = {
+                "songs": [{"slug": "OP1", "artist": []}],
+            }
+
+        monkeypatch.setattr(
+            animethemes,
+            "sync_catalog_to_metadata",
+            project_stale_catalog,
+        )
+
+        metadata_import._apply_package_stores({
+            "anime_metadata": {
+                "1": {"songs": [{"slug": "OP1", "artist": ["Package Artist"]}]},
+            },
+            "anime_metadata_overrides": {
+                "1": {"songs": [{"slug": "OP1", "artist": ["Corrected Artist"]}]},
+            },
+            "animethemes_metadata": {"anime": [{"id": 1}]},
+        })
+
+        assert state.metadata.anime_metadata["1"]["songs"][0]["artist"] == [
+            "Corrected Artist"
+        ]
+        assert state.metadata.anime_metadata_overrides["1"]["songs"][0]["artist"] == [
+            "User Artist"
+        ]
+
+        # The recipient's personal correction remains the final display value.
+        utils.deep_merge(
+            state.metadata.anime_metadata,
+            state.metadata.anime_metadata_overrides,
+        )
+        assert state.metadata.anime_metadata["1"]["songs"][0]["artist"] == [
+            "User Artist"
+        ]
+    finally:
+        state.metadata.anime_metadata.clear()
+        state.metadata.anime_metadata.update(saved_anime)
+        state.metadata.animethemes_metadata.clear()
+        state.metadata.animethemes_metadata.update(saved_animethemes)
+        state.metadata.anime_metadata_overrides.clear()
+        state.metadata.anime_metadata_overrides.update(saved_overrides)
+
+
 def test_import_is_saved_synchronously_before_reload(monkeypatch):
     calls = []
 
+    monkeypatch.setattr(
+        metadata_import.metadata_io,
+        "save_animethemes_metadata",
+        lambda: calls.append(("save_animethemes", None)),
+    )
+    monkeypatch.setattr(
+        metadata_import.metadata_io,
+        "save_anisongdb_metadata",
+        lambda: calls.append(("save_anisongdb", None)),
+    )
     monkeypatch.setattr(
         metadata_import.metadata_io,
         "save_metadata",
@@ -80,11 +154,30 @@ def test_import_is_saved_synchronously_before_reload(monkeypatch):
 
     metadata_import._persist_imported_metadata()
 
-    assert calls == [("save", True), ("load", None)]
+    assert calls == [
+        ("save_animethemes", None),
+        ("save_anisongdb", None),
+        ("save", True),
+        ("load", None),
+    ]
 
 
 def test_anime_overrides_file_is_part_of_import_format():
     assert (
         "metadata/anime_metadata_overrides.json",
         "anime_metadata_overrides",
+    ) in metadata_import.METADATA_PACKAGE_FILES
+
+
+def test_anisongdb_catalog_is_part_of_import_format():
+    assert (
+        "metadata/anisongdb_metadata.json",
+        "anisongdb_metadata",
+    ) in metadata_import.METADATA_PACKAGE_FILES
+
+
+def test_animethemes_catalog_is_part_of_import_format():
+    assert (
+        "metadata/animethemes_metadata.json",
+        "animethemes_metadata",
     ) in metadata_import.METADATA_PACKAGE_FILES

@@ -6,6 +6,8 @@ import tkinter as tk
 from tkinter import simpledialog
 
 from core.game_state import state
+from core.app_logging import log_exception, log_warning
+from _app_scripts.file import modal_guard
 import _app_scripts.playlists.playlist as playlist_ops
 import _app_scripts.ui.lists as lists
 import _app_scripts.file.metadata.metadata_display as metadata_display
@@ -129,15 +131,58 @@ def set_search_queue(index):
         cache_download.prefetch_next_themes()
 
 
+def _request_search_focus(entry):
+    """Restore native window focus on an explicit search click or shortcut."""
+    if modal_guard.is_modal_dialog_open():
+        return False
+    try:
+        if entry is not search_bar_entry or not entry.winfo_exists():
+            return False
+        if entry.cget("state") == "disabled":
+            log_warning("Toolbar search field is unexpectedly disabled")
+            return False
+        # Respect a custom modal popup as well as standard Tk dialogs.
+        grab = entry.grab_current()
+        if grab is not None and grab.winfo_toplevel() != entry.winfo_toplevel():
+            return False
+        # Tk's Entry click binding only calls focus_set(), which can leave the
+        # native Windows window unfocused after returning from another window.
+        # This runs only on a user click/shortcut, never a search-result update.
+        entry.focus_force()
+
+        def check_focus():
+            try:
+                if entry is not search_bar_entry or not entry.winfo_exists() or modal_guard.is_modal_dialog_open():
+                    return
+                focused = entry.focus_get()
+                if focused is None:
+                    log_warning("Search field could not acquire focus (entry=%s, grab=%s, state=%s)",
+                                entry, entry.grab_current(), entry.cget("state"))
+            except tk.TclError:
+                pass  # The toolbar or root was destroyed during the idle callback.
+
+        state.widgets.root.after_idle(check_focus)
+        return True
+    except tk.TclError:
+        log_exception("Failed to focus the toolbar search field")
+        return False
+
+
+def on_search_click(event):
+    """Let the normal Entry binding position the caret after focus recovery."""
+    _request_search_focus(event.widget)
+
+
 def _focus_search_entry():
     """Focus the toolbar search entry, clearing placeholder if present."""
     if search_bar_entry and search_bar_entry.winfo_exists():
+        if not _request_search_focus(search_bar_entry):
+            return
         if search_bar_entry.get() == SEARCH_BAR_PLACEHOLDER:
             search_bar_entry.delete(0, tk.END)
             search_bar_entry.configure(fg="white")
         else:
             search_bar_entry.select_range(0, tk.END)
-        search_bar_entry.focus_set()
     else:
         search(add=state.metadata.playlist.get("infinite", False))
 
@@ -175,17 +220,7 @@ def search_playlist(search_term):
         meta = metadata_fetch.get_metadata(file)
         slug = (meta.get("slug") or "").upper()
         title_key = (meta.get("eng_title") or meta.get("title") or file).lower()
-        if slug.startswith("OP"):
-            slug_type = 0
-            num_str = slug[2:]
-        elif slug.startswith("ED"):
-            slug_type = 1
-            num_str = slug[2:]
-        else:
-            slug_type = 2
-            num_str = slug
-        slug_num = int(num_str) if num_str.isdigit() else 0
-        return (title_key, slug_type, slug_num)
+        return (title_key, metadata_fetch.song_slug_sort_key(slug))
 
     priority_results.sort(key=_slug_sort_key)
     results.sort(key=_slug_sort_key)

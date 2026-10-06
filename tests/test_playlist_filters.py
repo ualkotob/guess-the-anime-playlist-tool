@@ -90,6 +90,51 @@ def test_ensure_default_infinite_filter_saved_keeps_existing_filter(monkeypatch,
     assert json.loads(filter_path.read_text()) == existing
 
 
+def test_ensure_default_infinite_filter_saved_upgrades_untouched_old_default(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(filters, "FILTERS_FOLDER", str(tmp_path))
+    old_default = copy.deepcopy(filters.DEFAULT_INFINITE_FILTER)
+    old_default["themes_exclude"].remove(filters.ANISONGDB_RISK_WITHOUT_CENSORS)
+    filter_path = tmp_path / f"{filters.DEFAULT_INFINITE_FILTER_NAME}.json"
+    filter_path.write_text(
+        json.dumps({"name": filters.DEFAULT_INFINITE_FILTER_NAME, "filter": old_default})
+    )
+
+    assert filters.ensure_default_infinite_filter_saved() is True
+    assert json.loads(filter_path.read_text())["filter"] == filters.DEFAULT_INFINITE_FILTER
+
+
+def test_upgrade_default_infinite_filter_preserves_custom_filters():
+    custom = {"themes_exclude": ["NSFW (Without Censors)"]}
+
+    assert filters.upgrade_default_infinite_filter(custom) is False
+    assert custom == {"themes_exclude": ["NSFW (Without Censors)"]}
+
+
+def test_upgrade_default_infinite_filter_migrates_long_anisongdb_name():
+    old_default = copy.deepcopy(filters.DEFAULT_INFINITE_FILTER)
+    index = old_default["themes_exclude"].index(
+        filters.ANISONGDB_RISK_WITHOUT_CENSORS
+    )
+    old_default["themes_exclude"][index] = (
+        "ANISONGDB ECCHI/NUDITY (Without Censors)"
+    )
+
+    assert filters.upgrade_default_infinite_filter(old_default) is True
+    assert old_default == filters.DEFAULT_INFINITE_FILTER
+
+
+def test_normalize_filter_migrates_long_anisongdb_risk_names():
+    assert filters.normalize_filter(
+        {
+            "themes_exclude": [
+                "ANISONGDB ECCHI/NUDITY (Without Censors)",
+            ]
+        }
+    ) == {"themes_exclude": [filters.ANISONGDB_RISK_WITHOUT_CENSORS]}
+
+
 def test_normalize_filter_canonicalizes_browser_values():
     normalized = filters.normalize_filter(
         {
@@ -107,6 +152,18 @@ def test_normalize_filter_canonicalizes_browser_values():
         "rank_max": 10,
         "rank_min": 500,
         "artists": ["Artist"],
+    }
+
+
+@pytest.mark.parametrize("default_value", [None, "", "Both", "Opening + Ending"])
+def test_normalize_filter_omits_default_theme_type(default_value):
+    assert filters.normalize_filter({"theme_type": default_value}, strict=True) == {}
+
+
+@pytest.mark.parametrize("theme_type", ["Opening", "Ending", "Insert", "All"])
+def test_normalize_filter_accepts_theme_types(theme_type):
+    assert filters.normalize_filter({"theme_type": theme_type}, strict=True) == {
+        "theme_type": theme_type,
     }
 
 
@@ -137,6 +194,137 @@ def test_evaluate_filter_does_not_mutate_live_playlist(monkeypatch, clean_playli
     assert filters.evaluate_filter({"score_min": 8}) == ["a.webm"]
     assert clean_playlist["playlist"] == ["a.webm", "b.webm"]
     assert clean_playlist["current_index"] == 1
+
+
+def test_evaluate_filter_excludes_inserts_by_default_and_can_include_them(monkeypatch):
+    filenames = ["opening.webm", "ending.webm", "insert.webm", "other.webm"]
+    metadata = {
+        "opening.webm": {"slug": "OP1"},
+        "ending.webm": {"slug": "ED2"},
+        "insert.webm": {"slug": "IN3"},
+        "other.webm": {"slug": "PV1"},
+    }
+    monkeypatch.setattr(filters.metadata_fetch, "get_metadata", metadata.get)
+
+    assert filters.evaluate_filter({}, filenames) == ["opening.webm", "ending.webm"]
+    assert filters.evaluate_filter({"theme_type": "Insert"}, filenames) == ["insert.webm"]
+    assert filters.evaluate_filter({"theme_type": "All"}, filenames) == filenames
+
+
+def test_anisongdb_ecchi_nudity_filter_distinguishes_censor_coverage(monkeypatch):
+    filenames = [
+        "uncensored.webm",
+        "censored.webm",
+        "hentai.webm",
+        "future-hentai-tag.webm",
+        "gore.webm",
+        "animethemes.webm",
+    ]
+    base = {
+        "slug": "OP1",
+        "songs": [{"slug": "OP1"}],
+        "anisongdb_genres": ["Ecchi"],
+        "anisongdb_tags": ["Nudity"],
+        "file_properties": {"source": "ANISONGDB"},
+    }
+    metadata = {
+        "uncensored.webm": copy.deepcopy(base),
+        "censored.webm": copy.deepcopy(base),
+        "hentai.webm": {
+            **copy.deepcopy(base),
+            "anisongdb_genres": [],
+            "anisongdb_tags": [],
+            "genres": ["Hentai"],
+        },
+        "future-hentai-tag.webm": {
+            **copy.deepcopy(base),
+            "anisongdb_genres": [],
+            "anisongdb_tags": ["Hentai"],
+        },
+        "gore.webm": {
+            **copy.deepcopy(base),
+            "anisongdb_genres": [],
+            "anisongdb_tags": ["Gore"],
+        },
+        "animethemes.webm": {
+            **copy.deepcopy(base),
+            "file_properties": {"source": "BD"},
+        },
+    }
+    monkeypatch.setattr(filters.metadata_fetch, "get_metadata", metadata.get)
+    monkeypatch.setattr(
+        filters.censors,
+        "get_file_censors",
+        lambda filename: [{"nsfw": True}] if filename == "censored.webm" else [],
+    )
+
+    assert filters.evaluate_filter(
+        {"themes_exclude": [filters.ANISONGDB_RISK_WITHOUT_CENSORS]}, filenames
+    ) == ["censored.webm", "gore.webm", "animethemes.webm"]
+    assert filters.evaluate_filter(
+        {"themes_exclude": [filters.ANISONGDB_RISK_WITH_CENSORS]}, filenames
+    ) == [
+        "uncensored.webm",
+        "hentai.webm",
+        "future-hentai-tag.webm",
+        "gore.webm",
+        "animethemes.webm",
+    ]
+
+
+def test_filter_metadata_aggregation_processes_each_anime_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        filters.metadata_fetch,
+        "filename_to_mal",
+        {
+            "op.webm": {"mal_id": "1"},
+            "ed.webm": {"mal_id": "1"},
+            "other.webm": {"mal_id": "2"},
+        },
+    )
+    metadata = {
+        "op.webm": {
+            "season": "Spring 2020",
+            "score": 8.5,
+            "rank": 10,
+            "members": 100,
+            "popularity": 50,
+            "songs": [{"artist": ["Artist B", "Artist A"]}],
+            "studios": ["Studio B"],
+            "genres": ["Action"],
+        },
+        "other.webm": {
+            "season": "Winter 2019",
+            "score": 7,
+            "rank": 20,
+            "members": 50,
+            "popularity": 100,
+            "songs": [{"artist": ["Artist C"]}],
+            "studios": ["Studio A"],
+            "themes": ["School"],
+        },
+    }
+
+    def get_metadata(filename):
+        calls.append(filename)
+        return metadata.get(filename)
+
+    monkeypatch.setattr(filters.metadata_fetch, "get_metadata", get_metadata)
+
+    aggregate = filters._aggregate_filter_metadata(["op.webm", "ed.webm", "other.webm"])
+
+    assert calls == ["op.webm", "other.webm"]
+    assert aggregate["seasons"] == ["Winter 2019", "Spring 2020"]
+    assert aggregate["artists"] == ["Artist A", "Artist B", "Artist C"]
+    assert aggregate["studios"] == ["Studio A", "Studio B"]
+    assert aggregate["tags"] == ["Action", "School"]
+    assert aggregate["ranges"] == {
+        "score": {"min": 7.0, "max": 8.5},
+        "rank": {"min": 10, "max": 20},
+        "members": {"min": 50, "max": 100},
+        "popularity": {"min": 50, "max": 100},
+    }
 
 
 def test_web_filter_can_widen_again_from_stable_source(monkeypatch, clean_playlist):

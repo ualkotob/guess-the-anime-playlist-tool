@@ -1,6 +1,93 @@
+import re
+
 from PIL import Image
 
+from _app_scripts.playback.media_player import MediaPlayer
 from _app_scripts.toggles import censors
+from _app_scripts import utils
+
+
+def test_anisongdb_file_finds_local_censors_by_shared_song_id(monkeypatch):
+    local_filename = (
+        "DragonRajaS2-OP1-[MAL]59662[ADB]19480"
+        "[ART]Hazel Fernandes[SNG]We Are Made.webm"
+    )
+    anisongdb_filename = "dq6458pmeqtp15rm.webm"
+    local_censors = [{"start": 4.0, "end": 7.0}]
+    metadata = {
+        local_filename: {
+            "mal": "59662",
+            "slug": "OP1",
+            "version": None,
+            "file_properties": {
+                "resolution": "1080",
+                "anisongdb_amq_song_id": 81131,
+            },
+        },
+        anisongdb_filename: {
+            "mal": "59662",
+            "slug": "OP1",
+            "version": "1",
+            "file_properties": {
+                "resolution": 720,
+                "anisongdb_amq_song_id": 81131,
+            },
+        },
+    }
+
+    monkeypatch.setattr(censors, "censor_list", {local_filename: local_censors})
+    monkeypatch.setattr(censors, "other_censor_lists", [])
+    monkeypatch.setattr(
+        censors.metadata_fetch,
+        "get_file_metadata_by_name",
+        lambda filename: metadata.get(filename),
+    )
+
+    assert censors.find_similar_theme_censors(anisongdb_filename) == {
+        local_filename: local_censors
+    }
+
+
+def test_censor_matching_uses_mal_and_slug_without_provider_song_ids(monkeypatch):
+    metadata = {
+        "local-file.webm": {"mal": "123", "slug": "ED2", "version": None},
+        "remote-file.webm": {"mal": 123, "slug": "ed2", "version": "1"},
+        "other-anime.webm": {"mal": "456", "slug": "ED2", "version": "1"},
+    }
+    monkeypatch.setattr(censors, "censor_list", {
+        "local-file.webm": [{"start": 1, "end": 2}],
+        "other-anime.webm": [{"start": 3, "end": 4}],
+    })
+    monkeypatch.setattr(censors, "other_censor_lists", [])
+    monkeypatch.setattr(
+        censors.metadata_fetch,
+        "get_file_metadata_by_name",
+        lambda filename: metadata.get(filename),
+    )
+
+    assert list(censors.find_similar_theme_censors("remote-file.webm")) == [
+        "local-file.webm"
+    ]
+
+
+def test_censor_sources_exclude_current_and_keep_main_file_precedence(monkeypatch):
+    main_censors = [{"start": 1, "end": 2}]
+    imported_duplicate = [{"start": 3, "end": 4}]
+    imported_unique = [{"start": 5, "end": 6}]
+    monkeypatch.setattr(censors, "censor_list", {
+        "current.webm": [{"start": 0, "end": 1}],
+        "duplicate.webm": main_censors,
+        "empty.webm": [],
+    })
+    monkeypatch.setattr(censors, "other_censor_lists", [{
+        "duplicate.webm": imported_duplicate,
+        "unique.webm": imported_unique,
+    }])
+
+    assert censors.get_censor_sources("current.webm") == {
+        "duplicate.webm": main_censors,
+        "unique.webm": imported_unique,
+    }
 
 
 def test_rectangle_result_keeps_target_after_editor_rows_are_rebuilt():
@@ -33,6 +120,21 @@ def test_rectangle_result_keeps_target_after_editor_rows_are_rebuilt():
         "start": 5.0, "end": 10.0,
         "color": None, "nsfw": False,
     }
+
+
+def test_color_result_survives_a_destroyed_editor_row():
+    target = {"color": None}
+
+    class DestroyedLabel:
+        def winfo_exists(self):
+            return False
+
+        def config(self, **_kwargs):
+            raise AssertionError("a destroyed swatch must not be configured")
+
+    censors._apply_color_result(target, "#12AB34", DestroyedLabel())
+
+    assert target["color"] == "#12AB34"
 
 
 def test_prime_start_censors_uses_end_of_initial_skip(monkeypatch):
@@ -216,3 +318,86 @@ def test_frame_color_excludes_partial_censor_from_raw_video(monkeypatch):
 
     assert censors._compute_frame_color() == "#001428"
     assert calls == ["video"]
+
+
+def test_letterbox_rect_uses_display_aspect_not_stored_pixels():
+    # 4:3 video on a 16:9 canvas is pillarboxed; 16:9 fills it edge to edge.
+    assert utils.letterbox_rect(1920, 1080, 4 / 3) == (240, 0, 1440, 1080)
+    assert utils.letterbox_rect(1920, 1080, 16 / 9) == (0, 0, 1920, 1080)
+    # 16:9 video in a 4:3 window is letterboxed.
+    assert utils.letterbox_rect(1440, 1080, 16 / 9) == (0, 135, 1440, 810)
+    # Unknown aspect (mpv has not reported video-params yet) falls back to the
+    # full container rather than guessing a shape.
+    assert utils.letterbox_rect(1280, 720, 0.0) == (0, 0, 1280, 720)
+    assert utils.letterbox_rect(0, 0, 16 / 9) == (0, 0, 0, 0)
+
+
+def test_display_size_prefers_aspect_corrected_video_params():
+    player = MediaPlayer.__new__(MediaPlayer)
+    player._c_width, player._c_height = 720, 480
+    player._c_disp_width = player._c_disp_height = None
+
+    # Before mpv reports video-params the stored size is all there is.
+    assert player.get_display_size() == (720, 480)
+
+    # An anamorphic 4:3 DVD rip stores 720x480 but displays 4:3 — the censor
+    # geometry must follow video-params, not the stored pixels.
+    player._on_video_params("video-params", {"w": 720, "h": 480, "dw": 720, "dh": 540})
+    assert player.get_display_size() == (720, 540)
+    assert player.get_display_aspect() == 4 / 3
+
+    # The 16:9 anamorphic rip of the same stored size resolves the other way.
+    player._on_video_params("video-params", {"w": 720, "h": 480, "dw": 853, "dh": 480})
+    assert round(player.get_display_aspect(), 3) == 1.777
+
+    # Unloading clears the cache instead of stranding the last file's shape.
+    player._on_video_params("video-params", None)
+    assert player.get_display_size() == (720, 480)
+
+
+def _draw_single_censor(monkeypatch, osd_w, osd_h, display_size):
+    """Commit one full-frame censor and return its (x, y, w, h) in OSD pixels."""
+    commands = []
+    player = type("Player", (), {})()
+    player._p = type("Mpv", (), {"osd_width": osd_w, "osd_height": osd_h})()
+    player.get_display_aspect = lambda: display_size[0] / display_size[1]
+
+    monkeypatch.setattr(censors.state.widgets, "player", player)
+    monkeypatch.setattr(censors, "_osd_command", lambda *args: commands.append(args))
+    monkeypatch.setattr(censors, "_is_filter_suppressing_censors", lambda: False)
+    monkeypatch.setattr(censors.filter_overlay, "get_zoom_state", lambda: None)
+    monkeypatch.setattr(censors, "censor_boxes", {
+        "theme:censor": {
+            "censor": {"pos_x": 0, "pos_y": 0, "size_w": 100, "size_h": 100},
+            "color": "black",
+            "destroying": False,
+        }
+    })
+
+    censors._commit_censor_osd()
+
+    payload = next(cmd[3] for cmd in commands if cmd[2] == "ass-events")
+    drawing = payload.split(r"\p1}")[1].split("{")[0]        # just the "m x y l ..." path
+    coords = [int(n) for n in re.findall(r"-?\d+", drawing)]
+    xs, ys = coords[0::2], coords[1::2]
+    return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+
+def test_censors_follow_the_pillarboxed_rect_of_an_anamorphic_4_3_file(monkeypatch):
+    # UltraManiac-OP1.webm: stored 720x480, SAR 8:9, so mpv displays it 4:3.
+    # A full-frame censor must cover only the 4:3 video, not the black pillars.
+    assert _draw_single_censor(monkeypatch, 1920, 1080, (720, 540)) == (240, 0, 1440, 1080)
+    # The 16:9 rip of the same stored size still fills the screen (853x480 is a
+    # hair under 16:9, so it is inset by a pixel rather than exactly flush).
+    x, y, w, h = _draw_single_censor(monkeypatch, 1920, 1080, (853, 480))
+    assert (x, y, h) == (0, 0, 1080) and w >= 1919
+
+
+def test_censor_rect_is_window_shape_independent_for_anamorphic_files(monkeypatch):
+    # Same censor, two window shapes: the box must keep the same fraction of the
+    # video (the whole of it here) instead of shifting between windowed and
+    # fullscreen, which is what the old 720x480 -> 16:9 assumption caused.
+    wide_x, _, wide_w, wide_h = _draw_single_censor(monkeypatch, 1920, 1080, (720, 540))
+    tall_x, _, tall_w, tall_h = _draw_single_censor(monkeypatch, 1200, 900, (720, 540))
+    assert round(wide_w / wide_h, 3) == round(tall_w / tall_h, 3) == round(4 / 3, 3)
+    assert (wide_x, tall_x) == (240, 0)

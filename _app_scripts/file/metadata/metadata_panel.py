@@ -480,16 +480,16 @@ def update_metadata():
         if filename:
             data = currently_playing.get('data')
             metadata_display.reset_metadata()
-            # count number of times file / series appears in playlist
+            # Count theme and series plays in playlist history.
             if playlist.get("infinite"):
                 _pl      = playlist.get("playlist", [])
                 _cur_idx = playlist.get("current_index", 0)
                 _fp, _sp = metadata_display._calc_plays_info(filename, data, _pl, _cur_idx)
 
-                left_column.insert(tk.END, "PLAYS: ", "bold")
+                left_column.insert(tk.END, "THEME PLAYS: ", "bold")
                 left_column.insert(tk.END, metadata_display._fmt_plays(_fp), "white")
                 if _sp:
-                    left_column.insert(tk.END, "  SERIES: ", "bold")
+                    left_column.insert(tk.END, "  SERIES PLAYS: ", "bold")
                     left_column.insert(tk.END, metadata_display._fmt_plays(_sp), "white")
                 left_column.insert(tk.END, "\n\n", "blank")
 
@@ -684,7 +684,7 @@ def update_metadata():
                     _cur_idx = playlist.get("current_index", 0)
                     _fp, _sp = metadata_display._calc_plays_info(filename, data, _pl, _cur_idx)
                     _web_meta["file_plays"]   = _fp
-                    _web_meta["series_plays"] = _sp  # None if no series matches
+                    _web_meta["series_plays"] = _sp
                 if data:
                     _slug = data.get("slug")
                     _songs = data.get("songs") or []
@@ -821,7 +821,7 @@ SERIES_COLLAPSE_THRESHOLD = 20   # total themes across all anime in series befor
 SECTION_COLLAPSE_THRESHOLD = 8   # themes in one anime before collapsing non-playing section type
 
 _collapsed_anime = set()     # str(anime_id) — collapsed series entries
-_collapsed_sections = set()  # (str(mal_id), type_str) — collapsed OP/ED section headers
+_collapsed_sections = set()  # (str(mal_id), type_str) — collapsed theme-section headers
 
 def _rerender_songs(scroll_to=None):
     currently_playing = state.playback.currently_playing
@@ -838,24 +838,48 @@ def _auto_init_series_collapse(all_series_themes, playing_mal):
             if str(anime_id) != str(playing_mal):
                 _collapsed_anime.add(str(anime_id))
 
+
+def _select_auto_collapsed_sections(theme_list, playing_slug):
+    """Choose only enough non-playing sections to fit the visible-theme budget."""
+    if len(theme_list) <= SECTION_COLLAPSE_THRESHOLD:
+        return []
+
+    section_counts = {}
+    playing_type = None
+    for theme in theme_list:
+        section_type = theme.get("type", "OTHER")
+        section_counts[section_type] = section_counts.get(section_type, 0) + 1
+        if theme.get("slug") == playing_slug:
+            playing_type = section_type
+
+    def collapse_priority(section_type):
+        normalized = str(section_type or "OTHER").upper()
+        if normalized == "IN":
+            return 0
+        if normalized not in ("OP", "ED"):
+            return 1
+        return 2 if normalized == "OP" else 3
+
+    visible_themes = len(theme_list)
+    selected = []
+    for section_type in sorted(section_counts, key=collapse_priority):
+        if section_type == playing_type:
+            continue
+        selected.append(section_type)
+        visible_themes -= section_counts[section_type]
+        if visible_themes <= SECTION_COLLAPSE_THRESHOLD:
+            break
+    return selected
+
+
 def _auto_init_section_collapse(mal_key, theme_list, playing_slug):
-    """Auto-collapse non-playing section type if the anime has many themes."""
-    _collapsed_sections.discard  # don't clear all; only touch this anime's keys
-    types_present = set(t.get("type") for t in theme_list)
+    """Auto-collapse only enough non-playing sections to fit the theme budget."""
     # Remove any old keys for this anime first
     for t in list(_collapsed_sections):
         if isinstance(t, tuple) and t[0] == mal_key:
             _collapsed_sections.discard(t)
-    if len(theme_list) <= SECTION_COLLAPSE_THRESHOLD:
-        return
-    playing_type = None
-    for theme in theme_list:
-        if theme.get("slug") == playing_slug:
-            playing_type = theme.get("type")
-            break
-    for t in types_present:
-        if t != playing_type:
-            _collapsed_sections.add((mal_key, t))
+    for section_type in _select_auto_collapsed_sections(theme_list, playing_slug):
+        _collapsed_sections.add((mal_key, section_type))
 
 def update_series_song_information(data, mal, rerender=False, scroll_to=None):
     middle_column = state.widgets.middle_column
@@ -934,7 +958,7 @@ def update_song_information(data, mal, slug=None, scroll_to=None, scroll_anchor_
     for slug_key in fm_entry.get("themes", {}):
         if slug_key not in known_slugs:
             s = slug_key[:2].upper()
-            t_type = "OP" if s == "OP" else ("ED" if s == "ED" else "OTHER")
+            t_type = s if s in ("OP", "ED", "IN") else "OTHER"
             local_only.append({
                 "type": t_type,
                 "slug": slug_key,
@@ -944,15 +968,9 @@ def update_song_information(data, mal, slug=None, scroll_to=None, scroll_anchor_
                 "versions": [],
             })
     if local_only:
-        def _slug_sort(s):
-            import re as _re
-            m = _re.match(r"([A-Z]+)(\d+)(.*)", s["slug"])
-            if m:
-                pre, num, var = m.groups()
-                return (pre, bool(var), int(num))
-            return ("ZZZ", True, 999999)
-        local_only.sort(key=_slug_sort)
         theme_list = theme_list + local_only
+
+    theme_list = metadata_fetch.sort_songs(theme_list)
 
     # Group themes by type while preserving order of first appearance
     sections = {}

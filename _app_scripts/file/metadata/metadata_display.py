@@ -41,6 +41,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from _app_scripts.file.metadata import metadata_fetch
+from _app_scripts.theme import source_preferences
 from _app_scripts.file.metadata import metadata_panel
 from _app_scripts.popout import popout_window
 import _app_scripts.file.web_server.web_server as web_server
@@ -144,6 +145,40 @@ def _play_name_key(f):
     base = os.path.splitext(entry_paths.get_clean_filename(f))[0]
     return re.sub(r'\[(?:MAL|IGDB|ADB|ALT|ART|SNG|ID)\][^[]*', '', base).strip('-').strip()
 
+
+def _file_play_key(filename, data=None):
+    """Match theme plays by MAL ID and slug across media sources and versions.
+
+    Recover deleted manual files from their filename tags even when their
+    metadata is gone. Unidentified files keep normalized filename matching.
+    """
+    reference = entry_paths.parse_theme_reference(filename)
+    if reference:
+        resolved = metadata_fetch.get_file_metadata_by_name(filename) or {}
+        mal_id = resolved.get("mal") or reference["mal_id"]
+        slug = resolved.get("slug") or reference["slug"]
+    else:
+        if data is None:
+            data = metadata_fetch.get_file_metadata_by_name(filename) or {}
+        mal_id = data.get("mal") or data.get("mal_id")
+        slug = data.get("slug")
+        physical_filename = entry_paths.get_clean_filename(filename)
+        mal_match = re.search(r"\[MAL\](\d+)", physical_filename, re.IGNORECASE)
+        if mal_match:
+            mal_id = mal_match.group(1)
+            slug_match = re.search(
+                r"(?:^|-)((?:OP|ED|IN)\d+(?:\.\d+)?(?:_[A-Za-z0-9]+)*)(?:v\d+)?(?=[-.\[]|$)",
+                physical_filename.split("[", 1)[0],
+                re.IGNORECASE,
+            )
+            if slug_match:
+                slug = slug_match.group(1)
+    mal_id = str(mal_id or "").strip()
+    if mal_id.isdigit() and int(mal_id) > 0 and slug:
+        return ("theme", str(int(mal_id)), str(slug).strip().upper())
+    return ("filename", _play_name_key(filename))
+
+
 def _build_web_series_themes(data, playing_filename):
     """Serialize series theme information for the web server metadata push."""
     if not data:
@@ -164,8 +199,10 @@ def _build_web_series_themes(data, playing_filename):
             filename, None, (), _cur_idx, prepared_history=_play_history
         )[0]
 
-    def _serialize_file(filename):
-        play_info = _file_play_info(filename)
+    def _serialize_file(filename, mal_id, slug):
+        play_info = _file_play_info(
+            entry_paths.make_theme_reference(filename, mal_id, slug)
+        )
         return {
             "filename": filename,
             "plays": play_info["count"],
@@ -176,13 +213,13 @@ def _build_web_series_themes(data, playing_filename):
             "is_playing": filename == playing_filename,
         }
 
-    def _ordered_file_options(primary, filenames):
+    def _ordered_file_options(primary, filenames, mal_id, slug):
         ordered = list(dict.fromkeys(filenames))
         if primary:
             if primary in ordered:
                 ordered.remove(primary)
             ordered.insert(0, primary)
-        return [_serialize_file(filename) for filename in ordered]
+        return [_serialize_file(filename, mal_id, slug) for filename in ordered]
 
     def _serialize_anime(anime_dict, anime_id, is_playing_anime):
         mal_key = str(anime_id)
@@ -194,11 +231,11 @@ def _build_web_series_themes(data, playing_filename):
         for slug_key in fm_entry.get("themes", {}):
             if slug_key not in known_slugs:
                 s = slug_key[:2].upper()
-                t_type = "OP" if s == "OP" else ("ED" if s == "ED" else "OTHER")
+                t_type = s if s in ("OP", "ED", "IN") else "OTHER"
                 theme_list.append({"type": t_type, "slug": slug_key, "title": None,
                                    "artist": [], "episodes": None, "versions": []})
 
-        theme_list.sort(key=metadata_fetch._song_slug_sort_key)
+        theme_list = metadata_fetch.sort_songs(theme_list)
 
         sections_map = {}
         for theme in theme_list:
@@ -243,7 +280,7 @@ def _build_web_series_themes(data, playing_filename):
                             except (TypeError, ValueError):
                                 is_playing_ver = (v_fn == playing_filename)
 
-                        v_files = _ordered_file_options(v_fn, v_filenames)
+                        v_files = _ordered_file_options(v_fn, v_filenames, mal_key, theme_slug)
                         primary_file = v_files[0] if v_files else None
                         serialized_versions.append({
                             "version": v_num,
@@ -264,7 +301,7 @@ def _build_web_series_themes(data, playing_filename):
 
                 _th_artists = theme.get("artist") or []
                 theme_files = _ordered_file_options(
-                    fn, get_theme_filenames(mal_key, theme_slug)
+                    fn, get_theme_filenames(mal_key, theme_slug), mal_key, theme_slug
                 )
                 primary_theme_file = theme_files[0] if theme_files else None
                 themes_out.append({
@@ -312,6 +349,20 @@ def _build_web_series_themes(data, playing_filename):
             for aid, anime in all_series]
 
 
+def _series_play_key(data, theme_key):
+    """Match named series, plus themes from the same anime when series is absent."""
+    groups = {("series", name) for name in series_set(data, fallback_title=False)}
+    anime_id = (
+        theme_key[1] if theme_key[0] == "theme"
+        else str((data or {}).get("mal") or (data or {}).get("mal_id") or "").strip()
+    )
+    if anime_id:
+        if anime_id.isdigit():
+            anime_id = str(int(anime_id))
+        groups.add(("anime", anime_id))
+    return frozenset(groups)
+
+
 def _prepare_play_history(pl, cur_idx):
     """Prepare reusable normal/lightning history through ``cur_idx``."""
     files = {}
@@ -319,7 +370,8 @@ def _prepare_play_history(pl, cur_idx):
     for index, item in enumerate(pl[:cur_idx + 1]):
         lightning = item.startswith("[L]")
         filename = item[3:] if lightning else item
-        key = _play_name_key(filename)
+        metadata = metadata_fetch.get_metadata(filename)
+        key = _file_play_key(filename, metadata)
         stats = files.setdefault(key, {
             "count": 0,
             "lightning": 0,
@@ -330,8 +382,7 @@ def _prepare_play_history(pl, cur_idx):
         else:
             stats["count"] += 1
             stats["normal_indices"].append(index)
-        metadata = metadata_fetch.get_metadata(filename)
-        entries.append((series_set(metadata) if metadata else set(), lightning, index))
+        entries.append((_series_play_key(metadata, key), lightning, index))
 
     return {
         "cur_idx": cur_idx,
@@ -342,17 +393,18 @@ def _prepare_play_history(pl, cur_idx):
 
 
 def _calc_plays_info(filename, data, pl, cur_idx, prepared_history=None):
-    """Return dicts with file-play and series-play stats for the given filename.
+    """Return theme-play and series-play stats for the given filename.
 
     Only counts playlist entries up to and including cur_idx (i.e. already played).
 
-    Returns (file_plays, series_plays) where each is a dict:
+    Returns (theme_plays, series_plays) where each is a dict:
       count      – int normal-round occurrences
       ago        – int | None  distance to most-recent prior normal occurrence
       lightning  – int lightning-round occurrences
-    series_plays is None when no other series matches exist.
+    Series plays include all themes in the same anime or a matching named
+    series. They are None only when neither anime nor series can be identified.
     """
-    _cur_key = _play_name_key(filename)
+    _cur_key = _file_play_key(filename, data)
     history = prepared_history or _prepare_play_history(pl, cur_idx)
 
     # ── file plays ────────────────────────────────────────────────────────────
@@ -363,18 +415,16 @@ def _calc_plays_info(filename, data, pl, cur_idx, prepared_history=None):
     })
     f_normal = file_stats["count"]
     f_light = file_stats["lightning"]
-    f_count  = f_normal + f_light
     f_prev = [i for i in file_stats["normal_indices"] if i < cur_idx]
     f_ago = (cur_idx - max(f_prev)) if f_prev else None
 
-    file_plays = {"count": f_count-f_light, "ago": f_ago, "lightning": f_light}
+    theme_plays = {"count": f_normal, "ago": f_ago, "lightning": f_light}
 
     # ── series plays ──────────────────────────────────────────────────────────
-    # Count ALL played entries sharing a series with this file, including the
-    # current file itself.
+    # Include every theme from this anime, even without a named series.
     series_plays = None
-    if data:
-        series_key = frozenset(series_set(data))
+    series_key = _series_play_key(data, _cur_key)
+    if series_key:
         series_stats = history["series_cache"].get(series_key)
         if series_stats is None:
             series_stats = {"count": 0, "lightning": 0, "normal_indices": []}
@@ -390,13 +440,10 @@ def _calc_plays_info(filename, data, pl, cur_idx, prepared_history=None):
         s_normal = series_stats["count"]
         s_light = series_stats["lightning"]
         s_prev = [i for i in series_stats["normal_indices"] if i < cur_idx]
-        total = s_normal + s_light
-        # Only show series line when there are other-file entries
-        if total > f_count:
-            s_ago = (cur_idx - max(s_prev)) if s_prev else None
-            series_plays = {"count": total-s_light, "ago": s_ago, "lightning": s_light}
+        s_ago = (cur_idx - max(s_prev)) if s_prev else None
+        series_plays = {"count": s_normal, "ago": s_ago, "lightning": s_light}
 
-    return file_plays, series_plays
+    return theme_plays, series_plays
 
 
 def _fmt_plays(p):
@@ -883,7 +930,7 @@ def get_overall_theme_number(filename):
                 elif not base_title or display_base_title:
                     continue
             if (base_title and base_title in anime_title) or (display_base_title and display_base_title in anime_display_title):
-                for song in anime.get("songs", []):
+                for song in metadata_fetch.sort_songs(anime.get("songs", [])):
                     if song["type"] == theme_type:
                         # Skip if slug_extra doesn't match (only count themes with same variant)
                         if not (slug_extra == get_slug_extra(song.get("slug"))):
@@ -891,7 +938,15 @@ def get_overall_theme_number(filename):
                         
                         # Extract number from slug like "OP1", "ED23", etc.
                         song_slug = song.get("slug", "")
-                        slug_num = int(''.join(filter(str.isdigit, song_slug.split('-')[0].split('_')[0][2:])))
+                        number_match = re.match(r"^(?:OP|ED)(\d+)(?:\.(\d+))?", song_slug)
+                        if not number_match:
+                            continue
+                        slug_num = int(number_match.group(1))
+                        if number_match.group(2):
+                            if anime_id == mal_id and song_slug == target_slug:
+                                fraction = float("0." + number_match.group(2))
+                                return round(overall_index + fraction, len(number_match.group(2)))
+                            continue
                         
                         # Track gap only for themes with matching slug_extra
                         theme_gap += slug_num - current_slug_num
@@ -1033,19 +1088,15 @@ def prioritize_theme_files(filenames):
     
     Returns the best filename from the list.
     """
+    filenames = [f for f in filenames if source_preferences.file_allowed(entry_paths.get_clean_filename(f))]
     if not filenames:
         return None
     
     if len(filenames) == 1:
         return filenames[0]
     
-    # Prioritize local files over streamable ones
-    local_files = [
-        f for f in filenames
-        if entry_paths.get_clean_filename(f) in state.metadata.directory_files
-    ]
-    if local_files:
-        filenames = local_files
+    best_rank = min(source_preferences.selection_key(entry_paths.get_clean_filename(f)) for f in filenames)
+    filenames = [f for f in filenames if source_preferences.selection_key(entry_paths.get_clean_filename(f)) == best_rank]
     
     # Prioritize files with censors
     files_with_censors = [
@@ -1131,7 +1182,8 @@ def get_theme_filename(mal_id, slug, version=None, need_version=False):
 
 def get_theme_filenames(mal_id, slug, version=None, need_version=False):
     """Like get_theme_filename but returns all matching files sorted by quality (best first)."""
-    found_filenames = list(dict.fromkeys(_collect_theme_filenames(mal_id, slug, version, need_version)))
+    found_filenames = [f for f in dict.fromkeys(_collect_theme_filenames(mal_id, slug, version, need_version))
+                       if source_preferences.file_allowed(f)]
     if not found_filenames:
         return []
     files_with_props = []
@@ -1141,13 +1193,12 @@ def get_theme_filenames(mal_id, slug, version=None, need_version=False):
         files_with_props.append((f, props))
     def sort_key(item):
         filename, props = item
-        local = 1 if filename in state.metadata.directory_files else 0
         res = props.get("resolution", 0)
         if not isinstance(res, (int, float)):
             res = 0
         lyrics = 1 if props.get("lyrics") else 0
         not_nc = 1 if not props.get("nc") else 0
-        return (-local, -res, -lyrics, -not_nc)
+        return (*source_preferences.selection_key(filename), -res, -lyrics, -not_nc)
     files_with_props.sort(key=sort_key)
     return [f for f, _ in files_with_props]
 

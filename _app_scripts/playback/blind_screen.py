@@ -237,6 +237,14 @@ def set_black_screen(toggle, smooth=True, color=None):
         set_blind_enabled(True)
         information_popup._register_mpv_tracked_window("blind_osd", None, information_popup._blind_osd_on_mpv_rect)
     else:
+        # The incoming lightning/reveal file was loaded through a solid-fill
+        # video filter so mpv's per-file OSD reset could never expose its first
+        # frame. Restore its real output while the opaque blind OSD is still
+        # up; removing that OSD below reveals only the fully prepared round.
+        try:
+            state.widgets.player.release_startup_video_cover()
+        except (AttributeError, TypeError):
+            pass
         if black_overlay:
             _set_blind_osd_alpha(_blind_osd_color_cache, 0)
         black_overlay = None

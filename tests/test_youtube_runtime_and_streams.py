@@ -6,6 +6,8 @@ from _app_scripts.queue_round.youtube import youtube_control
 class _FakeMpv:
     def __init__(self):
         self.commands = []
+        self.brightness = 12
+        self.contrast = 34
 
     def command(self, *args):
         self.commands.append(args)
@@ -103,6 +105,36 @@ def test_media_player_loads_separate_youtube_video_and_audio_tracks():
             "audio-file=https://audio.example/track",
         )
     ]
+
+
+def test_media_player_native_cover_is_part_of_the_incoming_load():
+    mpv = _FakeMpv()
+    player = MediaPlayer(mpv)
+    mpv.commands.clear()
+
+    player.set_media("round.webm", start_seconds=2.5, cover_video=True)
+
+    assert mpv.commands == [
+        (
+            "loadfile",
+            "round.webm",
+            "replace",
+            "-1",
+            (
+                "start=2.5,brightness=-100,contrast=-100,"
+                "vf=@gta-startup-cover:"
+                "lavfi=[drawbox=color=black:t=fill]"
+            ),
+        )
+    ]
+    assert player._startup_video_cover_active is True
+
+    player.release_startup_video_cover()
+
+    assert mpv.brightness == 12
+    assert mpv.contrast == 34
+    assert mpv.commands[-1] == ("vf", "remove", "@gta-startup-cover")
+    assert player._startup_video_cover_active is False
 
 
 def test_failed_stream_fallback_restores_theme_and_evicts_direct_url(monkeypatch):

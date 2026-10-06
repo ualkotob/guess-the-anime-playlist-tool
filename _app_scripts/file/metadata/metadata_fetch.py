@@ -7,7 +7,7 @@ guess_the_anime.py.  Nothing here reads or writes the main `metadata` /
 
 State owned by this module
 --------------------------
-animethemes_cache   – in-process cache keyed by filename slug
+animethemes_cache   – in-process cache keyed by lookup mode and filename/prefix
 last_tenrai_error    – last error string from fetch_tenrai_metadata (or None)
 _igdb_token_cache   – dict holding the cached Twitch/IGDB OAuth token
 _igdb_client_id     – IGDB credentials, injected via set_credentials()
@@ -112,16 +112,36 @@ def fetch_arm_ids(mal_id):
 # AnimThemes
 # ---------------------------------------------------------------------------
 
-def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
-    catalog_match = animethemes_catalog.find_anime(
-        filename=filename,
-        mal_id=mal_id,
-        split=split,
+def _animethemes_cache_key(filename, *, split):
+    """Keep broad-prefix and exact-basename lookups in separate cache slots."""
+    filename = str(filename or "")
+    query = filename.split("-", 1)[0] if split else filename
+    return ("prefix" if split else "exact", query.casefold())
+
+
+def fetch_animethemes_metadata(filename=None, mal_id=None, split=True, refetch=False):
+    """Return AnimeThemes data, optionally bypassing all local caches.
+
+    ``refetch`` is used by the explicit Fetch Theme Data action.  A normal
+    lookup prefers the retained catalog and the per-process lookup cache, but
+    a refetch must reach the API so a stale catalog row cannot mask updated
+    theme data.
+    """
+    cache_key = (
+        _animethemes_cache_key(filename, split=split)
+        if filename
+        else None
     )
-    if catalog_match:
-        if filename:
-            animethemes_cache[filename] = catalog_match
-        return catalog_match
+    if not refetch:
+        catalog_match = animethemes_catalog.find_anime(
+            filename=filename,
+            mal_id=mal_id,
+            split=split,
+        )
+        if catalog_match:
+            if cache_key is not None:
+                animethemes_cache[cache_key] = catalog_match
+            return catalog_match
 
     url = "https://api.animethemes.moe/anime"
     if filename:
@@ -130,8 +150,8 @@ def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
             filename_query = filename + "-%"
         else:
             filename_query = filename
-        if animethemes_cache.get(filename):
-            return animethemes_cache.get(filename)
+        if not refetch and cache_key in animethemes_cache:
+            return animethemes_cache[cache_key]
         params = {
             "filter[has]": "animethemes.animethemeentries.videos",
             "filter[video][basename-like]": filename_query,
@@ -148,8 +168,8 @@ def fetch_animethemes_metadata(filename=None, mal_id=None, split=True):
     if response.status_code == 200:
         data = response.json()
         if data.get("anime"):
-            if filename:
-                animethemes_cache[filename] = data["anime"][0]
+            if cache_key is not None:
+                animethemes_cache[cache_key] = data["anime"][0]
             return data["anime"][0]
     return None
 
@@ -850,22 +870,40 @@ def get_name_list(data, get):
     return name_list
 
 
-def _song_slug_sort_key(song):
-    """Sort key for theme songs: OPs before EDs before others, numerically within each group."""
-    slug = song.get("slug") or "" if isinstance(song, dict) else (song or "")
-    m = re.match(r"([A-Z]+)(\d+)(.*)", slug)
-    if m:
-        prefix, num, variant = m.groups()
-        return (prefix, bool(variant), int(num))
-    return ("ZZZ", True, 999999)
+def song_slug_sort_key(song):
+    """Sort OPs, EDs, inserts, and unknown slugs in display order."""
+    slug = str(
+        (song.get("slug") or "") if isinstance(song, dict) else (song or "")
+    )
+    match = re.match(r"^\s*([A-Z]+)(\d+(?:\.\d+)?)?(.*)$", slug, re.IGNORECASE)
+    prefix = match.group(1).upper() if match else ""
+    theme_type = str(song.get("type") or "").upper() if isinstance(song, dict) else ""
+    kind = prefix if prefix in ("OP", "ED", "IN") else theme_type
+    type_rank = {"OP": 0, "ED": 1, "IN": 2}.get(kind, 3)
+    # An exact decimal keeps ED1.01, ED1.1 and ED2 in numeric order.
+    from decimal import Decimal
+
+    number = Decimal(match.group(2)) if match and match.group(2) else Decimal(999999)
+    variant = match.group(3).strip() if match else slug
+    variant_parts = tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", variant)
+        if part
+    )
+    unknown_prefix = prefix if type_rank == 3 else ""
+    return (
+        type_rank,
+        unknown_prefix,
+        number,
+        bool(variant),
+        variant_parts,
+        slug.casefold(),
+    )
 
 
 def sort_songs(songs):
-    """Return a new sorted list: openings, then endings, then others; numerically within each group."""
-    openings = [s for s in songs if "OP" in (s.get("slug") or "")]
-    endings  = [s for s in songs if "ED" in (s.get("slug") or "")]
-    others   = [s for s in songs if "OP" not in (s.get("slug") or "") and "ED" not in (s.get("slug") or "")]
-    return sorted(openings, key=_song_slug_sort_key) + sorted(endings, key=_song_slug_sort_key) + sorted(others, key=_song_slug_sort_key)
+    """Return openings, endings, inserts, then others; numeric within each group."""
+    return sorted(songs, key=song_slug_sort_key)
 
 
 
@@ -957,8 +995,11 @@ def invalidate_metadata_cache(filenames=None):
 
 def _filename_theme_slug(filename):
     """Return the OP/ED slug encoded in a conventional theme filename."""
-    basename = os.path.splitext(os.path.basename(filename))[0]
-    match = re.search(r"(?:^|-)(OP|ED)(\d+)(?=(?:v\d+)?(?:[-_.]|$))", basename, re.IGNORECASE)
+    basename = os.path.basename(filename)
+    stem, extension = os.path.splitext(basename)
+    if extension.lower() in (".webm", ".mp4", ".mkv", ".avi", ".mov"):
+        basename = stem
+    match = re.search(r"(?:^|-)(OP|ED)(\d+(?:\.\d+)?)(?=(?:v\d+)?(?:[-_.\[]|$))", basename, re.IGNORECASE)
     if not match:
         return None
     return f"{match.group(1).upper()}{match.group(2)}"
@@ -1218,6 +1259,24 @@ def get_file_metadata_by_name(filename):
     if not mal_entry:
         return None
 
+    if reference:
+        physical_stem = os.path.splitext(physical_filename)[0]
+        requested_files = mal_entry.get("themes", {}).get(slug, {})
+        still_present = any(
+            any(os.path.splitext(name)[0] == physical_stem for name in files)
+            for files in requested_files.values()
+        )
+        if not still_present:
+            # Saved playlists may refer to a pre-migration slot. Recover the
+            # same physical media within the same anime only when unambiguous.
+            candidates = [
+                candidate for candidate in filename_to_mal_candidates.get(physical_filename, [])
+                if str(candidate.get("mal_id")) == str(mal_id)
+            ]
+            if len(candidates) == 1:
+                slug = candidates[0]["slug"]
+                version = candidates[0]["version"]
+
     # A themes-row click may not have an explicit version even though the
     # catalog stores the file under version "1". Recover it within the already
     # selected anime/slug instead of falling back to the global filename owner.
@@ -1274,11 +1333,9 @@ def get_version_from_filename(filename):
     # Fallback to filename parsing
     try:
         filename = entry_paths.get_clean_filename(filename)
-        parts = filename.split("-")
-        if len(parts) >= 2:
-            version_part = parts[1].split(".")[0]
-            if "v" in version_part:
-                return version_part.split("v")[1] if len(version_part.split("v")) > 1 else None
+        match = re.search(r"(?:^|-)(?:OP|ED|IN)\d+(?:\.\d+)?(?:_[A-Za-z0-9]+)*v(\d+)(?=[-.\[]|$)", filename, re.IGNORECASE)
+        if match:
+            return match.group(1)
     except Exception:
         pass
     
@@ -1856,7 +1913,7 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
     elif filename_source != anisongdb.SOURCE_MANUAL:
         # AnimThemes file
         is_animethemes_file = True
-        anime_themes = fetch_animethemes_metadata(filename)
+        anime_themes = fetch_animethemes_metadata(filename, refetch=refetch)
         # Extract slug and version from animethemes data instead of filename
         slug_found = False
         filename_base = os.path.splitext(str(filename or ""))[0].lower()
@@ -1880,7 +1937,11 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
 
         # Pass 2: exact basename fallback (important when prefix returns a different anime)
         if not slug_found:
-            anime_themes_exact = fetch_animethemes_metadata(filename, split=False)
+            anime_themes_exact = fetch_animethemes_metadata(
+                filename,
+                split=False,
+                refetch=refetch,
+            )
             if anime_themes_exact:
                 anime_themes = anime_themes_exact
                 _extract_slug_version(anime_themes)
@@ -1900,7 +1961,7 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
             _arm = fetch_arm_ids(mal_id)
             anidb_id = anidb_id or _arm.get("anidb")
             anilist_id = anilist_id or _arm.get("anilist")
-        anime_themes = fetch_animethemes_metadata(mal_id=mal_id)
+        anime_themes = fetch_animethemes_metadata(mal_id=mal_id, refetch=refetch)
         if not anime_themes:
             anime_themes = {
                  "animethemes":[]
@@ -1914,7 +1975,10 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
             except Exception:
                 file = None
             if file:
-                anime_themes = fetch_animethemes_metadata(file) or anime_themes
+                anime_themes = (
+                    fetch_animethemes_metadata(file, refetch=refetch)
+                    or anime_themes
+                )
                 anidb_id = anidb_id or get_external_site_id(anime_themes, "aniDB")
                 anilist_id = anilist_id or get_external_site_id(anime_themes, "AniList")
         existing_title, existing_artists = _theme_song_hints(anime_themes, slug)
@@ -1961,7 +2025,7 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
         mal_id = re.search(r"\[ID](.*?)(?=\[|$|\.)", filename, re.IGNORECASE).group(1)
         version = get_version_from_filename(filename)
         # Try to fetch AnimThemes metadata by MAL ID
-        anime_themes = fetch_animethemes_metadata(mal_id=mal_id)
+        anime_themes = fetch_animethemes_metadata(mal_id=mal_id, refetch=refetch)
         if not anime_themes:
             anime_themes = {}
         
@@ -2616,8 +2680,12 @@ def fetch_all_metadata(delay=0):
                 if temp_slug and not ("[MAL]" in filename or "[ID]" in filename):
                     # For AnimThemes files, check cache
                     temp_filename = filename.split("-")[0]
-                    if temp_filename in animethemes_cache:
-                        temp_anime = animethemes_cache.get(temp_filename)
+                    temp_cache_key = _animethemes_cache_key(
+                        temp_filename,
+                        split=True,
+                    )
+                    if temp_cache_key in animethemes_cache:
+                        temp_anime = animethemes_cache.get(temp_cache_key)
                         if temp_anime:
                             temp_mal_id = get_external_site_id(temp_anime, "MyAnimeList")
                             if temp_mal_id and temp_mal_id in state.metadata.anime_metadata and state.metadata.anime_metadata[temp_mal_id].get("title"):

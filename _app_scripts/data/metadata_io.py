@@ -304,6 +304,11 @@ def load_metadata():
                 f"Registered {count} AniSongDB gap video sources and "
                 f"{alternates} covered-theme alternatives..."
             )
+            # Projection migration runs after overrides are loaded. Keep the
+            # recipient's corrections at their established highest precedence.
+            deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
+            deep_merge(state.metadata.file_metadata, state.metadata.file_metadata_overrides)
+            anisongdb._refresh_runtime_lookup([], clear_all=True)
             save_metadata()
 
 

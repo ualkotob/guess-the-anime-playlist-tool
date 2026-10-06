@@ -7,6 +7,7 @@ import _app_scripts.playlists.playlist as playlist_ops
 import _app_scripts.theme.marks as playlist_marks
 import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+import _app_scripts.file.metadata.metadata_display as metadata_display
 import _app_scripts.information.information_popup as information_popup
 import _app_scripts.ui.lists as lists
 
@@ -438,14 +439,14 @@ def _season_year(entry):
 # --- dedup + play counts ------------------------------------------------------
 
 def _play_counts(files):
-    """Map clean filename -> {'regular': n, 'lightning': n} over raw entries.
+    """Map file-play identity -> {'regular': n, 'lightning': n} over entries.
 
     Lightning copies are the playlist entries prefixed with ``[L]``.
     """
     counts = {}
     for entry in files:
-        clean = entry_paths.get_clean_filename(entry)
-        c = counts.setdefault(clean, {'regular': 0, 'lightning': 0})
+        key = metadata_display._file_play_key(entry)
+        c = counts.setdefault(key, {'regular': 0, 'lightning': 0})
         if str(entry).startswith('[L]'):
             c['lightning'] += 1
         else:
@@ -454,12 +455,14 @@ def _play_counts(files):
 
 
 def _dedupe_entries(files):
-    """One clean filename per theme, first-seen order. The ``[L]`` lightning
-    prefix is stripped so deduped lists show plain filenames."""
+    """Remove repeat entries and lightning prefixes, keeping theme references."""
     seen = set()
     order = []
     for entry in files:
-        clean = entry_paths.get_clean_filename(entry)
+        if entry_paths.parse_theme_reference(entry):
+            clean = entry[3:] if entry.startswith('[L]') else entry
+        else:
+            clean = entry_paths.get_clean_filename(entry)
         if clean not in seen:
             seen.add(clean)
             order.append(clean)
@@ -470,7 +473,7 @@ def _make_played_name_func(counts):
     """Label renderer that appends '(regular ▶ / lightning ⚡)' play counts."""
     def _name(key, value):
         base = lists.get_title(key, value)
-        c = counts.get(entry_paths.get_clean_filename(value), {'regular': 0, 'lightning': 0})
+        c = counts.get(metadata_display._file_play_key(value), {'regular': 0, 'lightning': 0})
         return f"{base}  ({c['regular']}▶ {c['lightning']}⚡)"
     return _name
 
@@ -505,7 +508,7 @@ def _build_playlist_theme_list(files, mode):
     elif mode == 'played':
         counts = _play_counts(files)
         # Sort by regular plays only; lightning copies are shown but don't rank.
-        entries.sort(key=lambda e: -counts.get(entry_paths.get_clean_filename(e), {}).get('regular', 0))
+        entries.sort(key=lambda e: -counts.get(metadata_display._file_play_key(e), {}).get('regular', 0))
         return entries, _make_played_name_func(counts)
 
     return entries, None
