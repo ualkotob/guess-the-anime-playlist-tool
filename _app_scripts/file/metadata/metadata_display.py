@@ -1083,53 +1083,33 @@ def get_file_marks(filename):
         marks = marks + "🔇"
     return marks
 
-def prioritize_theme_files(filenames):
-    """Prioritize a list of theme files by local availability, censors, resolution, lyrics, and NC status.
-    
-    Returns the best filename from the list.
-    """
-    filenames = [f for f in filenames if source_preferences.file_allowed(entry_paths.get_clean_filename(f))]
-    if not filenames:
+def theme_file_priority(filename, file_data=None):
+    """Return the shared source/censor/quality ranking, or None if excluded."""
+    physical_filename = entry_paths.get_clean_filename(filename)
+    if not source_preferences.file_allowed(physical_filename):
         return None
-    
+    if file_data is None:
+        file_data = metadata_fetch.get_file_metadata_by_name(filename) or {}
+    props = file_data.get("file_properties") or {}
+    resolution = props.get("resolution", 0)
+    if not isinstance(resolution, (int, float)):
+        resolution = 0
+    return (
+        source_preferences.selection_key(physical_filename),
+        0 if censors.get_file_censors(physical_filename) else 1,
+        -resolution, -bool(props.get("lyrics")), -bool(not props.get("nc")),
+    )
+
+
+def prioritize_theme_files(filenames):
+    """Keep the best allowed file by source, censors, resolution, lyrics and NC."""
+    filenames = list(filenames)
     if len(filenames) == 1:
-        return filenames[0]
-    
-    best_rank = min(source_preferences.selection_key(entry_paths.get_clean_filename(f)) for f in filenames)
-    filenames = [f for f in filenames if source_preferences.selection_key(entry_paths.get_clean_filename(f)) == best_rank]
-    
-    # Prioritize files with censors
-    files_with_censors = [
-        f for f in filenames
-        if censors.get_file_censors(entry_paths.get_clean_filename(f))
-    ]
-    if files_with_censors:
-        filenames = files_with_censors
-    
-    # Collect files with their properties
-    files_with_props = []
-    for f in filenames:
-        file_data = metadata_fetch.get_file_metadata_by_name(f)
-        if not file_data:
-            files_with_props.append((f, {}))
-            continue
-        
-        props = file_data.get("file_properties", {})
-        files_with_props.append((f, props))
-    
-    # Sort by: resolution (desc), lyrics (desc), not NC (desc)
-    def sort_key(item):
-        filename, props = item
-        res = props.get("resolution", 0)
-        if not isinstance(res, (int, float)):
-            res = 0
-        lyrics = 1 if props.get("lyrics") else 0
-        not_nc = 1 if not props.get("nc") else 0
-        return (-res, -lyrics, -not_nc)  # Negative for descending order
-    
-    files_with_props.sort(key=sort_key)
-    
-    return files_with_props[0][0] if files_with_props else filenames[0]
+        filename = filenames[0]
+        return filename if source_preferences.file_allowed(entry_paths.get_clean_filename(filename)) else None
+    ranked = [(filename, theme_file_priority(filename)) for filename in filenames]
+    allowed = [(filename, key) for filename, key in ranked if key is not None]
+    return min(allowed, key=lambda item: item[1])[0] if allowed else None
 
 def _collect_theme_filenames(mal_id, slug, version=None, need_version=False):
     """Collect all matching theme filenames for a (mal_id, slug) — shared core
@@ -1204,7 +1184,7 @@ def get_theme_filenames(mal_id, slug, version=None, need_version=False):
 
 def play_video_from_filename(filename):
     search_ops.search_queue = filename
-    transport.play_video()
+    transport.play_video(explicit_file=True)
 
 def toggleColumnEdit(toggle):
     if toggle:

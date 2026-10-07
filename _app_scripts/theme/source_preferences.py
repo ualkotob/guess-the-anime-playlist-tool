@@ -2,6 +2,8 @@
 
 import os
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from urllib.parse import urlparse
 
 from core.game_state import state
@@ -21,6 +23,7 @@ DOWNLOAD_SOURCES_FILE = os.path.join(CONFIG_FOLDER, "theme_download_sources.json
 _download_sources = {}
 _sources_loaded = False
 _sources_lock = threading.RLock()
+_availability_snapshot = ContextVar("theme_availability_snapshot", default=None)
 
 
 def online_sources():
@@ -92,6 +95,14 @@ def download_record(path):
         return record if isinstance(record, dict) else {}
 
 
+def download_sources_key():
+    """Track provenance changes without including unrelated download details."""
+    _load_download_sources()
+    with _sources_lock:
+        return tuple((path, record.get("source")) for path, record in _download_sources.items()
+                     if isinstance(record, dict))
+
+
 def record_download(path, url):
     _load_download_sources()
     with _sources_lock:
@@ -132,9 +143,41 @@ def downloaded_allowed(filename, path):
     )
 
 
+def matches_selected_file(filename, path):
+    """Reject a saved fallback video when a user asks for a particular file."""
+    from _app_scripts.playlists import entry_paths
+    filename = entry_paths.get_clean_filename(filename)
+    record = download_record(path)
+    source = record.get("source")
+    if source and source != file_source(filename):
+        return False
+    native_filename = record.get("filename")
+    return not native_filename or os.path.normcase(os.path.splitext(native_filename)[0]) == os.path.normcase(os.path.splitext(filename)[0])
+
+
+@contextmanager
+def availability_snapshot():
+    """Reuse a cache inventory during one catalog pass in the current thread."""
+    from _app_scripts.playback import cache_download
+    token = _availability_snapshot.set((cache_download.available_cached_files(), {}))
+    try:
+        yield
+    finally:
+        _availability_snapshot.reset(token)
+
+
 def available_path(filename):
     from _app_scripts.playlists import entry_paths
     from _app_scripts.playback import cache_download
+    snapshot = _availability_snapshot.get()
+    if snapshot is not None:
+        cached_paths, resolved = snapshot
+        if filename not in resolved:
+            resolved[filename] = entry_paths.get_directory_file_path(filename) or next(
+                (cached_paths[candidate] for candidate in entry_paths.get_interchangeable_filenames(filename)
+                 if candidate in cached_paths), None,
+            )
+        return resolved[filename]
     return entry_paths.get_directory_file_path(filename) or cache_download.get_cached_file_path(filename)
 
 

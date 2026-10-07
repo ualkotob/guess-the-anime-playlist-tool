@@ -119,6 +119,8 @@ def _do_save_metadata():
 
 
 def save_metadata_overrides():
+    # Manual edits can change searchable songs/artists in place.
+    metadata_fetch.invalidate_metadata_cache()
     save_metadata_atomic(FILE_METADATA_OVERRIDES_FILE, state.metadata.file_metadata_overrides)
     save_metadata_atomic(ANIME_METADATA_OVERRIDES_FILE, state.metadata.anime_metadata_overrides)
 
@@ -310,6 +312,8 @@ def load_metadata():
             deep_merge(state.metadata.file_metadata, state.metadata.file_metadata_overrides)
             anisongdb._refresh_runtime_lookup([], clear_all=True)
             save_metadata()
+
+    metadata_fetch.invalidate_metadata_cache()
 
 
 REVIEW_MODIFIER = 500

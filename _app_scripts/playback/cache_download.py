@@ -82,9 +82,9 @@ def _remote_file_properties(filename):
     return properties if isinstance(properties, dict) else {}
 
 
-def get_theme_stream_url(filename):
+def get_theme_stream_url(filename, *, explicit_file=False):
     """Return the preferred registered source URL for a remote theme."""
-    urls = get_theme_stream_urls(filename)
+    urls = get_theme_stream_urls(filename, explicit_file=explicit_file)
     return urls[0] if urls else None
 
 
@@ -99,7 +99,7 @@ def get_anisongdb_stream_url(filename):
     return None
 
 
-def get_theme_stream_urls(filename):
+def get_theme_stream_urls(filename, *, explicit_file=False):
     """Return remote source URLs in preferred/fallback order."""
     if not isinstance(filename, str) or not filename:
         return []
@@ -109,6 +109,12 @@ def get_theme_stream_urls(filename):
     properties = data.get("file_properties") or {}
     if not isinstance(properties, dict):
         properties = {}
+    if explicit_file:
+        # File buttons select a concrete video, including its provider/quality.
+        # Automatic source ordering and other videos' fallback URLs do not apply.
+        url = (get_animethemes_stream_url(filename) if is_animethemes_stream_file(filename)
+               else properties.get("stream_url"))
+        return [url] if isinstance(url, str) and url.startswith(("https://", "http://")) else []
     candidates = [properties.get("stream_url")]
     if is_animethemes_stream_file(filename):
         candidates.append(get_animethemes_stream_url(filename))
@@ -141,6 +147,8 @@ def get_theme_stream_urls(filename):
 def select_theme_entry(playlist_entry):
     """Apply the policy to a saved filename while retaining its theme identity."""
     entry = playlist_entry.get("filename", "") if isinstance(playlist_entry, dict) else playlist_entry
+    if isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file"):
+        return playlist_entry
     filename = entry_paths.get_clean_filename(entry)
     if not filename or (isinstance(playlist_entry, dict) and "filepath" in playlist_entry):
         return playlist_entry
@@ -185,6 +193,8 @@ def select_theme_entry(playlist_entry):
 
 def downloaded_fallback_entry(playlist_entry):
     """After a stream fails, select an allowed disk copy of the same theme."""
+    if isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file"):
+        return None
     if isinstance(playlist_entry, dict):
         playlist_entry = {key: value for key, value in playlist_entry.items()
                           if key not in {"filepath", "_stream_url"}}
@@ -311,6 +321,43 @@ def get_cached_file_path(filename):
             if os.path.exists(cache_path):
                 return cache_path
     return None
+
+
+def cache_availability_key():
+    """Track cache additions, removals and conversions for catalog consumers.
+
+    Check registered downloads only, rather than probing every remote song.
+    The folder timestamp also detects files in the flat legacy cache.
+    Play-count updates do not affect availability.
+    """
+    with _cache_lock:
+        paths = tuple((filename, get_cached_file_path(filename)) for filename in cache_metadata)
+        try:
+            folder_timestamp = os.stat(THEMES_CACHE_FOLDER).st_mtime_ns
+        except OSError:
+            folder_timestamp = None
+        return paths, folder_timestamp
+
+
+def available_cached_files():
+    """Snapshot downloaded paths without probing each remote catalog filename."""
+    with _cache_lock:
+        paths = {}
+        for filename in cache_metadata:
+            path = get_cached_file_path(filename)
+            if path:
+                paths[filename] = path
+        # Preserve support for flat legacy files not registered in metadata.
+        try:
+            with os.scandir(THEMES_CACHE_FOLDER) as entries:
+                for entry in entries:
+                    if entry.is_file():
+                        paths.setdefault(entry.name, entry.path)
+        except OSError:
+            pass
+        return paths
+
+
 def _metadata_year_season(data):
     """Return (year, season) when metadata has a usable season value."""
     season_str = (data or {}).get("season", "")
@@ -450,7 +497,7 @@ def _finalize_cached_file(filename, rel_path, cache_path):
 # Core download engine
 # ---------------------------------------------------------------------------
 
-def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *, theme_entry=None):
+def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *, theme_entry=None, explicit_file=False):
     """Low-level streaming download of a remote theme to *dest_path*.
 
     Returns True on success, False on failure / cancellation.
@@ -458,7 +505,7 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
     dest_path = os.fspath(dest_path)
     partial_path = dest_path + ".part"
     try:
-        urls = get_theme_stream_urls(theme_entry or filename)
+        urls = get_theme_stream_urls(theme_entry or filename, explicit_file=explicit_file)
         if not urls:
             raise ValueError(f"No remote theme source is registered for {filename}")
         headers = {
@@ -655,6 +702,14 @@ def retry_download(filename, popup=None):
     """Cancel any in-flight download for *filename* and restart it."""
     _download_failures.pop(filename, None)
     pending_play_info = pending_play_queue.get(filename)
+    context = {}
+    if pending_play_info:
+        entry = pending_play_info["playlist_entry"]
+        theme_entry = entry.get("filename", filename) if isinstance(entry, dict) else entry
+        if entry_paths.parse_theme_reference(theme_entry):
+            context["theme_entry"] = theme_entry
+        if isinstance(entry, dict) and entry.get("_explicit_file"):
+            context["explicit_file"] = True
 
     if filename in active_downloads:
         print(f"Stopping current download to retry: {filename}")
@@ -673,7 +728,7 @@ def retry_download(filename, popup=None):
                     **pending_play_info,
                     "start_time": time.time(),
                 }
-            download_to_cache(filename, silent=False)
+            download_to_cache(filename, silent=False, **context)
             print(f"Retrying download: {filename}")
 
         state.widgets.root.after(250, start_retry_when_ready)
@@ -686,7 +741,7 @@ def retry_download(filename, popup=None):
                 **pending_play_info,
                 "start_time": time.time(),
             }
-        download_to_cache(filename, silent=False)
+        download_to_cache(filename, silent=False, **context)
         print(f"Retrying download: {filename}")
 
 
@@ -718,7 +773,7 @@ def queue_play_when_ready(filename, playlist_entry, fullscreen):
     }
 
 
-def download_to_cache(filename, silent=False, *, theme_entry=None):
+def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file=False):
     """Start a background download of *filename* to the local cache (or themes directory).
 
     Returns True if the download was started, False if already in progress / already on disk.
@@ -732,11 +787,13 @@ def download_to_cache(filename, silent=False, *, theme_entry=None):
 
     if filename in active_downloads:
         return False
-    if get_cached_file_path(filename):
+    cached_path = get_cached_file_path(filename)
+    if cached_path and (not explicit_file or source_preferences.matches_selected_file(filename, cached_path)):
         return False
-    if entry_paths.get_directory_file_path(filename):
+    directory_path = entry_paths.get_directory_file_path(filename)
+    if directory_path and (not explicit_file or source_preferences.matches_selected_file(filename, directory_path)):
         return False
-    if not get_theme_stream_urls(theme_entry):
+    if not get_theme_stream_urls(theme_entry, explicit_file=explicit_file):
         return False
 
     download_cancel_flags.pop(filename, None)
@@ -784,6 +841,8 @@ def download_to_cache(filename, silent=False, *, theme_entry=None):
                 return
 
             context = {"theme_entry": theme_entry} if entry_paths.parse_theme_reference(theme_entry) else {}
+            if explicit_file:
+                context["explicit_file"] = True
             success = _download_theme_file_to_path(filename, dest_path, progress_callback, **context)
 
             if download_cancel_flags.get(filename):
@@ -1040,6 +1099,11 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
     theme_entry = playlist_entry.get("filename", filename) if isinstance(playlist_entry, dict) else playlist_entry
     theme_entry = theme_entry if entry_paths.parse_theme_reference(theme_entry) else filename
     context = {"theme_entry": theme_entry} if entry_paths.parse_theme_reference(theme_entry) else {}
+    explicit_file = isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file")
+    stream_context = {"explicit_file": True} if explicit_file else {}
+    if explicit_file:
+        context["explicit_file"] = True
+    path_allowed = source_preferences.matches_selected_file if explicit_file else source_preferences.downloaded_allowed
     if is_downloading(filename):
         print(f"Download in progress, queuing play: {filename}")
         queue_play_when_ready(filename, playlist_entry, fullscreen)
@@ -1051,10 +1115,10 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
         is_stream = bool(filepath and filepath.startswith(('https://', 'http://')))
         if is_stream:
             source = source_preferences.source_for_url(filepath) or source_preferences.file_source(filename)
-            if source is not None and source not in source_preferences.online_sources():
-                filepath = get_theme_stream_url(theme_entry)
+            if explicit_file or (source is not None and source not in source_preferences.online_sources()):
+                filepath = get_theme_stream_url(theme_entry, **stream_context)
                 is_stream = bool(filepath)
-        elif filepath and not source_preferences.downloaded_allowed(filename, filepath):
+        elif filepath and not path_allowed(filename, filepath):
             filepath = None
         if not filepath:
             return (None, False)
@@ -1062,14 +1126,14 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
 
     # Use the pre-resolved local filepath supplied by the caller
     filepath = local_filepath
-    if filepath and not source_preferences.downloaded_allowed(filename, filepath):
+    if filepath and not path_allowed(filename, filepath):
         filepath = None
     is_stream = False
 
     # Fallback chain for supported remote themes not found locally
     if not filepath and is_remote_theme_file(filename):
         cached_path = get_cached_file_path(filename)
-        if cached_path and source_preferences.downloaded_allowed(filename, cached_path):
+        if cached_path and path_allowed(filename, cached_path):
             filepath = cached_path
         else:
             download_started = (_download_failures.get(filename) != _source_policy()
@@ -1079,7 +1143,7 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
                 return None
             else:
                 # Cache full or other issue — stream directly
-                filepath = get_theme_stream_url(theme_entry)
+                filepath = get_theme_stream_url(theme_entry, **stream_context)
                 is_stream = bool(filepath)
 
     # Update play count for cached files
@@ -1248,7 +1312,9 @@ def check_download_ui_updates():
             theme_entry = play_info["playlist_entry"]
             if isinstance(theme_entry, dict):
                 theme_entry = theme_entry.get("filename", fn)
-            stream_url = get_theme_stream_url(theme_entry if entry_paths.parse_theme_reference(theme_entry) else fn)
+            stream_context = ({"explicit_file": True}
+                              if isinstance(play_info["playlist_entry"], dict) and play_info["playlist_entry"].get("_explicit_file") else {})
+            stream_url = get_theme_stream_url(theme_entry if entry_paths.parse_theme_reference(theme_entry) else fn, **stream_context)
             streaming_entry = (
                 play_info["playlist_entry"].copy()
                 if isinstance(play_info["playlist_entry"], dict)

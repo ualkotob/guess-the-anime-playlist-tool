@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.game_state import state
-from _app_scripts.file.metadata import metadata_display, metadata_fetch
+from _app_scripts.file.metadata import metadata_display, metadata_fetch, metadata_panel
 from _app_scripts.playback import cache_download, transport
 from _app_scripts.playlists import entry_paths, playlist as playlist_ops
 from _app_scripts.theme import source_preferences as sources
@@ -287,3 +287,233 @@ def test_prefetch_uses_preferred_alternative_for_existing_playlist(theme_sources
     monkeypatch.setattr(cache_download, "download_to_cache", download)
     cache_download.prefetch_next_themes()
     assert downloaded == [AS_FILE]
+
+
+@pytest.mark.parametrize("policy", list(sources.SOURCE_CHOICES))
+@pytest.mark.parametrize("filename,url", [(AT_FILE, AT_URL), (AS_FILE, AS_URL)])
+def test_explicit_file_ignores_source_and_download_preferences(theme_sources, monkeypatch, policy, filename, url):
+    state.config.theme_online_source = policy
+    state.config.theme_downloaded_first = True
+    state.config.theme_allow_excluded_downloads = False
+    # A better downloaded alternative must not replace the clicked video.
+    other = AS_FILE if filename == AT_FILE else AT_FILE
+    state.metadata.directory_files[other] = str(theme_sources / other)
+    reference = entry_paths.make_theme_reference(filename, "123", "OP1", "1")
+    entry = {"filename": reference, "_explicit_file": True}
+    monkeypatch.setattr(cache_download, "download_to_cache", lambda *args, **kwargs: False)
+    assert cache_download.select_theme_entry(entry) is entry
+    assert cache_download.get_theme_stream_urls(reference, explicit_file=True) == [url]
+    assert cache_download.resolve_playable_path(filename, entry, None, False) == (url, True)
+
+
+def test_explicit_file_uses_excluded_downloaded_copy(theme_sources):
+    state.config.theme_online_source = "animethemes_only"
+    state.config.theme_allow_excluded_downloads = False
+    path = str(theme_sources / AS_FILE)
+    sources.record_download(path, AS_URL)
+    entry = {"filename": AS_FILE, "_explicit_file": True}
+    assert cache_download.resolve_playable_path(AS_FILE, entry, path, False) == (path, False)
+
+
+def test_explicit_file_rejects_previously_saved_fallback(theme_sources, monkeypatch):
+    path = str(theme_sources / AS_FILE)
+    sources.record_download(path, AT_URL)
+    monkeypatch.setattr(cache_download, "get_cached_file_path", lambda filename: path if filename == AS_FILE else None)
+    monkeypatch.setattr(cache_download, "download_to_cache", lambda *args, **kwargs: False)
+    entry = {"filename": AS_FILE, "_explicit_file": True}
+    assert cache_download.resolve_playable_path(AS_FILE, entry, path, False) == (AS_URL, True)
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_explicit_download_requests_only_the_selected_video(theme_sources, monkeypatch, success):
+    state.config.theme_online_source = "animethemes_only"
+    requested = []
+
+    def response(url, **kwargs):
+        requested.append(url)
+        if not success:
+            raise RuntimeError("Selected video unavailable")
+        return SimpleNamespace(headers={}, raise_for_status=lambda: None,
+                               iter_content=lambda **kwargs: [b"selected video"])
+
+    monkeypatch.setattr(cache_download.requests, "get", response)
+    destination = theme_sources / AS_FILE
+    assert cache_download._download_theme_file_to_path(AS_FILE, destination, explicit_file=True) is success
+    assert requested == [AS_URL]
+    if success:
+        assert destination.read_bytes() == b"selected video"
+        assert sources.download_record(str(destination))["source"] == sources.ANISONGDB
+    else:
+        assert not destination.exists()
+
+
+def test_cache_worker_carries_explicit_choice_and_replaces_wrong_fallback(theme_sources, monkeypatch):
+    destination = theme_sources / AS_FILE
+    destination.write_bytes(b"wrong fallback video")
+    sources.record_download(str(destination), AT_URL)
+    monkeypatch.setattr(cache_download, "get_cached_file_path", lambda filename: str(destination))
+    monkeypatch.setattr(cache_download, "download_cancel_flags", {})
+    monkeypatch.setattr(cache_download, "download_progress", {})
+    monkeypatch.setattr(cache_download, "_resolve_download_destination", lambda filename: (str(destination), AS_FILE, False))
+    monkeypatch.setattr(cache_download, "_finalize_cached_file", lambda *args: True)
+    monkeypatch.setattr(sources, "save_download_sources", lambda: None)
+    monkeypatch.setattr(cache_download, "downloads_completed", 0)
+    monkeypatch.setattr(cache_download, "download_ui_update_pending", False)
+    requested = []
+
+    def response(url, **kwargs):
+        requested.append(url)
+        return SimpleNamespace(headers={}, raise_for_status=lambda: None,
+                               iter_content=lambda **kwargs: [b"selected video"])
+
+    class _Thread:
+        def __init__(self, target, **kwargs):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(cache_download.requests, "get", response)
+    monkeypatch.setattr(cache_download.threading, "Thread", _Thread)
+    reference = entry_paths.make_theme_reference(AS_FILE, "123", "OP1", "1")
+    assert cache_download.download_to_cache(AS_FILE, silent=True, theme_entry=reference, explicit_file=True)
+    assert requested == [AS_URL]
+    assert destination.read_bytes() == b"selected video"
+    assert sources.download_record(str(destination))["filename"] == AS_FILE
+
+
+def test_download_retry_retains_explicit_file_and_anime_identity(theme_sources, monkeypatch):
+    reference = entry_paths.make_theme_reference(AS_FILE, "123", "OP1", "1")
+    entry = {"filename": reference, "_explicit_file": True}
+    monkeypatch.setattr(cache_download, "pending_play_queue", {AS_FILE: {
+        "playlist_entry": entry, "fullscreen": False, "start_time": 0, "timeout": 30,
+    }})
+    monkeypatch.setattr(cache_download, "download_progress", {})
+    monkeypatch.setattr(cache_download, "download_cancel_flags", {})
+    downloads = []
+    monkeypatch.setattr(cache_download, "download_to_cache", lambda filename, **kwargs: downloads.append((filename, kwargs)))
+    cache_download.retry_download(AS_FILE)
+    assert downloads == [(AS_FILE, {"silent": False, "theme_entry": reference, "explicit_file": True})]
+    assert cache_download.pending_play_queue[AS_FILE]["playlist_entry"] == entry
+
+
+def test_download_timeout_streams_the_explicit_file(theme_sources, monkeypatch):
+    state.config.theme_online_source = "animethemes_only"
+    reference = entry_paths.make_theme_reference(AS_FILE, "123", "OP1", "1")
+    entry = {"filename": reference, "_explicit_file": True}
+    monkeypatch.setattr(cache_download, "pending_play_queue", {AS_FILE: {
+        "playlist_entry": entry, "fullscreen": False, "start_time": 0, "timeout": 30,
+    }})
+    monkeypatch.setattr(cache_download, "download_progress", {})
+    monkeypatch.setattr(cache_download, "download_cancel_flags", {})
+    monkeypatch.setattr(cache_download, "download_ui_update_pending", False)
+    cache_download.active_downloads[AS_FILE] = object()
+    callbacks = []
+    root = SimpleNamespace(after=lambda delay, callback, *args: callbacks.append((delay, callback, args)))
+    monkeypatch.setattr(state.widgets, "root", root)
+    monkeypatch.setattr(cache_download.time, "time", lambda: 31)
+    played = []
+    monkeypatch.setattr(transport, "play_filename_streaming_fallback", lambda entry, fullscreen: played.append((entry, fullscreen)))
+    cache_download.check_download_ui_updates()
+    for delay, callback, args in callbacks:
+        if delay == 100:
+            callback(*args)
+    assert played == [({**entry, "_stream_url": AS_URL}, False)]
+
+
+def test_failed_explicit_stream_reports_error_without_substituting(theme_sources, monkeypatch):
+    state.metadata.directory_files[AT_FILE] = str(theme_sources / AT_FILE)
+    entry = {"filename": AS_FILE, "_explicit_file": True}
+    monkeypatch.setattr(transport, "animethemes_stream", True)
+    monkeypatch.setattr(state.controls, "video_stopped", False)
+    monkeypatch.setattr(state.widgets, "player", SimpleNamespace(is_playing=lambda: False, get_length=lambda: 0))
+    monkeypatch.setattr(state.playback, "currently_playing", {"filename": AS_FILE, "playlist_entry": entry})
+    errors = []
+    monkeypatch.setattr(transport.messagebox, "showerror", lambda *args: errors.append(args))
+
+    def unexpected_play(*args, **kwargs):
+        pytest.fail("Explicit selection fell back to another theme or video")
+
+    monkeypatch.setattr(transport, "play_filename", unexpected_play)
+    monkeypatch.setattr(transport, "play_video", unexpected_play)
+    transport.play_video_retry(0, AS_FILE)
+    assert errors and AS_FILE in errors[0][1]
+    assert state.controls.video_stopped
+    assert cache_download.downloaded_fallback_entry(entry) is None
+
+
+@pytest.mark.parametrize("filename,url,policy,resolution", [
+    (AS_FILE, AS_URL, "prefer_animethemes", 720),
+    (AT_FILE, AT_URL, "prefer_anisongdb", 1080),
+])
+def test_theme_button_reaches_player_with_clicked_file(theme_sources, monkeypatch, filename, url, policy, resolution):
+    """Exercise the real button, queue, source selection and path resolution."""
+    state.config.theme_online_source = policy
+    monkeypatch.setattr(state.config, "auto_fetch_missing", False)
+    monkeypatch.setattr(state, "lightning", SimpleNamespace(**vars(state.lightning)))
+    monkeypatch.setattr(state, "controls", SimpleNamespace(**vars(state.controls)))
+    monkeypatch.setattr(state, "playback", SimpleNamespace(**vars(state.playback)))
+    state.playback.currently_playing = {}
+    state.playback.youtube_queue = None
+    state.lightning.fixed_lightning_queue = None
+    state.lightning.fixed_lightning_round_playlist_data = None
+    state.lightning.fixed_current_round = None
+    state.lightning.light_mode = None
+    state.controls.auto_info_start = False
+    state.controls.auto_bonus_start = None
+    state.controls.auto_reveal_start = None
+    monkeypatch.setattr(state.metadata, "playlist", {"current_index": 0, "playlist": [AT_FILE]})
+    monkeypatch.setattr(transport.search_ops, "search_queue", None)
+    monkeypatch.setattr(transport, "animethemes_stream", None)
+    monkeypatch.setattr(transport, "skip_limit", 0)
+    for name in ("playlist_loaded", "playlist_changed", "playing_next_error"):
+        monkeypatch.setattr(transport, name, False)
+    monkeypatch.setattr(transport.playlist_ops, "playlist_changed", False)
+    other = AT_FILE if filename == AS_FILE else AS_FILE
+    state.metadata.directory_files[other] = str(theme_sources / other)
+    monkeypatch.setattr(cache_download, "download_to_cache", lambda *args, **kwargs: False)
+    monkeypatch.setattr(transport.web_server, "is_running", lambda: False)
+    monkeypatch.setattr(transport.session_end, "end_message_window", None)
+    for module, names in (
+        (transport.round_start_guard, ["begin_round"]),
+        (transport.lightning_manager, ["clean_up_light_round"]),
+        (transport.osd_text, ["set_countdown_muted", "set_countdown"]),
+        (transport.peek_dispatch, ["stop_timed_reveal"]),
+        (transport.bonus, ["guess_extra"]),
+        (transport.information_popup, ["toggle_title_popup"]),
+        (transport.coming_up_ui, ["toggle_coming_up_popup"]),
+        (transport.censors, ["on_play_starting"]),
+        (metadata_display, ["update_metadata_queue"]),
+    ):
+        for name in names:
+            monkeypatch.setattr(module, name, lambda *args, **kwargs: None)
+    monkeypatch.setattr(transport.censors, "get_start_skip_end", lambda filename: None)
+    monkeypatch.setattr(transport.threading, "Thread", lambda **kwargs: SimpleNamespace(start=lambda: None))
+
+    class _Button:
+        def __init__(self, *args, **kwargs):
+            self.command = kwargs["command"]
+
+        def bind(self, *args):
+            pass
+
+    class _PlayerReached(Exception):
+        pass
+
+    media = []
+
+    def load_media(filepath, **kwargs):
+        media.append(filepath)
+        raise _PlayerReached
+
+    monkeypatch.setattr(metadata_panel.tk, "Button", _Button)
+    monkeypatch.setattr(transport, "_load_incoming_media", load_media)
+    button = metadata_panel._create_theme_play_button(None, filename, "Play", mal_id="123", slug="OP1", version="1")
+    with pytest.raises(_PlayerReached):
+        button.command()
+    assert media == [url]
+    playing = state.playback.currently_playing
+    assert playing["filename"] == filename
+    assert playing["playlist_entry"]["_explicit_file"] is True
+    assert playing["data"]["mal"] == "123"
+    assert playing["data"]["file_properties"]["resolution"] == resolution

@@ -48,6 +48,8 @@ def scan_directory(queue=False):
             infinite.get_pop_time_groups(refetch=True)
             transport.update_current_index()
         print(f"\rScanning Directory....COMPLETE ({len(directory_files)} files)")
+        from _app_scripts.search import search
+        search.prepare_search_index()
     if queue:
         threading.Thread(target=worker, daemon=True).start()
     else:

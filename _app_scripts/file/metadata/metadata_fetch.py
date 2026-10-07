@@ -967,6 +967,7 @@ def pre_fetch_metadata():
                 get_metadata(filename, refresh=True, fetch=True)
 
 _metadata_cache = {}
+metadata_cache_generation = 0
 # Make sure this is initialized as a set!
 fetched_metadata = set()
 
@@ -978,12 +979,15 @@ filename_to_mal_candidates = {}
 
 def invalidate_file_metadata_cache():
     """Call this when state.metadata.file_metadata changes"""
-    global _file_metadata_cache_valid
+    global _file_metadata_cache_valid, metadata_cache_generation
     _file_metadata_cache_valid = False
+    metadata_cache_generation += 1
 
 
 def invalidate_metadata_cache(filenames=None):
     """Clear merged metadata results for all files or selected filenames."""
+    global metadata_cache_generation
+    metadata_cache_generation += 1
     if filenames is None:
         _metadata_cache.clear()
         return
@@ -1880,7 +1884,7 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
         all_songs = list({s["slug"]: s for s in old_songs + new_songs if s.get("slug")}.values())
         anime_data["songs"] = sort_songs(all_songs)
         state.metadata.anime_metadata[igdb_key] = anime_data
-        _metadata_cache.pop(filename, None)  # invalidate stale cache entry
+        invalidate_metadata_cache([filename])
 
         reorder_file_metadata_entry(igdb_key)
         if not batch_mode:
@@ -2203,9 +2207,10 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
                         if mal_id in state.metadata.file_metadata:
                             state.metadata.file_metadata[mal_id]["anidb"] = anidb_id
                     # Clear any cached metadata for files under this mal_id so new IDs are picked up
-                    for cached_fn, cached_ref in list(filename_to_mal.items()):
-                        if cached_ref.get("mal_id") == mal_id:
-                            _metadata_cache.pop(cached_fn, None)
+                    invalidate_metadata_cache([
+                        cached_fn for cached_fn, cached_ref in list(filename_to_mal.items())
+                        if cached_ref.get("mal_id") == mal_id
+                    ])
             except Exception as e:
                 print(f" [AniList MAL-lookup ✗: {e}]", end="")
 
@@ -2288,10 +2293,11 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
         
         if mal_id in state.metadata.file_metadata:
             themes = state.metadata.file_metadata[mal_id].get("themes", {})
-            for slug_data in themes.values():
-                for version_data in slug_data.values():
-                    for cache_filename in list(version_data.keys()):
-                        _metadata_cache.pop(cache_filename, None)
+            invalidate_metadata_cache([
+                cache_filename for slug_data in themes.values()
+                for version_data in slug_data.values()
+                for cache_filename in version_data
+            ])
         
         if not batch_mode:
             # Save all metadata is persisted
@@ -2489,7 +2495,8 @@ def refresh_tenrai_data(mal_id, data, label=""):
         # browsable AnimeThemes projection. Keep the general catalog marker so
         # its songs/videos can still be maintained, but stop queueing MAL.
         data.pop(animethemes_catalog.CATALOG_OWNED_MARKER, None)
-        
+
+        invalidate_metadata_cache()
         metadata_io.save_metadata()
         print(f"\r{label}Refreshing Tenrai data for {data['title']}...COMPLETE")
     else:

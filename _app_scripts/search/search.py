@@ -1,6 +1,7 @@
 # Theme search operations.
 import re
 import threading
+from dataclasses import dataclass
 
 import tkinter as tk
 from tkinter import simpledialog
@@ -16,6 +17,7 @@ import _app_scripts.playback.transport as transport
 import _app_scripts.data.config_io as config_io
 import _app_scripts.information.information_popup as information_popup
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+from _app_scripts.theme import source_preferences
 
 # Collaborators (read directly off state / sibling modules).
 # play_video reached via transport sibling; root/right_column/player read from
@@ -35,6 +37,10 @@ SEARCH_BAR_PLACEHOLDER = "SEARCH THEMES"
 search_queue = None
 search_results = []
 _search_token = 0
+_search_worker_lock = threading.Lock()
+_search_index_lock = threading.Lock()
+_search_index = None
+_search_index_key = None
 
 # ===========================================================================
 #  SEARCHING THEMES
@@ -43,7 +49,7 @@ _search_token = 0
 def _apply_search_results(token, results, term, update, add):
     """Called on the main thread once a background search finishes."""
     global search_results, _search_token
-    if token != _search_token:
+    if token != _search_token or term != search_term:
         return
     search_results = results
     selected = 0
@@ -80,8 +86,14 @@ def search(update=False, ask=True, add=False):
         return
 
     def _run():
-        results = search_playlist(term)
-        state.widgets.root.after(0, lambda: _apply_search_results(token, results, term, update, add))
+        # A slow catalog refresh must not start another full scan per keystroke.
+        # Waiting workers discard superseded queries before doing any work.
+        with _search_worker_lock:
+            if token != _search_token or term != search_term:
+                return
+            results = search_playlist(term)
+        if token == _search_token and term == search_term:
+            state.widgets.root.after(0, lambda: _apply_search_results(token, results, term, update, add))
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -187,6 +199,86 @@ def _focus_search_entry():
         search(add=state.metadata.playlist.get("infinite", False))
 
 
+@dataclass(frozen=True, slots=True)
+class _SearchRow:
+    entry: str
+    filename: str
+    title: str
+    english_title: str
+    studios: str
+    season: str
+    song: str
+    sort_key: tuple
+    theme_key: object
+    file_priority: tuple
+
+
+def _search_data_key():
+    """Keep cached text tied to metadata, physical files and source policy."""
+    return (
+        metadata_fetch.metadata_cache_generation,
+        id(metadata_fetch.filename_to_mal), len(metadata_fetch.filename_to_mal),
+        id(metadata_fetch._metadata_cache),
+        id(state.metadata.file_metadata), id(state.metadata.anime_metadata),
+        tuple(state.metadata.directory_files.copy().items()),
+        source_preferences.online_sources(), state.config.theme_downloaded_first,
+        state.config.theme_allow_excluded_downloads,
+        source_preferences.download_sources_key(), cache_download.cache_availability_key(),
+        # Only censor presence affects file selection, not coordinates/timing.
+        tuple(tuple(name for name, boxes in censor_list.copy().items() if boxes)
+              for censor_list in (metadata_display.censors.censor_list,
+                                  *metadata_display.censors.other_censor_lists,
+                                  metadata_display.censors._youtube_censor_list)),
+    )
+
+
+def _get_search_index():
+    global _search_index, _search_index_key
+    # Desktop and web searches share one index, including while it is rebuilt.
+    with _search_index_lock:
+        key = _search_data_key()
+        if _search_index is not None and key == _search_index_key:
+            return _search_index
+        rows = []
+        with source_preferences.availability_snapshot():
+            for filename in playlist_ops.get_directory_files(include_non_local=True):
+                filename_trim = filename.lower().replace(".webm", "").replace(".mp4", "")
+                for theme_entry in metadata_fetch.get_theme_references(filename):
+                    file_data = metadata_fetch.get_file_metadata_by_name(theme_entry) or {}
+                    priority = metadata_display.theme_file_priority(theme_entry, file_data)
+                    if priority is None:
+                        continue
+                    metadata = metadata_fetch.get_metadata(theme_entry)
+                    title = (metadata.get("title") or "").lower()
+                    english_title = (metadata.get("eng_title") or "").lower()
+                    rows.append(_SearchRow(
+                        theme_entry, filename_trim, title, english_title,
+                        ", ".join(metadata.get("studios") or []).lower(),
+                        re.sub(r"\s+", " ", str(metadata.get("season") or "").lower()).strip(),
+                        information_popup.get_song_string(metadata, artist_limit=None).lower(),
+                        (english_title or title or theme_entry.lower(),
+                         metadata_fetch.song_slug_sort_key(metadata.get("slug") or "")),
+                        (file_data["mal"], file_data["slug"])
+                        if file_data.get("mal") and file_data.get("slug") else theme_entry,
+                        priority,
+                    ))
+        _search_index = rows
+        # Lazy catalog initialization can change the key while constructing it.
+        # Keep the original key so a concurrent metadata edit causes a rebuild.
+        _search_index_key = key
+        return rows
+
+
+def prepare_search_index():
+    """Build searchable text after a directory scan, before the first query."""
+    def prepare():
+        try:
+            _get_search_index()
+        except Exception:
+            log_exception("Failed to prepare the theme search index")
+    threading.Thread(target=prepare, daemon=True).start()
+
+
 def search_playlist(search_term):
     """Returns filenames matching the search term (deduplicated)."""
     search_term = search_term.lower()
@@ -197,32 +289,31 @@ def search_playlist(search_term):
     priority_results = []
     results = []
     artist_results = []
-    for filename in playlist_ops.get_directory_files(include_non_local=True):
-        filename_trim = filename.lower().replace(".webm", "").replace(".mp4", "")
-        for theme_entry in metadata_fetch.get_theme_references(filename):
-            metadata = metadata_fetch.get_metadata(theme_entry)
-            title = metadata.get("title", "").lower()
-            english_title = (metadata.get("eng_title") or "").lower()
-            studios = ", ".join(metadata.get("studios") or []).lower()
-            season = re.sub(r"\s+", " ", str(metadata.get("season") or "").lower()).strip()
-            studio_match = bool(studios and search_term in studios)
-            season_match = bool(_season_query_enabled and season and search_term_norm in season)
-            if (english_title or title).startswith(search_term):
-                priority_results.append(theme_entry)
-            elif (search_term in filename_trim) or (title and search_term in title) or (english_title and search_term in english_title) or studio_match or season_match:
-                results.append(theme_entry)
-            else:
-                song_string = information_popup.get_song_string(metadata, artist_limit=None).lower()
-                if song_string and search_term in song_string:
-                    artist_results.append(theme_entry)
+    for row in _get_search_index():
+        if (row.english_title or row.title).startswith(search_term):
+            priority_results.append(row)
+        elif (search_term in row.filename or search_term in row.title
+              or search_term in row.english_title or search_term in row.studios
+              or (_season_query_enabled and search_term_norm in row.season)):
+            results.append(row)
+        elif search_term in row.song:
+            artist_results.append(row)
 
-    def _slug_sort_key(file):
-        meta = metadata_fetch.get_metadata(file)
-        slug = (meta.get("slug") or "").upper()
-        title_key = (meta.get("eng_title") or meta.get("title") or file).lower()
-        return (title_key, metadata_fetch.song_slug_sort_key(slug))
-
-    priority_results.sort(key=_slug_sort_key)
-    results.sort(key=_slug_sort_key)
-    artist_results.sort(key=_slug_sort_key)
-    return playlist_ops.deduplicate_theme_versions(priority_results + results + artist_results)
+    priority_results.sort(key=lambda row: row.sort_key)
+    results.sort(key=lambda row: row.sort_key)
+    artist_results.sort(key=lambda row: row.sort_key)
+    matching_rows = priority_results + results + artist_results
+    # Apply the same ranking as playlist deduplication to the matching subset.
+    # Keeping it in the index avoids disk/metadata lookups even for one letter.
+    best_rows = {}
+    for row in matching_rows:
+        previous = best_rows.get(row.theme_key)
+        if previous is None or row.file_priority < previous.file_priority:
+            best_rows[row.theme_key] = row
+    seen = set()
+    deduplicated = []
+    for row in matching_rows:
+        if best_rows[row.theme_key] is row and row.entry not in seen:
+            seen.add(row.entry)
+            deduplicated.append(row.entry)
+    return deduplicated

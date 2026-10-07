@@ -350,7 +350,7 @@ def update_current_index(value = None, save = True):
         pass  # root isn't defined yet â€” possibly too early in startup
 
 
-def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"] == -1
+def play_video(index=-1, *, explicit_file=False):  # def-time default was BLANK_PLAYLIST["current_index"] == -1
     """Function to play a specific video by index"""
     global playlist_loaded, playing_next_error
     global playlist_changed
@@ -475,6 +475,8 @@ def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"
         youtube_ui.unload_youtube_video()
         metadata_display.up_next_text()
     elif search_ops.search_queue:
+        queued_entry = ({"filename": search_ops.search_queue, "_explicit_file": True}
+                        if explicit_file else search_ops.search_queue)
         if youtube_control.is_youtube_file(search_ops.search_queue):
             youtube_data = youtube_control.get_youtube_metadata_by_filename(search_ops.search_queue)
             if youtube_data:
@@ -510,9 +512,9 @@ def play_video(index=-1):  # def-time default was BLANK_PLAYLIST["current_index"
                     else:
                         youtube_ui.stream_youtube(os.path.join("youtube", search_ops.search_queue))  # Try anyway
             else:
-                play_filename(search_ops.search_queue)
+                play_filename(queued_entry)
         else:
-            play_filename(search_ops.search_queue)
+            play_filename(queued_entry)
         search_ops.search_queue = None
         metadata_display.up_next_text()
         if "SEARCH QUEUE" in state.playback.popout_buttons_by_name:
@@ -606,7 +608,8 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
     if isinstance(playlist_entry, dict) and '_stream_url' in playlist_entry:
         stream_url = playlist_entry['_stream_url']
     else:
-        stream_url = cache_download.get_theme_stream_url(theme_entry)
+        context = {"explicit_file": True} if isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file") else {}
+        stream_url = cache_download.get_theme_stream_url(theme_entry, **context)
     
     # Create modified entry with filepath
     if isinstance(playlist_entry, dict):
@@ -650,10 +653,14 @@ def play_filename(playlist_entry, fullscreen=True):
             actual_entry = "[L]" + actual_entry
         data = metadata_fetch.get_metadata(actual_entry, fetch=state.config.auto_fetch_missing)
         filename = actual_filename
-        playlist_entry = {"filename": actual_entry, "filepath": filepath}
+        playlist_entry = {**(playlist_entry if isinstance(playlist_entry, dict) else {}),
+                          "filename": actual_entry, "filepath": filepath}
     
     if skip_limit <= 10:
         if not filepath or not (os.path.exists(filepath) or animethemes_stream):  # Check if file exists
+            if isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file"):
+                messagebox.showerror("Playback Error", f"The selected theme file is unavailable:\n{filename}")
+                return False
             print(f"File not found: {filepath}. Skipping...")
             skip_filename()
             return False
@@ -827,9 +834,14 @@ def play_video_retry(retries, filename=None):
             state.widgets.root.after(retry_delay, play_video_retry, retries - 1, filename)  # Retry playback
             return
         else:
+            playlist_entry = state.playback.currently_playing.get("playlist_entry", filename)
+            if isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file"):
+                state.controls.video_stopped = True
+                messagebox.showerror("Playback Error", f"Could not play the selected theme file:\n{filename}")
+                return
             if animethemes_stream:
                 fallback = cache_download.downloaded_fallback_entry(
-                    state.playback.currently_playing.get("playlist_entry", filename)
+                    playlist_entry
                 )
                 if fallback is not None:
                     play_filename(fallback)
