@@ -112,6 +112,9 @@ def _do_save_metadata():
         save_metadata_compressed(FILE_METADATA_FILE, state.metadata.file_metadata)
 
         deep_merge(state.metadata.anime_metadata, state.metadata.anime_metadata_overrides)
+        from _app_scripts.theme import animethemes
+
+        animethemes.reconcile_shared_video_flags()
         save_metadata_compressed(ANIME_METADATA_FILE, state.metadata.anime_metadata)
         save_metadata_compressed(ANIDB_METADATA_FILE, state.metadata.anidb_metadata)
         save_metadata_compressed(AI_METADATA_FILE, state.metadata.ai_metadata, encoding="utf-8", ensure_ascii=False)
@@ -313,6 +316,10 @@ def load_metadata():
             anisongdb._refresh_runtime_lookup([], clear_all=True)
             save_metadata()
 
+    from _app_scripts.theme import animethemes
+
+    if animethemes.reconcile_shared_video_flags():
+        save_metadata()
     metadata_fetch.invalidate_metadata_cache()
 
 

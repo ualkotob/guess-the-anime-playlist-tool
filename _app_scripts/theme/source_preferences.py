@@ -23,6 +23,7 @@ DOWNLOAD_SOURCES_FILE = os.path.join(CONFIG_FOLDER, "theme_download_sources.json
 _download_sources = {}
 _sources_loaded = False
 _sources_lock = threading.RLock()
+_sources_io_lock = threading.RLock()
 _availability_snapshot = ContextVar("theme_availability_snapshot", default=None)
 
 
@@ -73,17 +74,19 @@ def _load_download_sources():
     if _sources_loaded:
         return
     import json
-    with _sources_lock:
+    with _sources_io_lock:
         if _sources_loaded:
             return
         try:
             with open(DOWNLOAD_SOURCES_FILE, encoding="utf-8") as handle:
                 records = json.load(handle)
-            if isinstance(records, dict):
-                _download_sources.update(records)
+            if not isinstance(records, dict):
+                records = {}
         except (OSError, ValueError):
-            pass
-        _sources_loaded = True
+            records = {}
+        with _sources_lock:
+            _download_sources.update(records)
+            _sources_loaded = True
 
 
 def download_record(path):
@@ -116,9 +119,11 @@ def record_download(path, url):
 def save_download_sources():
     from _app_scripts.utils import _atomic_json_write
     _load_download_sources()
-    with _sources_lock:
+    with _sources_io_lock:
+        with _sources_lock:
+            snapshot = dict(_download_sources)
         os.makedirs(os.path.dirname(DOWNLOAD_SOURCES_FILE), exist_ok=True)
-        _atomic_json_write(DOWNLOAD_SOURCES_FILE, _download_sources, indent=2)
+        _atomic_json_write(DOWNLOAD_SOURCES_FILE, snapshot, indent=2)
 
 
 def move_download_record(old_path, new_path):
@@ -159,6 +164,9 @@ def matches_selected_file(filename, path):
 def availability_snapshot():
     """Reuse a cache inventory during one catalog pass in the current thread."""
     from _app_scripts.playback import cache_download
+    if _availability_snapshot.get() is not None:
+        yield
+        return
     token = _availability_snapshot.set((cache_download.available_cached_files(), {}))
     try:
         yield

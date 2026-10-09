@@ -1,6 +1,7 @@
 # Stats display operations.
 import re
 import threading
+from _app_scripts import utils
 
 from core.game_state import state
 import _app_scripts.playlists.playlist as playlist_ops
@@ -162,8 +163,8 @@ def artist_stats(files, sort='count'):
                         artist_to_filenames.setdefault(artist, []).append(filename)
                     break
         if sort == 'alpha':
-            return sorted(artist_to_filenames.items(), key=lambda x: x[0].lower())
-        return sorted(artist_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+            return sorted(artist_to_filenames.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
+        return sorted(artist_to_filenames.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
 
     _run_stat_in_background("THEMES BY ARTIST", compute)
 
@@ -180,7 +181,7 @@ def series_stats(files, sort='count'):
             else:
                 series_to_filenames.setdefault(series, []).append(filename)
         if sort == 'alpha':
-            return sorted(series_to_filenames.items(), key=lambda x: x[0].lower())
+            return sorted(series_to_filenames.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
         if sort == 'popularity':
             def _series_pop(item):
                 _, files = item
@@ -188,7 +189,7 @@ def series_stats(files, sort='count'):
                 ranks = [r for r in ranks if r is not None]
                 return min(ranks) if ranks else float('inf')
             return sorted(series_to_filenames.items(), key=_series_pop)
-        return sorted(series_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+        return sorted(series_to_filenames.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
 
     _run_stat_in_background("THEMES BY SERIES", compute)
 
@@ -207,7 +208,7 @@ def title_stats(files, sort='alpha'):
                 ranks = [r for r in ranks if r is not None]
                 return min(ranks) if ranks else float('inf')
             return sorted(title_to_filenames.items(), key=_title_pop)
-        return sorted(title_to_filenames.items(), key=lambda x: x[0].lower())
+        return sorted(title_to_filenames.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
 
     _run_stat_in_background("THEMES BY TITLE", compute)
 
@@ -220,8 +221,8 @@ def studio_stats(files, sort='count'):
             for studio in data.get("studios", []):
                 studio_to_filenames.setdefault(studio, []).append(filename)
         if sort == 'alpha':
-            return sorted(studio_to_filenames.items(), key=lambda x: x[0].lower())
-        return sorted(studio_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+            return sorted(studio_to_filenames.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
+        return sorted(studio_to_filenames.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
 
     _run_stat_in_background("THEMES BY STUDIO", compute)
 
@@ -234,8 +235,8 @@ def tag_stats(files, sort='count'):
             for tag in information_popup.get_tags(data):
                 tag_to_filenames.setdefault(tag, []).append(filename)
         if sort == 'alpha':
-            return sorted(tag_to_filenames.items(), key=lambda x: x[0].lower())
-        return sorted(tag_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+            return sorted(tag_to_filenames.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
+        return sorted(tag_to_filenames.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
 
     _run_stat_in_background("THEMES BY TAG (MAL)", compute)
 
@@ -254,8 +255,8 @@ def anilist_tag_stats(files, anilist_metadata, sort='count'):
                 if name:
                     tag_to_filenames.setdefault(name, []).append(filename)
         if sort == 'alpha':
-            return sorted(tag_to_filenames.items(), key=lambda x: x[0].lower())
-        return sorted(tag_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+            return sorted(tag_to_filenames.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
+        return sorted(tag_to_filenames.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
 
     _run_stat_in_background("THEMES BY TAG (ANILIST)", compute)
 
@@ -268,8 +269,8 @@ def slug_stats(files, sort='count'):
             slug = data.get("slug", "Unknown")
             slug_to_filenames.setdefault(slug, []).append(filename)
         if sort == 'alpha':
-            return sorted(slug_to_filenames.items(), key=lambda x: x[0].lower())
-        return sorted(slug_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+            return sorted(slug_to_filenames.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
+        return sorted(slug_to_filenames.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
 
     _run_stat_in_background("THEMES BY SLUG", compute)
 
@@ -281,7 +282,7 @@ def type_stats(files):
             data = metadata_fetch.get_metadata(filename)
             t = information_popup.get_format(data) or "Unknown"
             type_to_filenames.setdefault(t, []).append(filename)
-        return sorted(type_to_filenames.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+        return sorted(type_to_filenames.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
 
     _run_stat_in_background("THEMES BY TYPE", compute)
 
@@ -401,8 +402,8 @@ def _select_playlist_sort(index):
 # --- per-entry metadata keys --------------------------------------------------
 
 def _alpha_key(entry):
-    data = metadata_fetch.get_metadata(entry_paths.get_clean_filename(entry)) or {}
-    return (data.get('eng_title') or data.get('title') or entry).lower()
+    data = metadata_fetch.get_metadata(entry) or {}
+    return utils.alphabetical_sort_key(data.get('eng_title') or data.get('title') or entry_paths.get_clean_filename(entry))
 
 
 def _pop_rank(entry):

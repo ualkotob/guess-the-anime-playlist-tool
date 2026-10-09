@@ -35,6 +35,9 @@ from ...ui.scaling import scl
 import os
 import re
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
+from core.app_logging import watch_for_stall
 import webbrowser
 
 import tkinter as tk
@@ -53,7 +56,6 @@ import _app_scripts.information.information_popup as information_popup
 import _app_scripts.playback.cache_download as cache_download
 import _app_scripts.playback.image_loader as image_loader
 import _app_scripts.playback.transport as transport
-import _app_scripts.playlists.playlist as playlist_ops
 import _app_scripts.playlists.infinite as infinite
 import _app_scripts.playlists.entry_paths as entry_paths
 import _app_scripts.theme.marks as playlist_marks
@@ -70,6 +72,20 @@ import _app_scripts.utils as utils
 # ---------------------------------------------------------------------------
 
 LISTS_TO_CLOSE = ['load_playlist', 'merge_playlist', 'load_system_playlist', 'delete_playlist', 'load_filters', 'delete_filters', 'sort', 'show_fixed_lightning_list', 'show_youtube_playlist', 'show_archived_youtube_playlist']
+
+_series_matches = ContextVar("theme_render_series_matches", default=None)
+
+
+@contextmanager
+def theme_render_snapshot():
+    """Reuse file availability and series membership during one render."""
+    token = _series_matches.set({})
+    try:
+        with source_preferences.availability_snapshot():
+            yield
+    finally:
+        _series_matches.reset(token)
+
 
 def clear_metadata():
     """Function to clear metadata fields"""
@@ -179,6 +195,8 @@ def _file_play_key(filename, data=None):
     return ("filename", _play_name_key(filename))
 
 
+@watch_for_stall("Build web Info theme list")
+@theme_render_snapshot()
 def _build_web_series_themes(data, playing_filename):
     """Serialize series theme information for the web server metadata push."""
     if not data:
@@ -751,6 +769,34 @@ def add_field_total_button(column, group, blank = True, show_count=True, button_
     if blank:
         column.insert(tk.END, "\n\n", "blank")
 
+
+def add_catalog_total_button(column, field, name):
+    """Render the theme count immediately, then fill it from the shared index."""
+    matches = search_ops.get_catalog_matches(field, name, wait=False)
+    if matches is not None:
+        add_field_total_button(column, matches, blank=False, title=name)
+        return
+    button = tk.Button(column, text="[…]", state=tk.DISABLED, borderwidth=0, pady=0,
+                       bg="black", fg="white", font=("Arial", scl(11), "bold"))
+    column.window_create(tk.END, window=button)
+
+    def fill_count():
+        try:
+            if not button.winfo_exists():
+                return
+            group = search_ops.get_catalog_matches(field, name, wait=False)
+            if group is None:
+                state.widgets.root.after(100, fill_count)
+            elif group:
+                button.config(text=f"[{len(group)}]", state=tk.NORMAL,
+                              command=lambda: lists.show_field_themes(group=list(group), title=name))
+            else:
+                button.destroy()
+        except tk.TclError:
+            pass  # The column was rebuilt or the app closed.
+    state.widgets.root.after(100, fill_count)
+
+
 # ── Series utility helpers ────────────────────────────────────────────────────
 
 def series_list(data, fallback_title=True):
@@ -806,6 +852,10 @@ def get_all_theme_from_series(data):
     target_set = series_set(data, fallback_title=False)
     if not target_set:
         return []
+    snapshot = _series_matches.get()
+    key = tuple(sorted(target_set))
+    if snapshot is not None and key in snapshot:
+        return snapshot[key]
 
     # Step 1: Find all anime sharing at least one series
     related_anime = []
@@ -873,6 +923,8 @@ def get_all_theme_from_series(data):
         return (year, 99)
 
     related_anime.sort(key=lambda x: sort_key(x[1]))
+    if snapshot is not None:
+        snapshot[key] = related_anime
     return related_anime
 
 def get_overall_theme_number(filename):
@@ -981,29 +1033,11 @@ def has_same_start(s1, s2, length=3):
         return False
     return s1[:length].lower() == s2[:length].lower()
 
-def get_filenames_from_artist(match):
-    filenames = []
-    for filename in playlist_ops.get_cached_deduplicated_files():
-        file_data = metadata_fetch.get_metadata(filename)
-        if file_data:
-            for theme in file_data.get("songs", []) or []:
-                if file_data.get("slug") == theme.get("slug"):
-                    for artist in theme.get("artist", []) or []:
-                        if artist == match:
-                            filenames.append(filename)
+def get_filenames_from_artist(match, *, wait=True):
+    return search_ops.get_catalog_matches("artist", match, wait=wait)
 
-    return sorted(filenames)
-
-def get_filenames_from_studio(match):
-    filenames = []
-    for filename in playlist_ops.get_cached_deduplicated_files():
-        file_data = metadata_fetch.get_metadata(filename)
-        if file_data:
-            for studio in file_data.get("studios", []) or []:
-                if studio == match:
-                    filenames.append(filename)
-
-    return sorted(filenames)
+def get_filenames_from_studio(match, *, wait=True):
+    return search_ops.get_catalog_matches("studio", match, wait=wait)
 
 
 

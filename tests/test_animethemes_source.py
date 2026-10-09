@@ -10,6 +10,7 @@ from core.game_state import state
 from _app_scripts.file.metadata import metadata_fetch
 from _app_scripts.playback import cache_download
 from _app_scripts.playlists import playlist
+from _app_scripts.playlists import entry_paths
 from _app_scripts.theme import animethemes
 from _app_scripts.ui import menu_registry
 
@@ -88,12 +89,16 @@ def _catalog(*anime):
 
 
 @pytest.fixture(autouse=True)
-def isolated_metadata():
+def isolated_metadata(monkeypatch):
     stores = (
         "file_metadata",
         "anime_metadata",
         "animethemes_metadata",
         "anisongdb_metadata",
+        "anidb_metadata",
+        "anilist_metadata",
+        "anime_metadata_overrides",
+        "theme_artist_resolutions",
         "directory_files",
     )
     saved = {
@@ -106,6 +111,7 @@ def isolated_metadata():
     metadata_fetch.animethemes_cache.clear()
     metadata_fetch.build_filename_to_mal_map()
     metadata_fetch.invalidate_metadata_cache()
+    monkeypatch.setattr(metadata_fetch.metadata_io, "save_animethemes_metadata", lambda: None)
     yield
     for name, value in saved.items():
         target = getattr(state.metadata, name)
@@ -411,6 +417,328 @@ def test_stale_prefix_catalog_does_not_block_exact_live_lookup(monkeypatch):
         calls[0]["filter[video][basename-like]"]
         == "Example-OP2.webm"
     )
+
+
+@pytest.mark.parametrize("action", ["playing_reference", "playing_data", "playlist", "default_fetch", "playing_dictionary", "playlist_dictionary", "default_dictionary"])
+def test_refetch_actions_preserve_shared_theme_identity(monkeypatch, action):
+    filename = "ElfenLied-OP1.webm"
+    reference = entry_paths.make_theme_reference(filename, "376", "OP1", "1")
+    playlist_entry = {"filename": reference} if action.endswith("dictionary") else reference
+    monkeypatch.setattr(state.metadata, "playlist", {"playlist": [playlist_entry], "current_index": 0})
+    playing = {}
+    if action.startswith("playing_"):
+        playing = {
+            "type": "theme",
+            "filename": filename,
+            "playlist_entry": playlist_entry if action in ("playing_reference", "playing_dictionary") else filename,
+            "data": {"mal": "376", "slug": "OP1", "version": "1"},
+        }
+    monkeypatch.setattr(state.playback, "currently_playing", playing)
+    calls = []
+    monkeypatch.setattr(
+        metadata_fetch, "_fetch_metadata_impl",
+        lambda *args: calls.append(args),
+    )
+
+    if action.startswith("default_"):
+        metadata_fetch.fetch_metadata()
+    else:
+        metadata_fetch.refetch_metadata()
+
+    assert calls == [(reference, True, "", False)]
+
+
+def _shared_anime(anime_id, mal_id, *, nsfw=False):
+    anime = _anime(anime_id, mal_id=mal_id, basename="ElfenLied-OP1.webm")
+    anime["name"] = "Elfen Lied" if mal_id == "226" else "Elfen Lied Special"
+    anime["slug"] = "elfen_lied" if mal_id == "226" else "elfen_lied_special"
+    anime["series"] = [{"name": "Elfen Lied"}]
+    opening = anime["animethemes"][0]
+    opening["song"]["title"] = "LILIUM"
+    opening["animethemeentries"][0]["nsfw"] = nsfw
+    ending = copy.deepcopy(opening)
+    ending.update({"type": "ED", "slug": "ED1"})
+    ending["song"]["title"] = "be your girl"
+    ending["animethemeentries"][0]["videos"][0]["basename"] = "ElfenLied-ED1.webm"
+    anime["animethemes"].append(ending)
+    return anime
+
+
+@pytest.mark.parametrize("filename", ["ElfenLied-OP1.webm", "ElfenLied-ED1.webm", "ElfenLied-OP1.mp4"])
+@pytest.mark.parametrize("current_mal", ["376", "226"])
+def test_shared_theme_refetch_updates_special_flags_and_keeps_current_anime(monkeypatch, filename, current_mal):
+    main = _shared_anime(704, "226")
+    stale_special = _shared_anime(4957, "376")
+    fresh_special = _shared_anime(4957, "376", nsfw=True)
+    # Live per-file responses do not include studios; keep the catalog copy.
+    fresh_special.pop("studios")
+    animethemes.replace_catalog(_catalog(main, stale_special))
+    animethemes.sync_catalog_to_metadata()
+    slug = "ED1" if "-ED" in filename else "OP1"
+    reference = entry_paths.make_theme_reference(filename, "376", slug, "1")
+    assert metadata_fetch.get_metadata(reference)["songs"][0]["nsfw"] is False
+    current_reference = entry_paths.make_theme_reference(filename, current_mal, slug, "1")
+    playing = {"type": "theme", "filename": filename, "playlist_entry": current_reference, "data": {"mal": current_mal}}
+    monkeypatch.setattr(state.playback, "currently_playing", playing)
+    monkeypatch.setattr(state.metadata, "playlist", {"playlist": [reference], "current_index": 0})
+    calls = []
+
+    def fake_get(_url, params):
+        calls.append(params)
+        # A filename-only lookup would return the main series first.
+        rows = [fresh_special] if params.get("filter[resource][external_id]") == "376" else [main, fresh_special]
+        return _Response({"anime": rows})
+
+    monkeypatch.setattr(metadata_fetch.requests, "get", fake_get)
+    monkeypatch.setattr(metadata_fetch, "fetch_tenrai_metadata", lambda _mal_id: None)
+    monkeypatch.setattr(metadata_fetch, "fetch_anilist_metadata", lambda **_kwargs: (None, None))
+    monkeypatch.setattr(metadata_fetch.metadata_display, "update_metadata_queue", lambda _index: None)
+    saves = []
+    monkeypatch.setattr(metadata_fetch.metadata_io, "save_animethemes_metadata", lambda: saves.append(True))
+
+    result = metadata_fetch.fetch_metadata(reference, refetch=True, batch_mode=True)
+
+    assert result["mal"] == "376"
+    assert playing["data"]["mal"] == current_mal
+    assert {song["slug"] for song in result["songs"]} == {"OP1", "ED1"}
+    assert all(song["nsfw"] and song["versions"][0]["nsfw"] for song in result["songs"])
+    assert all(song["nsfw"] for song in state.metadata.anime_metadata["226"]["songs"])
+    assert all(song["nsfw"] for song in metadata_fetch.get_metadata(reference)["songs"])
+    assert "filter[video][basename-like]" not in calls[0]
+    assert len(calls) == 1
+    assert reference not in metadata_fetch.fetching_metadata
+    assert saves == [True]
+    retained = metadata_fetch.fetch_animethemes_metadata(mal_id="376")
+    assert retained["studios"] == stale_special["studios"]
+    assert all(theme["animethemeentries"][0]["nsfw"] for theme in retained["animethemes"])
+    assert len(calls) == 1
+    assert all(
+        not name.startswith("[THEME_REF]")
+        for versions in state.metadata.file_metadata["376"]["themes"].values()
+        for files in versions.values()
+        for name in files
+    )
+
+
+def test_failed_special_refetch_does_not_fall_back_to_shared_main_series(monkeypatch):
+    main = _shared_anime(704, "226")
+    special = _shared_anime(4957, "376")
+    animethemes.replace_catalog(_catalog(main, special))
+    animethemes.sync_catalog_to_metadata()
+    reference = entry_paths.make_theme_reference("ElfenLied-OP1.webm", "376", "OP1", "1")
+    monkeypatch.setattr(state.playback, "currently_playing", {})
+    calls = []
+
+    def fake_get(_url, params):
+        calls.append(params)
+        return _Response({"anime": []})
+
+    monkeypatch.setattr(metadata_fetch.requests, "get", fake_get)
+    before = copy.deepcopy(state.metadata.anime_metadata)
+
+    assert metadata_fetch.fetch_metadata(reference, refetch=True, batch_mode=True) == {}
+    assert len(calls) == 1
+    assert calls[0]["filter[resource][external_id]"] == "376"
+    assert state.metadata.anime_metadata == before
+    assert reference not in metadata_fetch.fetching_metadata
+
+
+def test_cached_fetch_keeps_explicit_special_identity(monkeypatch):
+    animethemes.replace_catalog(_catalog(_shared_anime(704, "226"), _shared_anime(4957, "376")))
+    animethemes.sync_catalog_to_metadata()
+    reference = entry_paths.make_theme_reference("ElfenLied-OP1.webm", "376", "OP1", "1")
+    monkeypatch.setattr(state.playback, "currently_playing", {})
+    monkeypatch.setattr(metadata_fetch, "_linked_metadata_complete", lambda *_args: True)
+    monkeypatch.setattr(metadata_fetch.requests, "get", lambda *_args, **_kwargs: pytest.fail("unexpected HTTP request"))
+
+    result = metadata_fetch.fetch_metadata(reference)
+
+    assert result["mal"] == "376"
+    assert result["title"] == "Elfen Lied Special"
+
+
+def test_manual_mal_refetch_retains_id_when_api_video_is_shared(monkeypatch):
+    animethemes.replace_catalog(_catalog(_shared_anime(704, "226"), _shared_anime(4957, "376")))
+    animethemes.sync_catalog_to_metadata()
+    fresh_special = _shared_anime(4957, "376", nsfw=True)
+    monkeypatch.setattr(state.playback, "currently_playing", {})
+    calls = []
+
+    def fake_get(_url, params):
+        calls.append(params)
+        assert params["filter[resource][external_id]"] == "376"
+        return _Response({"anime": [fresh_special]})
+
+    monkeypatch.setattr(metadata_fetch.requests, "get", fake_get)
+    monkeypatch.setattr(metadata_fetch, "fetch_arm_ids", lambda _mal_id: {"anilist": "101", "anidb": "1544"})
+    monkeypatch.setattr(metadata_fetch, "fetch_tenrai_metadata", lambda _mal_id: None)
+    monkeypatch.setattr(metadata_fetch, "fetch_anilist_metadata", lambda **_kwargs: (None, None))
+    monkeypatch.setattr(metadata_fetch, "fetch_anidb_metadata", lambda _anidb: {"tags": [], "characters": [], "episodes": []})
+    monkeypatch.setattr(metadata_fetch, "extract_video_file_properties", lambda _filename: {})
+
+    result = metadata_fetch.fetch_metadata("Special-OP1-[MAL]376.webm", refetch=True, batch_mode=True)
+
+    assert result["mal"] == "376"
+    assert all(song["nsfw"] for song in result["songs"])
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("field", ["nsfw", "spoiler"])
+def test_shared_catalog_projection_unions_flags_without_rewriting_raw_api(field):
+    main = _shared_anime(704, "226")
+    special = _shared_anime(4957, "376")
+    main["animethemes"][0]["animethemeentries"][0][field] = True
+    animethemes.replace_catalog(_catalog(main, special))
+
+    animethemes.sync_catalog_to_metadata()
+
+    for mal_id in ("226", "376"):
+        opening, ending = state.metadata.anime_metadata[mal_id]["songs"]
+        assert opening[field] is True
+        assert opening["versions"][0][field] is True
+        assert not ending.get(field)
+    assert special["animethemes"][0]["animethemeentries"][0][field] is False
+
+
+def test_shared_ending_spoiler_is_consistent_without_changing_episode_ranges():
+    anime = _anime(basename="StrikeWitchesS3-ED6-NCBD1080.webm")
+    ending = anime["animethemes"][0]
+    ending.update({"type": "ED", "slug": "ED6"})
+    ending["animethemeentries"][0]["episodes"] = "6"
+    finale = copy.deepcopy(ending)
+    finale["slug"] = "ED12"
+    finale["animethemeentries"][0].update({"episodes": "12", "spoiler": True})
+    anime["animethemes"].append(finale)
+    animethemes.replace_catalog(_catalog(anime))
+
+    animethemes.sync_catalog_to_metadata()
+
+    songs = state.metadata.anime_metadata["1"]["songs"]
+    assert all(song["spoiler"] and song["versions"][0]["spoiler"] for song in songs)
+    assert [song["episodes"] for song in songs] == ["6", "12"]
+
+
+def test_shared_flags_remain_specific_to_physical_video_versions():
+    main = _anime()
+    special = _anime(2, mal_id="2")
+    special["animethemes"][0]["animethemeentries"][0].update({"nsfw": True, "spoiler": True})
+    clean = copy.deepcopy(main["animethemes"][0]["animethemeentries"][0])
+    clean["version"] = 2
+    clean["videos"][0]["basename"] = "Different-OP1v2.webm"
+    main["animethemes"][0]["animethemeentries"].append(clean)
+    animethemes.replace_catalog(_catalog(main, special))
+
+    animethemes.sync_catalog_to_metadata()
+
+    song = state.metadata.anime_metadata["1"]["songs"][0]
+    first, second = song["versions"]
+    assert first["nsfw"] and first["spoiler"]
+    assert second["nsfw"] is False and second["spoiler"] is False
+    assert song["nsfw"] is True
+    assert not song.get("spoiler")
+
+
+@pytest.mark.parametrize("field", ["nsfw", "spoiler"])
+def test_saved_shared_video_flags_survive_missing_api_catalog_and_mp4_conversion(field):
+    for mal_id, filename, flagged in (("1", "Shared-OP1.webm", True), ("2", "Shared-OP1.mp4", False), ("3", "Other-OP1.webm", False)):
+        state.metadata.file_metadata[mal_id] = {"themes": {"OP1": {"1": {filename: {}}}}}
+        state.metadata.anime_metadata[mal_id] = {
+            "songs": [{"slug": "OP1", field: flagged, "versions": [{"version": 1, field: flagged}]}]
+        }
+
+    assert animethemes.reconcile_shared_video_flags() == 1
+
+    song = state.metadata.anime_metadata["2"]["songs"][0]
+    assert song[field] is True and song["versions"][0][field] is True
+    assert state.metadata.anime_metadata["3"]["songs"][0][field] is False
+    assert animethemes.reconcile_shared_video_flags() == 0
+
+
+def test_refetch_of_missing_api_nsfw_flag_keeps_shared_warning(monkeypatch):
+    main = _shared_anime(704, "226", nsfw=True)
+    special = _shared_anime(4957, "376")
+    animethemes.replace_catalog(_catalog(main, special))
+    animethemes.sync_catalog_to_metadata()
+    monkeypatch.setattr(state.playback, "currently_playing", {})
+    monkeypatch.setattr(metadata_fetch.requests, "get", lambda _url, params: _Response({"anime": [special]}))
+    monkeypatch.setattr(metadata_fetch, "fetch_tenrai_metadata", lambda _mal_id: None)
+    monkeypatch.setattr(metadata_fetch, "fetch_anilist_metadata", lambda **_kwargs: (None, None))
+    reference = entry_paths.make_theme_reference("ElfenLied-OP1.webm", "376", "OP1", "1")
+
+    result = metadata_fetch.fetch_metadata(reference, refetch=True, batch_mode=True)
+
+    assert result["mal"] == "376"
+    assert all(song["nsfw"] and song["versions"][0]["nsfw"] for song in result["songs"])
+    assert all(song["nsfw"] for song in metadata_fetch.get_metadata(reference)["songs"])
+    assert all(not theme["animethemeentries"][0]["nsfw"] for theme in special["animethemes"])
+
+
+def test_save_and_display_keep_shared_flags_after_stale_overrides(monkeypatch, tmp_path):
+    main = _shared_anime(704, "226", nsfw=True)
+    special = _shared_anime(4957, "376")
+    animethemes.replace_catalog(_catalog(main, special))
+    animethemes.sync_catalog_to_metadata()
+    state.metadata.anime_metadata_overrides["376"] = {
+        "songs": [{"slug": "OP1", "artist": ["Curated Artist"], "nsfw": False,
+                   "versions": [{"version": 1, "nsfw": False}]}]
+    }
+    reference = entry_paths.make_theme_reference("ElfenLied-OP1.webm", "376", "OP1", "1")
+    monkeypatch.setattr(state.playback, "currently_playing", {})
+    monkeypatch.setattr(metadata_fetch, "_linked_metadata_complete", lambda *_args: True)
+    saved = {}
+    io = metadata_fetch.metadata_io
+    monkeypatch.setattr(io, "FILE_METADATA_FILE", str(tmp_path / "file_metadata.json"))
+    monkeypatch.setattr(io, "save_metadata_compressed", lambda path, data, **_kwargs: saved.update({path: copy.deepcopy(data)}))
+
+    result = metadata_fetch.fetch_metadata(reference)
+    opening = next(song for song in result["songs"] if song["slug"] == "OP1")
+    assert opening["nsfw"] and opening["versions"][0]["nsfw"]
+    assert opening["artist"] == ["Curated Artist"]
+    io._do_save_metadata()
+
+    opening = saved[io.ANIME_METADATA_FILE]["376"]["songs"][0]
+    assert opening["nsfw"] and opening["versions"][0]["nsfw"]
+    assert opening["artist"] == ["Curated Artist"]
+
+
+def test_unique_video_keeps_its_existing_override_behavior():
+    anime = _anime()
+    anime["animethemes"][0]["animethemeentries"][0]["nsfw"] = True
+    animethemes.replace_catalog(_catalog(anime))
+    animethemes.sync_catalog_to_metadata()
+    songs = state.metadata.anime_metadata["1"]["songs"]
+    songs[0]["nsfw"] = False
+    songs[0]["versions"][0]["nsfw"] = False
+
+    assert animethemes.reconcile_shared_video_flags() == 0
+    assert not animethemes.apply_shared_video_flags("1", songs)[0]["nsfw"]
+
+
+def test_load_repairs_shared_flags_even_when_catalog_projection_is_current(monkeypatch, tmp_path):
+    main = _shared_anime(704, "226", nsfw=True)
+    special = _shared_anime(4957, "376")
+    animethemes.replace_catalog(_catalog(main, special))
+    animethemes.sync_catalog_to_metadata()
+    for song in state.metadata.anime_metadata["376"]["songs"]:
+        song["nsfw"] = False
+        song["versions"][0]["nsfw"] = False
+    io = metadata_fetch.metadata_io
+    stores = {
+        io.FILE_METADATA_FILE: copy.deepcopy(state.metadata.file_metadata),
+        io.ANIME_METADATA_FILE: copy.deepcopy(state.metadata.anime_metadata),
+        io.ANIMETHEMES_METADATA_FILE: copy.deepcopy(state.metadata.animethemes_metadata),
+    }
+    monkeypatch.setattr(io, "load_metadata_compressed", lambda path, **_kwargs: (copy.deepcopy(stores.get(path)), True))
+    for name in ("MANUAL_METADATA_FILE", "ANIME_METADATA_OVERRIDES_FILE", "THEME_ARTIST_RESOLUTIONS_FILE"):
+        monkeypatch.setattr(io, name, str(tmp_path / name))
+    saves = []
+    monkeypatch.setattr(io, "save_metadata", lambda: saves.append(True))
+    monkeypatch.setattr(animethemes, "sync_catalog_to_metadata", lambda: pytest.fail("current catalog projection should not rebuild"))
+
+    io.load_metadata()
+
+    assert all(song["nsfw"] and song["versions"][0]["nsfw"] for song in state.metadata.anime_metadata["376"]["songs"])
+    assert saves == [True]
 
 
 def test_projection_upgrade_repairs_legacy_fake_aired_value():

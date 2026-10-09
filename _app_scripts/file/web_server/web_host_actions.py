@@ -11,6 +11,7 @@ import threading
 import time
 from datetime import datetime
 
+from _app_scripts import utils
 from core.app_logging import get_logger
 from core.game_state import state
 import _app_scripts.file.web_server.web_server as web_server
@@ -559,9 +560,9 @@ def _handle_host_action(action: str, data: dict):
                                         d.setdefault(artist, []).append(fn)
                                     break
                         if _sort == 'alpha':
-                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                            groups_raw = sorted(d.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
                         else:
-                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
                     elif st.startswith('playlist'):
                         # Groups are the playlists themselves (listing order
                         # preserved); the sort mode applies to the themes inside.
@@ -579,7 +580,7 @@ def _handle_host_action(action: str, data: dict):
                             else:
                                 d.setdefault(series, []).append(fn)
                         if _sort == 'alpha':
-                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                            groups_raw = sorted(d.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
                         elif _sort == 'popularity':
                             def _spop(item):
                                 ranks = [metadata_fetch.get_metadata(fn).get('popularity') for fn in item[1]]
@@ -587,7 +588,7 @@ def _handle_host_action(action: str, data: dict):
                                 return min(ranks) if ranks else float('inf')
                             groups_raw = sorted(d.items(), key=_spop)
                         else:
-                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
                     elif _base == 'title':
                         d = {}
                         for fn in playlist_ops.get_cached_deduplicated_files():
@@ -601,7 +602,7 @@ def _handle_host_action(action: str, data: dict):
                                 return min(ranks) if ranks else float('inf')
                             groups_raw = sorted(d.items(), key=_tpop)
                         else:
-                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                            groups_raw = sorted(d.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
                     elif _base == 'season':
                         d = {}
                         for fn in playlist_ops.get_cached_deduplicated_files():
@@ -646,9 +647,9 @@ def _handle_host_action(action: str, data: dict):
                             for studio in meta.get('studios', []):
                                 d.setdefault(studio, []).append(fn)
                         if _sort == 'alpha':
-                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                            groups_raw = sorted(d.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
                         else:
-                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
                     elif _base == 'tag':
                         d = {}
                         for fn in playlist_ops.get_cached_deduplicated_files():
@@ -656,9 +657,9 @@ def _handle_host_action(action: str, data: dict):
                             for tag in information_popup.get_tags(meta):
                                 d.setdefault(tag, []).append(fn)
                         if _sort == 'alpha':
-                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                            groups_raw = sorted(d.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
                         else:
-                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
                     elif _base == 'anilist_tag':
                         d = {}
                         for fn in playlist_ops.get_cached_deduplicated_files():
@@ -672,16 +673,16 @@ def _handle_host_action(action: str, data: dict):
                                 if name:
                                     d.setdefault(name, []).append(fn)
                         if _sort == 'alpha':
-                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                            groups_raw = sorted(d.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
                         else:
-                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
                     elif _base == 'type':
                         d = {}
                         for fn in playlist_ops.get_cached_deduplicated_files():
                             meta = metadata_fetch.get_metadata(fn)
                             t = information_popup.get_format(meta) or 'Unknown'
                             d.setdefault(t, []).append(fn)
-                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                        groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
                     elif _base == 'slug':
                         d = {}
                         for fn in playlist_ops.get_cached_deduplicated_files():
@@ -689,9 +690,9 @@ def _handle_host_action(action: str, data: dict):
                             slug = meta.get('slug', 'Unknown')
                             d.setdefault(slug, []).append(fn)
                         if _sort == 'alpha':
-                            groups_raw = sorted(d.items(), key=lambda x: x[0].lower())
+                            groups_raw = sorted(d.items(), key=lambda x: utils.alphabetical_sort_key(x[0]))
                         else:
-                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), x[0].lower()))
+                            groups_raw = sorted(d.items(), key=lambda x: (-len(x[1]), utils.alphabetical_sort_key(x[0])))
                 except Exception as e:
                     print(f"[directory_groups error] {e}")
                 total = sum(len(files) for _, files in groups_raw)
@@ -779,7 +780,7 @@ def _handle_host_action(action: str, data: dict):
                             meta = metadata_fetch.get_metadata(fn)
                             if meta.get('slug', 'Unknown') == gl: files.append(fn)
                     if not _preserve_order:
-                        files.sort(key=lambda f: lists.get_title(f, f).lower())
+                        files.sort(key=lists.theme_sort_key)
                     play_history = web_search._build_play_history()
                     results = [web_search._build_theme_web_result(fn, play_history) for fn in files]
                 except Exception as e:

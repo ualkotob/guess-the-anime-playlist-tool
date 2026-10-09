@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import tkinter as tk
 from tkinter import simpledialog
 
+from _app_scripts import utils
 from core.game_state import state
 from core.app_logging import log_exception, log_warning
 from _app_scripts.file import modal_guard
@@ -41,6 +42,12 @@ _search_worker_lock = threading.Lock()
 _search_index_lock = threading.Lock()
 _search_index = None
 _search_index_key = None
+_catalog_matches = {}
+_index_prepare_lock = threading.Lock()
+# Rebuilding takes seconds of CPU; wait until the user stops changing themes.
+INDEX_REFRESH_DELAY = 10.0
+_index_refresh_timer = None
+_index_refresh_lock = threading.Lock()
 
 # ===========================================================================
 #  SEARCHING THEMES
@@ -211,6 +218,8 @@ class _SearchRow:
     sort_key: tuple
     theme_key: object
     file_priority: tuple
+    artists: tuple
+    studio_names: tuple
 
 
 def _search_data_key():
@@ -233,7 +242,7 @@ def _search_data_key():
 
 
 def _get_search_index():
-    global _search_index, _search_index_key
+    global _search_index, _search_index_key, _catalog_matches
     # Desktop and web searches share one index, including while it is rebuilt.
     with _search_index_lock:
         key = _search_data_key()
@@ -249,6 +258,8 @@ def _get_search_index():
                     if priority is None:
                         continue
                     metadata = metadata_fetch.get_metadata(theme_entry)
+                    song = next((song for song in metadata.get("songs") or []
+                                 if song.get("slug") == metadata.get("slug")), {})
                     title = (metadata.get("title") or "").lower()
                     english_title = (metadata.get("eng_title") or "").lower()
                     rows.append(_SearchRow(
@@ -256,12 +267,28 @@ def _get_search_index():
                         ", ".join(metadata.get("studios") or []).lower(),
                         re.sub(r"\s+", " ", str(metadata.get("season") or "").lower()).strip(),
                         information_popup.get_song_string(metadata, artist_limit=None).lower(),
-                        (english_title or title or theme_entry.lower(),
+                        (utils.alphabetical_sort_key(english_title or title or theme_entry),
                          metadata_fetch.song_slug_sort_key(metadata.get("slug") or "")),
                         (file_data["mal"], file_data["slug"])
                         if file_data.get("mal") and file_data.get("slug") else theme_entry,
                         priority,
+                        tuple(dict.fromkeys(song.get("artist") or [])),
+                        tuple(dict.fromkeys(metadata.get("studios") or [])),
                     ))
+        # Artist/studio counts use the same selected file and shared-theme
+        # identities as search. Build once, rather than scan for every label.
+        best_rows = {}
+        for row in rows:
+            previous = best_rows.get(row.theme_key)
+            if previous is None or row.file_priority < previous.file_priority:
+                best_rows[row.theme_key] = row
+        matches = {"artist": {}, "studio": {}}
+        for row in best_rows.values():
+            for field, names in (("artist", row.artists), ("studio", row.studio_names)):
+                for name in names:
+                    matches[field].setdefault(name, []).append(row.entry)
+        _catalog_matches = {field: {name: tuple(sorted(entries)) for name, entries in groups.items()}
+                            for field, groups in matches.items()}
         _search_index = rows
         # Lazy catalog initialization can change the key while constructing it.
         # Keep the original key so a concurrent metadata edit causes a rebuild.
@@ -271,12 +298,54 @@ def _get_search_index():
 
 def prepare_search_index():
     """Build searchable text after a directory scan, before the first query."""
+    if not _index_prepare_lock.acquire(blocking=False):
+        return
     def prepare():
         try:
             _get_search_index()
         except Exception:
             log_exception("Failed to prepare the theme search index")
-    threading.Thread(target=prepare, daemon=True).start()
+        finally:
+            _index_prepare_lock.release()
+    try:
+        threading.Thread(target=prepare, daemon=True).start()
+    except Exception:
+        _index_prepare_lock.release()
+        raise
+
+
+def _schedule_index_refresh():
+    """Refresh a stale index once theme changes settle, not during a render."""
+    global _index_refresh_timer
+    with _index_refresh_lock:
+        if _index_refresh_timer is not None:
+            _index_refresh_timer.cancel()
+        _index_refresh_timer = threading.Timer(INDEX_REFRESH_DELAY, prepare_search_index)
+        _index_refresh_timer.daemon = True
+        _index_refresh_timer.start()
+
+
+def get_catalog_matches(field, name, *, wait=True):
+    """Get indexed artist/studio themes; UI callers can request ready data only.
+
+    None means the first index is still being built. An empty list means a
+    completed lookup found no themes. A rendering callback never waits for the
+    indexing worker: it reads the last completed index, which a quiet-period
+    refresh brings up to date. Downloads and metadata fetches invalidate the
+    index on nearly every theme change, yet rarely change who sang a theme.
+    """
+    if wait:
+        _get_search_index()
+        with _search_index_lock:
+            return list(_catalog_matches.get(field, {}).get(name, ()))
+    if _search_index is None:
+        if not _search_index_lock.locked():
+            prepare_search_index()
+        return None
+    # Built together with _search_index; a rebuild replaces the whole mapping.
+    matches = _catalog_matches
+    _schedule_index_refresh()
+    return list(matches.get(field, {}).get(name, ()))
 
 
 def search_playlist(search_term):

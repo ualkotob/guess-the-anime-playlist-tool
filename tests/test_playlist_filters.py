@@ -272,6 +272,45 @@ def test_anisongdb_ecchi_nudity_filter_distinguishes_censor_coverage(monkeypatch
     ]
 
 
+@pytest.mark.parametrize("censored", [False, True])
+@pytest.mark.parametrize("theme_nsfw", [False, True])
+def test_matched_anisongdb_uses_nsfw_from_any_animethemes_version(monkeypatch, censored, theme_nsfw):
+    first = "Anime-OP1v1.webm"
+    second = "Anime-OP1v2.webm"
+    matched = "matched.webm"
+    unmatched = "unmatched.webm"
+    filenames = [first, second, matched, unmatched]
+    theme = {
+        "slug": "OP1", "nsfw": theme_nsfw,
+        "versions": [{"version": 1, "nsfw": False}, {"version": 2, "nsfw": True}],
+    }
+    base = {"slug": "OP1", "songs": [theme], "file_properties": {"source": "BD"}}
+    metadata = {
+        first: copy.deepcopy(base), second: copy.deepcopy(base),
+        matched: {**copy.deepcopy(base), "file_properties": {"source": "ANISONGDB", "anisongdb_alternate": True}},
+        unmatched: {
+            "slug": "OP2", "songs": [theme, {"slug": "OP2", "anisongdb_only": True}],
+            "file_properties": {"source": "ANISONGDB"},
+        },
+    }
+    monkeypatch.setattr(filters.metadata_fetch, "get_metadata", metadata.get)
+    monkeypatch.setattr(filters, "extract_version", lambda filename: 2 if filename == second else 1)
+    monkeypatch.setattr(filters.censors, "get_file_censors", lambda filename: [{"nsfw": True}] if censored and filename == matched else [])
+
+    assert filters.evaluate_filter({"themes_exclude": ["NSFW (Without Censors)"]}, filenames) == (
+        [first, matched, unmatched] if censored else [first, unmatched]
+    )
+    assert filters.evaluate_filter({"themes_exclude": ["NSFW (With Censors)"]}, filenames) == (
+        [first, second, unmatched] if censored else filenames
+    )
+    assert filters.evaluate_filter({"themes_include": ["NSFW (Without Censors)"]}, filenames) == (
+        [second] if censored else [second, matched]
+    )
+    assert filters.evaluate_filter({"themes_include": ["NSFW (With Censors)"]}, filenames) == (
+        [matched] if censored else []
+    )
+
+
 def test_filter_metadata_aggregation_processes_each_anime_once(monkeypatch):
     calls = []
     monkeypatch.setattr(

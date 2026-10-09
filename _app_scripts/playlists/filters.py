@@ -463,9 +463,9 @@ def _aggregate_filter_metadata(playlis):
 
     return {
         "seasons": sorted(seasons, key=_season_sort_key),
-        "artists": sorted(artists, key=str.lower),
-        "studios": sorted(studios, key=str.lower),
-        "tags": sorted(tags, key=str.lower),
+        "artists": sorted(artists, key=utils.alphabetical_sort_key),
+        "studios": sorted(studios, key=utils.alphabetical_sort_key),
+        "tags": sorted(tags, key=utils.alphabetical_sort_key),
         "ranges": {
             "score": value_range("score", 0, 10),
             "rank": value_range("rank"),
@@ -847,7 +847,7 @@ def get_all_artists(playlis):
             for song in data.get('songs', []):
                 for artist in song.get("artist", []):
                     artists.add(artist)
-    return sorted(artists, key=str.lower)
+    return sorted(artists, key=utils.alphabetical_sort_key)
 
 
 def get_all_tags(playlis=None, game=True, double=False):
@@ -867,7 +867,7 @@ def get_all_tags(playlis=None, game=True, double=False):
     else:
         for anime in state.metadata.anime_metadata.values():
             add_tag(anime)
-    return sorted(tags)
+    return sorted(tags, key=utils.alphabetical_sort_key)
 
 
 def get_all_studios(playlis, games=True, repeats=False):
@@ -878,7 +878,7 @@ def get_all_studios(playlis, games=True, repeats=False):
             for studio in data.get('studios', []):
                 if studio not in studios or repeats:
                     studios.append(studio)
-    return sorted(studios)
+    return sorted(studios, key=utils.alphabetical_sort_key)
 
 
 def get_saved_filter(name):
@@ -1338,7 +1338,14 @@ def evaluate_filter(filters, playlis=None):
                     if has_censors is None:
                         has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("SPOILER (With Censors)" if has_censors else "SPOILER (Without Censors)")
-                if needs_nsfw_check and source.get("nsfw"):
+                is_nsfw = bool(source.get("nsfw"))
+                if needs_nsfw_check and str((data.get("file_properties") or {}).get("source") or "").upper() == "ANISONGDB":
+                    # AniSongDB's version 1 is a storage slot, not a match to
+                    # AnimeThemes v1. Keep warnings from any matched version.
+                    is_nsfw |= bool(theme.get("nsfw")) or any(
+                        version.get("nsfw") for version in versions or []
+                    )
+                if needs_nsfw_check and is_nsfw:
                     if has_censors is None:
                         has_censors = bool(censors.get_file_censors(filename))
                     theme_flags.add("NSFW (With Censors)" if has_censors else "NSFW (Without Censors)")

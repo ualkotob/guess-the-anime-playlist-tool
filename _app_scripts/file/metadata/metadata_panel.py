@@ -1,5 +1,6 @@
 # Metadata panel rendering (right-column renderer).
 import re
+import threading
 import webbrowser
 import tkinter as tk
 from datetime import datetime
@@ -8,6 +9,7 @@ from tkinter import messagebox, simpledialog
 import pyperclip
 
 from core.game_state import state
+from core.app_logging import log_exception, watch_for_stall
 import _app_scripts.playback.cache_download as cache_download
 import _app_scripts.playback.streaming as streaming
 import _app_scripts.file.web_server.web_server as web_server
@@ -30,6 +32,68 @@ from _app_scripts.ui.scaling import scl
 # Module-level constants
 # ---------------------------------------------------------------------------
 stream_icon = '📶'
+_web_metadata_token = 0
+_web_metadata_lock = threading.Lock()
+
+
+def _web_catalog_details(metadata, filename, *, wait):
+    """Add indexed artist/studio details without delaying the initial themes."""
+    from _app_scripts.search import search
+    current_theme = dict(metadata.get("current_theme") or {})
+    artists = current_theme.get("artists") or []
+    studios = metadata.get("studios") or []
+    groups = {}
+    for field, names in (("artist", artists), ("studio", studios)):
+        for name in names:
+            matches = search.get_catalog_matches(field, name, wait=wait)
+            if matches is None:
+                return None
+            groups[field, name] = matches
+    if artists:
+        current_theme["artist_themes"] = {
+            name: information_popup.get_artist_themes_data(
+                name, filename, include_current=True, filenames=groups["artist", name])
+            for name in artists
+        }
+    if studios:
+        current_theme["studio_entries"] = {
+            name: information_popup.get_studio_entries_data(
+                name, filename, include_current=True, filenames=groups["studio", name])
+            for name in studios
+        }
+        current_theme["studio_entry_total"] = sum(
+            int(details.get("entry_count", 0) or 0)
+            for details in current_theme["studio_entries"].values()
+        )
+    return {**metadata, "current_theme": current_theme} if current_theme else dict(metadata)
+
+
+def _publish_web_metadata(metadata, filename):
+    """Publish themes now; only the optional catalog details may arrive later."""
+    global _web_metadata_token
+    playing = state.playback.currently_playing
+    identity = (playing.get("playlist_entry"), playing.get("data"))
+    ready = _web_catalog_details(metadata, filename, wait=False)
+    with _web_metadata_lock:
+        _web_metadata_token += 1
+        token = _web_metadata_token
+        web_server.push_metadata(ready if ready is not None else metadata)
+    if ready is not None:
+        return
+
+    def enrich():
+        try:
+            details = _web_catalog_details(metadata, filename, wait=True)
+            with _web_metadata_lock:
+                playing = state.playback.currently_playing
+                if (token == _web_metadata_token and web_server.is_running()
+                        and playing.get("filename") == filename
+                        and playing.get("playlist_entry") == identity[0]
+                        and playing.get("data") is identity[1]):
+                    web_server.push_metadata(details)
+        except Exception:
+            log_exception("Failed to prepare web Info artist/studio details for %s", filename)
+    threading.Thread(target=enrich, daemon=True).start()
 
 
 def _has_anilist_fallback(data, selected_extra_metadata):
@@ -581,7 +645,7 @@ def update_metadata():
                 left_column.insert(tk.END, "STUDIOS: ", "bold")
                 for index, studio in enumerate(data.get("studios", [])):
                     left_column.insert(tk.END, f"{studio}", "white")
-                    metadata_display.add_field_total_button(left_column, metadata_display.get_filenames_from_studio(studio), blank = False, title=studio)
+                    metadata_display.add_catalog_total_button(left_column, "studio", studio)
                     if index < len(data.get("studios"))-1:
                         left_column.insert(tk.END, ", ", "white")
                 if data.get("series"):
@@ -720,24 +784,8 @@ def update_metadata():
                         "flags": _v_flags,
                         "file_props": metadata_display.get_file_props_label(filename) if filename else "",
                     }
-                    # Add artist themes data for each artist in current theme
-                    if _ct_artists:
-                        _artist_themes_map = {}
-                        for _artist in _ct_artists:
-                            _artist_themes_map[_artist] = information_popup.get_artist_themes_data(_artist, filename, include_current=True)
-                        _web_meta["current_theme"]["artist_themes"] = _artist_themes_map
-                    _ct_studios = data.get("studios", []) or []
-                    if _ct_studios:
-                        _studio_entries_map = {}
-                        _studio_total = 0
-                        for _studio in _ct_studios:
-                            _s_data = information_popup.get_studio_entries_data(_studio, filename, include_current=True)
-                            _studio_entries_map[_studio] = _s_data
-                            _studio_total += int(_s_data.get("entry_count", 0) or 0)
-                        _web_meta["current_theme"]["studio_entries"] = _studio_entries_map
-                        _web_meta["current_theme"]["studio_entry_total"] = _studio_total
                 _web_meta["series_themes"] = metadata_display._build_web_series_themes(data, filename)
-                web_server.push_metadata(_web_meta)
+                _publish_web_metadata(_web_meta, filename)
                 playlist_marks._push_web_marks(filename)
     except Exception:
         import traceback
@@ -881,7 +929,13 @@ def _auto_init_section_collapse(mal_key, theme_list, playing_slug):
     for section_type in _select_auto_collapsed_sections(theme_list, playing_slug):
         _collapsed_sections.add((mal_key, section_type))
 
+@watch_for_stall("Render desktop theme list")
 def update_series_song_information(data, mal, rerender=False, scroll_to=None):
+    with metadata_display.theme_render_snapshot():
+        return _update_series_song_information(data, mal, rerender, scroll_to)
+
+
+def _update_series_song_information(data, mal, rerender=False, scroll_to=None):
     middle_column = state.widgets.middle_column
     middle_column.config(state=tk.NORMAL)
     middle_column.delete("1.0", tk.END)
@@ -1167,7 +1221,7 @@ def add_op_ed(theme, column, slug, title, mal_id):
         for index, artist in enumerate(artist_list):
             column.insert(tk.END, f"{artist}", format)
             if theme_slug == slug:
-                metadata_display.add_field_total_button(column, metadata_display.get_filenames_from_artist(artist), blank=False, title=artist)
+                metadata_display.add_catalog_total_button(column, "artist", artist)
             if index < len(artist_list) - 1:
                 column.insert(tk.END, ", ", format)
 

@@ -1,4 +1,5 @@
 import os
+import threading
 
 import pytest
 
@@ -126,3 +127,81 @@ def test_load_registers_untracked_files_and_trims_to_limit(cache_dir, monkeypatc
     assert remaining == [second]
     assert sum(path.stat().st_size for path in remaining) <= 10
     assert set(cache_download.cache_metadata) == {"second.webm"}
+
+
+@pytest.mark.parametrize("operation", ["evict", "save"])
+def test_cache_reads_do_not_wait_for_slow_disk_work(cache_dir, monkeypatch, operation):
+    from _app_scripts import utils
+    old_path = _cached_file(cache_dir, "old.webm", 6)
+    kept_path = _cached_file(cache_dir, "kept.webm", 6)
+    cache_download.cache_metadata.update({
+        "old.webm": {"path": "old.webm", "size": 6, "last_played": "1"},
+        "kept.webm": {"path": "kept.webm", "size": 6, "last_played": "2"},
+    })
+    blocked, release, read_done = threading.Event(), threading.Event(), threading.Event()
+    results = []
+    real_remove = os.remove
+    def slow_remove(path):
+        if path == str(old_path):
+            blocked.set()
+            assert release.wait(3)
+        real_remove(path)
+    def slow_write(*args, **kwargs):
+        blocked.set()
+        assert release.wait(3)
+    if operation == "evict":
+        monkeypatch.setattr(cache_download, "_cache_limit_bytes", lambda: 6)
+        monkeypatch.setattr(cache_download.os, "remove", slow_remove)
+        writer = threading.Thread(target=cache_download.evict_cache_for_size, args=(0,))
+    else:
+        monkeypatch.setattr(utils, "_atomic_json_write", slow_write)
+        writer = threading.Thread(target=cache_download.save_cache_metadata)
+    def read():
+        results.append(cache_download.get_cached_file_path("kept.webm"))
+        results.append(cache_download.available_cached_files().get("kept.webm"))
+        read_done.set()
+    writer.start()
+    reader = threading.Thread(target=read)
+    try:
+        assert blocked.wait(2)
+        reader.start()
+        assert read_done.wait(1), "UI lookup waited for cache disk work"
+    finally:
+        release.set()
+        writer.join(3)
+        if reader.ident is not None:
+            reader.join(3)
+    assert results == [str(kept_path), str(kept_path)]
+    assert not writer.is_alive()
+
+
+def test_partial_downloads_are_excluded_from_availability(cache_dir):
+    _cached_file(cache_dir, "partial.webm.part", 4)
+    assert "partial.webm.part" not in cache_download.available_cached_files()
+
+
+def test_saving_play_counts_does_not_change_cache_availability(cache_dir):
+    _cached_file(cache_dir, "song.webm", 4)
+    cache_download.cache_metadata["song.webm"] = {"path": "song.webm", "play_count": 0}
+    cache_download.save_cache_metadata()
+    key = cache_download.cache_availability_key()
+    cache_download.cache_metadata["song.webm"]["play_count"] = 1
+    cache_download.save_cache_metadata()  # Atomic replace touches the folder.
+    assert cache_download.cache_availability_key() == key
+    assert "cache_metadata.json" not in cache_download.available_cached_files()
+    _cached_file(cache_dir, "legacy.webm", 4)
+    assert cache_download.cache_availability_key() != key
+
+
+def test_play_count_update_does_not_wait_for_cache_writer(cache_dir, monkeypatch):
+    from types import SimpleNamespace
+    cache_download.cache_metadata["song.webm"] = {"play_count": 0}
+    scheduled = []
+    monkeypatch.setattr(cache_download, "_cache_save_timer", None)
+    monkeypatch.setattr(cache_download.threading, "Timer", lambda delay, callback:
+                        SimpleNamespace(start=lambda: scheduled.append(callback)))
+    monkeypatch.setattr(cache_download, "save_cache_metadata", lambda:
+                        pytest.fail("Playback wrote to disk synchronously"))
+    cache_download.update_cache_play_count("song.webm")
+    assert cache_download.cache_metadata["song.webm"]["play_count"] == 1
+    assert len(scheduled) == 1

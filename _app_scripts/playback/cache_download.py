@@ -15,7 +15,7 @@ from tkinter import ttk
 import requests
 
 from core.game_state import state
-from core.app_logging import log_warning
+from core.app_logging import log_exception, log_warning
 from core.app_meta import APP_VERSION
 from core.paths import THEMES_CACHE_FOLDER, CACHE_METADATA_FILE
 import _app_scripts.search.search as search_ops
@@ -38,6 +38,10 @@ download_ui_update_pending = False
 pending_play_queue      = {}   # {filename: {playlist_entry, fullscreen, start_time, timeout}}
 download_progress       = {}   # {filename: {downloaded_mb, total_mb, popup, progress_bar, status_label}}
 _cache_lock             = threading.RLock()
+# Disk work is serialized separately; playback only needs the short state lock.
+_cache_io_lock          = threading.RLock()
+_cache_save_timer       = None
+_cache_save_lock        = threading.Lock()
 _download_failures      = {}   # filename -> policy active when its sources failed
 
 
@@ -216,28 +220,34 @@ def downloaded_fallback_entry(playlist_entry):
 
 def load_cache_metadata():
     global cache_metadata
-    with _cache_lock:
+    with _cache_io_lock:
         try:
             if os.path.exists(CACHE_METADATA_FILE):
                 with open(CACHE_METADATA_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                cache_metadata = loaded if isinstance(loaded, dict) else {}
+                with _cache_lock:
+                    cache_metadata = loaded if isinstance(loaded, dict) else {}
             else:
-                cache_metadata = {}
+                with _cache_lock:
+                    cache_metadata = {}
         except Exception as e:
             print(f"Error loading cache metadata: {e}")
-            cache_metadata = {}
+            with _cache_lock:
+                cache_metadata = {}
 
         _reconcile_cache_metadata()
         evict_cache_for_size(0)
 
 
 def save_cache_metadata():
-    with _cache_lock:
+    from _app_scripts.utils import _atomic_json_write
+    with _cache_io_lock:
+        with _cache_lock:
+            snapshot = {name: dict(info) for name, info in cache_metadata.items()
+                        if isinstance(info, dict)}
         try:
             os.makedirs(os.path.dirname(CACHE_METADATA_FILE), exist_ok=True)
-            with open(CACHE_METADATA_FILE, "w", encoding="utf-8") as f:
-                json.dump(cache_metadata, f, indent=2)
+            _atomic_json_write(CACHE_METADATA_FILE, snapshot, indent=2)
         except Exception as e:
             print(f"Error saving cache metadata: {e}")
 
@@ -266,17 +276,20 @@ def _cleanup_empty_cache_dirs(cache_path):
 
 def _reconcile_cache_metadata():
     """Make metadata reflect every file actually present in the cache folder."""
+    with _cache_lock:
+        reconciled = {name: dict(info) if isinstance(info, dict) else info
+                      for name, info in cache_metadata.items()}
     metadata_path = os.path.normcase(os.path.abspath(CACHE_METADATA_FILE))
     known_paths = set()
 
-    for filename, metadata in list(cache_metadata.items()):
+    for filename, metadata in list(reconciled.items()):
         if not isinstance(metadata, dict):
-            del cache_metadata[filename]
+            del reconciled[filename]
             continue
         rel_path = metadata.get("path", filename)
         cache_path = _cache_path(rel_path)
         if not os.path.isfile(cache_path):
-            del cache_metadata[filename]
+            del reconciled[filename]
             continue
         metadata["size"] = os.path.getsize(cache_path)
         known_paths.add(os.path.normcase(os.path.abspath(cache_path)))
@@ -292,9 +305,9 @@ def _reconcile_cache_metadata():
                     continue
                 rel_path = os.path.relpath(cache_path, THEMES_CACHE_FOLDER)
                 key = basename
-                if key in cache_metadata:
+                if key in reconciled:
                     key = f"__orphan__:{rel_path}"
-                cache_metadata[key] = {
+                reconciled[key] = {
                     "path": rel_path,
                     "size": os.path.getsize(cache_path),
                     "play_count": 0,
@@ -302,6 +315,9 @@ def _reconcile_cache_metadata():
                 }
                 known_paths.add(normalized_path)
 
+    with _cache_lock:
+        cache_metadata.clear()
+        cache_metadata.update(reconciled)
     save_cache_metadata()
 
 
@@ -309,53 +325,58 @@ def _reconcile_cache_metadata():
 
 def get_cached_file_path(filename):
     """Return full path to a cached file, or None if not cached."""
+    candidates = entry_paths.get_interchangeable_filenames(filename)
     with _cache_lock:
-        for candidate in entry_paths.get_interchangeable_filenames(filename):
-            if candidate in cache_metadata:
-                rel_path = cache_metadata[candidate].get("path", candidate)
-                cache_path = _cache_path(rel_path)
-                if os.path.exists(cache_path):
-                    return cache_path
-            # Fallback: flat legacy structure
-            cache_path = _cache_path(candidate)
-            if os.path.exists(cache_path):
-                return cache_path
+        paths = []
+        for candidate in candidates:
+            info = cache_metadata.get(candidate)
+            if isinstance(info, dict):
+                paths.append(_cache_path(info.get("path", candidate)))
+            paths.append(_cache_path(candidate))  # Flat legacy structure.
+    for path in dict.fromkeys(paths):
+        if os.path.exists(path):
+            return path
     return None
+
+
+def _flat_cache_files():
+    """Completed files in the flat legacy cache, including conversions."""
+    metadata_name = os.path.basename(CACHE_METADATA_FILE)
+    try:
+        with os.scandir(THEMES_CACHE_FOLDER) as entries:
+            return {entry.name: entry.path for entry in entries
+                    if not entry.name.endswith((".part", ".tmp"))
+                    and entry.name != metadata_name and entry.is_file()}
+    except OSError:
+        return {}
 
 
 def cache_availability_key():
     """Track cache additions, removals and conversions for catalog consumers.
 
     Check registered downloads only, rather than probing every remote song.
-    The folder timestamp also detects files in the flat legacy cache.
+    List flat legacy files by name: the folder timestamp also changes on every
+    atomic save of the cache metadata file, i.e. after each cached play.
     Play-count updates do not affect availability.
     """
     with _cache_lock:
-        paths = tuple((filename, get_cached_file_path(filename)) for filename in cache_metadata)
-        try:
-            folder_timestamp = os.stat(THEMES_CACHE_FOLDER).st_mtime_ns
-        except OSError:
-            folder_timestamp = None
-        return paths, folder_timestamp
+        filenames = tuple(cache_metadata)
+    paths = tuple((filename, get_cached_file_path(filename)) for filename in filenames)
+    return paths, tuple(sorted(_flat_cache_files()))
 
 
 def available_cached_files():
     """Snapshot downloaded paths without probing each remote catalog filename."""
     with _cache_lock:
-        paths = {}
-        for filename in cache_metadata:
-            path = get_cached_file_path(filename)
-            if path:
-                paths[filename] = path
-        # Preserve support for flat legacy files not registered in metadata.
-        try:
-            with os.scandir(THEMES_CACHE_FOLDER) as entries:
-                for entry in entries:
-                    if entry.is_file():
-                        paths.setdefault(entry.name, entry.path)
-        except OSError:
-            pass
-        return paths
+        filenames = tuple(cache_metadata)
+    paths = {}
+    for filename in filenames:
+        path = get_cached_file_path(filename)
+        if path:
+            paths[filename] = path
+    for name, path in _flat_cache_files().items():
+        paths.setdefault(name, path)
+    return paths
 
 
 def _metadata_year_season(data):
@@ -398,7 +419,20 @@ def update_cache_play_count(filename):
         if filename in cache_metadata:
             cache_metadata[filename]["play_count"] = cache_metadata[filename].get("play_count", 0) + 1
             cache_metadata[filename]["last_played"] = datetime.now().isoformat()
-            save_cache_metadata()
+        else:
+            return
+    # A play must not wait behind a worker doing cache eviction or disk writes.
+    global _cache_save_timer
+    with _cache_save_lock:
+        if _cache_save_timer is None:
+            def save():
+                global _cache_save_timer
+                with _cache_save_lock:
+                    _cache_save_timer = None
+                save_cache_metadata()
+            _cache_save_timer = threading.Timer(0.5, save)
+            _cache_save_timer.daemon = True
+            _cache_save_timer.start()
 
 
 def evict_cache_for_size(needed_size_bytes):
@@ -407,7 +441,7 @@ def evict_cache_for_size(needed_size_bytes):
     Returns True when enough space was freed.
     """
     needed_size_bytes = max(0, int(needed_size_bytes))
-    with _cache_lock:
+    with _cache_io_lock:
         cache_limit_bytes = _cache_limit_bytes()
         # A completed download always wins over older cache entries. If that
         # one file is larger than the configured cap, retain it as the sole
@@ -417,15 +451,20 @@ def evict_cache_for_size(needed_size_bytes):
         current_size = 0
         cached_files = []
         metadata_changed = False
-        for filename, metadata in list(cache_metadata.items()):
+        with _cache_lock:
+            records = [(name, dict(info) if isinstance(info, dict) else info)
+                       for name, info in cache_metadata.items()]
+        for filename, metadata in records:
             if not isinstance(metadata, dict):
-                del cache_metadata[filename]
+                with _cache_lock:
+                    cache_metadata.pop(filename, None)
                 metadata_changed = True
                 continue
             rel_path = metadata.get("path", filename)
             cache_path = _cache_path(rel_path)
             if not os.path.isfile(cache_path):
-                del cache_metadata[filename]
+                with _cache_lock:
+                    cache_metadata.pop(filename, None)
                 metadata_changed = True
                 continue
             try:
@@ -433,7 +472,9 @@ def evict_cache_for_size(needed_size_bytes):
             except OSError:
                 continue
             if metadata.get("size") != actual_size:
-                metadata["size"] = actual_size
+                with _cache_lock:
+                    if filename in cache_metadata:
+                        cache_metadata[filename]["size"] = actual_size
                 metadata_changed = True
             current_size += actual_size
             cached_files.append({
@@ -460,7 +501,8 @@ def evict_cache_for_size(needed_size_bytes):
                 os.remove(file_info["path"])
                 _cleanup_empty_cache_dirs(file_info["path"])
                 space_freed += file_info["size"]
-                cache_metadata.pop(filename, None)
+                with _cache_lock:
+                    cache_metadata.pop(filename, None)
                 metadata_changed = True
             except Exception as e:
                 print(f"Error evicting {filename}: {e}")
@@ -478,17 +520,19 @@ def _finalize_cached_file(filename, rel_path, cache_path):
     temporarily over its target (for example, because an old file is locked).
     """
     actual_size = os.path.getsize(cache_path)
-    with _cache_lock:
+    with _cache_io_lock:
         # A stale record for this filename must not make the new file count twice.
-        cache_metadata.pop(filename, None)
+        with _cache_lock:
+            cache_metadata.pop(filename, None)
         eviction_complete = evict_cache_for_size(actual_size)
 
-        cache_metadata[filename] = {
-            "path": rel_path,
-            "size": actual_size,
-            "play_count": 0,
-            "last_played": datetime.now().isoformat(),
-        }
+        with _cache_lock:
+            cache_metadata[filename] = {
+                "path": rel_path,
+                "size": actual_size,
+                "play_count": 0,
+                "last_played": datetime.now().isoformat(),
+            }
         save_cache_metadata()
         return eviction_complete
 
@@ -1013,7 +1057,7 @@ def move_cached_file_to_directory(filename, button=None):
             with _cache_lock:
                 if filename in cache_metadata:
                     del cache_metadata[filename]
-                    save_cache_metadata()
+            save_cache_metadata()
 
             mb = os.path.getsize(dest_path) / 1024 / 1024
             update_button(f"✓ {mb:.1f} MB")
@@ -1104,11 +1148,6 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
     if explicit_file:
         context["explicit_file"] = True
     path_allowed = source_preferences.matches_selected_file if explicit_file else source_preferences.downloaded_allowed
-    if is_downloading(filename):
-        print(f"Download in progress, queuing play: {filename}")
-        queue_play_when_ready(filename, playlist_entry, fullscreen)
-        return None
-
     # Explicit filepath already embedded in the playlist entry (e.g. streaming fallback)
     if isinstance(playlist_entry, dict) and 'filepath' in playlist_entry:
         filepath = playlist_entry['filepath']
@@ -1123,6 +1162,12 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
         if not filepath:
             return (None, False)
         return (filepath, is_stream)
+
+    # A forced stream above can start while a cancelled worker shuts down.
+    if is_downloading(filename):
+        print(f"Download in progress, queuing play: {filename}")
+        queue_play_when_ready(filename, playlist_entry, fullscreen)
+        return None
 
     # Use the pre-resolved local filepath supplied by the caller
     filepath = local_filepath
@@ -1260,6 +1305,18 @@ def check_download_ui_updates():
     Reschedules itself every 500 ms via root.after().  The initial call is placed
     by main with root.after(500, cache_download.check_download_ui_updates).
     """
+    try:
+        _check_download_ui_updates()
+    except Exception:
+        log_exception("Download UI update failed; polling will continue")
+    finally:
+        try:
+            state.widgets.root.after(500, check_download_ui_updates)
+        except tk.TclError:
+            pass  # The app has closed.
+
+
+def _check_download_ui_updates():
     global download_ui_update_pending, pending_play_queue, download_progress
 
     if download_ui_update_pending:
@@ -1301,6 +1358,8 @@ def check_download_ui_updates():
                     transport.play_filename(pe, fs),
             )
         elif elapsed > play_info["timeout"]:
+            log_warning("Download exceeded %ss; switching to streaming: %s (worker active=%s)",
+                        play_info["timeout"], fn, fn in active_downloads)
             print(
                 f"Download timeout ({play_info['timeout']}s), "
                 f"falling back to streaming: {fn}"
@@ -1329,5 +1388,3 @@ def check_download_ui_updates():
 
     for fn in completed:
         pending_play_queue.pop(fn, None)
-
-    state.widgets.root.after(500, check_download_ui_updates)

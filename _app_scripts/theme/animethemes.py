@@ -12,6 +12,7 @@ no downloaded metadata package and no local theme directory.
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Callable
 
@@ -34,6 +35,13 @@ INCLUDE_PATHS = (
 
 _indexes: dict[str, dict] = {}
 _index_signature = None
+SAFETY_FLAGS = ("nsfw", "spoiler")
+
+
+def _video_key(filename) -> str:
+    basename = os.path.basename(str(filename or "")).casefold()
+    stem, extension = os.path.splitext(basename)
+    return stem if extension in (".webm", ".mp4") else basename
 
 
 def _catalog() -> dict:
@@ -136,6 +144,24 @@ def replace_catalog(catalog: dict) -> None:
     build_indexes(force=True)
 
 
+def update_cached_anime(anime: dict) -> bool:
+    """Keep a live refetch authoritative over the retained catalog row."""
+    if not has_catalog() or anime.get("id") is None:
+        return False
+    rows = _catalog()["anime"]
+    for index, previous in enumerate(rows):
+        if str(previous.get("id")) != str(anime["id"]):
+            continue
+        # Per-file lookups omit some catalog relationships, such as studios.
+        updated = {**previous, **anime}
+        if updated == previous:
+            return False
+        rows[index] = updated
+        build_indexes(force=True)
+        return True
+    return False
+
+
 def _resource_id(anime: dict, site: str) -> str | None:
     for resource in anime.get("resources") or []:
         if not isinstance(resource, dict) or resource.get("site") != site:
@@ -168,6 +194,8 @@ def build_indexes(*, force=False) -> None:
     by_basename = {}
     by_prefix = {}
     by_mal = {}
+    video_flags = {}
+    video_owners = {}
     for anime in _catalog().get("anime", []):
         if not isinstance(anime, dict):
             continue
@@ -189,12 +217,140 @@ def build_indexes(*, force=False) -> None:
                     lowered = basename.casefold()
                     by_basename.setdefault(lowered, anime)
                     by_prefix.setdefault(lowered.split("-", 1)[0], anime)
+                    flags = video_flags.setdefault(_video_key(basename), {})
+                    video_owners.setdefault(_video_key(basename), set()).add(
+                        (anime.get("id"), theme.get("slug"), _version_key(entry.get("version")))
+                    )
+                    for field in SAFETY_FLAGS:
+                        flags[field] = flags.get(field, False) or bool(entry.get(field))
     _indexes = {
         "basename": by_basename,
         "prefix": by_prefix,
         "mal": by_mal,
+        "video_flags": video_flags,
+        "catalog_shared_videos": {key for key, owners in video_owners.items() if len(owners) > 1},
+        "shared_videos": {key for key, owners in video_owners.items() if len(owners) > 1},
     }
     _index_signature = signature
+
+
+def entry_flags(entry: dict) -> dict:
+    """Use every known safety flag for a video, including its other owners."""
+    build_indexes()
+    result = {field: bool(entry.get(field)) for field in SAFETY_FLAGS}
+    for video in entry.get("videos") or []:
+        if not isinstance(video, dict):
+            continue
+        key = _video_key(video.get("basename"))
+        flags = _indexes["video_flags"].get(key, {}) if key in _indexes["shared_videos"] else {}
+        for field in SAFETY_FLAGS:
+            result[field] |= bool(flags.get(field))
+    return result
+
+
+def _version_key(version) -> str:
+    return "null" if version in (None, "null") else str(version)
+
+
+def apply_shared_video_flags(key: str, songs: list) -> list:
+    """Apply video safety flags after merging an anime's metadata or overrides."""
+    build_indexes()
+    themes = state.metadata.file_metadata.get(key, {}).get("themes", {})
+    result = []
+    for song in songs:
+        file_versions = themes.get(song.get("slug"), {})
+        versions = []
+        for version in song.get("versions") or []:
+            updated = dict(version)
+            for filename in file_versions.get(_version_key(version.get("version")), {}):
+                video_key = _video_key(filename)
+                flags = _indexes["video_flags"].get(video_key, {}) if video_key in _indexes["shared_videos"] else {}
+                for field in SAFETY_FLAGS:
+                    if flags.get(field):
+                        updated[field] = True
+            versions.append(updated)
+        updated_song = dict(song)
+        if versions:
+            updated_song["versions"] = versions
+            if any(version.get("nsfw") for version in versions):
+                updated_song["nsfw"] = True
+            if all(version.get("spoiler") for version in versions):
+                updated_song["spoiler"] = True
+        else:
+            for files in file_versions.values():
+                for filename in files:
+                    video_key = _video_key(filename)
+                    flags = _indexes["video_flags"].get(video_key, {}) if video_key in _indexes["shared_videos"] else {}
+                    for field in SAFETY_FLAGS:
+                        if flags.get(field):
+                            updated_song[field] = True
+        result.append(updated_song)
+    return result
+
+
+def reconcile_shared_video_flags() -> int:
+    """Keep the union of API and saved safety flags for every physical video."""
+    build_indexes()
+    owners = []
+    groups = {}
+    for key, file_entry in state.metadata.file_metadata.items():
+        songs = {
+            song.get("slug"): song
+            for song in state.metadata.anime_metadata.get(key, {}).get("songs") or []
+        }
+        for slug, file_versions in file_entry.get("themes", {}).items():
+            song = songs.get(slug)
+            if not song:
+                continue
+            versions = {
+                _version_key(version.get("version")): version
+                for version in song.get("versions") or []
+            }
+            for version_key, files in file_versions.items():
+                version = versions.get(_version_key(version_key), song)
+                flags = {field: bool(version.get(field)) for field in SAFETY_FLAGS}
+                owner = len(owners)
+                owners.append(flags)
+                for filename, properties in files.items():
+                    video_key = _video_key(filename)
+                    groups.setdefault(video_key, []).append(owner)
+                    known = _indexes["video_flags"].setdefault(video_key, {})
+                    for field in SAFETY_FLAGS:
+                        known[field] = bool(known.get(field)) or bool(isinstance(properties, dict) and properties.get(field))
+
+    _indexes["shared_videos"] = _indexes["catalog_shared_videos"] | {
+        video_key for video_key, owner_ids in groups.items() if len(set(owner_ids)) > 1
+    }
+
+    # One entry can contain multiple encodes. Propagate until every shared
+    # file and every version that contains it agree on the safety flags.
+    changed = True
+    while changed:
+        changed = False
+        for video_key, owner_ids in groups.items():
+            flags = _indexes["video_flags"][video_key]
+            for field in SAFETY_FLAGS:
+                flags[field] = flags.get(field, False) or any(owners[owner].get(field) for owner in owner_ids)
+                if flags[field]:
+                    for owner in owner_ids:
+                        if not owners[owner][field]:
+                            owners[owner][field] = True
+                            changed = True
+
+    updated_count = 0
+    for key, anime in state.metadata.anime_metadata.items():
+        songs = anime.get("songs")
+        if not songs or key not in state.metadata.file_metadata:
+            continue
+        updated = apply_shared_video_flags(key, songs)
+        if updated != songs:
+            anime["songs"] = updated
+            updated_count += 1
+    if updated_count:
+        from _app_scripts.file.metadata import metadata_fetch
+
+        metadata_fetch.invalidate_metadata_cache()
+    return updated_count
 
 
 def find_anime(*, filename=None, mal_id=None, split=True) -> dict | None:
@@ -258,8 +414,7 @@ def _theme_song(theme: dict) -> dict | None:
         version_data = {
             "version": entry.get("version"),
             "episodes": entry.get("episodes", "N/A"),
-            "spoiler": bool(entry.get("spoiler")),
-            "nsfw": bool(entry.get("nsfw")),
+            **entry_flags(entry),
         }
         overlap = _entry_overlap(entry)
         if overlap is not None:
@@ -276,11 +431,11 @@ def _theme_song(theme: dict) -> dict | None:
             if isinstance(artist, dict) and artist.get("name")
         ],
         "episodes": entries[0].get("episodes") if entries else None,
-        "nsfw": any(bool(entry.get("nsfw")) for entry in entries),
+        "nsfw": any(version.get("nsfw") for version in versions),
         "versions": versions,
         CATALOG_MARKER: True,
     }
-    if entries and all(bool(entry.get("spoiler")) for entry in entries):
+    if versions and all(version.get("spoiler") for version in versions):
         result["spoiler"] = True
     overlaps = [version.get("overlap") for version in versions]
     meaningful_overlaps = [value for value in overlaps if value not in (None, "None")]
@@ -518,6 +673,7 @@ def sync_catalog_to_metadata() -> int:
     for anime in _catalog().get("anime", []):
         if isinstance(anime, dict):
             registered += _register_anime(anime)
+    reconcile_shared_video_flags()
     _catalog()["projection_version"] = PROJECTION_VERSION
     build_indexes(force=True)
     _refresh_runtime_lookup()

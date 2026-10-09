@@ -12,6 +12,7 @@ Sibling helpers are imported directly, including the playback hub
 
 from core.game_state import state
 
+from _app_scripts import utils
 from _app_scripts.search import search as search_ops
 from _app_scripts.file.metadata import metadata_fetch, metadata_display
 from _app_scripts.information import information_popup
@@ -30,7 +31,7 @@ def get_all_anime_titles():
         if t and t != "No Title Found" and t not in seen:
             seen.add(t)
             titles.append(t)
-    return sorted(titles)
+    return sorted(titles, key=utils.alphabetical_sort_key)
 
 
 def _invoke_registry_by_id(item_id: str):

@@ -62,6 +62,7 @@ def catalog(monkeypatch, tmp_path):
     monkeypatch.setattr(metadata_display.censors, "_youtube_censor_list", {})
     monkeypatch.setattr(search_ops, "_search_index", None)
     monkeypatch.setattr(search_ops, "_search_index_key", None)
+    monkeypatch.setattr(search_ops, "_schedule_index_refresh", lambda: None)
     metadata_fetch.build_filename_to_mal_map()
     return cache_folder
 
@@ -86,6 +87,17 @@ def test_index_build_does_not_probe_the_disk_for_uncached_catalog_entries(catalo
 
     monkeypatch.setattr(cache_download, "get_cached_file_path", repeated_disk_check)
     assert search_ops.search_playlist("banana") == [MAIN, ACOUSTIC, RED, "Other-OP1.webm"]
+
+
+def test_search_sorts_without_leading_the_and_keeps_it_searchable(catalog):
+    state.metadata.anime_metadata["123"]["title"] = "The Amber"
+    state.metadata.anime_metadata["456"].update({
+        "title": "Birch", "eng_title": "Birch", "studios": ["MAPPA"],
+    })
+    metadata_fetch.invalidate_metadata_cache()
+
+    assert search_ops.search_playlist("mappa") == [MAIN, ACOUSTIC, RED, "Other-OP1.webm"]
+    assert search_ops.search_playlist("the amber") == [MAIN, ACOUSTIC, RED]
 
 
 def test_refresh_without_metadata_changes_keeps_index(catalog, monkeypatch):
@@ -236,3 +248,128 @@ def test_result_waiting_for_ui_is_rejected_after_typing_or_clearing(monkeypatch,
     monkeypatch.setattr(search_ops, "search_results", [])
     search_ops._apply_search_results(1, [MAIN], "b", True, False)
     assert search_ops.search_results == []
+
+
+def test_artist_and_studio_index_reuses_search_and_preserves_file_ranking(catalog, monkeypatch):
+    search_ops.search_playlist("banana")
+    monkeypatch.setattr(metadata_fetch, "get_metadata", lambda *a, **k:
+                        pytest.fail("Artist/studio lookup rescanned metadata"))
+    assert metadata_display.get_filenames_from_artist("King Gnu") == sorted([MAIN, ACOUSTIC])
+    assert metadata_display.get_filenames_from_studio("MAPPA") == sorted([MAIN, ACOUSTIC, RED])
+    assert metadata_display.get_filenames_from_artist("king gnu") == []
+    assert search_ops.get_catalog_matches("artist", "King Gnu", wait=False) == sorted([MAIN, ACOUSTIC])
+
+
+def test_artist_index_tracks_source_cache_and_metadata_changes(catalog):
+    assert metadata_display.get_filenames_from_artist("Survive Said The Prophet") == [RED]
+    state.config.theme_online_source = "anisongdb_only"
+    assert metadata_display.get_filenames_from_artist("Survive Said The Prophet") == [RED_ALTERNATE]
+    state.metadata.anime_metadata["123"]["songs"][2]["artist"] = ["New Artist"]
+    metadata_fetch.invalidate_metadata_cache()
+    assert metadata_display.get_filenames_from_artist("Survive Said The Prophet") == []
+    assert metadata_display.get_filenames_from_artist("New Artist") == [RED_ALTERNATE]
+    path = catalog / RED
+    path.write_bytes(b"video")
+    cache_download.cache_metadata[RED] = {"path": RED}
+    assert metadata_display.get_filenames_from_artist("New Artist") == [RED]
+    path.unlink()
+    assert metadata_display.get_filenames_from_artist("New Artist") == [RED_ALTERNATE]
+
+
+def test_render_lookup_does_not_wait_for_index_worker(catalog):
+    with search_ops._search_index_lock:
+        assert search_ops.get_catalog_matches("artist", "King Gnu", wait=False) is None
+
+
+def test_render_lookup_reuses_last_index_while_it_is_stale_or_rebuilding(catalog, monkeypatch):
+    refreshes = []
+    monkeypatch.setattr(search_ops, "_schedule_index_refresh", lambda: refreshes.append(True))
+    assert metadata_display.get_filenames_from_artist("King Gnu") == sorted([MAIN, ACOUSTIC])
+    metadata_fetch.invalidate_metadata_cache()  # As a prefetch download's metadata fetch does.
+    assert search_ops._search_data_key() != search_ops._search_index_key
+    monkeypatch.setattr(search_ops, "_get_search_index", lambda: pytest.fail("A render rebuilt the index"))
+    monkeypatch.setattr(search_ops, "prepare_search_index", lambda: pytest.fail("A render started a rebuild"))
+    assert search_ops.get_catalog_matches("artist", "King Gnu", wait=False) == sorted([MAIN, ACOUSTIC])
+    with search_ops._search_index_lock:  # The quiet-period refresh is running.
+        assert search_ops.get_catalog_matches("studio", "MAPPA", wait=False) == sorted([MAIN, ACOUSTIC, RED])
+        assert metadata_fetch.get_artists_string(["King Gnu"], total=True) == "King Gnu [2]"
+    assert len(refreshes) == 3
+
+
+def test_info_popup_waits_only_for_the_first_index(catalog, monkeypatch):
+    from _app_scripts.information import information_popup
+    monkeypatch.setattr(search_ops, "prepare_search_index", lambda: None)
+    # Startup: nothing to reuse yet, so the popup builds the index itself.
+    assert information_popup.get_artist_themes_data("King Gnu")["theme_count"] == 2
+    metadata_fetch.invalidate_metadata_cache()  # As a prefetch download's metadata fetch does.
+    monkeypatch.setattr(search_ops, "_get_search_index", lambda: pytest.fail("The popup waited for a refresh"))
+    assert information_popup.get_artist_themes_data("King Gnu")["theme_count"] == 2
+    assert information_popup.get_studio_entries_data("MAPPA")["entry_count"] == 1
+
+
+def test_index_refresh_waits_for_theme_changes_to_settle(monkeypatch):
+    timers = []
+    class Timer:
+        def __init__(self, delay, callback):
+            self.delay, self.callback, self.cancelled = delay, callback, False
+            timers.append(self)
+        def start(self):
+            pass
+        def cancel(self):
+            self.cancelled = True
+    monkeypatch.setattr(search_ops.threading, "Timer", Timer)
+    monkeypatch.setattr(search_ops, "_index_refresh_timer", None)
+    for _ in range(3):
+        search_ops._schedule_index_refresh()
+    assert [timer.cancelled for timer in timers] == [True, True, False]
+    assert timers[-1].delay == search_ops.INDEX_REFRESH_DELAY
+    assert timers[-1].callback is search_ops.prepare_search_index
+
+
+def test_artist_count_fills_in_after_index_preparation(catalog, monkeypatch):
+    from _app_scripts.file.metadata import metadata_display
+    callbacks, buttons, shown = [], [], []
+    class Button:
+        def __init__(self, *args, **kwargs):
+            self.options = kwargs
+            self.exists = True
+            buttons.append(self)
+        def config(self, **kwargs):
+            self.options.update(kwargs)
+        def winfo_exists(self):
+            return self.exists
+        def destroy(self):
+            self.exists = False
+    monkeypatch.setattr(metadata_display.tk, "Button", Button)
+    monkeypatch.setattr(search_ops, "prepare_search_index", lambda: None)
+    monkeypatch.setattr(state.widgets, "root", SimpleNamespace(after=lambda delay, callback: callbacks.append(callback)))
+    monkeypatch.setattr(metadata_display.lists, "show_field_themes", lambda **kwargs: shown.append(kwargs))
+    column = SimpleNamespace(window_create=lambda *a, **k: None)
+    metadata_display.add_catalog_total_button(column, "artist", "King Gnu")
+    assert buttons[0].options["state"] == "disabled"
+    search_ops._get_search_index()
+    callbacks.pop(0)()
+    assert buttons[0].options["text"] == "[2]"
+    assert buttons[0].options["state"] == "normal"
+    buttons[0].options["command"]()
+    assert shown == [{"group": sorted([MAIN, ACOUSTIC]), "title": "King Gnu"}]
+
+
+def test_web_theme_list_reuses_one_file_inventory(catalog, monkeypatch):
+    calls = []
+    inventory = cache_download.available_cached_files
+    def counted_inventory():
+        calls.append(True)
+        return inventory()
+    monkeypatch.setattr(cache_download, "available_cached_files", counted_inventory)
+    monkeypatch.setattr(cache_download, "get_cached_file_path", lambda *a:
+                        pytest.fail("Web theme rendering probed an uncached catalog file"))
+    monkeypatch.setattr(state.metadata, "playlist", {})
+    for song in state.metadata.anime_metadata["123"]["songs"]:
+        song["type"] = "ED"
+    data = {**state.metadata.anime_metadata["123"], "mal": "123", "slug": "ED1"}
+    result = metadata_display._build_web_series_themes(data, MAIN)
+    assert len(calls) == 1
+    assert result[0]["anime_id"] == "123"
+    themes = [theme for section in result[0]["sections"] for theme in section["themes"]]
+    assert next(theme for theme in themes if theme["slug"] == "ED1")["filename"] == MAIN

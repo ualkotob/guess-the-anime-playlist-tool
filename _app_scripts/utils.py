@@ -8,6 +8,7 @@ Contains:
   - Color conversion helpers
   - Deep-merge helpers
   - Season / slug helpers
+  - Alphabetical name comparisons
 """
 
 import copy
@@ -20,6 +21,16 @@ from datetime import datetime
 
 from core.app_logging import log_exception, log_warning
 from core.game_state import state
+
+
+def alphabetical_sort_key(value):
+    """Compare names case-insensitively, ignoring a leading 'The' word."""
+    if not isinstance(value, str):
+        return ""
+    key = value.strip().lower()
+    words = key.split(maxsplit=1)
+    return words[1] if len(words) == 2 and words[0] == "the" else key
+
 
 # ---------------------------------------------------------------------------
 # JSON infinity serialization helpers

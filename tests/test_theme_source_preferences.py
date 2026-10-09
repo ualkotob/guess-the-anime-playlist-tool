@@ -1,6 +1,7 @@
 """Source policies across saved playlists, disk copies, URLs, and prefetch."""
 
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -56,6 +57,35 @@ def theme_sources(monkeypatch, tmp_path):
 def test_remote_source_order_and_exclusions(theme_sources, policy, expected, filename):
     state.config.theme_online_source = policy
     assert cache_download.get_theme_stream_urls(filename) == expected
+
+
+def test_provenance_reads_do_not_wait_for_slow_save(theme_sources, monkeypatch):
+    from _app_scripts import utils
+    path = str(theme_sources / AS_FILE)
+    sources.record_download(path, AS_URL)
+    blocked, release, read_done = threading.Event(), threading.Event(), threading.Event()
+    records = []
+    def slow_write(*args, **kwargs):
+        blocked.set()
+        assert release.wait(3)
+    monkeypatch.setattr(utils, "_atomic_json_write", slow_write)
+    writer = threading.Thread(target=sources.save_download_sources)
+    def read():
+        records.append(sources.download_record(path))
+        read_done.set()
+    reader = threading.Thread(target=read)
+    writer.start()
+    try:
+        assert blocked.wait(2)
+        reader.start()
+        assert read_done.wait(1), "UI provenance lookup waited for a disk save"
+    finally:
+        release.set()
+        writer.join(3)
+        if reader.ident is not None:
+            reader.join(3)
+    assert records[0]["source"] == "anisongdb"
+    assert not writer.is_alive()
 
 
 @pytest.mark.parametrize("policy,downloaded_first,allow_excluded,expected", [

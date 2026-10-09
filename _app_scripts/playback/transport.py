@@ -624,13 +624,16 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
 
 def play_filename(playlist_entry, fullscreen=True):
     global skip_limit, animethemes_stream
-    playlist_entry = cache_download.select_theme_entry(playlist_entry)
-    _pe_str = playlist_entry.get('filename', playlist_entry.get('filepath', '')) if isinstance(playlist_entry, dict) else playlist_entry
-    filename = entry_paths.get_clean_filename(_pe_str)
-    data = metadata_fetch.get_metadata(_pe_str, fetch=state.config.auto_fetch_missing)
-    
-    local_filepath = entry_paths.get_file_path(playlist_entry)
-    result = cache_download.resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen)
+    from core.app_logging import watch_for_stall
+    with watch_for_stall(f"Resolve theme playback: {playlist_entry}"):
+        playlist_entry = cache_download.select_theme_entry(playlist_entry)
+        _pe_str = playlist_entry.get('filename', playlist_entry.get('filepath', '')) if isinstance(playlist_entry, dict) else playlist_entry
+        filename = entry_paths.get_clean_filename(_pe_str)
+        data = metadata_fetch.get_metadata(_pe_str, fetch=state.config.auto_fetch_missing)
+
+        local_filepath = (None if isinstance(playlist_entry, dict) and "filepath" in playlist_entry
+                          else entry_paths.get_file_path(playlist_entry))
+        result = cache_download.resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen)
     if result is None:
         return False
     filepath, animethemes_stream = result

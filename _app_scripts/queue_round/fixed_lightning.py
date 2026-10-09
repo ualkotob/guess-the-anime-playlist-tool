@@ -948,7 +948,7 @@ def open_round_editor(round_info, manager_window=None, position=None):
                                         "Sort all rounds alphabetically by display name?",
                                         parent=editor_window)
             if result:
-                rounds.sort(key=lambda r: lists.get_title(r.get('theme', ''), r.get('theme', '')).lower())
+                rounds.sort(key=lambda r: lists.theme_sort_key(r.get('theme', '')))
                 selected_round_index[0] = None
                 save_rounds()
                 refresh_editor()

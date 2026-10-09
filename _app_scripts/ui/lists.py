@@ -12,6 +12,7 @@ drag/highlight tracking, …); the right_column_* header widgets live on
 """
 
 import os
+from _app_scripts import utils
 from core.game_state import state
 from core.event_bus import events
 from .scaling import scl
@@ -119,6 +120,19 @@ def _theme_context_menu(filename, refresh_func, play_func=None, remove_func=None
         pass
 
 
+def theme_sort_key(entry):
+    """Sort themes by title without a leading 'The', then by theme number."""
+    fname = entry_paths.get_clean_filename(entry)
+    if youtube_control.is_youtube_file(fname):
+        youtube_data = youtube_control.get_youtube_metadata_by_filename(fname)
+        title = youtube_control.get_youtube_display_title(youtube_data) if youtube_data else fname
+        return (utils.alphabetical_sort_key(title), metadata_fetch.song_slug_sort_key(""))
+    meta = metadata_fetch.get_metadata(entry) or {}
+    title = meta.get("eng_title") or meta.get("title") or fname
+    return (utils.alphabetical_sort_key(title),
+            metadata_fetch.song_slug_sort_key(meta.get("slug") or ""))
+
+
 def show_field_themes(update = False, group=[], title=None, sort_key=None, name_func=None):
     if group == []:
         field_list = state.lists.last_themes_listed
@@ -137,13 +151,7 @@ def show_field_themes(update = False, group=[], title=None, sort_key=None, name_
         state.lists.field_name_func = name_func
     if state.lists.last_themes_listed != group:
         update = True
-    def _field_slug_sort_key(file):
-        fname = entry_paths.get_clean_filename(file)
-        meta = metadata_fetch.get_metadata(fname)
-        slug = (meta.get("slug") or "").upper() if meta else ""
-        title_key = (meta.get("eng_title") or meta.get("title") or fname).lower() if meta else fname.lower()
-        return (title_key, metadata_fetch.song_slug_sort_key(slug))
-    field_list.sort(key=sort_key if sort_key is not None else _field_slug_sort_key)
+    field_list.sort(key=sort_key if sort_key is not None else theme_sort_key)
     state.lists.last_themes_listed = field_list
     selected = -1
     if search_ops.search_queue:

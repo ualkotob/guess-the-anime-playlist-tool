@@ -212,7 +212,16 @@ def animate_window(window, target_x, target_y, steps=20, delay=5, bounce=True, f
 # ===========================================================================
 # Artist / Studio data shaping (used by the popup and by metadata_panel)
 # ===========================================================================
-def get_artist_themes_data(artist_name, current_filename=None, max_display=None, include_current=False):
+def _indexed_filenames(lookup, name):
+    """Use the last finished catalog index so the popup never waits on a refresh.
+
+    Only before the first index exists does this wait for it to be built.
+    """
+    matches = lookup(name, wait=False)
+    return lookup(name) if matches is None else matches
+
+
+def get_artist_themes_data(artist_name, current_filename=None, max_display=None, include_current=False, *, filenames=None):
     """Extract and format all themes by a given artist.
 
     Returns a dict with structure:
@@ -262,7 +271,7 @@ def get_artist_themes_data(artist_name, current_filename=None, max_display=None,
         except (TypeError, ValueError):
             return float("inf")
 
-    same_artists = metadata_display.get_filenames_from_artist(artist_name)
+    same_artists = _indexed_filenames(metadata_display.get_filenames_from_artist, artist_name) if filenames is None else filenames
 
     # Group themes by anime and collect popularity
     anime_themes = {}  # {anime_title: {"themes": [theme_list], "popularity": popularity_val}}
@@ -296,7 +305,7 @@ def get_artist_themes_data(artist_name, current_filename=None, max_display=None,
         truncated = False
 
     # Sort alphabetically by anime title
-    sorted_anime = sorted(sorted_anime, key=lambda x: x[0])
+    sorted_anime = sorted(sorted_anime, key=lambda x: utils.alphabetical_sort_key(x[0]))
 
     # Build output structure for web consumption
     themes_list = []
@@ -317,7 +326,7 @@ def get_artist_themes_data(artist_name, current_filename=None, max_display=None,
     }
 
 
-def get_studio_entries_data(studio_name, current_filename=None, max_display=None, include_current=False):
+def get_studio_entries_data(studio_name, current_filename=None, max_display=None, include_current=False, *, filenames=None):
     """Extract and format unique anime entries by a given studio.
 
     Mirrors the previous studio popup logic:
@@ -351,7 +360,7 @@ def get_studio_entries_data(studio_name, current_filename=None, max_display=None
                 return _m.group(0)
         return None
 
-    same_studio = metadata_display.get_filenames_from_studio(studio_name)
+    same_studio = _indexed_filenames(metadata_display.get_filenames_from_studio, studio_name) if filenames is None else filenames
     unique_titles = []
     unique_shows = []  # [title, popularity, series, year]
     for f in same_studio:
@@ -412,7 +421,7 @@ def get_studio_entries_data(studio_name, current_filename=None, max_display=None
         candidates = sorted(candidates, key=lambda x: x[1] if x[1] is not None else 9999999)[:max_display]
         truncated = True
 
-    display_entries = sorted([t for t, _ in candidates])
+    display_entries = sorted([t for t, _ in candidates], key=utils.alphabetical_sort_key)
 
     # Preserve prior behavior note for collapsed-series mode.
     if header_type == "series" and series_dict and len(display_entries) < len(series_dict):
@@ -420,7 +429,7 @@ def get_studio_entries_data(studio_name, current_filename=None, max_display=None
 
     series_groups = []
     for _k, _g in series_groups_map.items():
-        _entries = sorted(list(set(_g["entries"])))
+        _entries = sorted(set(_g["entries"]), key=utils.alphabetical_sort_key)
         _sort_key = _g["series"] if len(_entries) > 1 else (_entries[0] if _entries else _g["series"])
         series_groups.append({
             "series": _g["series"],
@@ -429,7 +438,7 @@ def get_studio_entries_data(studio_name, current_filename=None, max_display=None
             "popularity": _g["popularity"],
             "sort_key": _sort_key,
         })
-    series_groups = sorted(series_groups, key=lambda x: str(x.get("sort_key", "")).lower())
+    series_groups = sorted(series_groups, key=lambda x: utils.alphabetical_sort_key(x.get("sort_key", "")))
 
     return {
         "studio": studio_name,

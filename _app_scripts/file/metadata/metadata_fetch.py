@@ -168,9 +168,13 @@ def fetch_animethemes_metadata(filename=None, mal_id=None, split=True, refetch=F
     if response.status_code == 200:
         data = response.json()
         if data.get("anime"):
+            anime = data["anime"][0]
+            if refetch and animethemes_catalog.update_cached_anime(anime):
+                animethemes_cache.clear()
+                metadata_io.save_animethemes_metadata()
             if cache_key is not None:
-                animethemes_cache[cache_key] = data["anime"][0]
-            return data["anime"][0]
+                animethemes_cache[cache_key] = anime
+            return anime
     return None
 
 
@@ -991,7 +995,13 @@ def invalidate_metadata_cache(filenames=None):
     if filenames is None:
         _metadata_cache.clear()
         return
-    physical_filenames = {entry_paths.get_clean_filename(name) for name in filenames}
+    physical_filenames = {
+        variant
+        for name in filenames
+        for variant in entry_paths.get_interchangeable_filenames(
+            entry_paths.get_clean_filename(name)
+        )
+    }
     for cache_key in list(_metadata_cache):
         if entry_paths.get_clean_filename(cache_key) in physical_filenames:
             _metadata_cache.pop(cache_key, None)
@@ -1170,9 +1180,9 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
 
     file_data = get_file_metadata_by_name(metadata_entry)
     if not file_data and not ("-OP" in physical_filename or "-ED" in physical_filename):
-        return fetch_metadata(physical_filename, refetch=refresh) if fetch else {}
+        return fetch_metadata(metadata_entry, refetch=refresh) if fetch else {}
     if not file_data:
-        return fetch_metadata(physical_filename, refetch=refresh) if fetch else {}
+        return fetch_metadata(metadata_entry, refetch=refresh) if fetch else {}
     properties = file_data.get("file_properties") or {}
     if properties.get("source") == "ANISONGDB" and not anisongdb.has_catalog():
         try:
@@ -1211,6 +1221,8 @@ def get_metadata(filename, refresh=False, refresh_all=False, fetch=False):
                 print(f" [AniList auto-refresh ✗: {e}]", end="")
 
     result = file_data | anime_data | anidb_data | ai_data
+    if result.get("songs"):
+        result["songs"] = animethemes_catalog.apply_shared_video_flags(mal_id, result["songs"])
     # Ensure igdb from state.metadata.file_metadata is never lost to a null in state.metadata.anime_metadata
     if not result.get("igdb") and file_data.get("igdb"):
         result["igdb"] = file_data["igdb"]
@@ -1400,10 +1412,17 @@ def extract_video_file_properties(filename):
 
 def refetch_metadata():
     if state.playback.currently_playing and state.playback.currently_playing.get('type') == 'theme':
-        filename = state.playback.currently_playing.get('filename')
+        playing = state.playback.currently_playing
+        filename = playing.get('playlist_entry') or playing.get('filename')
+        if isinstance(filename, dict):
+            filename = filename.get('filename', filename.get('filepath', ''))
+        if not entry_paths.parse_theme_reference(filename):
+            data = playing.get('data') or {}
+            filename = entry_paths.make_theme_reference(
+                filename, data.get('mal'), data.get('slug'), data.get('version')
+            )
     else:
-        playlist_entry = entry_paths.get_clean_filename(state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]])
-        filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
+        filename = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]]
     fetch_metadata(filename, True)
 
 
@@ -1696,9 +1715,10 @@ def _collect_missing_metadata_targets():
 def fetch_metadata(filename=None, refetch=False, label="", batch_mode=False):
     """Fetch one file's metadata and always release its in-flight marker."""
     if filename is None:
-        playlist_entry = entry_paths.get_clean_filename(state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]])
-        filename = os.path.basename(playlist_entry) if os.path.isabs(playlist_entry) else playlist_entry
+        filename = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"]]
         refetch = True
+    if isinstance(filename, dict):
+        filename = filename.get('filename', filename.get('filepath', ''))
 
     try:
         return _fetch_metadata_impl(filename, refetch, label, batch_mode)
@@ -1709,18 +1729,34 @@ def fetch_metadata(filename=None, refetch=False, label="", batch_mode=False):
 def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
     global anidb_cooldown, anidb_delay
 
+    metadata_entry = filename
+    reference = entry_paths.parse_theme_reference(metadata_entry)
+    filename = entry_paths.get_clean_filename(metadata_entry)
+    def _is_current_file():
+        playing = state.playback.currently_playing
+        return (
+            playing.get('playlist_entry') == metadata_entry
+            or (
+                playing.get('filename') == filename
+                and (
+                    not reference
+                    or str((playing.get('data') or {}).get('mal')) == reference['mal_id']
+                )
+            )
+        )
+
     print(f"{label}Fetching metadata for {filename}...", end="", flush=True)
 
-    fetching_metadata[filename] = True
+    fetching_metadata[metadata_entry] = True
     
-    if not refetch and filename in filename_to_mal:
-        lookup_data = filename_to_mal[filename]
+    lookup_data = reference or filename_to_mal.get(filename)
+    if not refetch and lookup_data:
         mal_id = lookup_data["mal_id"]
         slug = lookup_data["slug"]
         version = lookup_data["version"]
         
         anime_data = state.metadata.anime_metadata.get(mal_id)
-        file_data = get_file_metadata_by_name(filename) or {}
+        file_data = get_file_metadata_by_name(metadata_entry) or {}
         if (
             anime_data
             and anime_data.get("title")
@@ -1742,9 +1778,11 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
                 "version": version
             }
             data.update(anime_data)
+            if data.get("songs"):
+                data["songs"] = animethemes_catalog.apply_shared_video_flags(mal_id, data["songs"])
             anisongdb.apply_full_metadata(filename, data)
             
-            if state.playback.currently_playing.get('filename') == filename:
+            if _is_current_file():
                 state.playback.currently_playing["data"] = data
                 metadata_panel.update_metadata()
             
@@ -1903,7 +1941,7 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
 
         data = {"mal": igdb_key, "igdb": igdb_id, "slug": slug, "version": version}
         data.update(anime_data)
-        if state.playback.currently_playing.get("filename") == filename:
+        if _is_current_file():
             state.playback.currently_playing["data"] = data
             # Do NOT call metadata_panel.update_metadata() directly — let the already-queued thread pick up
             # the newly-set data. A direct call here races with the queued thread and causes
@@ -1911,13 +1949,21 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
             if not state.controls.updating_metadata:
                 metadata_display.update_metadata_queue(state.metadata.playlist["current_index"])
         print(f"\r{label}Fetching metadata for {filename}...COMPLETE")
-        fetching_metadata.pop(filename, None)
+        fetching_metadata.pop(metadata_entry, None)
         return data
 
     elif filename_source != anisongdb.SOURCE_MANUAL:
         # AnimThemes file
         is_animethemes_file = True
-        anime_themes = fetch_animethemes_metadata(filename, refetch=refetch)
+        # A shared video basename cannot identify the selected anime.
+        if reference and _valid_provider_id(reference['mal_id']):
+            anime_themes = fetch_animethemes_metadata(
+                mal_id=reference['mal_id'], refetch=refetch
+            )
+            slug = reference['slug']
+            version = reference['version']
+        else:
+            anime_themes = fetch_animethemes_metadata(filename, refetch=refetch)
         # Extract slug and version from animethemes data instead of filename
         slug_found = False
         filename_base = os.path.splitext(str(filename or ""))[0].lower()
@@ -1927,6 +1973,8 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
             if not src or not src.get("animethemes"):
                 return
             for theme in src.get("animethemes", []):
+                if reference and theme.get("slug") != reference["slug"]:
+                    continue
                 for entry in theme.get("animethemeentries", []):
                     for video in entry.get("videos", []):
                         video_base = os.path.splitext(str(video.get("basename") or ""))[0].lower()
@@ -1936,11 +1984,11 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
                             slug_found = True
                             return
 
-        # Pass 1: prefix match lookup (fast/common)
+        # Resolve the video's slug/version within the selected anime.
         _extract_slug_version(anime_themes)
 
         # Pass 2: exact basename fallback (important when prefix returns a different anime)
-        if not slug_found:
+        if not slug_found and not reference:
             anime_themes_exact = fetch_animethemes_metadata(
                 filename,
                 split=False,
@@ -1974,17 +2022,6 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
             # Always try to resolve IDs from the MAL-based response first
             anidb_id = anidb_id or get_external_site_id(anime_themes, "aniDB")
             anilist_id = anilist_id or get_external_site_id(anime_themes, "AniList")
-            try:
-                file = anime_themes.get("animethemes",[{}])[0].get("animethemeentries",[{}])[0].get("videos",[{}])[0].get("basename")
-            except Exception:
-                file = None
-            if file:
-                anime_themes = (
-                    fetch_animethemes_metadata(file, refetch=refetch)
-                    or anime_themes
-                )
-                anidb_id = anidb_id or get_external_site_id(anime_themes, "aniDB")
-                anilist_id = anilist_id or get_external_site_id(anime_themes, "AniList")
         existing_title, existing_artists = _theme_song_hints(anime_themes, slug)
         explicit_title = filename_metadata.get("song")
         explicit_artists = [
@@ -2267,6 +2304,7 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
             if anisong_fallback_song:
                 anisongdb.merge_song_metadata(mal_id, anisong_fallback_song)
                 anime_data = state.metadata.anime_metadata[mal_id]
+            animethemes_catalog.reconcile_shared_video_flags()
         
         if not batch_mode:
             metadata_io.save_metadata()
@@ -2322,13 +2360,15 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
         }
         if anime_data:
             data.update(anime_data)
+        if data.get("songs"):
+            data["songs"] = animethemes_catalog.apply_shared_video_flags(mal_id, data["songs"])
         # Merge aniDB data so characters/tags are immediately available
         anidb_data = state.metadata.anidb_metadata.get(anidb_id, {}) if anidb_id else {}
         if anidb_data:
             data = {**anidb_data, **data}  # data keys win over anidb_data
         anisongdb.apply_full_metadata(filename, data)
         
-        if state.playback.currently_playing.get('filename') == filename:
+        if _is_current_file():
             state.playback.currently_playing["data"] = data
             if not state.controls.updating_metadata:
                 metadata_display.update_metadata_queue(state.metadata.playlist["current_index"])
@@ -2366,11 +2406,11 @@ def get_theme_list(data, file_slug=None, file_version=None):
             no_spoiler = False
             if theme.get("animethemeentries"):
                 for entry in theme.get("animethemeentries", []):
+                    flags = animethemes_catalog.entry_flags(entry)
                     version_data = {
                         "version": entry.get("version"),
                         "episodes": entry.get("episodes", "N/A"),
-                        "spoiler": entry.get("spoiler", False),
-                        "nsfw": entry.get("nsfw", False)
+                        **flags,
                     }
                     
                     overlap = None
@@ -2386,10 +2426,10 @@ def get_theme_list(data, file_slug=None, file_version=None):
                     if file_slug == theme["slug"]:
                         if not theme_data["episodes"]:
                             theme_data["episodes"] = entry["episodes"]
-                    if not entry["spoiler"]:
+                    if not flags["spoiler"]:
                         no_spoiler = True
-                    if entry["nsfw"]:
-                        theme_data["nsfw"] = entry["nsfw"]
+                    if flags["nsfw"]:
+                        theme_data["nsfw"] = True
                     if overlap == "None":
                         no_overlap = True
 
@@ -2563,7 +2603,8 @@ def get_artists_string(artists, total = False, limit=None):
             else:
                 artists_string = artists_string + ", " + artist
             if total:
-                artist_count = len(metadata_display.get_filenames_from_artist(artist))
+                # A label must not hold up the theme list while the index rebuilds.
+                artist_count = len(metadata_display.get_filenames_from_artist(artist, wait=False) or ())
                 if artist_count > 1:
                     artists_string = f"{artists_string} [{artist_count}]"
             

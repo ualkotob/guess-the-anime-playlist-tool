@@ -99,15 +99,6 @@ def _apply_package_stores(imported_stores):
         if name in imported_stores:
             counts[name] = _merge_package_store(name, imported_stores[name])
 
-    # Older release snapshots can overwrite the projection made above. Repair
-    # their schema before applying publisher corrections and personal overrides.
-    from _app_scripts.theme import anisongdb
-
-    if anisongdb.has_catalog():
-        anisongdb.build_indexes(force=True)
-        if anisongdb.registered_projection_version() < anisongdb.PROJECTION_VERSION:
-            anisongdb.sync_catalog_to_metadata()
-
     override_stores = (
         name
         for _file_path, name in METADATA_PACKAGE_FILES
@@ -116,6 +107,19 @@ def _apply_package_stores(imported_stores):
     for name in override_stores:
         if name in imported_stores:
             counts[name] = _merge_package_store(name, imported_stores[name])
+
+    # Reviewed matching decisions arrive with publisher overrides. Apply them
+    # before repairing a stale projection, and also rebuild when a package
+    # changes those decisions without changing the projection schema version.
+    from _app_scripts.theme import anisongdb
+
+    if anisongdb.has_catalog():
+        anisongdb.build_indexes(force=True)
+        matching_update = any(isinstance(anime, dict) and "anisongdb_matching" in anime
+                              for name in ("anime_metadata", "anime_metadata_overrides")
+                              for anime in (imported_stores.get(name) or {}).values())
+        if matching_update or anisongdb.registered_projection_version() < anisongdb.PROJECTION_VERSION:
+            anisongdb.sync_catalog_to_metadata()
 
     return counts
 
