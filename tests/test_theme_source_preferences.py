@@ -40,6 +40,8 @@ def theme_sources(monkeypatch, tmp_path):
     monkeypatch.setattr(sources, "_sources_loaded", True)
     monkeypatch.setattr(sources, "DOWNLOAD_SOURCES_FILE", str(tmp_path / "sources.json"))
     monkeypatch.setattr(cache_download, "_download_failures", {})
+    monkeypatch.setattr(cache_download, "_unavailable_downloads", {})
+    monkeypatch.setattr(cache_download, "_validate_downloaded_video", lambda _path: True)
     monkeypatch.setattr(cache_download, "active_downloads", {})
     monkeypatch.setattr(cache_download, "get_cached_file_path", lambda _filename: None)
     monkeypatch.setattr(metadata_display.censors, "get_file_censors", lambda _filename: None)
@@ -265,6 +267,40 @@ def test_failed_download_preserves_existing_destination(theme_sources, monkeypat
     monkeypatch.setattr(cache_download.requests, "get", lambda *_args, **_kwargs:
                         SimpleNamespace(headers={}, raise_for_status=lambda: None, iter_content=chunks))
     assert cache_download._download_theme_file_to_path(AS_FILE, str(destination)) is False
+    assert destination.read_bytes() == b"existing video"
+    assert not (theme_sources / (AS_FILE + ".part")).exists()
+
+
+def test_missing_remote_theme_is_skipped_instead_of_streamed(theme_sources, monkeypatch):
+    state.config.theme_online_source = "anisongdb_only"
+    response = SimpleNamespace(status_code=404)
+
+    def missing(*_args, **_kwargs):
+        raise cache_download.requests.HTTPError("404 Not Found", response=response)
+
+    monkeypatch.setattr(cache_download.requests, "get", missing)
+    assert not cache_download._download_theme_file_to_path(AS_FILE, theme_sources / AS_FILE)
+    assert cache_download._unavailable_downloads[AS_FILE] == (
+        cache_download._source_policy(), (AS_URL,)
+    )
+    assert cache_download.resolve_playable_path(AS_FILE, AS_FILE, None, False) == (None, False)
+    monkeypatch.setattr(metadata_fetch, "get_metadata", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(entry_paths, "get_file_path", lambda *_args: None)
+    skipped = []
+    monkeypatch.setattr(transport, "skip_filename", lambda: skipped.append(AS_FILE))
+    assert transport.play_filename(AS_FILE, fullscreen=False) is False
+    assert skipped == [AS_FILE]
+
+
+def test_incomplete_download_does_not_replace_existing_file(theme_sources, monkeypatch):
+    state.config.theme_online_source = "anisongdb_only"
+    destination = theme_sources / AS_FILE
+    destination.write_bytes(b"existing video")
+    monkeypatch.setattr(cache_download.requests, "get", lambda *_args, **_kwargs:
+                        SimpleNamespace(headers={"content-length": "100"},
+                                        raise_for_status=lambda: None,
+                                        iter_content=lambda **_kwargs: [b"short video"]))
+    assert not cache_download._download_theme_file_to_path(AS_FILE, destination)
     assert destination.read_bytes() == b"existing video"
     assert not (theme_sources / (AS_FILE + ".part")).exists()
 

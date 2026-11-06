@@ -197,7 +197,7 @@ def toggle_filter_vf(variant=None, progress=0, destroy=False):
         _filter_zoom_offset[1] = 0.0
         osd_text.bottom_info()  # clear blur/pixelize/zoom intensity label
         try:
-            player._p.command('vf', 'set', '')
+            player.set_video_filter('')
         except Exception:
             pass
         return
@@ -243,10 +243,10 @@ def toggle_filter_vf(variant=None, progress=0, destroy=False):
             vf_str = f'lavfi=[crop={crop_w}:{crop_h}:{cx_expr}:{cy_expr},scale=iw*{z}:ih*{z}]'
     if vf_str == _filter_vf_last:
         return
-    _filter_vf_last = vf_str
     if not vf_str:
         try:
-            player._p.command('vf', 'set', '')
+            player.set_video_filter('')
+            _filter_vf_last = vf_str
         except Exception:
             pass
         return
@@ -264,6 +264,7 @@ def toggle_filter_vf(variant=None, progress=0, destroy=False):
     _is_hw = str(_hwdec_cur).strip().lower() not in ('', 'no', 'none', 'auto', 'auto-safe')
     _prefix = 'hwdownload,format=yuv420p,' if _is_hw else ''
     try:
-        player._p.command('vf', 'set', _prefix + vf_str)
+        player.set_video_filter(_prefix + vf_str)
+        _filter_vf_last = vf_str
     except Exception as e:
         print(f"[vf] error setting filter '{_prefix + vf_str}': {e}", flush=True)

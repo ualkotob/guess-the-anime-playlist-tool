@@ -8,7 +8,7 @@ overlay modules directly.
 
 from core.game_state import state
 from core.app_meta import WINDOW_TITLE
-from core.app_logging import log_exception
+from core.app_logging import log_exception, log_warning
 import _app_scripts.toggles.censors as censors
 
 import _app_scripts.toggles.audio_toggles as audio_toggles
@@ -56,6 +56,7 @@ import _app_scripts.search.search as search_ops
 from _app_scripts.file import session_end
 import _app_scripts.playback.streaming as streaming
 import threading
+import time
 import _app_scripts.file.web_server.web_server as web_server
 import _app_scripts.queue_round.youtube.youtube_ui as youtube_ui
 
@@ -67,6 +68,24 @@ skip_limit = 0                  # consecutive auto-skip guard (missing/unplayabl
 playlist_loaded = False         # set by a fresh playlist load; consumed by play_next/play_video
 playlist_changed = False        # vestigial main-side flag (playlist_ops.playlist_changed is authoritative)
 playing_next_error = False      # shared with main.update_seek_bar (read/written as transport.playing_next_error)
+_theme_stall = None             # progress observed for the current theme load
+
+
+def _advance_background_music_round():
+    """Count this round, starting a fresh rotation period for an assigned track."""
+    global background_music_rounds
+    fixed_round = state.lightning.fixed_current_round or {}
+    if (fixed_round.get("background_track") or "").strip():
+        # play_background_music selects this explicit track. Session-wide
+        # cadence must not replace it on the next unassigned fixed round.
+        background_music_rounds = 1
+        return
+    rounds_per_track = state.playback.lightning_mode_settings[
+        "_misc_settings"
+    ]["background_music"]["rounds_per_track"]
+    if background_music_rounds > 0 and background_music_rounds % rounds_per_track == 0:
+        music.next_background_track()
+    background_music_rounds += 1
 
 
 def set_rules(type=None):
@@ -121,6 +140,9 @@ def seek_to(time_ms):
 
 def stop():
     """Function to stop the video"""
+    global _theme_stall, skip_limit
+    _theme_stall = None
+    skip_limit = 0
     round_start_guard.begin_round()
     if web_server.is_running():
         web_server.reset_vote_skip()
@@ -588,7 +610,15 @@ def skip_filename():
     peek_dispatch.peek_round_toggle = False
     peek_dispatch.mute_peek_round_toggle = False
     skip_limit += 1
-    play_video(state.metadata.playlist["current_index"] + state.seek.skip_direction)  # Try playing the next video
+    next_index = state.metadata.playlist["current_index"] + state.seek.skip_direction
+    if (not state.lightning.fixed_lightning_round_playlist_data
+            and not state.lightning.fixed_lightning_queue
+            and not search_ops.search_queue
+            and not state.metadata.playlist.get("infinite")
+            and not 0 <= next_index < len(state.metadata.playlist["playlist"])):
+        stop()
+        return
+    play_video(next_index)  # Try playing the next video
 
 
 def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
@@ -623,7 +653,7 @@ def play_filename_streaming_fallback(playlist_entry, fullscreen=True):
 
 
 def play_filename(playlist_entry, fullscreen=True):
-    global skip_limit, animethemes_stream
+    global skip_limit, animethemes_stream, _theme_stall
     from core.app_logging import watch_for_stall
     with watch_for_stall(f"Resolve theme playback: {playlist_entry}"):
         playlist_entry = cache_download.select_theme_entry(playlist_entry)
@@ -659,18 +689,23 @@ def play_filename(playlist_entry, fullscreen=True):
         playlist_entry = {**(playlist_entry if isinstance(playlist_entry, dict) else {}),
                           "filename": actual_entry, "filepath": filepath}
     
-    if skip_limit <= 10:
-        if not filepath or not (os.path.exists(filepath) or animethemes_stream):  # Check if file exists
-            if isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file"):
-                messagebox.showerror("Playback Error", f"The selected theme file is unavailable:\n{filename}")
-                return False
-            print(f"File not found: {filepath}. Skipping...")
-            skip_filename()
+    if not filepath or not (os.path.exists(filepath) or animethemes_stream):  # Check if file exists
+        if isinstance(playlist_entry, dict) and playlist_entry.get("_explicit_file"):
+            messagebox.showerror("Playback Error", f"The selected theme file is unavailable:\n{filename}")
             return False
-        elif not state.lightning.fixed_current_round and not variety_round.variety_light_mode_enabled and state.lightning.light_mode and not variety_round.has_lightning_mode_info(data, state.lightning.light_mode):
-            print(f"Not enough info for {filename}. Skipping...")
+        print(f"File not found: {filepath}. Skipping...")
+        if skip_limit < 10:
             skip_filename()
-            return False
+        else:
+            state.widgets.root.after(0, skip_filename)
+        return False
+    elif not state.lightning.fixed_current_round and not variety_round.variety_light_mode_enabled and state.lightning.light_mode and not variety_round.has_lightning_mode_info(data, state.lightning.light_mode):
+        print(f"Not enough info for {filename}. Skipping...")
+        if skip_limit < 10:
+            skip_filename()
+        else:
+            state.widgets.root.after(0, skip_filename)
+        return False
     
     # Start prefetching next themes after we've started playing
     threading.Thread(target=cache_download.prefetch_next_themes, daemon=True).start()
@@ -682,6 +717,9 @@ def play_filename(playlist_entry, fullscreen=True):
         "playlist_entry":playlist_entry,
         "data":data
     })
+    _theme_stall = {"since": time.monotonic(), "position": None, "filename": filename,
+                    "started": False, "limit": 40 if animethemes_stream else 5,
+                    "startup_limit": 40 if animethemes_stream else 8}
     censors.on_play_starting()
     if variety_round.variety_light_mode_enabled:
         variety_round.set_variety_light_mode()
@@ -730,7 +768,6 @@ def play_filename(playlist_entry, fullscreen=True):
     start_skip_end = censors.get_start_skip_end(filename)
     _load_incoming_media(filepath, start_seconds=start_skip_end)
     censors.reset_for_new_file(filename)
-    global background_music_rounds
     if state.lightning.light_mode:
         if "c." in state.lightning.light_mode:
             set_rules("character")
@@ -741,9 +778,7 @@ def play_filename(playlist_entry, fullscreen=True):
         
         # Exclude modes that don't play background music: clip, ost (streaming), regular, blind (play theme audio)
         if state.lightning.light_mode not in ['clip', 'ost', 'regular', 'blind']:
-            if background_music_rounds > 0 and background_music_rounds % state.playback.lightning_mode_settings["_misc_settings"]["background_music"]["rounds_per_track"] == 0:
-                music.next_background_track()
-            background_music_rounds += 1
+            _advance_background_music_round()
         
         state.lightning.light_round_number = state.lightning.light_round_number + 1
         if state.lightning.light_mode != 'reveal':
@@ -966,13 +1001,45 @@ def play_previous():
         play_video(state.metadata.playlist["current_index"] - 1)
 
 
+def _theme_playback_stalled(player, currently_playing):
+    """Advance when an unpaused theme has stopped making media progress."""
+    tracker = _theme_stall
+    if (not tracker or currently_playing.get("type") != "theme"
+            or currently_playing.get("filename") != tracker["filename"]
+            or state.controls.video_stopped or state.controls.autoplay_toggle == 3):
+        return False
+    now = time.monotonic()
+    if player.is_paused() or (getattr(player, "seek_recently", lambda _seconds: False)(3)):
+        tracker["since"] = now
+        tracker["position"] = None
+        return False
+    position = player.get_time()
+    if tracker["position"] is None or position != tracker["position"]:
+        tracker["position"] = position
+        tracker["since"] = now
+        if position > 0:
+            tracker["started"] = True
+        return False
+    limit = tracker["limit"] if tracker.get("started") else tracker["startup_limit"]
+    if now - tracker["since"] < limit:
+        return False
+    log_warning("Theme playback stalled for %.0fs; skipping: %s", now - tracker["since"], tracker["filename"])
+    tracker["since"] = now
+    skip_filename()
+    return True
+
+
 def update_seek_bar():
     """Recurring seek-bar / playback tick (rescheduled every SEEK_POLLING ms)."""
     global playing_next_error
     player = state.widgets.player
     seek_bar = state.widgets.seek_bar
     currently_playing = state.playback.currently_playing
+
     try:
+        if _theme_playback_stalled(player, currently_playing):
+            state.widgets.root.after(state.seek.SEEK_POLLING, update_seek_bar)
+            return
         if not player.is_playing():
             player_time = player.get_time()
             if player_time != state.seek.last_player_time or state.seek.last_player_time != state.seek.projected_player_time:

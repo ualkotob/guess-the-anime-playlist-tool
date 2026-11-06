@@ -523,6 +523,25 @@ def _should_keep_characters():
     )
 
 
+def _should_keep_tags():
+    return bool(
+        state.lightning.current_light_mode == "tags"
+        and state.playback.lightning_mode_settings.get("tags", {}).get(
+            "show_tags_during_answer", True
+        )
+    )
+
+
+def _should_keep_episode_names():
+    mode = state.lightning.current_light_mode
+    return bool(
+        mode in ("episodes", "names")
+        and state.playback.lightning_mode_settings.get(mode, {}).get(
+            f"show_{mode}_during_answer", True
+        )
+    )
+
+
 def clean_up_light_round(new_round=False):
     player = state.widgets.player
     fixed_current_round       = state.lightning.fixed_current_round
@@ -533,6 +552,8 @@ def clean_up_light_round(new_round=False):
     keep_emoji_clues = not new_round and _should_keep_emoji_clues()
     keep_synopsis = not new_round and _should_keep_synopsis()
     keep_characters = not new_round and _should_keep_characters()
+    keep_tags = not new_round and _should_keep_tags()
+    keep_episode_names = not new_round and _should_keep_episode_names()
     from _app_scripts.playback import blind_screen as _blind_screen
     _video_frame_active       = _blind_screen._video_frame_active
 
@@ -568,13 +589,15 @@ def clean_up_light_round(new_round=False):
     cover_image_overlay.light_cover_image       = None
     if not keep_trivia_question:
         trivia_round.light_trivia_answer        = None
-    episode_overlay.light_name_overlay          = False
+    if not keep_episode_names:
+        episode_overlay.light_name_overlay = False
+        episode_overlay.light_episode_names = []
     frame_round.frame_light_round_started       = False
     if not keep_characters:
         characters_overlay.characters_round_characters = []
         characters_overlay.characters_round_names = []
-    tag_cloud_overlay.tag_cloud_tags            = []
-    episode_overlay.light_episode_names         = []
+    if not keep_tags:
+        tag_cloud_overlay.tag_cloud_tags = []
     state.lightning.light_speed_modifier = 1
     state.lightning.light_blind_one_second_count = None
     player.set_rate(1)
@@ -602,10 +625,12 @@ def clean_up_light_round(new_round=False):
     answer_phase_overlays = [
         clues_overlay.toggle_clues_overlay,
         song_overlay.toggle_song_overlay,
-        tag_cloud_overlay.toggle_tag_cloud_overlay,
-        episode_overlay.toggle_episode_overlay,
         profile_overlay.toggle_character_profile_overlay,
     ]
+    if not keep_tags:
+        answer_phase_overlays.append(tag_cloud_overlay.toggle_tag_cloud_overlay)
+    if not keep_episode_names:
+        answer_phase_overlays.append(episode_overlay.toggle_episode_overlay)
     if not keep_characters:
         answer_phase_overlays.append(
             characters_overlay.toggle_characters_overlay
@@ -882,6 +907,13 @@ def update_light_round(time):
                         characters_overlay.toggle_characters_overlay(
                             num_characters=4, show_names=True
                         )
+                    # Skipping can enter the answer phase before the final clue tick.
+                    if _should_keep_tags():
+                        tag_cloud_overlay.toggle_tag_cloud_overlay(
+                            num_tags=len(tag_cloud_overlay.tag_cloud_tags)
+                        )
+                    if _should_keep_episode_names():
+                        episode_overlay.toggle_episode_overlay(num_episodes=6)
                     max_width_size = 0.55 if (state.lightning.light_round_answer_length < 10) else 0.5
 
                     _keep_trivia_question = _should_keep_trivia_question()

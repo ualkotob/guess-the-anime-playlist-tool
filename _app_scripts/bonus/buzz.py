@@ -73,6 +73,15 @@ def toggle_pause_on_buzz():
     set_pause_on_buzz(not bool(_buzzer_settings().get("pause_on_buzz", False)))
 
 
+def set_multi_buzz(enabled):
+    _persist_buzzer_setting("multi_buzz", bool(enabled))
+    web_server.set_multi_buzz(bool(enabled))
+
+
+def toggle_multi_buzz():
+    set_multi_buzz(not bool(_buzzer_settings().get("multi_buzz", False)))
+
+
 def set_answer_timer_seconds(seconds):
     try:
         seconds = max(0, min(300, int(seconds or 0)))
@@ -312,7 +321,7 @@ _buzz_preset_index = 1  # default: Double Ding
 
 BUZZ_TOAST_MAX_ALPHA = 0.9
 _buzz_toast_wins = []   # list of dicts: {win, base_y, cx, h}
-_buzz_answer_queue = []  # FIFO of {rank, name, card}
+_buzz_answer_queue = []  # FIFO of {rank, name, card, buzz_id}
 _buzz_timer_after_id = None
 _buzz_timer_deadline = None
 _buzz_timer_generation = 0
@@ -508,6 +517,13 @@ def _refresh_buzz_queue_cards(remaining=None):
             pass
 
 
+def _release_buzz(item):
+    """Tell the server this buzz was served so multi-buzz lets the player buzz again."""
+    buzz_id = item.get('buzz_id') if item else None
+    if buzz_id is not None:
+        web_server.release_buzz(item['name'], buzz_id)
+
+
 def _destroy_queue_card(item):
     card = item.get('card') if item else None
     if card:
@@ -586,8 +602,8 @@ def _tick_answer_timer(generation):
     _buzz_timer_after_id = state.widgets.root.after(100, lambda: _tick_answer_timer(generation))
 
 
-def _enqueue_timed_buzz(rank, name):
-    item = {'rank': int(rank), 'name': str(name), 'card': None}
+def _enqueue_timed_buzz(rank, name, buzz_id=None):
+    item = {'rank': int(rank), 'name': str(name), 'card': None, 'buzz_id': buzz_id}
     if _buzzer_settings().get("player_buzz_popup", True):
         try:
             item['card'] = _show_buzz_queue_card(
@@ -609,6 +625,7 @@ def _advance_answer_queue_main():
     if _buzz_answer_queue:
         finished = _buzz_answer_queue.pop(0)
         _destroy_queue_card(finished)
+        _release_buzz(finished)
     _promote_active_queue_card()
     _layout_buzz_queue_cards()
     if _buzz_answer_queue:
@@ -630,6 +647,7 @@ def _reset_answer_queue_main():
     _buzz_last_display_second = None
     for item in list(_buzz_answer_queue):
         _destroy_queue_card(item)
+        _release_buzz(item)
     _buzz_answer_queue.clear()
     web_server.clear_timer()
     _resume_owned_pause()
@@ -640,13 +658,15 @@ def reset_answer_queue():
     _run_on_main_thread(_reset_answer_queue_main)
 
 
-def _handle_buzz_ui(rank, name, received_at):
+def _handle_buzz_ui(rank, name, received_at, buzz_id=None):
     waited = time.monotonic() - received_at
     if waited >= 0.15:
         get_logger().warning("buzz UI for '%s' waited %.2fs for the main loop", name, waited)
     if _answer_timer_seconds() > 0:
-        _enqueue_timed_buzz(rank, name)
+        _enqueue_timed_buzz(rank, name, buzz_id)
         return
+    # Untimed buzzes have no answer window, so they count as served right away.
+    _release_buzz({'name': name, 'buzz_id': buzz_id})
     if _buzzer_settings().get("pause_on_buzz", False):
         try:
             from _app_scripts.playback import transport
@@ -811,8 +831,11 @@ def _show_buzz_toast(rank, name):
     state.widgets.root.after(10, _fade_in)
 
 
-def _play_buzz_sound(rank, name):
-    """Play a buzzer sound on the host machine when a player buzzes in."""
+def _play_buzz_sound(rank, name, buzz_id=None):
+    """Play a buzzer sound on the host machine when a player buzzes in.
+
+    buzz_id is None for the host's sound preview (name 'Test').
+    """
     if name != 'Test':
         scoreboard_control.send_command(f"[BUZZ_ORDER]{rank}:{name}")
     bonus_defaults = bonus.BONUS_SETTINGS_DEFAULT
@@ -821,7 +844,10 @@ def _play_buzz_sound(rank, name):
         # UI and playback mutation must happen on Tk's thread. Timed buzzes are
         # enqueued here; untimed buzzes retain the original transient toast.
         _received = time.monotonic()
-        _run_on_main_thread(lambda: _handle_buzz_ui(rank, name, _received))
+        _run_on_main_thread(lambda: _handle_buzz_ui(rank, name, _received, buzz_id))
+    else:
+        # A player literally named 'Test' gets no UI, so free their buzz now.
+        _release_buzz({'name': name, 'buzz_id': buzz_id})
     def _make_wav_segments(segments):
         import wave, struct, math, io, random
         rate = 44100

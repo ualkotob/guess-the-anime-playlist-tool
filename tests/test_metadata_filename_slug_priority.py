@@ -1,8 +1,11 @@
 """Regression tests for ambiguous file entries in file metadata."""
 
+import pytest
+
 from core.game_state import state
 from _app_scripts.file.metadata import metadata_fetch
 from _app_scripts.file.metadata import metadata_panel
+from _app_scripts.playback import transport
 from _app_scripts.playlists import entry_paths
 from _app_scripts.search import search as search_ops
 
@@ -18,6 +21,78 @@ def _theme_entry(filename):
             }
         }
     }
+
+
+@pytest.fixture
+def shared_theme(monkeypatch):
+    filename = "Example-OP1.webm"
+    monkeypatch.setattr(state.metadata, "file_metadata", {
+        "1": {"name": "Example", "themes": {"OP1": _theme_entry(filename)}},
+        "2": {"name": "Example OVA", "themes": {"OP1": _theme_entry(filename)}},
+    })
+    monkeypatch.setattr(state.metadata, "anime_metadata", {
+        "1": {"title": "Example", "series": ["Example"], "popularity": 2000},
+        "2": {"title": "Example OVA", "series": ["Example"], "popularity": 100},
+    })
+    monkeypatch.setattr(metadata_fetch, "filename_to_mal", {})
+    monkeypatch.setattr(metadata_fetch, "filename_to_mal_candidates", {})
+    monkeypatch.setattr(metadata_fetch, "_metadata_cache", {})
+    metadata_fetch.build_filename_to_mal_map()
+    return filename
+
+
+@pytest.mark.parametrize("reverse_order", [False, True])
+@pytest.mark.parametrize("extension", [".webm", ".mp4"])
+def test_shared_filename_prefers_popularity_over_series_and_insertion_order(
+    shared_theme, reverse_order, extension,
+):
+    if reverse_order:
+        state.metadata.file_metadata = dict(reversed(state.metadata.file_metadata.items()))
+    metadata_fetch.build_filename_to_mal_map()
+
+    filename = shared_theme.replace(".webm", extension)
+    assert metadata_fetch.get_file_metadata_by_name(filename)["mal"] == "2"
+    assert metadata_fetch.get_metadata("[L]" + filename)["mal"] == "2"
+
+
+@pytest.mark.parametrize("rank", [None, "N/A", 0, -1, 50])
+def test_shared_filename_uses_current_popularity_after_map_is_built(shared_theme, rank):
+    state.metadata.anime_metadata["2"]["popularity"] = rank
+    expected = "2" if rank == 50 else "1"
+
+    assert metadata_fetch.get_file_metadata_by_name(shared_theme)["mal"] == expected
+
+
+def test_shared_filename_uses_popularity_loaded_after_file_index(shared_theme):
+    anime_metadata = dict(state.metadata.anime_metadata)
+    state.metadata.anime_metadata.clear()
+    metadata_fetch.build_filename_to_mal_map()
+    state.metadata.anime_metadata.update(anime_metadata)
+
+    assert metadata_fetch.get_metadata(shared_theme)["mal"] == "2"
+
+
+def test_direct_reference_keeps_less_popular_theme(shared_theme):
+    reference = entry_paths.make_theme_reference(shared_theme, "1", "OP1", "1")
+
+    assert metadata_fetch.get_metadata(shared_theme)["mal"] == "2"
+    assert metadata_fetch.get_metadata(reference)["mal"] == "1"
+    assert metadata_fetch.get_metadata("[L]" + reference)["mal"] == "1"
+
+
+@pytest.mark.parametrize("explicit_reference", [False, True])
+def test_fixed_round_playback_resolves_popular_theme(shared_theme, monkeypatch, explicit_reference):
+    theme = (entry_paths.make_theme_reference(shared_theme, "1", "OP1", "1")
+             if explicit_reference else shared_theme)
+    round_data = {"type": "regular", "theme": theme}
+    monkeypatch.setattr(state.lightning, "fixed_current_round", round_data)
+    monkeypatch.setattr(state.config, "auto_fetch_missing", False)
+    monkeypatch.setattr(entry_paths, "get_file_path", lambda _entry: None)
+    # Stop before loading media, after the fixed round has resolved its metadata.
+    monkeypatch.setattr(transport.cache_download, "resolve_playable_path", lambda *args: None)
+
+    assert transport.play_filename(round_data["theme"], fullscreen=False) is False
+    assert metadata_fetch._metadata_cache[theme]["mal"] == ("1" if explicit_reference else "2")
 
 
 def test_op_filename_wins_when_file_is_listed_as_opening_and_ending(monkeypatch):
@@ -132,11 +207,13 @@ def test_shared_video_has_distinct_search_and_navigation_entries(monkeypatch):
         "226": {
             "title": "Elfen Lied",
             "series": ["Elfen Lied"],
+            "popularity": 300,
             "songs": [{"slug": "OP1", "title": "LILIUM"}],
         },
         "376": {
             "title": "Elfen Lied OVA",
             "series": ["Elfen Lied"],
+            "popularity": 3000,
             "songs": [{"slug": "OP1", "title": "LILIUM"}],
         },
     })

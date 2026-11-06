@@ -121,3 +121,19 @@ def test_ui_polling_survives_unexpected_failure(download_state, monkeypatch):
     cache_download.check_download_ui_updates()
     assert errors
     assert root.after_calls == [(500, cache_download.check_download_ui_updates, ())]
+
+
+def test_finished_download_does_not_replay_an_old_playlist_entry(download_state, monkeypatch):
+    root = _Root()
+    filename = "OldShow-OP1.webm"
+    monkeypatch.setattr(cache_download.state.widgets, "root", root)
+    monkeypatch.setattr(cache_download.state.lightning, "round_generation", 12)
+    cache_download.pending_play_queue[filename] = {
+        "playlist_entry": filename, "fullscreen": False, "start_time": 0,
+        "timeout": 30, "generation": 11,
+    }
+
+    cache_download.check_download_ui_updates()
+
+    assert filename not in cache_download.pending_play_queue
+    assert not any(delay == 100 for delay, _callback, _args in root.after_calls)

@@ -132,7 +132,7 @@ def toggle_theme(playlist_name, filename=None, quiet=False, add=False):
 
 def check_theme(filename=None, playlist_name=None, recache=False):
     """Check if a theme exists in a specified playlist."""
-    if playlist_name and (recache or not check_theme_cache.get(playlist_name)):
+    if playlist_name and (recache or playlist_name not in check_theme_cache):
         playlist_path = os.path.join(PLAYLISTS_FOLDER, f"{playlist_name}.json")
         if os.path.exists(playlist_path):
             with open(playlist_path, "r", encoding="utf-8") as f:

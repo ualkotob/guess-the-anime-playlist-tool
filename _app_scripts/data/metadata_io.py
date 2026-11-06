@@ -9,6 +9,7 @@ Sibling metadata helpers (metadata_fetch, metadata_display) are imported
 directly.
 """
 import atexit
+import gc
 import os
 import threading
 from core.game_state import state
@@ -320,7 +321,13 @@ def load_metadata():
 
     if animethemes.reconcile_shared_video_flags():
         save_metadata()
+    # The initial file index is built before anime popularity is available.
+    metadata_fetch.build_filename_to_mal_map()
     metadata_fetch.invalidate_metadata_cache()
+    # Loaded metadata is ~2 million long-lived objects without reference
+    # cycles. Exclude them from cyclic garbage collection: each full pass over
+    # them froze the UI for ~0.8s. Reference counting still frees them.
+    gc.freeze()
 
 
 REVIEW_MODIFIER = 500

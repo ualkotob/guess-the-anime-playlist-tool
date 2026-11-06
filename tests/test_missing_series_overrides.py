@@ -137,6 +137,23 @@ def test_missing_local_parent_can_bridge_to_an_existing_series(monkeypatch):
     assert audit["assignments"][70402] == ["Known Franchise"]
 
 
+def test_verified_beywarriors_and_bikkuriman_memberships_without_relations():
+    anime = {
+        55978: _anime("BeyWarriors: Cyborg"),
+        54914: _anime("Bikkurimen"),
+        15913: _anime("Happy Lucky Bikkuriman"),
+        79998: _anime("Unrelated Bikkuri Story"),
+    }
+
+    audit = build_audit(anime, relations={})
+
+    assert audit["assignments"][55978] == ["Beyblade"]
+    assert audit["assignments"][54914] == ["Bikkuriman"]
+    assert audit["assignments"][15913] == ["Bikkuriman"]
+    assert 79998 not in audit["assignments"]
+    assert anime[55978]["title"] == "BeyWarriors: Cyborg"
+
+
 def test_unrelated_external_alternative_does_not_bridge_series(monkeypatch):
     anime = {
         70501: _anime("Known Franchise Season 3", series=["Known Franchise"]),

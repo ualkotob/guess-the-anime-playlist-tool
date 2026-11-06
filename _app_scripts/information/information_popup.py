@@ -65,10 +65,7 @@ _INFO_POPUP_ASS_OSD_ID = 59
 
 def _osd_command(*args):
     """Send an osd-overlay command to the main player."""
-    try:
-        state.widgets.player._p.command(*args)
-    except Exception:
-        pass
+    osd_text.osd_command(*args)
 
 
 def toggle_auto_info_start():
@@ -97,7 +94,7 @@ _mpv_tracker_last_fg = False   # whether mpv was foreground on the last poll
 _title_popup_last_mpv_size = (0, 0)
 _title_popup_anim_after  = None   # root.after ID for slide animation
 _title_popup_anim_state  = None   # 'in' | 'out' | None
-_title_popup_anim_args   = None   # (top_row, title_row, bottom_row, bg_color, fg_color) for redraw
+_title_popup_anim_args   = None   # popup rows, colors, alternate title, inline row, and side info for redraw
 
 
 # ===========================================================================
@@ -651,12 +648,117 @@ def _hide_title_popup_osd():
         pass
 
 
-def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset=0):
+def _popup_text_width(text, fs):
+    """Measure one ASS text line with the font used by the popup."""
+    font = osd_text._get_ass_font(fs)
+    try:
+        width = font.getlength(text) if font else len(text) * fs * 0.52
+    except AttributeError:
+        width = font.getsize(text)[0] if font else len(text) * fs * 0.52
+    # PIL's Arial Bold measurements run wider than mpv's ASS rendering. Keep
+    # the original correction for both fitting text and sizing its background,
+    # including the off-center alternate-title row.
+    return round(width * 0.91)
+
+
+def _wrap_popup_text(text, fs, max_width):
+    """Wrap explicit lines at word boundaries, splitting an oversized word if needed."""
+    lines = []
+    for paragraph in text.split("\n"):
+        if not paragraph.strip():
+            lines.append("")
+            continue
+        current = ""
+        for word in paragraph.split():
+            candidate = f"{current} {word}" if current else word
+            if _popup_text_width(candidate, fs) <= max_width:
+                current = candidate
+                continue
+            if current:
+                lines.append(current)
+                current = ""
+            while word and _popup_text_width(word, fs) > max_width:
+                low, high = 1, len(word)
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if _popup_text_width(word[:mid], fs) <= max_width:
+                        low = mid
+                    else:
+                        high = mid - 1
+                lines.append(word[:low])
+                word = word[low:]
+            current = word
+        if current:
+            lines.append(current)
+    return lines
+
+
+def _fit_popup_text(text, fs, min_fs, max_width, max_lines):
+    """Keep a title readable, then shorten its last line only as a last resort."""
+    lines = _wrap_popup_text(text, fs, max_width)
+    if len(lines) <= max_lines:
+        return lines, fs
+    low, high = min_fs, fs - 1
+    best = None
+    while low <= high:
+        candidate_fs = (low + high) // 2
+        candidate_lines = _wrap_popup_text(text, candidate_fs, max_width)
+        if len(candidate_lines) <= max_lines:
+            best = (candidate_lines, candidate_fs)
+            low = candidate_fs + 1
+        else:
+            high = candidate_fs - 1
+    if best:
+        return best
+    fs = min_fs
+    lines = _wrap_popup_text(text, fs, max_width)
+    if len(lines) > max_lines:
+        last = lines[max_lines - 1].rstrip()
+        while last and _popup_text_width(last + "…", fs) > max_width:
+            last = last[:-1].rstrip()
+        lines = lines[:max_lines - 1] + [last + "…"]
+    return lines, fs
+
+
+def _split_popup_title_with_sides(text, fs, first_width, second_width):
+    """Split the title into similarly sized lines around its word boundaries."""
+    title = " ".join(text.split())
+    word_breaks = [i for i, char in enumerate(title) if char == " "]
+    for breaks in (word_breaks, range(1, len(title))):
+        for candidate_fs in range(fs, 9, -1):
+            if _popup_text_width(title, candidate_fs) > first_width + second_width + 2 * candidate_fs:
+                continue
+            best = None
+            for index in breaks:
+                first, second = title[:index].rstrip(), title[index:].lstrip()
+                if not first or not second:
+                    continue
+                first_w = _popup_text_width(first, candidate_fs)
+                second_w = _popup_text_width(second, candidate_fs)
+                if first_w > first_width or second_w > second_width:
+                    continue
+                balance = abs(first_w - second_w)
+                if best is None or balance < best[0]:
+                    best = (balance, first, second)
+            if best:
+                return best[1], best[2], candidate_fs
+
+    # Even at the minimum font size, some alternate titles need a short ending.
+    first = _wrap_popup_text(title, 10, min(first_width, second_width))[0]
+    remainder = title[len(first):].lstrip()
+    second, _ = _fit_popup_text(remainder, 10, 10, second_width, 1)
+    return first, second[0] if second else "", 10
+
+
+def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color,
+                          alternate_title="", inline_bottom_row="", side_info=None,
+                          y_offset=0):
     """Render the anime info popup as an ASS osd-overlay at the bottom-center of the mpv canvas.
 
     Mirrors the original tkinter layout:
       top_row    — small bold text  (ASS fs ≈ scl(20))
       title_row  — large bold text  (ASS fs ≈ scl(50), shrink-to-fit)
+      alternate_title — small bold text, up to three lines
       bottom_row — small bold text  (ASS fs ≈ scl(15))
     A semi-transparent background box (alpha 0.8) is drawn beneath all rows.
     y_offset > 0 shifts the box downward (used for slide-out below the screen).
@@ -682,55 +784,80 @@ def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_
     margin = max(4, round(10 * modifier))
     gap    = max(2, round(fs_top * 0.1))    # vertical gap between rows
 
-    def _line_h(fs, n):
-        return round(n * fs * 1.0)
+    max_text_width = max(1, osd_w - 2 * margin - 2 * pad_x)
+    max_title_width = min(max_text_width, osd_w - round(osd_h * 0.25))
+    inline_fits = bool(
+        inline_bottom_row
+        and _popup_text_width(inline_bottom_row.split("\n", 1)[0], fs_bottom) <= max_text_width
+    )
+    if inline_fits:
+        # Keep the familiar one-line layout when its title actually fits.
+        alternate_title = ""
+        bottom_row = inline_bottom_row
 
-    def _measure_w(text_block, fs):
-        """Max rendered pixel width of any line in text_block at the given fs."""
-        fnt = osd_text._get_ass_font(fs)
-        max_w = 0
-        for line in text_block.split('\n'):
-            if not line:
-                continue
-            try:
-                w = round(fnt.getlength(line)) if fnt else round(len(line) * fs * 0.52)
-            except AttributeError:
-                w = fnt.getsize(line)[0] if fnt else round(len(line) * fs * 0.52)
-            if w > max_w:
-                max_w = w
-        return max_w or fs
+    second_alternate_row = None
+    first_alternate_line = None
+    first_alternate_x = None
+    if alternate_title and side_info and not inline_fits:
+        left, right = side_info
+        prefix, suffix = f"{left} | ", f" | {right}"
+        second_width = (max_text_width - _popup_text_width(prefix, fs_bottom)
+                        - _popup_text_width(suffix, fs_bottom) - 2)
+        if second_width >= max(80, round(max_text_width * 0.25)):
+            first_alternate_line, second_alternate_line, alternate_fs = _split_popup_title_with_sides(
+                alternate_title, fs_bottom, max_text_width, second_width,
+            )
+            second_alternate_row = f"{prefix}{second_alternate_line}{suffix}"
+            while _popup_text_width(second_alternate_row, alternate_fs) > max_text_width and alternate_fs > 10:
+                alternate_fs -= 1
+            if _popup_text_width(second_alternate_row, alternate_fs) > max_text_width:
+                available = (max_text_width - _popup_text_width(prefix, alternate_fs)
+                             - _popup_text_width(suffix, alternate_fs) - 2)
+                second_alternate_line = _fit_popup_text(
+                    second_alternate_line, alternate_fs, alternate_fs, max(1, available), 1
+                )[0][0]
+                second_alternate_row = f"{prefix}{second_alternate_line}{suffix}"
+            row_width = _popup_text_width(second_alternate_row, alternate_fs)
+            prefix_width = _popup_text_width(prefix, alternate_fs)
+            prefix_title_width = _popup_text_width(prefix + second_alternate_line, alternate_fs)
+            title_center = (osd_w - row_width + prefix_width + prefix_title_width) / 2
+            first_width = _popup_text_width(first_alternate_line, alternate_fs)
+            min_x = margin + pad_x + first_width / 2
+            max_x = osd_w - margin - pad_x - first_width / 2
+            first_alternate_x = round(max(min_x, min(title_center, max_x)))
+            bottom_row = bottom_row.partition("\n")[2]
 
-    # Shrink title font until it fits, matching adjust_font_size behaviour.
-    max_title_px = osd_w - round(osd_h * 0.25)
-    while fs_title > 14 and _measure_w(title_row, fs_title) + pad_x * 2 > max_title_px:
-        fs_title -= 1
+    rows = []
+    if top_row:
+        rows.append((_wrap_popup_text(top_row, fs_top, max_text_width), fs_top, None))
+    if title_row:
+        title_lines, fs_title = _fit_popup_text(
+            " ".join(title_row.split()), fs_title, 14, max(1, max_title_width), 1
+        )
+        rows.append((title_lines, fs_title, None))
+    if second_alternate_row is not None:
+        rows.append(([first_alternate_line], alternate_fs, first_alternate_x))
+        rows.append(([second_alternate_row], alternate_fs, None))
+    elif alternate_title:
+        alternate_lines, fs_alt = _fit_popup_text(
+            alternate_title, fs_bottom, 10, max_text_width, 3
+        )
+        rows.append((alternate_lines, fs_alt, None))
+    if bottom_row:
+        rows.append((_wrap_popup_text(bottom_row, fs_bottom, max_text_width), fs_bottom, None))
 
-    top_lines    = top_row.count('\n') + 1    if top_row    else 0
-    title_lines  = title_row.count('\n') + 1  if title_row  else 0
-    bottom_lines = bottom_row.count('\n') + 1 if bottom_row else 0
-
-    row_h_top    = _line_h(fs_top,    top_lines)    if top_lines    else 0
-    row_h_title  = _line_h(fs_title,  title_lines)  if title_lines  else 0
-    row_h_bottom = _line_h(fs_bottom, bottom_lines)  if bottom_lines else 0
-
-    inner_h = (row_h_top
-               + (gap if top_lines and (title_lines or bottom_lines) else 0)
-               + row_h_title
-               + (gap if title_lines and bottom_lines else 0)
-               + row_h_bottom)
-    box_h = inner_h + 2 * pad_y
-
-    widths = []
-    if top_row:    widths.append(_measure_w(top_row,    fs_top))
-    if title_row:  widths.append(_measure_w(title_row,  fs_title))
-    if bottom_row: widths.append(_measure_w(bottom_row, fs_bottom))
-    # PIL overestimates ASS bold render width; scale down to tighten the box.
-    box_w = (round(max(widths) * 0.91) if widths else fs_title) + 2 * pad_x
-    box_w = min(box_w, osd_w - 2 * margin)
+    box_h = sum(len(lines) * fs for lines, fs, _ in rows) + max(0, len(rows) - 1) * gap + 2 * pad_y
+    center_x = osd_w // 2
+    widths = [
+        _popup_text_width(line, fs) + 2 * abs((x if x is not None else center_x) - center_x)
+        for lines, fs, x in rows for line in lines
+    ]
+    text_width = max(widths, default=fs_title)
+    box_w = min(text_width + 2 * pad_x, osd_w - 2 * margin)
 
     bx = (osd_w - box_w) // 2
     by = osd_h - margin - box_h + y_offset
-    cx = osd_w // 2   # horizontal center for \an8 anchored text
+    cx = center_x   # horizontal center for \an8 anchored text
 
     bg_bgr = osd_text._color_str_to_ass_bgr(bg_color)
     fg_bgr = osd_text._color_str_to_ass_bgr(fg_color)
@@ -751,26 +878,13 @@ def _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_
     ty = by + pad_y
     # \an8 = top-center anchor; \q2 = no automatic word-wrap
     _txt_tags = "\\bord0\\shad0\\b1\\q2"
-    if top_lines:
+    for lines, fs, x in rows:
         events.append(
-            f"{{\\an8\\pos({cx},{ty})"
+            f"{{\\an8\\pos({x if x is not None else cx},{ty})"
             f"\\1c&H{fg_bgr}&\\1a&H00&{_txt_tags}"
-            f"\\fs{fs_top}}}{_esc(top_row)}"
+            f"\\fs{fs}}}{_esc(chr(10).join(lines))}"
         )
-        ty += row_h_top + gap
-    if title_lines:
-        events.append(
-            f"{{\\an8\\pos({cx},{ty})"
-            f"\\1c&H{fg_bgr}&\\1a&H00&{_txt_tags}"
-            f"\\fs{fs_title}}}{_esc(title_row)}"
-        )
-        ty += row_h_title + gap
-    if bottom_lines:
-        events.append(
-            f"{{\\an8\\pos({cx},{ty})"
-            f"\\1c&H{fg_bgr}&\\1a&H00&{_txt_tags}"
-            f"\\fs{fs_bottom}}}{_esc(bottom_row)}"
-        )
+        ty += len(lines) * fs + gap
 
     try:
         _osd_command('osd-overlay', _INFO_POPUP_ASS_OSD_ID, 'ass-events',
@@ -790,12 +904,14 @@ def _title_popup_slide_cancel():
         _title_popup_anim_after = None
 
 
-def _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color):
+def _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color,
+                          alternate_title="", inline_bottom_row="", side_info=None):
     """Animate the title popup sliding up from below the screen (time-based, ~100 ms duration)."""
     global _title_popup_anim_state, _title_popup_anim_args
     _title_popup_slide_cancel()
     _title_popup_anim_state = 'in'
-    _title_popup_anim_args  = (top_row, title_row, bottom_row, bg_color, fg_color)
+    _title_popup_anim_args  = (top_row, title_row, bottom_row, bg_color, fg_color,
+                               alternate_title, inline_bottom_row, side_info)
     try:
         osd_h = int(state.widgets.player._p.osd_height or 0)
     except Exception:
@@ -811,13 +927,15 @@ def _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color):
         t = min((time.perf_counter() - t0) / duration, 1.0)
         bounce = math.sin(t * math.pi) * 5 if t > 0.7 else 0
         y_offset = int((osd_h if osd_h else 400) * (1.0 - t) + bounce)
-        _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset)
+        _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color,
+                              alternate_title, inline_bottom_row, side_info, y_offset)
         if t < 1.0:
             _title_popup_anim_after = state.widgets.root.after(poll, _step)
         else:
             _title_popup_anim_after  = None
             _title_popup_anim_state  = None
-            _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, 0)
+            _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color,
+                                  alternate_title, inline_bottom_row, side_info, 0)
 
     _step()
 
@@ -831,7 +949,7 @@ def _title_popup_slide_out():
         _hide_title_popup_osd()
         return
     _title_popup_anim_state = 'out'
-    top_row, title_row, bottom_row, bg_color, fg_color = _title_popup_anim_args
+    top_row, title_row, bottom_row, bg_color, fg_color, alternate_title, inline_bottom_row, side_info = _title_popup_anim_args
     try:
         osd_h = int(state.widgets.player._p.osd_height or 0)
     except Exception:
@@ -846,7 +964,8 @@ def _title_popup_slide_out():
             return
         t = min((time.perf_counter() - t0) / duration, 1.0)
         y_offset = int((osd_h if osd_h else 400) * t)
-        _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, y_offset)
+        _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color,
+                              alternate_title, inline_bottom_row, side_info, y_offset)
         if t < 1.0:
             _title_popup_anim_after = state.widgets.root.after(poll, _step)
         else:
@@ -896,7 +1015,7 @@ def _schedule_revealed_session_history_publish():
 
 def toggle_title_popup(show, info_type=None, instant=False):
     """Creates or destroys the title popup at the bottom middle of the screen."""
-    global _title_popup_info_type_cache, _title_popup_last_mpv_size
+    global _title_popup_info_type_cache, _title_popup_last_mpv_size, _title_popup_anim_args
     if show:
         _already_up = state.info_display._title_popup_intent  # True when switching info type while popup is already visible
         _title_popup_info_type_cache = info_type
@@ -946,6 +1065,9 @@ def toggle_title_popup(show, info_type=None, instant=False):
     top_row = ""
     title_row = ""
     bottom_row = ""
+    alternate_title = ""
+    inline_bottom_row = ""
+    side_info = None
     bg_color = state.colors.OVERLAY_BACKGROUND_COLOR
     fg_color = state.colors.OVERLAY_TEXT_COLOR
     data = state.playback.currently_playing.get("data")
@@ -968,10 +1090,8 @@ def toggle_title_popup(show, info_type=None, instant=False):
         if state.playback.currently_playing.get("type") == "youtube":
             title = youtube_ui.get_youtube_display_title(data)
             full_title = data.get("title")
-            if full_title == title:
-                full_title = ""
-            else:
-                full_title = full_title + "\n"
+            if full_title != title:
+                alternate_title = full_title or ""
             uploaded = f"{datetime.strptime(data.get("upload_date"), "%Y%m%d").strftime("%Y-%m-%d")}"
             views = f"{data.get("view_count"):,}"
             likes = f"{data.get("like_count"):,}"
@@ -983,7 +1103,7 @@ def toggle_title_popup(show, info_type=None, instant=False):
 
             top_row = f"Uploaded by {channel} ({subscribers} subscribers)"
             title_row = title
-            bottom_row = f"{full_title}Views: {views} | Likes: {likes} | {uploaded} | {duration}"
+            bottom_row = f"Views: {views} | Likes: {likes} | {uploaded} | {duration}"
         else:
             japanese_title = data.get("title")
             title = metadata_display.get_display_title(data)
@@ -1143,12 +1263,15 @@ def toggle_title_popup(show, info_type=None, instant=False):
                         if year_titles:
                             top_row = f"Most Popular {current_format} from {year} (on AniList):\n{chr(10).join(year_titles)}\n\n{top_row}"
 
-                middle_row_string = f"{score} | {japanese_title} | {members}\n"
+                if japanese_title and japanese_title != title:
+                    alternate_title = japanese_title
+                middle_parts = [part for part in (score, members) if part]
+                middle_row_string = " | ".join(middle_parts) + "\n" if middle_parts else ""
+                if score and members:
+                    side_info = (score, members)
+                inline_middle_row_string = f"{score} | {japanese_title} | {members}\n"
                 if not score and not members:
-                    if japanese_title != title:
-                        middle_row_string = f"{japanese_title}\n"
-                    else:
-                        middle_row_string = ""
+                    inline_middle_row_string = f"{japanese_title}\n" if japanese_title != title else ""
 
                 anilist_row_string = ""
                 anilist_id = data.get("anilist")
@@ -1190,17 +1313,25 @@ def toggle_title_popup(show, info_type=None, instant=False):
                             anilist_row_string = " | ".join(anilist_parts) + "\n"
 
                 bottom_row = f"{middle_row_string}{anilist_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
+                inline_bottom_row = f"{inline_middle_row_string}{anilist_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
             else:
                 title_row = title_overlay.get_base_title()
                 japanese_title = title_overlay.get_base_title(title=japanese_title)
                 if state.config.title_top_info_txt:
                     top_row = state.config.title_top_info_txt
                 if japanese_title != title:
-                    bottom_row = f"{japanese_title}"
+                    alternate_title = japanese_title
     else:
         title_row = state.playback.currently_playing.get("filename", "No Media Playing").split(".")[0]
 
-    _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color) if not _already_up else _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color, 0)
+    if not _already_up:
+        _title_popup_slide_in(top_row, title_row, bottom_row, bg_color, fg_color,
+                              alternate_title, inline_bottom_row, side_info)
+    else:
+        _title_popup_anim_args = (top_row, title_row, bottom_row, bg_color, fg_color,
+                                  alternate_title, inline_bottom_row, side_info)
+        _draw_title_popup_osd(top_row, title_row, bottom_row, bg_color, fg_color,
+                              alternate_title, inline_bottom_row, side_info)
     _mx, _my, _mw, _mh = _get_mpv_window_rect()
     _title_popup_last_mpv_size = (_mw, _mh)
     _register_mpv_tracked_window("title_popup", None, _title_popup_on_mpv_rect)

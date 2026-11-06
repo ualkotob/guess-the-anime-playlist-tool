@@ -46,7 +46,7 @@ characters_round_characters           = []
 characters_round_names                = []
 characters_round_image_cache_default  = []
 characters_round_image_cache_default_urls = [
-    "https://w0.peakpx.com/wallpaper/104/618/HD-wallpaper-anime-error-female-dress-black-cute-hair-windows-girl-anime-page.jpg",
+    "https://cdn.anidb.net/misc/confused.png",
     "https://i.imgflip.com/1xuu83.jpg",
     "https://www.pngarts.com/files/8/Confused-Anime-PNG-Background-Image.png",
     "https://cdn.anidb.net/misc/confused.png",

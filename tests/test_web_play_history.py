@@ -9,6 +9,33 @@ from _app_scripts.file.web_server import web_search
 from _app_scripts.playlists import entry_paths
 
 
+@pytest.mark.parametrize("existing_file", [True, False])
+def test_empty_favorites_are_cached_and_explicit_refresh_reloads(monkeypatch, tmp_path, existing_file):
+    marks = web_search.playlist_marks
+    path = tmp_path / "Favorite Themes.json"
+    if existing_file:
+        path.write_text('{"playlist": []}', encoding="utf-8")
+    monkeypatch.setattr(marks, "PLAYLISTS_FOLDER", str(tmp_path))
+    monkeypatch.setattr(marks, "check_theme_cache", {})
+    exists = marks.os.path.exists
+    exists_calls = []
+
+    def count_exists(filename):
+        exists_calls.append(filename)
+        return exists(filename)
+
+    monkeypatch.setattr(marks.os.path, "exists", count_exists)
+    for filename in ("one.webm", "two.webm", "three.webm"):
+        assert marks.check_favorited(filename) is False
+    assert len(exists_calls) == 1
+
+    path.write_text('{"playlist": ["one.webm"]}', encoding="utf-8")
+    assert marks.check_theme("one.webm", "Favorite Themes", recache=True) is True
+    assert marks.check_favorited("one.webm") is True
+    assert marks.check_favorited("two.webm") is False
+    assert len(exists_calls) == 2
+
+
 def _metadata(title, series):
     return {
         "title": title,

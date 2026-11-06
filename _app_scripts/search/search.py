@@ -250,7 +250,7 @@ def _get_search_index():
             return _search_index
         rows = []
         with source_preferences.availability_snapshot():
-            for filename in playlist_ops.get_directory_files(include_non_local=True):
+            for filename in utils.yield_to_ui(playlist_ops.get_directory_files(include_non_local=True)):
                 filename_trim = filename.lower().replace(".webm", "").replace(".mp4", "")
                 for theme_entry in metadata_fetch.get_theme_references(filename):
                     file_data = metadata_fetch.get_file_metadata_by_name(theme_entry) or {}

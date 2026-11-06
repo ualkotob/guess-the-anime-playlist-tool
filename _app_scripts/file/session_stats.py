@@ -98,11 +98,11 @@ def publish_final_session_history():
 
 
 # ---------------------------------------------------------------------------
-# OP / ED counting helper
+# Theme-type counting helpers
 # ---------------------------------------------------------------------------
-def get_op_ed_counts(themes):
-    opening_count = 0
-    ending_count = 0
+def get_theme_type_counts(themes):
+    """Return opening, ending, insert and other counts in a single pass."""
+    counts = [0, 0, 0, 0]
 
     for filename in themes:
         if filename is None:
@@ -117,12 +117,23 @@ def get_op_ed_counts(themes):
                 continue
             slug = parts[1].split(".")[0].split("v")[0]
 
-        if utils.is_slug_op(slug):
-            opening_count += 1
+        slug = str(slug).upper()
+        if slug.startswith("OP"):
+            counts[0] += 1
+        elif slug.startswith("ED"):
+            counts[1] += 1
+        elif slug.startswith("IN"):
+            counts[2] += 1
         else:
-            ending_count += 1
+            counts[3] += 1
 
-    return opening_count, ending_count
+    return tuple(counts)
+
+
+def get_op_ed_counts(themes):
+    """Keep the opening/non-opening counts used by existing session summaries."""
+    openings, endings, inserts, other = get_theme_type_counts(themes)
+    return openings, endings + inserts + other
 
 
 # ---------------------------------------------------------------------------

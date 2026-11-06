@@ -71,7 +71,7 @@ def get_cached_sfw_themes():
         "ops":[],
         "eds":[]
     }
-    for filename in state.metadata.directory_files:
+    for filename in utils.yield_to_ui(state.metadata.directory_files):
         if not check_nsfw(filename):
             data = metadata_fetch.get_metadata(filename)
             if data:

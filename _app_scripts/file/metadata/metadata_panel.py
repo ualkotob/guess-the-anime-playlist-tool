@@ -544,18 +544,20 @@ def update_metadata():
         if filename:
             data = currently_playing.get('data')
             metadata_display.reset_metadata()
+            play_stats = None
             # Count theme and series plays in playlist history.
             if playlist.get("infinite"):
                 _pl      = playlist.get("playlist", [])
                 _cur_idx = playlist.get("current_index", 0)
-                _fp, _sp = metadata_display._calc_plays_info(filename, data, _pl, _cur_idx)
+                _fp, _sp = metadata_display._calc_plays_info(filename, data, _pl, _cur_idx, include_dates=True)
+                play_stats = (_fp, _sp)
 
-                left_column.insert(tk.END, "THEME PLAYS: ", "bold")
-                left_column.insert(tk.END, metadata_display._fmt_plays(_fp), "white")
-                if _sp:
-                    left_column.insert(tk.END, "  SERIES PLAYS: ", "bold")
-                    left_column.insert(tk.END, metadata_display._fmt_plays(_sp), "white")
-                left_column.insert(tk.END, "\n\n", "blank")
+                for label, plays in (("THEME", _fp), ("SERIES", _sp)):
+                    if plays is not None:
+                        left_column.insert(tk.END, f"{label} PLAYS: ", "bold")
+                        left_column.insert(tk.END, plays.get("display") or metadata_display._fmt_plays(plays), "white")
+                        left_column.insert(tk.END, "\n", "blank")
+                left_column.insert(tk.END, "\n", "blank")
 
             if data:
                 metadata_display.add_single_data_line(left_column, data, "TITLE: ", 'title', True)
@@ -743,10 +745,8 @@ def update_metadata():
                         "anisongdb_amq_song_id": data.get("anisongdb_amq_song_id"),
                         "cover": data.get("cover"),
                     }
-                if playlist.get("infinite"):
-                    _pl      = playlist.get("playlist", [])
-                    _cur_idx = playlist.get("current_index", 0)
-                    _fp, _sp = metadata_display._calc_plays_info(filename, data, _pl, _cur_idx)
+                if playlist.get("infinite") and play_stats is not None:
+                    _fp, _sp = play_stats
                     _web_meta["file_plays"]   = _fp
                     _web_meta["series_plays"] = _sp
                 if data:

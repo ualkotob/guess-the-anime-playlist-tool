@@ -29,7 +29,7 @@ DIST_BASE_URLS = {
     "europe": "https://eudist.animemusicquiz.com/",
 }
 DEFAULT_DIST_REGION = "na-east"
-PROJECTION_VERSION = 21
+PROJECTION_VERSION = 27
 
 _TAGGED_AMQ_RE = re.compile(r"\[(?:ASDB|AMQ)\](\d+)", re.IGNORECASE)
 _TAGGED_ANN_RE = re.compile(r"\[ANNSONG\](\d+)", re.IGNORECASE)
@@ -178,7 +178,8 @@ def build_indexes(*, force=False) -> dict:
         return _indexes
     _invalidate_artist_display_aliases()
 
-    indexes = {"media": {}, "amq": {}, "ann_song": {}, "mal": {}}
+    assignments = _build_anime_assignments()
+    indexes = {"media": {}, "amq": {}, "ann_song": {}, "mal": {}, "anime_assignments": assignments}
     if isinstance(songs, list):
         for song in songs:
             if not isinstance(song, dict):
@@ -192,9 +193,7 @@ def build_indexes(*, force=False) -> dict:
                 value = song.get(field)
                 if value is not None:
                     indexes[index_name][str(value)] = song
-            anime = catalog.get("anime", {}).get(str(song.get("annId")), {})
-            linked = anime.get("linked_ids") if isinstance(anime, dict) else {}
-            mal_id = linked.get("myanimelist") if isinstance(linked, dict) else None
+            mal_id = assignments.get(_anime_assignment_identity(song), _original_mal_id(song))
             if mal_id is not None:
                 indexes["mal"].setdefault(str(mal_id), []).append(song)
 
@@ -218,14 +217,20 @@ def build_indexes(*, force=False) -> dict:
             _mapped_slugs[key] = song.get("slug")
     # Several provider rows can share one established song. Its anime row
     # retains only one provider identity, while each selectable file retains
-    # its own. Restore those mappings too so a restart preserves every slot.
+    # its own. A native file's backup can retain a source identity overwritten
+    # on both the anime row and a provider file shared by multiple source rows.
+    # Restore all annotated files so a restart preserves every slot.
     for entry in state.metadata.file_metadata.values():
         if not isinstance(entry, dict):
             continue
         for slug, versions in entry.get("themes", {}).items():
             for files in versions.values():
                 for properties in files.values():
-                    if not isinstance(properties, dict) or properties.get("source") != "ANISONGDB" or not properties.get("anisongdb_source_slug"):
+                    if not isinstance(properties, dict) or not properties.get("anisongdb_source_slug"):
+                        continue
+                    if any(properties.get(field) is None for field in (
+                        "anisongdb_ann_id", "anisongdb_ann_song_id", "anisongdb_amq_song_id",
+                    )):
                         continue
                     key = (
                         str(properties.get("anisongdb_ann_id")),
@@ -353,15 +358,35 @@ def normalize_song(song: dict) -> dict:
     return result
 
 
-def _linked_ids(song: dict) -> dict:
+def _original_linked_ids(song: dict) -> dict:
     anime = _catalog().get("anime", {}).get(str(song.get("annId")), {})
     linked = anime.get("linked_ids") if isinstance(anime, dict) else {}
     return linked if isinstance(linked, dict) else {}
 
 
-def _mal_id(song: dict) -> str | None:
-    value = _linked_ids(song).get("myanimelist")
+def _original_mal_id(song: dict) -> str | None:
+    value = _original_linked_ids(song).get("myanimelist")
     return str(value) if value not in (None, "") else None
+
+
+def _mal_id(song: dict) -> str | None:
+    return build_indexes()["anime_assignments"].get(_anime_assignment_identity(song), _original_mal_id(song))
+
+
+def _linked_ids(song: dict) -> dict:
+    original = _original_linked_ids(song)
+    mal_id = _mal_id(song)
+    if mal_id == _original_mal_id(song):
+        return original
+    # A split movie/season can have different site IDs from its catalog parent.
+    # Keep only IDs established for the corrected anime, never the parent's.
+    result = {"myanimelist": int(mal_id)}
+    entry = state.metadata.file_metadata.get(mal_id, {})
+    for key in ("anidb", "anilist", "kitsu"):
+        value = entry.get(key)
+        if value not in (None, ""):
+            result[key] = value
+    return result
 
 
 def linked_ids(song: dict) -> dict:
@@ -415,6 +440,53 @@ def _song_titles_match(left, right) -> bool:
     return bool(_song_title_spelling_key(left)) and (
         _song_title_spelling_key(left) == _song_title_spelling_key(right)
         or _song_title_key(left) == _song_title_key(right)
+    )
+
+
+@lru_cache(maxsize=32768)
+def _song_title_without_version(title: str | None) -> str | None:
+    """Read an explicit trailing recording label without aliasing song titles."""
+    value = unicodedata.normalize("NFKC", str(title or "")).strip()
+    for pattern in (
+        r"(.+?)\s*\(([^()]*)\)\s*$",
+        r"(.+?)\s*\[([^\[\]]*)\]\s*$",
+        r"(.+?)\s+[-~]\s*(.+?)\s*[-~]\s*$",
+        r"(.+?)\s+((?:[\w-]+\s+)?(?:version|ver\.?))\s*$",
+    ):
+        match = re.fullmatch(pattern, value, re.IGNORECASE)
+        if match and re.search(
+            r"\b(?:ver\.?|version|remix|mix|acoustic|piano|final|instrumental|karaoke|live"
+            r"|from\s+(?:the\s+)?studio|studio\s+(?:session|recording))\b",
+            match[2], re.IGNORECASE,
+        ):
+            return match[1].strip()
+    return None
+
+
+def _omitted_version_title_match(song: dict, title) -> bool:
+    """A qualified source can cover a native title whose version was omitted."""
+    base = _song_title_without_version(song.get("songName"))
+    return bool(base and not _song_title_without_version(title) and _song_titles_match(base, title))
+
+
+def _unaccounted_version_matches(song: dict, theme: dict, slug: str) -> bool:
+    """Infer a theme family from coverage, retaining the exact source recording."""
+    if not _omitted_version_title_match(song, theme.get("title")):
+        return False
+    # Instrumentals, live performances, and translated recordings can share a
+    # title and performer with a vocal TV theme without representing its cut.
+    if str(song.get("songCategory") or "").casefold() != "standard":
+        return False
+    if re.search(r"\b(?:instrumental|karaoke|off[ -]?vocal|live|english|dub)\b",
+                 str(song.get("songName") or ""), re.IGNORECASE):
+        return False
+    if not _literal_performer_rosters_match(song, theme.get("artist")):
+        return False
+    mal = _mal_id(song)
+    return any(
+        isinstance(properties, dict) and str(properties.get("source", "")).upper() != "ANISONGDB"
+        for files in state.metadata.file_metadata.get(mal, {}).get("themes", {}).get(slug, {}).values()
+        for properties in files.values()
     )
 
 
@@ -1071,6 +1143,45 @@ def _theme_matching_overrides(mal_id: str) -> dict:
     return {**(published if isinstance(published, dict) else {}), **(personal if isinstance(personal, dict) else {})}
 
 
+def _anime_assignment_identity(song: dict) -> tuple:
+    """Guard an anime correction with the complete observed source identity."""
+    return (
+        _original_mal_id(song), *_song_key(song), song.get("songName"),
+        song.get("songArtist"), song.get("songCategory"),
+        next(iter_videos(song), (None,))[0],
+    )
+
+
+def _build_anime_assignments() -> dict:
+    """Read per-song anime corrections once during an explicit index rebuild."""
+    fields = (
+        "ann_id", "ann_song_id", "amq_song_id", "source_slug", "source_title",
+        "source_artist", "category", "source_video", "mal",
+    )
+    candidates = defaultdict(set)
+    for original_mal in state.metadata.anime_metadata.keys() | state.metadata.anime_metadata_overrides.keys():
+        records = _theme_matching_overrides(str(original_mal)).get("anime_assignments")
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict) or not all(field in record for field in fields):
+                continue
+            target = str(record["mal"])
+            if not target.isascii() or not target.isdigit() or int(target) <= 0:
+                continue
+            if not isinstance(state.metadata.anime_metadata.get(target), dict):
+                continue
+            identity = (
+                str(original_mal), *(str(record[field]) for field in fields[:3]),
+                *(record[field] for field in fields[3:8]),
+            )
+            if not all(isinstance(value, str) and value for value in identity):
+                continue
+            candidates[identity].add(target)
+    # Conflicting decisions cannot move a video to either claimed anime.
+    return {identity: next(iter(targets)) for identity, targets in candidates.items() if len(targets) == 1}
+
+
 def iter_reviewed_matches(kind: str, mal_id: str | None = None):
     """Read guarded case data from the exported metadata overrides."""
     selected = [mal_id] if mal_id is not None else (
@@ -1108,6 +1219,12 @@ def _reviewed_recording_match(song: dict, theme: dict, slug: str) -> bool:
 def _reviewed_official_credit_match(song: dict, theme: dict, slug: str) -> bool:
     """Apply a primary theme-credit review only to its observed media/credits."""
     keys = _reviewed_link_keys(iter_reviewed_matches("official_credits", _mal_id(song)))
+    return _reviewed_link_match(song, theme, slug, keys)
+
+
+def _reviewed_unaccounted_theme_match(song: dict, theme: dict, slug: str) -> bool:
+    """Identify a reviewed theme family, without asserting recording equality."""
+    keys = _reviewed_link_keys(iter_reviewed_matches("unaccounted_themes", _mal_id(song)))
     return _reviewed_link_match(song, theme, slug, keys)
 
 
@@ -1157,12 +1274,16 @@ def _matches_projected_credit_role(song: dict, title, artists) -> bool:
     if not anchor or not _song_titles_match(title, anchor.get("title")):
         return False
     recording_match = _reviewed_theme_match(song, anchor, mapped)
-    if not recording_match and not (_song_titles_match(title, song.get("songName")) or _reviewed_title_match(song, title)):
+    version_match = _unaccounted_version_matches(song, anchor, mapped)
+    family_match = _reviewed_unaccounted_theme_match(song, anchor, mapped)
+    if not recording_match and not version_match and not family_match and not (
+        _song_titles_match(title, song.get("songName")) or _reviewed_title_match(song, title)
+    ):
         return False
     anchor_artists = anchor.get("artist") or []
     if isinstance(anchor_artists, str):
         anchor_artists = [anchor_artists]
-    return (recording_match or bool(_unaccounted_credit_evidence(song, anchor_artists))) and _performer_rosters_match(
+    return (recording_match or version_match or family_match or bool(_unaccounted_credit_evidence(song, anchor_artists))) and _performer_rosters_match(
         {"artists": [{"names": [name]} for name in anchor_artists]}, artists,
     )
 
@@ -1178,10 +1299,14 @@ def resolve_song_for_mal_slug(
     """Resolve song identity across source numbering without accepting conflicts."""
     if not ensure_catalog(download=download_catalog):
         return None
-    match = re.fullmatch(r"(OP|ED|IN)(\d+(?:\.\d+)?)(?:-(?:BD|HD|TV|SOUND))?", str(slug or ""), re.IGNORECASE)
+    match = re.fullmatch(r"(OP|ED|IN)(\d+(?:\.\d+)?)(?:-([A-Z][A-Z0-9_]*))?", str(slug or ""), re.IGNORECASE)
     if not match:
         return None
     kind = match.group(1).upper()
+    qualifier = (match.group(3) or "").upper()
+    requires_review = qualifier not in ("", "BD", "HD", "TV", "SOUND")
+    anchor = next((theme for theme in state.metadata.anime_metadata.get(str(mal_id), {}).get("songs") or []
+                   if str(theme.get("slug", "")).upper() == str(slug).upper() and not theme.get("anisongdb_only")), None)
     slot_candidates = songs_for_mal_slug(mal_id, slug)
     # With a known title, the number cannot restrict the search. Without one,
     # the saved slot remains the only evidence for a manually named file.
@@ -1190,6 +1315,7 @@ def resolve_song_for_mal_slug(
         song for song in pool
         if _song_type(song)[0] == kind
         and not song.get("isDub") and not song.get("isRebroadcast")
+        and (not requires_review or (anchor and _reviewed_theme_match(song, anchor, anchor["slug"])))
         and (_matches_theme(song, title, artists) or _matches_projected_credit_role(song, title, artists))
     ]
     if not candidates:
@@ -1197,8 +1323,6 @@ def resolve_song_for_mal_slug(
 
     # A verified clip in this slot has stronger evidence than another cast's
     # matching answer credits. Check it before the roster filter can discard it.
-    anchor = next((theme for theme in state.metadata.anime_metadata.get(str(mal_id), {}).get("songs") or []
-                   if str(theme.get("slug", "")).upper() == str(slug).upper() and not theme.get("anisongdb_only")), None)
     if anchor:
         reviewed = [song for song in candidates if song in slot_candidates
                     and _reviewed_theme_match(song, anchor, anchor["slug"])
@@ -1659,8 +1783,10 @@ def _refresh_runtime_lookup(filenames: list[str], *, clear_all=False) -> None:
     playlist.invalidate_deduplicated_cache()
 
 
-def _unaccounted_title_pairs(rows: list[dict], anchors: dict, mappings: dict) -> list[tuple[dict, str]]:
-    """Find unique same-title pairs remaining after the performer matching pass.
+def _unaccounted_title_pairs(
+    rows: list[dict], anchors: dict, mappings: dict, *, include_versions=False, include_reviewed=False,
+) -> list[tuple[dict, str]]:
+    """Find unique title pairs remaining after the performer matching pass.
 
     A matched base slot also accounts for its HD/TV/Sound clips. Every remaining
     source row participates in ambiguity checks, including rows with different
@@ -1673,7 +1799,9 @@ def _unaccounted_title_pairs(rows: list[dict], anchors: dict, mappings: dict) ->
     sources = {_song_key(song): song for song in rows if _song_key(song) not in mappings}
     matches = {key: [slug for slug, theme in remaining.items()
                      if (_song_titles_match(song.get("songName"), theme.get("title"))
-                         or _reviewed_title_match(song, theme.get("title")))]
+                         or _reviewed_title_match(song, theme.get("title"))
+                         or (include_versions and _omitted_version_title_match(song, theme.get("title")))
+                         or (include_reviewed and _reviewed_unaccounted_theme_match(song, theme, slug)))]
                for key, song in sources.items()}
     frequency = Counter(slug for candidates in matches.values() for slug in candidates)
     return [(sources[key], candidates[0]) for key, candidates in matches.items()
@@ -1716,6 +1844,12 @@ def _assign_theme_slugs(coverage: set[tuple[str, str]]) -> None:
                 slug: songs.get(slug, {}) for slug in slots
                 if re.fullmatch(rf"{kind}\d+(?:\.\d+)?(?:-(?:BD|HD|TV|SOUND))?", slug)
             }
+            # Language and other named cuts remain outside ordinary matching.
+            # An observed source/native review can identify one explicitly.
+            reviewable = {
+                slug: songs.get(slug, {}) for slug in slots
+                if re.fullmatch(rf"{kind}\d+(?:\.\d+)?(?:-[A-Z][A-Z0-9_]*)?", slug)
+            }
             rows = sorted(
                 (song for song in source_songs if _song_type(song)[0] == kind
                  and not song.get("isDub") and not song.get("isRebroadcast")),
@@ -1726,10 +1860,10 @@ def _assign_theme_slugs(coverage: set[tuple[str, str]]) -> None:
                         or _literal_performer_rosters_match(song, theme.get("artist")))
 
             for song in rows:
-                reviewed = [slug for slug, theme in anchors.items()
+                reviewed = [slug for slug, theme in reviewable.items()
                             if _reviewed_theme_match(song, theme, slug)]
                 if len(reviewed) == 1:
-                    _mapped_slugs[_song_key(song)] = anchors[reviewed[0]].get("slug") or reviewed[0]
+                    _mapped_slugs[_song_key(song)] = reviewable[reviewed[0]].get("slug") or reviewed[0]
             for song in rows:
                 if _song_key(song) in _mapped_slugs:
                     continue
@@ -1775,11 +1909,33 @@ def _assign_theme_slugs(coverage: set[tuple[str, str]]) -> None:
             # explain differing credits. A cover of an already accounted-for
             # song remains an extra, without relaxing artist matching globally.
             for song, slug in _unaccounted_title_pairs(rows, anchors, _mapped_slugs):
-                if (cast_matches(song, slug, anchors[slug])
-                        and _unaccounted_credit_evidence(song, anchors[slug].get("artist"))):
+                evidence = _unaccounted_credit_evidence(song, anchors[slug].get("artist"))
+                # A guarded alias accounts for the complete source roster even
+                # when its written names differ. Keep that identity check in
+                # this unique unaccounted pass so it cannot absorb a known cover.
+                if evidence and (cast_matches(song, slug, anchors[slug])
+                                 or evidence == ("reviewed_source_artist",)):
+                    _mapped_slugs[_song_key(song)] = anchors[slug].get("slug") or slug
+
+            # A provider can name the TV arrangement while the native title
+            # omits it. Consider that only after exact-title/credit coverage is
+            # complete, with one remaining source and one remaining family.
+            for song, slug in _unaccounted_title_pairs(rows, anchors, _mapped_slugs, include_versions=True):
+                if _unaccounted_version_matches(song, anchors[slug], slug):
+                    _mapped_slugs[_song_key(song)] = anchors[slug].get("slug") or slug
+
+            # Reviewed family links explain particular source/native credit or
+            # title differences. They apply only while that family is uncovered;
+            # a later ordinary source must keep its additional variant separate.
+            for song, slug in _unaccounted_title_pairs(
+                rows, anchors, _mapped_slugs, include_versions=True, include_reviewed=True,
+            ):
+                if _reviewed_unaccounted_theme_match(song, anchors[slug], slug):
                     _mapped_slugs[_song_key(song)] = anchors[slug].get("slug") or slug
 
             occupied = {Decimal(slug[2:].split("-", 1)[0]) for slug in anchors}
+            occupied.update(Decimal(_mapped_slugs[_song_key(song)][2:].split("-", 1)[0])
+                            for song in rows if _song_key(song) in _mapped_slugs)
             previous = None
             index = 0
             while index < len(rows):
@@ -1838,11 +1994,11 @@ def sync_catalog_to_metadata() -> int:
     """Project gaps plus selectable alternatives for covered themes."""
     if not has_catalog():
         return 0
-    # Retain detected MQ and renamed files as logical entries after rebuilding
-    # the preferred catalog videos. No physical file is moved or renamed.
+    # Retain detected MQ, renamed, and explicitly registered excluded clips
+    # after rebuilding the preferred catalog videos.
     detected_files = []
-    for entry in state.metadata.file_metadata.values():
-        for versions in entry.get("themes", {}).values():
+    for mal_id, entry in state.metadata.file_metadata.items():
+        for slug, versions in entry.get("themes", {}).items():
             for files in versions.values():
                 for filename, properties in files.items():
                     if not isinstance(properties, dict) or properties.get("source") != "ANISONGDB":
@@ -1851,12 +2007,19 @@ def sync_catalog_to_metadata() -> int:
                     if not song:
                         song = build_indexes()["ann_song"].get(str(properties.get("anisongdb_ann_song_id")))
                     videos = list(iter_videos(song)) if song else []
-                    if videos and filename.casefold() != videos[0][0].casefold():
-                        detected_files.append((filename, song))
+                    excluded = bool(song and (song.get("isDub") or song.get("isRebroadcast")))
+                    if videos and (filename.casefold() != videos[0][0].casefold() or excluded):
+                        saved_slug = slug if excluded and str(mal_id) == _mal_id(song) else None
+                        detected_files.append((filename, song, saved_slug))
     existing_coverage = _existing_non_anisongdb_coverage()
     clear_registered_metadata()
     _apply_native_theme_overrides(existing_coverage)
     _assign_theme_slugs(existing_coverage)
+    # Excluded rows have no automatic slot assignment. Retain their explicitly
+    # saved slots, including language qualifiers, without adding other dubs.
+    for _filename, song, saved_slug in detected_files:
+        if saved_slug:
+            _mapped_slugs.setdefault(_song_key(song), saved_slug)
     filenames = []
     for song in _catalog().get("songs", []):
         if not isinstance(song, dict) or song.get("isDub") or song.get("isRebroadcast"):
@@ -1877,7 +2040,7 @@ def sync_catalog_to_metadata() -> int:
             )
         )
     alternate_filenames = _enrich_covered_files(existing_coverage)
-    for filename, song in detected_files:
+    for filename, song, _saved_slug in detected_files:
         covered = (_mal_id(song), theme_slug(song).upper()) in existing_coverage
         register_song(song, filename=filename, is_gap=not covered, is_alternate=covered)
     from _app_scripts.file.metadata.metadata_fetch import sort_songs

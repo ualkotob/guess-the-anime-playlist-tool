@@ -508,6 +508,59 @@ def invalidate_deduplicated_cache():
     cached_deduplicated_files_timestamp = 0
 
 
+def prefer_popular_shared_themes(filenames):
+    """Choose a shared video's most popular owner for an infinite pool.
+
+    Keep an explicit reference when the ordinary filename lookup belongs to
+    another anime. A downloaded alternative must belong to the winning theme
+    and version; source preferences still decide which allowed copy to use.
+    """
+    result = []
+    seen = set()
+    with source_preferences.availability_snapshot():
+        for filename in utils.yield_to_ui(filenames):
+            references = metadata_fetch.get_theme_references(filename)
+            if len(references) > 1:
+                def popularity(reference):
+                    data = metadata_fetch.get_file_metadata_by_name(reference) or {}
+                    anime = state.metadata.anime_metadata.get(str(data.get("mal"))) or {}
+                    rank = anime.get("popularity")
+                    return rank if isinstance(rank, (int, float)) and rank > 0 else float("inf")
+
+                chosen = min(references, key=popularity)
+                data = metadata_fetch.get_file_metadata_by_name(chosen) or {}
+                version = data.get("version")
+                if isinstance(version, str) and version.isdigit():
+                    version = int(version)
+                alternatives = metadata_display._collect_theme_filenames(
+                    data.get("mal"), data.get("slug"), version, need_version=True,
+                )
+                downloaded = [
+                    entry_paths.make_theme_reference(f, data.get("mal"), data.get("slug"), data.get("version"))
+                    for f in alternatives
+                    if source_preferences.file_allowed(f, local_only=True)
+                ]
+                # Downloaded copies normally tie on source rank, after which
+                # quality tags can favor the shared AniSongDB video. Prefer a
+                # downloaded AnimeThemes copy here before those quality ties.
+                native_downloads = [
+                    f for f in downloaded
+                    if source_preferences.file_source(f) == source_preferences.ANIMETHEMES
+                    and source_preferences.selection_key(f) <= source_preferences.selection_key(chosen)
+                ]
+                filename = metadata_display.prioritize_theme_files(native_downloads or [chosen] + downloaded) or chosen
+                # Ordinary filenames remain enough when their default owner
+                # already matches the selected anime, slug and version.
+                physical = entry_paths.get_clean_filename(filename)
+                default = metadata_fetch.get_file_metadata_by_name(physical) or {}
+                if all(str(default.get(key)) == str(data.get(key)) for key in ("mal", "slug", "version")):
+                    filename = physical
+            if filename not in seen:
+                result.append(filename)
+                seen.add(filename)
+    return result
+
+
 def deduplicate_theme_versions(filenames, keep_versions=False):
     """Deduplicate files by theme, keeping the best version or best file per version."""
     if not filenames:
@@ -555,7 +608,7 @@ def get_directory_files(include_non_local=False, deduplicate_files=False, dedupl
     filename_to_mal = metadata_fetch.filename_to_mal
     if include_non_local:
         non_local_files = []
-        for f in filename_to_mal:
+        for f in utils.yield_to_ui(filename_to_mal):
             if '.' not in f:
                 continue
             if (
@@ -571,16 +624,17 @@ def get_directory_files(include_non_local=False, deduplicate_files=False, dedupl
     else:
         all_files = list(directory_files.keys())
 
-    all_files = [f for f in all_files if source_preferences.file_allowed(f, local_only=not include_non_local)]
+    all_files = [f for f in utils.yield_to_ui(all_files)
+                 if source_preferences.file_allowed(f, local_only=not include_non_local)]
     if include_non_local:
         # Keep provider alternatives from making a covered song appear twice.
         groups = {}
-        for filename in all_files:
+        for filename in utils.yield_to_ui(all_files):
             data = metadata_fetch.get_file_metadata_by_name(filename) or {}
             key = (data.get("mal"), data.get("slug"), data.get("version")) if data.get("mal") and data.get("slug") else filename
             groups.setdefault(key, []).append(filename)
         retained = set()
-        for files in groups.values():
+        for files in utils.yield_to_ui(groups.values()):
             providers = {source_preferences.file_source(f) for f in files} - {None}
             if len(providers) < 2:
                 retained.update(files)

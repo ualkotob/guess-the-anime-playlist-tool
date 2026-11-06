@@ -54,6 +54,18 @@ class TestInfiniteSettings:
         clean_playlist["infinite_settings"] = stored
         assert infinite.get_infinite_settings() is not stored
 
+    def test_end_card_first_plays_default_on_for_old_settings_and_preserve_opt_out(self, clean_playlist):
+        from _app_scripts import utils
+
+        clean_playlist["infinite_settings"] = {"tag_cooldown": 99}
+        assert infinite.get_infinite_settings()["show_first_time_plays_on_end_card"] is True
+
+        clean_playlist["infinite_settings"]["show_first_time_plays_on_end_card"] = False
+        settings = infinite.get_infinite_settings()
+        assert settings["show_first_time_plays_on_end_card"] is False
+        diff = utils.compute_settings_diff(infinite.INFINITE_SETTINGS_DEFAULT, settings)
+        assert diff["show_first_time_plays_on_end_card"] is False
+
 
 # ---------------------------------------------------------------------------
 # Season helpers

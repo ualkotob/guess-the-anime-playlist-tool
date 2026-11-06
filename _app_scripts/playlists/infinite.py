@@ -11,6 +11,7 @@ filters and several playback modules import this module in turn. All cross-modul
 references are runtime-only, so the cycles resolve cleanly.
 """
 import copy
+import math
 import random
 import threading
 import time
@@ -43,7 +44,14 @@ INFINITE_SETTINGS_DEFAULT = {
         "hard": {"range": [1001, float('inf')], "cooldown": [1.0, 1.0], "file_boost_limit": 1},
         "all": {"range": [1, float('inf')], "cooldown": [1.0, 1.5], "file_boost_limit": 1},
     },
+    "minimum_cooldown": {
+        "series_ratio": 0.25,
+        "theme_ratio": 0.25,
+        "series_cap": 20,
+        "theme_cap": 50,
+    },
     "ending_limit_ratio": 0.5,
+    "insert_limit_ratio": 0.1,
     "recent_boost_multiplier": [20, 10, 5],
     "favorites_boost_multiplier": 2,
     "score_boost": {"min_score": 7.5, "multiplier": 1.0},
@@ -53,6 +61,7 @@ INFINITE_SETTINGS_DEFAULT = {
     "deduplicate_files": True,
     "deduplicate_versions": False,
     "preload_track_count": 5,
+    "show_first_time_plays_on_end_card": True,
 }
 
 # Global template settings: used for playlists without stored settings of
@@ -81,6 +90,7 @@ cached_skipped_themes = []
 total_infinite_files = 0
 series_cooldowns_cache = None
 file_cooldowns_cache = None
+minimum_cooldowns_cache = (0, 0)
 _refetch_debounce_id = None
 _reroll_debounce_id = None
 _spec_pick_running = False
@@ -94,6 +104,15 @@ def get_infinite_settings():
     if stored is None:
         return infinite_settings
     return {**INFINITE_SETTINGS_DEFAULT, **stored}
+
+
+def get_infinite_directory_files():
+    """Resolve shared videos before filters and difficulty grouping see them."""
+    filenames = playlist_ops.get_directory_files(
+        include_non_local=get_infinite_settings().get("include_non_local_files", False),
+        deduplicate_files=False, deduplicate_versions=False,
+    )
+    return playlist_ops.prefer_popular_shared_themes(filenames)
 
 
 
@@ -256,14 +275,47 @@ def refetch_next_track():
 def reset_infinite_caches():
     """Clear cached infinite-playlist grouping/cooldown data."""
     global cached_pop_time_group, series_cooldowns_cache, file_cooldowns_cache
+    global minimum_cooldowns_cache
     cached_pop_time_group = None
     series_cooldowns_cache = None
     file_cooldowns_cache = None
+    minimum_cooldowns_cache = (0, 0)
+
+
+def _compute_minimum_cooldowns(metadata_by_file, inf_settings):
+    """Count the eligible pool once, without weighting or duplicate versions."""
+    series_keys = set()
+    theme_keys = set()
+    for filename, data in metadata_by_file.items():
+        if not data:
+            continue
+        mal = data.get("mal") or entry_paths.get_clean_filename(filename)
+        series_keys.add(metadata_display.series_cache_key(data) or (str(mal),))
+        theme_keys.add((str(mal), data.get("slug") or filename))
+
+    defaults = INFINITE_SETTINGS_DEFAULT["minimum_cooldown"]
+    configured = inf_settings.get("minimum_cooldown", {})
+    if not isinstance(configured, dict):
+        configured = defaults
+
+    def minimum(kind, count):
+        ratio_key, cap_key = f"{kind}_ratio", f"{kind}_cap"
+        try:
+            ratio = float(configured.get(ratio_key, defaults[ratio_key]))
+            cap = float(configured.get(cap_key, defaults[cap_key]))
+            if not math.isfinite(ratio) or not math.isfinite(cap):
+                raise ValueError("Cooldown settings must be finite")
+        except (TypeError, ValueError, OverflowError):
+            ratio, cap = defaults[ratio_key], defaults[cap_key]
+        return min(max(0, int(cap)), int(count * max(0, min(1, ratio))), max(0, count - 1))
+
+    return minimum("series", len(series_keys)), minimum("theme", len(theme_keys))
 
 
 def get_pop_time_groups(refetch=False):
     global cached_pop_time_group, cached_show_files_map, cached_boosted_show_files_map
     global cached_pop_time_cooldown, cached_skipped_themes, total_infinite_files
+    global minimum_cooldowns_cache
 
     playlist = state.metadata.playlist
     inf_settings = get_infinite_settings()
@@ -279,10 +331,7 @@ def get_pop_time_groups(refetch=False):
         directory_options = (
             filters.filter_playlist(playlist["filter"])
             if playlist.get("filter")
-            else playlist_ops.get_directory_files(
-                include_non_local=inf_settings.get("include_non_local_files", False),
-                deduplicate_files=False, deduplicate_versions=False,
-            )
+            else get_infinite_directory_files()
         )
 
         if inf_settings.get("deduplicate_files", False):
@@ -298,7 +347,7 @@ def get_pop_time_groups(refetch=False):
         playlist_mal_history = []
         for f in playlist_history:
             clean_f = entry_paths.get_clean_filename(f)
-            metadata = metadata_fetch.get_metadata(clean_f)
+            metadata = metadata_fetch.get_metadata(f)
             if metadata and metadata.get("mal"):
                 if not f.startswith("[L]") or clean_f in current_session_lightning:
                     playlist_mal_history.append(metadata.get("mal"))
@@ -326,6 +375,7 @@ def get_pop_time_groups(refetch=False):
         group_series = inf_settings["group_series"]
 
         shows_files_map = {}
+        eligible_metadata = {}
         for f, d in all_metadata.items():
             if not d:
                 cached_skipped_themes.append(f)
@@ -364,11 +414,14 @@ def get_pop_time_groups(refetch=False):
 
                     sorted_groups[k].extend([f] * int(boost))
                     shows_files_map.setdefault(mal, []).append(f)
+                    eligible_metadata[f] = d
                     placed = True
                     break
 
             if not placed:
                 cached_skipped_themes.append(f)
+
+        minimum_cooldowns_cache = _compute_minimum_cooldowns(eligible_metadata, inf_settings)
 
         if playlist["difficulty"] == 5:
             sorted_groups = [[sorted_groups[0] + sorted_groups[1] + sorted_groups[2], [], []], [[], [], []], [[], [], []]]
@@ -617,6 +670,7 @@ def _build_spec_snapshot():
         "next_pop_time_order": list(playlist.get("next_pop_time_order", [])),
         "difficulty": playlist["difficulty"],
         "inf_settings": inf_settings,
+        "minimum_cooldowns": minimum_cooldowns_cache,
         "light_mode": state.lightning.light_mode,
     }
 
@@ -646,6 +700,22 @@ def _select_speculative_track(snap):
     effective_difficulty_range = difficulty_ranges[snap["difficulty"]]
     _min_s_limit, _min_f_limit = get_cooldown_for_popularity(1, effective_difficulty_range, groups)
     s_limit_mod, f_limit_mod = 1, 1
+    minimum_s_limit, minimum_f_limit = snap.get("minimum_cooldowns", (0, 0))
+    minimum_enabled = bool(minimum_s_limit or minimum_f_limit)
+    minimum_limit_mod = 1.0
+    group_templates = [[list(cell) for cell in group] for group in groups] if minimum_enabled else None
+    exhausted_cells = set()
+    has_minimum_candidate = False
+
+    # Borrow another eligible cell without consuming extra rotation slots.
+    cell_order = []
+    if minimum_enabled:
+        upcoming = [_local_pop_entry(spec_order + offset)
+                    for offset in range(len(pop_time_order) + len(nxt_pop_order) + 1)]
+        upcoming.extend((i, j) for i, group in enumerate(groups) for j in range(len(group)))
+        for i, j in upcoming:
+            if i < len(groups) and j < len(groups[i]) and groups[i][j] and (i, j) not in cell_order:
+                cell_order.append((i, j))
 
     p, t = _local_pop_entry(spec_order)
     if p < len(groups) and t < len(groups[p]) and groups[p][t]:
@@ -658,32 +728,74 @@ def _select_speculative_track(snap):
     tag_failed_files = []
     max_tag_tries = min(len(groups[p][t]) // 3, 5) if (p < len(groups) and t < len(groups[p])) else 0
     _hist_entry_cache = {}
-    _group_op_ed_cache = {}
+    _group_type_counts_cache = {}
 
-    def _group_op_ed_counts(group_index, subgroup_index):
+    def _group_type_counts(group_index, subgroup_index):
         """Count a large candidate cell once per selection, not once per retry."""
         key = (group_index, subgroup_index)
-        if key not in _group_op_ed_cache:
+        if key not in _group_type_counts_cache:
             if (
                 group_index < len(groups)
                 and subgroup_index < len(groups[group_index])
             ):
-                _group_op_ed_cache[key] = session_stats.get_op_ed_counts(
+                _group_type_counts_cache[key] = session_stats.get_theme_type_counts(
                     groups[group_index][subgroup_index]
                 )
             else:
-                _group_op_ed_cache[key] = (0, 0)
-        return _group_op_ed_cache[key]
+                _group_type_counts_cache[key] = (0, 0, 0, 0)
+        return _group_type_counts_cache[key]
 
-    op_count, ed_count = session_stats.get_op_ed_counts(snap["last50"])
+    op_count, ed_count, insert_count, other_count = session_stats.get_theme_type_counts(snap["last50"])
+    total_type_count = op_count + ed_count + insert_count + other_count
+    insert_limit_ratio = inf_settings.get("insert_limit_ratio", INFINITE_SETTINGS_DEFAULT["insert_limit_ratio"])
     series_boost_cache = {}
     current_session_lightning = session_stats.get_current_session_lightning_tracks()
+
+    def _history_entry(file):
+        if file not in _hist_entry_cache:
+            data = metadata_fetch.get_metadata(file) or {}
+            _hist_entry_cache[file] = (
+                metadata_display._play_name_key(entry_paths.get_clean_filename(file)),
+                data.get("mal"),
+                data.get("slug"),
+                metadata_display.series_set(data),
+            )
+        return _hist_entry_cache[file]
+
+    minimum_history = []
+    distance = 0
+    for file in reversed(playlist_history) if minimum_enabled else ():
+        is_lightning = file.startswith("[L]")
+        distance += 0.25 if is_lightning else 1
+        if distance > max(minimum_s_limit, minimum_f_limit):
+            break
+        clean_file = entry_paths.get_clean_filename(file)
+        if not snap_light_mode and is_lightning and clean_file not in current_session_lightning:
+            continue
+        minimum_history.append((distance, clean_file, _history_entry(file)))
+
+    def _passes_minimum(file, data):
+        """Enforce both windows independently, after boosts and normal relaxation."""
+        series = metadata_display.series_set(data)
+        base_file = metadata_display._play_name_key(file)
+        mal, slug = data.get("mal"), data.get("slug")
+        for distance, clean_file, (old_base, old_mal, old_slug, old_series) in minimum_history:
+            if distance <= minimum_f_limit * minimum_limit_mod and (
+                clean_file == file or old_base == base_file
+                or (mal is not None and old_mal == mal and old_slug == slug)
+            ):
+                return False
+            if distance <= minimum_s_limit * minimum_limit_mod and (
+                (mal is not None and old_mal == mal) or bool(series & old_series)
+            ):
+                return False
+        return True
 
     recent_tags_union = set()
     if inf_settings.get("tag_cooldown"):
         tag_cooldown_limit = inf_settings["tag_cooldown"]
         for recent_file in (playlist_history + spec_tail)[-tag_cooldown_limit:]:
-            recent_tags_union.update(information_popup.get_tags(metadata_fetch.get_metadata(entry_paths.get_clean_filename(recent_file))))
+            recent_tags_union.update(information_popup.get_tags(metadata_fetch.get_metadata(recent_file)))
 
     # --- spec-pick watchdog / hard-stop guard (diagnose + never hang the app) ---
     _iter_count = 0
@@ -695,7 +807,7 @@ def _select_speculative_track(snap):
     _force_accept = False
 
     while not selected_file:
-        group_op_count, group_ed_count = _group_op_ed_counts(p, t)
+        group_op_count, group_ed_count, group_insert_count, group_other_count = _group_type_counts(p, t)
         if group_ed_count == 0 or (ed_count + op_count) == 0:
             need_op = False
         else:
@@ -703,6 +815,12 @@ def _select_speculative_track(snap):
                 (ed_count / (ed_count + op_count)) > inf_settings["ending_limit_ratio"]
                 and (group_op_count / (2 * group_ed_count)) > 0.05
             )
+        need_non_insert = (
+            group_insert_count > 0
+            and total_type_count > 0
+            and (insert_count / total_type_count) > insert_limit_ratio
+            and ((group_op_count + group_ed_count + group_other_count) / (2 * group_insert_count)) > 0.05
+        )
 
         _iter_count += 1
         if _iter_count >= _watchdog_next:
@@ -722,6 +840,7 @@ def _select_speculative_track(snap):
                 _force_accept = True
                 print(f"[spec-pick] relaxing all soft constraints after {_iter_count} iters", flush=True)
             need_op = False
+            need_non_insert = False
             recent_tags_union = set()
             s_limit_mod = 0.0
             f_limit_mod = 0.0
@@ -755,7 +874,7 @@ def _select_speculative_track(snap):
                 show_files = [file]
             else:
                 checked_mal_ids.add(selected_mal)
-                show_files = shows_files_map.get(selected_mal, [])
+                show_files = list(shows_files_map.get(selected_mal, []))
                 random.shuffle(show_files)
             checked_files = set()
             while show_files and not selected_file:
@@ -766,7 +885,16 @@ def _select_speculative_track(snap):
                 checked_files.add(selected_file)
                 d = metadata_fetch.get_metadata(selected_file)
 
+                if minimum_enabled:
+                    if not _passes_minimum(selected_file, d):
+                        selected_file = None
+                        continue
+                    has_minimum_candidate = True
+
                 if need_op and not utils.is_slug_op(d.get("slug")):
+                    selected_file = None
+                    continue
+                if need_non_insert and str(d.get("slug") or "").upper().startswith("IN"):
                     selected_file = None
                     continue
 
@@ -809,34 +937,49 @@ def _select_speculative_track(snap):
                             continue
                         if cooldown_count >= f_break:
                             break
-                        if clean_f not in _hist_entry_cache:
-                            f_d = metadata_fetch.get_metadata(clean_f)
-                            _hist_entry_cache[clean_f] = (
-                                metadata_display._play_name_key(clean_f),
-                                f_d.get("mal"),
-                                f_d.get("slug"),
-                                metadata_display.series_set(f_d),
-                            )
-                        _base_f, _f_mal, _f_slug, _f_series = _hist_entry_cache[clean_f]
+                        _base_f, _f_mal, _f_slug, _f_series = _history_entry(f)
                         if (clean_f == selected_file or _base_f == selected_base_f
                                 or (_f_mal == d_mal and _f_slug == d_slug)
                                 or (cooldown_count <= s_thresh and bool(d_series & _f_series))):
                             selected_file = None
                             break
 
-        if not groups[p][t]:
+        if not selected_file and not groups[p][t]:
+            if minimum_enabled:
+                exhausted_cells.add((p, t))
+                next_cell = next((cell for cell in cell_order
+                                  if cell not in exhausted_cells and groups[cell[0]][cell[1]]), None)
+                if next_cell is not None:
+                    p, t = next_cell
+                    random.shuffle(groups[p][t])
+                    max_tag_tries = min(len(groups[p][t]) // 4, 5)
+                    tag_cooldown_failures = 0
+                    continue
+
             _refill_count += 1
-            groups, shows_files_map = get_pop_time_groups()
-            _group_op_ed_cache.clear()
+            if minimum_enabled:
+                groups = [[list(cell) for cell in group] for group in group_templates]
+                exhausted_cells.clear()
+                p, t = cell_order[0]
+            else:
+                groups, shows_files_map = get_pop_time_groups()
+            _group_type_counts_cache.clear()
             if p < len(groups) and t < len(groups[p]) and groups[p][t]:
                 random.shuffle(groups[p][t])
+                max_tag_tries = min(len(groups[p][t]) // 4, 5)
                 tag_cooldown_failures = 0
             checked_mal_ids = set()
             if recent_tags_union:
                 recent_tags_union = set()
+            elif minimum_enabled and not has_minimum_candidate:
+                # All eligible cells failed the minimum. Drop the normal
+                # cooldowns first, then ease the minimum to keep tiny pools moving.
+                s_limit_mod = f_limit_mod = 0.0
+                minimum_limit_mod *= 0.9
             else:
                 s_limit_mod = s_limit_mod * 0.9
                 f_limit_mod = f_limit_mod * 0.9
+            has_minimum_candidate = False
 
     return selected_file, spec_order
 

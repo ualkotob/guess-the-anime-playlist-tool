@@ -3262,6 +3262,7 @@ HTML = r"""<!DOCTYPE html>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_reset" onclick="_ctrlExtraClick('buzz_reset')">Bz Reset</button>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_next" onclick="_ctrlExtraClick('buzz_next')">Bz Next</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_pause" onclick="_ctrlExtraClick('buzz_pause')">Bz Pause</button>
+        <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_multi" onclick="_ctrlExtraClick('buzz_multi')">Bz Multi</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="buzz_timer" onclick="_ctrlExtraClick('buzz_timer')">Bz Timer</button>
         <button class="ctrl-bonus-btn ctrl-sect-bonus" data-extra-id="buzz_sound" onclick="_ctrlExtraClick('buzz_sound')" title="Choose buzzer sound preset">Bz Sound</button>
         <button class="ctrl-bonus-btn ctrl-toggle-btn ctrl-sect-bonus" data-extra-id="auto_bonus" onclick="_ctrlExtraClick('auto_bonus')">Auto Bonus</button>
@@ -3588,7 +3589,10 @@ HTML = r"""<!DOCTYPE html>
     let _colorpickTextValue = '';
     let _colorpickActiveField = null;
     let _isBuzzerQuestion = false;
-    let _buzzerState = { open: false, locked: false, order: [], disabled_names: [] };
+    let _buzzerState = { open: false, locked: false, order: [], disabled_names: [], multi_buzz: false, pending_names: [] };
+    let _myBuzzCount = 0;          // our entries in the buzz order, to spot a newly accepted buzz
+    let _buzzCooldownUntilMs = 0;  // multi-buzz: local end of the server's re-buzz cooldown
+    let _buzzCooldownTimer = null;
     let _hostMessages = [];
     let _msgPanelOpen = false;
     let _msgSeenCount = 0;
@@ -5839,21 +5843,30 @@ HTML = r"""<!DOCTYPE html>
 
       const inQuestion = !!_currentQid;
       const order = Array.isArray(_buzzerState.order) ? _buzzerState.order : [];
-      const myIdx = order.findIndex(x => x && x.name === playerName);
+      const myIdx = order.map(x => x && x.name).lastIndexOf(playerName);
       const isOpen = !!_buzzerState.open;
       const isLocked = !!_buzzerState.locked;
       const isPlayerLocked = _isPlayerBuzzerLocked(playerName);
       const shouldShow = !!_isBuzzerQuestion;
+      // Multi-buzz blocks only while our last buzz is unserved or cooling down.
+      const pending = Array.isArray(_buzzerState.pending_names) ? _buzzerState.pending_names : [];
+      const buzzBlocked = _buzzerState.multi_buzz
+        ? (pending.includes(playerName) || Date.now() < _buzzCooldownUntilMs)
+        : myIdx >= 0;
 
       panel.style.display = shouldShow ? 'block' : 'none';
       if (!shouldShow) return;
 
       if (isPlayerLocked) status.textContent = 'Your buzzer is locked.';
       else if (isLocked) status.textContent = 'Buzzer locked.';
-      else if (isOpen) status.textContent = myIdx >= 0 ? ('Buzz received #' + (myIdx + 1)) : 'Buzzer open — press BUZZ or Space Bar to buzz in!';
+      else if (isOpen) {
+        if (myIdx < 0) status.textContent = 'Buzzer open — press BUZZ or Space Bar to buzz in!';
+        else if (buzzBlocked) status.textContent = 'Buzz received #' + (myIdx + 1);
+        else status.textContent = 'Buzz received #' + (myIdx + 1) + ' — press BUZZ to buzz again';
+      }
       else status.textContent = 'Buzzer idle.';
 
-      btn.disabled = !inQuestion || !isOpen || isLocked || isPlayerLocked || myIdx >= 0 || !playerName;
+      btn.disabled = !inQuestion || !isOpen || isLocked || isPlayerLocked || buzzBlocked || !playerName;
 
       // Submission order/timing now lives in Submitted Answers UI.
       list.style.display = 'none';
@@ -5861,7 +5874,19 @@ HTML = r"""<!DOCTYPE html>
     }
 
     function _applyBuzzerState(data) {
-      _buzzerState = Object.assign({ open: false, locked: false, order: [], disabled_names: [] }, data || {});
+      _buzzerState = Object.assign({ open: false, locked: false, order: [], disabled_names: [], multi_buzz: false, pending_names: [] }, data || {});
+      // Mirror the server's re-buzz cooldown from when it records our buzz.
+      const order = Array.isArray(_buzzerState.order) ? _buzzerState.order : [];
+      const myCount = order.filter(x => x && x.name === playerName).length;
+      if (!order.length) {
+        _buzzCooldownUntilMs = 0;
+      } else if (myCount > _myBuzzCount) {
+        const cooldownMs = Math.max(0, Number(_buzzerState.rebuzz_cooldown_ms || 0));
+        _buzzCooldownUntilMs = Date.now() + cooldownMs;
+        clearTimeout(_buzzCooldownTimer);
+        _buzzCooldownTimer = setTimeout(_updateBuzzerUI, cooldownMs + 50);
+      }
+      _myBuzzCount = myCount;
       // host button states
       const lockActive = !!_buzzerState.locked;
       const buzzOpen = !!_buzzerState.open;
@@ -8578,7 +8603,10 @@ HTML = r"""<!DOCTYPE html>
       textCol.className = 'ctrl-popup-search-text';
       const lineSong = document.createElement('div');
       lineSong.className = 'ctrl-popup-search-line song';
-      lineSong.innerHTML = _ctrlHighlightSearchText(topText, _ctrlSearchQuery);
+      const favHtml = r.favorited
+        ? '<span class="mt-fav-mark leading" title="Favorite" aria-label="Favorite">♥</span> '
+        : '';
+      lineSong.innerHTML = favHtml + _ctrlHighlightSearchText(topText, _ctrlSearchQuery);
       const lineArtist = document.createElement('div');
       lineArtist.className = 'ctrl-popup-search-line artist';
       lineArtist.innerHTML = _ctrlHighlightSearchText(songByText, _ctrlSearchQuery);
@@ -9976,6 +10004,10 @@ HTML = r"""<!DOCTYPE html>
         document.querySelectorAll('[data-extra-id="buzz_pause"],[data-proxy-extra="buzz_pause"]').forEach(el =>
           el.classList.toggle('ctrl-toggle-active', !!data.buzzer_pause));
       }
+      if ('buzzer_multi' in data) {
+        document.querySelectorAll('[data-extra-id="buzz_multi"],[data-proxy-extra="buzz_multi"]').forEach(el =>
+          el.classList.toggle('ctrl-toggle-active', !!data.buzzer_multi));
+      }
       if ('buzzer_timer_seconds' in data) {
         _ctrlBuzzerTimerSeconds = Math.max(0, Number(data.buzzer_timer_seconds || 0));
         document.querySelectorAll('[data-extra-id="buzz_timer"],[data-proxy-extra="buzz_timer"]').forEach(el => {
@@ -10101,6 +10133,7 @@ HTML = r"""<!DOCTYPE html>
       'buzz_reset':   { classes: 'ctrl-sect-bonus',                           html: 'Bz Reset', title: 'Reset buzzer order' },
       'buzz_next':    { classes: 'ctrl-sect-bonus',                           html: 'Bz Next', title: 'Advance to the next queued buzzer answer' },
       'buzz_pause':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Bz Pause', title: 'Pause playback while buzzer answers are served' },
+      'buzz_multi':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Bz Multi', title: 'Let players buzz again once their previous buzz has been served' },
       'buzz_timer':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Bz Timer', title: 'Choose the answer time for each queued player' },
       'buzz_sound':   { classes: 'ctrl-sect-bonus',                           html: 'Bz Sound', title: 'Choose buzzer sound preset' },
       'auto_bonus':   { classes: 'ctrl-toggle-btn ctrl-sect-bonus',           html: 'Auto Bonus', title: 'Automatically trigger a bonus round at the start of each theme' },
@@ -10175,6 +10208,7 @@ HTML = r"""<!DOCTYPE html>
       'buzz_reset':   () => socket.emit('host_action',{action:'invoke',id:'buzzer_reset'}),
       'buzz_next':    () => socket.emit('host_action',{action:'invoke',id:'buzzer_next'}),
       'buzz_pause':   () => socket.emit('host_action',{action:'set_buzzer_pause',enabled:!_ctrlCurrentToggles.buzzer_pause}),
+      'buzz_multi':   () => socket.emit('host_action',{action:'set_buzzer_multi',enabled:!_ctrlCurrentToggles.buzzer_multi}),
       'buzz_timer':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleBuzzerTimerList(); },
       'buzz_sound':   () => { _ctrlCloseExtrasPopup(); _ctrlToggleBuzzSoundList(); },
       'tgl_blind':    () => socket.emit('host_action',{action:'invoke',id:'blind'}),
@@ -11210,6 +11244,10 @@ HTML = r"""<!DOCTYPE html>
           // New entry appended; bump index so user stays on the same item
           _metaHistoryIdx++;
         }
+      } else {
+        // Same theme, refreshed information (including asynchronously dated
+        // history). Keep the latest snapshot without adding a navigation item.
+        _metaHistory[_metaHistory.length - 1] = d;
       }
     }
     function _metaHistoryNav(dir) {
@@ -11446,14 +11484,14 @@ HTML = r"""<!DOCTYPE html>
         let fpStr = String(fp.count);
         if (fp.ago != null) fpStr += ` (${fp.ago} Ago)`;
         if (fp.lightning) fpStr += ` (${fp.lightning} L)`;
-        line('THEME PLAYS:', fpStr);
+        line('THEME PLAYS:', fp.display || fpStr);
       }
       if (d.series_plays != null) {
         const sp = d.series_plays;
         let spStr = String(sp.count);
         if (sp.ago != null) spStr += ` (${sp.ago} Ago)`;
         if (sp.lightning) spStr += ` (${sp.lightning} L)`;
-        line('SERIES PLAYS:', spStr);
+        line('SERIES PLAYS:', sp.display || spStr);
       }
       box.innerHTML = lines.join('') || '<span style="color:#555">No data.</span>';
       

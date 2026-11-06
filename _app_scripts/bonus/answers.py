@@ -308,6 +308,23 @@ def _preview_bonus_points(answers, q_type, correct):
     return result
 
 
+def _remove_pending_answer(name, answer=None):
+    """Drop all of a player's pending answers, or only the one matching answer.
+
+    Returns True if anything was removed.
+    """
+    answers = bonus._pending_bonus_answers
+    if answer is None:
+        before = len(answers)
+        answers[:] = [e for e in answers if e["name"].strip() != name]
+        return len(answers) != before
+    for i, e in enumerate(answers):
+        if e["name"].strip() == name and e["answer"] == answer:
+            del answers[i]
+            return True
+    return False
+
+
 def _refresh_bonus_answer_list():
     """Show or update the bonus-answers list in the right column.
     Only acts if no other list is open, or if the bonus-answers list is already open."""
@@ -318,14 +335,18 @@ def _refresh_bonus_answer_list():
 
     preview = _preview_bonus_points(bonus._pending_bonus_answers, bonus.guessing_extra, bonus._bonus_correct_answer)
 
-    seen_names = {}
-    for entry in bonus._pending_bonus_answers:
+    # Buzzer rounds list every buzz (multi-buzz can give a player several);
+    # other rounds show each player's first answer.
+    is_buzzer = bonus.guessing_extra == "buzzer"
+    rows = {}
+    for i, entry in enumerate(bonus._pending_bonus_answers):
         name = entry["name"].strip()
-        if name and name not in seen_names:
+        key = i if is_buzzer else name
+        if name and key not in rows:
             pts_str = preview.get(name, "")
-            seen_names[name] = {"answer": entry["answer"], "pts": pts_str}
+            rows[key] = (name, {"answer": entry["answer"], "pts": pts_str})
 
-    content = {str(i): v for i, v in enumerate(seen_names.items())}
+    content = {str(i): v for i, v in enumerate(rows.values())}
 
     def _name_func(key, value):
         name, info = value
@@ -348,15 +369,19 @@ def _refresh_bonus_answer_list():
         return f"{pts_col}{name}: {answer}"
 
     def _do_remove_bonus_answer(idx):
-        items = list(seen_names.keys())
+        items = list(rows.values())
         if idx < 0 or idx >= len(items):
             return
-        name = items[idx]
+        name, info = items[idx]
         if not state.lists._list_action_from_keyboard:
             if not messagebox.askyesno("Remove Submission", f"Remove {name}'s submission?"):
                 return
-        bonus._pending_bonus_answers[:] = [e for e in bonus._pending_bonus_answers if e["name"].strip() != name]
-        web_server.remove_answer_by_name(name)
+        if is_buzzer:
+            _remove_pending_answer(name, info["answer"])
+            web_server.remove_answer_entry(name, info["answer"])
+        else:
+            _remove_pending_answer(name)
+            web_server.remove_answer_by_name(name)
         if bonus._pending_bonus_answers:
             _refresh_bonus_answer_list()
         else:
@@ -470,6 +495,9 @@ def _push_web_scores():
 
 def _push_web_toggles():
     """Push current toggle states to all web host clients."""
+    # Kept in sync even while stopped so preset changes reach the buzz gate.
+    web_server.set_multi_buzz(bool(state.playback.bonus_settings.get(
+        "buzzer", bonus.BONUS_SETTINGS_DEFAULT["buzzer"]).get("multi_buzz", False)))
     if not web_server.is_running():
         return
     web_server.set_vote_skip_enabled(state.controls.vote_skip_enabled)
@@ -529,6 +557,8 @@ def _push_web_toggles():
             "buzzer", bonus.BONUS_SETTINGS_DEFAULT["buzzer"]).get("pause_on_buzz", False)),
         "buzzer_timer_seconds": int(state.playback.bonus_settings.get(
             "buzzer", bonus.BONUS_SETTINGS_DEFAULT["buzzer"]).get("answer_timer_seconds", 0) or 0),
+        "buzzer_multi": bool(state.playback.bonus_settings.get(
+            "buzzer", bonus.BONUS_SETTINGS_DEFAULT["buzzer"]).get("multi_buzz", False)),
         "end_session_popup": bool(session_end.end_message_window),
         "scoreboard_open": scoreboard_open,
         "scoreboard_visible": scoreboard_visible,
@@ -568,10 +598,8 @@ def _poll_web_answers():
             scoreboard_control.send_command(f"[SUBMITTED]{entry['name']}")
     for served_name in web_server.get_served():
         scoreboard_control.send_command(f"[SERVED]{served_name}")
-    for removed_name in web_server.get_removals():
-        before = len(bonus._pending_bonus_answers)
-        bonus._pending_bonus_answers[:] = [e for e in bonus._pending_bonus_answers if e["name"].strip() != removed_name]
-        if len(bonus._pending_bonus_answers) != before:
+    for removal in web_server.get_removals():
+        if _remove_pending_answer(removal["name"], removal.get("answer")):
             new_answers = True
     for i, (emoji_name, emoji_char) in enumerate(web_server.get_emojis()):
         delay = i * 600

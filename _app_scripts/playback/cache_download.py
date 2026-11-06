@@ -6,6 +6,8 @@ settings are read directly off state.config / core.app_meta at call time.
 
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -43,6 +45,7 @@ _cache_io_lock          = threading.RLock()
 _cache_save_timer       = None
 _cache_save_lock        = threading.Lock()
 _download_failures      = {}   # filename -> policy active when its sources failed
+_unavailable_downloads   = {}   # filename -> (policy, URLs) when all returned 404/410
 
 
 def _source_policy():
@@ -541,6 +544,26 @@ def _finalize_cached_file(filename, rel_path, cache_path):
 # Core download engine
 # ---------------------------------------------------------------------------
 
+def _validate_downloaded_video(path):
+    """Check the container in the download worker when ffprobe is installed."""
+    probe = shutil.which("ffprobe")
+    if not probe:
+        return True
+    try:
+        result = subprocess.run(
+            [probe, "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "json", path],
+            capture_output=True, text=True, timeout=8,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode:
+            return False
+        streams = json.loads(result.stdout).get("streams", [])
+        return any(stream.get("codec_type") in {"video", "audio"} for stream in streams)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
 def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *, theme_entry=None, explicit_file=False):
     """Low-level streaming download of a remote theme to *dest_path*.
 
@@ -548,6 +571,8 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
     """
     dest_path = os.fspath(dest_path)
     partial_path = dest_path + ".part"
+    urls = []
+    missing_sources = 0
     try:
         urls = get_theme_stream_urls(theme_entry or filename, explicit_file=explicit_file)
         if not urls:
@@ -579,11 +604,15 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
                 downloaded = 0
 
                 with open(partial_path, "wb") as f:
+                    first_chunk = True
                     for chunk in response.iter_content(chunk_size=8192):
                         if download_cancel_flags.get(filename):
                             print(f"Download cancelled: {filename}")
                             raise InterruptedError("download cancelled")
                         if chunk:
+                            if first_chunk and chunk.lstrip()[:32].lower().startswith((b"<!doctype html", b"<html")):
+                                raise ValueError(f"Source returned an HTML page instead of video: {url}")
+                            first_chunk = False
                             f.write(chunk)
                             downloaded += len(chunk)
                             if progress_callback and total_size > 0:
@@ -591,12 +620,19 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
                                     downloaded / 1024 / 1024,
                                     total_size / 1024 / 1024,
                                 )
+                if not downloaded or (total_size and downloaded != total_size):
+                    raise ValueError(f"Incomplete video download from {url}: {downloaded}/{total_size} bytes")
+                if not _validate_downloaded_video(partial_path):
+                    raise ValueError(f"Downloaded video could not be opened: {url}")
                 os.replace(partial_path, dest_path)
                 source_preferences.record_download(dest_path, url)
                 _download_failures.pop(filename, None)
+                _unavailable_downloads.pop(filename, None)
                 return True
             except Exception as exc:
                 last_error = exc
+                if isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code in (404, 410):
+                    missing_sources += 1
                 try:
                     if os.path.exists(partial_path):
                         os.remove(partial_path)
@@ -607,6 +643,8 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
         raise last_error
     except Exception as e:
         _download_failures[filename] = _source_policy()
+        if urls and missing_sources == len(urls):
+            _unavailable_downloads[filename] = (_source_policy(), tuple(urls))
         print(f"Download error for {filename}: {e}")
         return False
 
@@ -745,6 +783,7 @@ def cancel_download(filename, popup=None):
 def retry_download(filename, popup=None):
     """Cancel any in-flight download for *filename* and restart it."""
     _download_failures.pop(filename, None)
+    _unavailable_downloads.pop(filename, None)
     pending_play_info = pending_play_queue.get(filename)
     context = {}
     if pending_play_info:
@@ -814,6 +853,7 @@ def queue_play_when_ready(filename, playlist_entry, fullscreen):
         "fullscreen":     fullscreen,
         "start_time":     time.time(),
         "timeout":        30,
+        "generation":     state.lightning.round_generation,
     }
 
 
@@ -1180,6 +1220,10 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
         cached_path = get_cached_file_path(filename)
         if cached_path and path_allowed(filename, cached_path):
             filepath = cached_path
+        elif not explicit_file and _unavailable_downloads.get(filename) == (
+            _source_policy(), tuple(get_theme_stream_urls(theme_entry, **stream_context))
+        ):
+            return (None, False)
         else:
             download_started = (_download_failures.get(filename) != _source_policy()
                                 and download_to_cache(filename, silent=False, **context))
@@ -1349,13 +1393,17 @@ def _check_download_ui_updates():
 
     completed = []
     for fn, play_info in list(pending_play_queue.items()):
+        if play_info.get("generation", state.lightning.round_generation) != state.lightning.round_generation:
+            completed.append(fn)
+            continue
         elapsed = time.time() - play_info["start_time"]
         if fn not in active_downloads:
             completed.append(fn)
             state.widgets.root.after(
                 100,
-                lambda pe=play_info["playlist_entry"], fs=play_info["fullscreen"]:
-                    transport.play_filename(pe, fs),
+                lambda pe=play_info["playlist_entry"], fs=play_info["fullscreen"],
+                       generation=play_info.get("generation", state.lightning.round_generation):
+                    transport.play_filename(pe, fs) if generation == state.lightning.round_generation else None,
             )
         elif elapsed > play_info["timeout"]:
             log_warning("Download exceeded %ss; switching to streaming: %s (worker active=%s)",
@@ -1382,8 +1430,9 @@ def _check_download_ui_updates():
             streaming_entry["_stream_url"] = stream_url
             state.widgets.root.after(
                 100,
-                lambda pe=streaming_entry, fs=play_info["fullscreen"]:
-                    transport.play_filename_streaming_fallback(pe, fs),
+                lambda pe=streaming_entry, fs=play_info["fullscreen"],
+                       generation=play_info.get("generation", state.lightning.round_generation):
+                    transport.play_filename_streaming_fallback(pe, fs) if generation == state.lightning.round_generation else None,
             )
 
     for fn in completed:

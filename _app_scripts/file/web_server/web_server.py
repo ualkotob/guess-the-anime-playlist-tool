@@ -9,6 +9,7 @@ Quick start:
   3. Players visit your ngrok URL, enter their name, and submit answers.
 """
 
+import itertools
 import json
 import logging
 import os
@@ -68,7 +69,7 @@ CLOUDFLARED_AVAILABLE = web_tunnels.CLOUDFLARED_AVAILABLE
 _app = None
 _socketio = None
 _answer_queue = queue.Queue()
-_removal_queue = queue.Queue()  # names removed by host via web panel
+_removal_queue = queue.Queue()  # {name, answer} removed by host (answer None = all of name's)
 _emoji_queue = queue.Queue()    # (name, emoji) tuples sent by players
 _served_queue = queue.Queue()   # names of players who were served the current question
 _current_question = None   # dict pushed to newly-connecting clients
@@ -111,6 +112,12 @@ _buzzer_open: bool = False
 _buzzer_locked: bool = False
 _buzzer_opened_at_ms: int | None = None
 _buzzer_disabled_names: set[str] = set()
+_buzzer_multi_buzz: bool = False      # when True, players may buzz again once served
+_BUZZ_REBUZZ_COOLDOWN_MS = 2000       # multi-buzz: minimum gap between one player's buzzes
+_buzz_lock = threading.Lock()         # guards the buzz gate and the pending/cooldown maps
+_buzz_ids = itertools.count(1)        # unique id per accepted buzz; never reused
+_buzz_pending: dict[str, int] = {}    # name → id of the buzz the host has not served yet
+_buzz_last_press_ms: dict[str, int] = {}  # name → wall-clock ms of the last accepted buzz
 _ngrok_process = None
 _cloudflared_process = None
 _server_thread = None      # Thread running _socketio.run(); kept alive across stop()/start() cycles
@@ -130,7 +137,7 @@ _up_next: dict = {}           # up-next track info; pushed to host clients
 _current_marks: dict = {}     # {tagged, favorited, blind, peek, mute_peek} for current theme
 _current_toggles: dict = {}   # {blind, peek, mute, censors, shortcuts, dock, censor_count}
 _host_action_callback = None  # callable(action, data) set by main app for remote control
-_on_buzz_callback = None       # callable(rank: int, name: str) called when a player buzzes in
+_on_buzz_callback = None       # callable(rank: int, name: str, buzz_id: int) called when a player buzzes in
 _on_buzzer_reset_callback = None  # callable() clears host-side buzzer timers/popups
 _on_skip_grant_callback = None # callable(name: str) called when skip grant changes (empty = cleared)
 _on_skip_decline_callback = None # callable(name: str, declined: bool); empty name clears all
@@ -271,11 +278,16 @@ def _emit_buzzer_state(to_sid: str = None):
   order = []
   if _current_question and _current_question.get('buzzer_only'):
     order = [{'name': str(a.get('name', ''))} for a in list(_submitted_answers)]
+  with _buzz_lock:
+    pending_names = sorted(_buzz_pending)
   payload = {
     'open': bool(_buzzer_open),
     'locked': bool(_buzzer_locked),
     'order': order,
     'disabled_names': sorted(_buzzer_disabled_names),
+    'multi_buzz': bool(_buzzer_multi_buzz),
+    'pending_names': pending_names,
+    'rebuzz_cooldown_ms': _BUZZ_REBUZZ_COOLDOWN_MS,
   }
   if to_sid:
     _socketio.emit('buzzer_state', payload, to=to_sid)
@@ -369,12 +381,20 @@ def _emit_peer_answers_update():
       _socketio.emit('peer_answers_update', payload, to=sid)
 
 
+def _clear_buzz_pending():
+  """Forget outstanding buzzes and cooldowns so every player may buzz again."""
+  with _buzz_lock:
+    _buzz_pending.clear()
+    _buzz_last_press_ms.clear()
+
+
 def _reset_buzzer(open_after_reset: bool = False):
   """Reset buzzer order and state; optionally open immediately."""
   global _buzzer_open, _buzzer_locked, _buzzer_opened_at_ms
   _buzzer_open = bool(open_after_reset)
   _buzzer_locked = False
   _buzzer_opened_at_ms = int(time.time() * 1000) if _buzzer_open else None
+  _clear_buzz_pending()
   if _on_buzzer_reset_callback is not None:
     try:
       _on_buzzer_reset_callback()
@@ -405,6 +425,7 @@ def control_buzzer(cmd: str) -> bool:
     _submitted_answers = []
     _submitted_sids = set()
     _pending_selections = {}
+    _clear_buzz_pending()
     if _buzzer_open and not _buzzer_locked:
       _buzzer_opened_at_ms = int(time.time() * 1000)
     _broadcast_players_update()
@@ -437,6 +458,57 @@ def control_buzzer(cmd: str) -> bool:
 
 def buzzer_is_locked() -> bool:
   return bool(_buzzer_locked)
+
+
+def set_multi_buzz(enabled: bool):
+  """Allow players to buzz again once their previous buzz has been served."""
+  global _buzzer_multi_buzz
+  enabled = bool(enabled)
+  if enabled == _buzzer_multi_buzz:
+    return
+  _buzzer_multi_buzz = enabled
+  _emit_buzzer_state()
+
+
+def _accept_buzz(name: str, now_ms: int):
+  """Apply the per-player buzz gate and record an accepted buzz.
+
+  Returns (rank, answer, buzz_id), or None when the player may not buzz now.
+  Open/lock/per-player-lock checks are the caller's job.
+  """
+  with _buzz_lock:
+    if _buzzer_multi_buzz:
+      # Multi-buzz: one unserved buzz per player, plus a cooldown against double-taps.
+      if name in _buzz_pending:
+        return None
+      last_ms = _buzz_last_press_ms.get(name)
+      if last_ms is not None and now_ms - last_ms < _BUZZ_REBUZZ_COOLDOWN_MS:
+        return None
+    elif any(item.get('name') == name for item in _submitted_answers):
+      # One buzz per player per open/reset cycle.
+      return None
+    buzz_id = next(_buzz_ids)
+    _buzz_pending[name] = buzz_id
+    _buzz_last_press_ms[name] = now_ms
+    rank = len(_submitted_answers) + 1
+    base_ms = _buzzer_opened_at_ms if isinstance(_buzzer_opened_at_ms, int) else now_ms
+    elapsed_ms = max(0, now_ms - base_ms)
+    answer = f"[#{rank}] {elapsed_ms} ms"
+    _submitted_answers.append({'name': name, 'answer': answer})
+  return rank, answer, buzz_id
+
+
+def release_buzz(name: str, buzz_id: int):
+  """Mark a player's buzz as served so multi-buzz lets them buzz again.
+
+  The id must match the player's current pending buzz, so a late release for a
+  buzz that a reset already cleared can't free a newer one.
+  """
+  with _buzz_lock:
+    if _buzz_pending.get(name) != buzz_id:
+      return
+    del _buzz_pending[name]
+  _emit_buzzer_state()
 
 
 def set_player_buzzer_disabled(name: str, disabled: bool) -> bool:
@@ -961,11 +1033,32 @@ def remove_answer_by_name(name: str):
     if not FLASK_AVAILABLE or _socketio is None:
         return
     _submitted_answers[:] = [a for a in _submitted_answers if a['name'] != name]
-    _removal_queue.put(name)
+    _removal_queue.put({'name': name, 'answer': None})
     _broadcast_players_update()
     _emit_peer_answers_update()
     for sid in list(_host_sids):
         _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+
+
+def remove_answer_entry(name: str, answer: str):
+    """Remove one submitted answer (first exact match) and broadcast the update.
+
+    Used for buzzer rounds, where multi-buzz can give a player several entries.
+    The desktop caller has already dropped its own copy, so nothing is queued.
+    """
+    if not FLASK_AVAILABLE or _socketio is None:
+        return
+    for i, a in enumerate(_submitted_answers):
+        if a['name'] == name and a['answer'] == answer:
+            _submitted_answers.pop(i)
+            break
+    else:
+        return
+    _broadcast_players_update()
+    _emit_peer_answers_update()
+    for sid in list(_host_sids):
+        _socketio.emit('answer_update', {'answers': list(_submitted_answers)}, to=sid)
+    _emit_buzzer_state()
 
 
 def reveal_answer(correct_display: str, q_type: str = '', correct_tags: list = None,
@@ -1065,14 +1158,18 @@ def get_connected_player_names():
 
 
 def get_removals():
-    """Drain and return all names removed by the host via the web panel."""
-    names = []
+    """Drain and return answers removed by the host as {name, answer} dicts.
+
+    answer is None when every answer from that player was removed; otherwise
+    it is the exact text of the single answer that was removed.
+    """
+    removals = []
     while True:
         try:
-            names.append(_removal_queue.get_nowait())
+            removals.append(_removal_queue.get_nowait())
         except queue.Empty:
             break
-    return names
+    return removals
 
 
 def get_emojis():
@@ -1369,7 +1466,10 @@ def set_host_action_callback(fn):
 
 
 def set_buzz_callback(fn):
-    """Register a callable(rank: int, name: str) invoked each time a player buzzes in."""
+    """Register a callable(rank: int, name: str, buzz_id: int) invoked each time a player buzzes in.
+
+    The host must call release_buzz(name, buzz_id) once that buzz has been served.
+    """
     global _on_buzz_callback
     _on_buzz_callback = fn
 
@@ -1906,9 +2006,8 @@ def _build_app():
         idx = data.get('index')
         if idx is None or not isinstance(idx, int) or idx < 0 or idx >= len(_submitted_answers):
             return
-        removed_name = _submitted_answers[idx]['name']
-        _submitted_answers.pop(idx)
-        _removal_queue.put(removed_name)
+        removed = _submitted_answers.pop(idx)
+        _removal_queue.put({'name': removed['name'], 'answer': removed['answer']})
         _broadcast_players_update()
         _emit_peer_answers_update()
         for sid in list(_host_sids):
@@ -2283,19 +2382,14 @@ def _build_app():
         return
       if (not _buzzer_open) or _buzzer_locked or name in _buzzer_disabled_names:
         if name in _buzzer_disabled_names:
-          emit('buzzer_state', {'open': bool(_buzzer_open), 'locked': bool(_buzzer_locked), 'order': [{'name': str(a.get('name', ''))} for a in list(_submitted_answers)] if (_current_question and _current_question.get('buzzer_only')) else [], 'disabled_names': sorted(_buzzer_disabled_names)})
+          _emit_buzzer_state(to_sid=_req.sid)
         return
-      # One buzz per player per open/reset cycle.
-      if any(item.get('name') == name for item in _submitted_answers):
+      accepted = _accept_buzz(name, int(time.time() * 1000))
+      if accepted is None:
         return
-      rank = len(_submitted_answers) + 1
-      now_ms = int(time.time() * 1000)
-      base_ms = _buzzer_opened_at_ms if isinstance(_buzzer_opened_at_ms, int) else now_ms
-      elapsed_ms = max(0, now_ms - base_ms)
-      answer = f"[#{rank}] {elapsed_ms} ms"
+      rank, answer, buzz_id = accepted
       _pending_selections.pop(name, None)
       _answer_queue.put({'name': name, 'answer': answer})
-      _submitted_answers.append({'name': name, 'answer': answer})
       _submitted_sids.add(_req.sid)
       _broadcast_players_update()
       _emit_peer_answers_update()
@@ -2305,7 +2399,7 @@ def _build_app():
       _emit_buzzer_state()
       if _on_buzz_callback is not None:
         try:
-          _on_buzz_callback(rank, name)
+          _on_buzz_callback(rank, name, buzz_id)
         except Exception:
           pass
 

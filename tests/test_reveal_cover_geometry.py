@@ -34,6 +34,9 @@ class _FakeMpv:
     def command(self, *args):
         self.commands.append(args)
 
+    def command_async(self, *args):
+        self.commands.append(args)
+
 
 def _player(osd_size, display_size=None):
     """A MediaPlayer on a fake mpv, sized `osd_size`, showing `display_size`."""

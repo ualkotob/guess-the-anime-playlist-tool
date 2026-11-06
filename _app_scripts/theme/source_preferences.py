@@ -177,6 +177,7 @@ def availability_snapshot():
 def available_path(filename):
     from _app_scripts.playlists import entry_paths
     from _app_scripts.playback import cache_download
+    filename = entry_paths.get_clean_filename(filename)
     snapshot = _availability_snapshot.get()
     if snapshot is not None:
         cached_paths, resolved = snapshot

@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from core.game_state import state
+from core import ui_watchdog
 import _app_scripts.ui.menu_builder as menu_builder
 import _app_scripts.data.config_io as config_io
 import _app_scripts.data.metadata_io as metadata_io
@@ -72,6 +73,7 @@ def _show_closing_popup(root):
 
 def _teardown(root, popup):
     """quit() the mainloop then destroy widgets — the single close path."""
+    ui_watchdog.stop()
     if state.config.AUTO_EXIT_SCOREBOARD and scoreboard_control.is_running():
         try:
             scoreboard_control.send_command("quit")

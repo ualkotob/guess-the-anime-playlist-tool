@@ -200,6 +200,8 @@ def wire_web_server():
     web_server.set_vote_skip_passed_callback(_on_vote_skip_passed)
     web_server.set_vote_skip_enabled(state.controls.vote_skip_enabled)
     web_server.set_buzzer_lock_callback(_on_buzzer_lock_changed)
+    web_server.set_multi_buzz(bool(state.playback.bonus_settings.get(
+        'buzzer', bonus.BONUS_SETTINGS_DEFAULT['buzzer']).get('multi_buzz', False)))
 
 
 def _handle_host_action(action: str, data: dict):
@@ -301,6 +303,8 @@ def _handle_host_action(action: str, data: dict):
             buzz.set_pause_on_buzz(bool(data.get('enabled', False)))
         elif action == 'set_buzzer_timer':
             buzz.set_answer_timer_seconds(data.get('seconds', 0))
+        elif action == 'set_buzzer_multi':
+            buzz.set_multi_buzz(bool(data.get('enabled', False)))
         elif action == 'set_strm_boost':
             state.controls.stream_volume_boost = max(-100, min(100, int(data.get('boost', 0))))
             audio_toggles.set_volume(state.controls.volume_level)

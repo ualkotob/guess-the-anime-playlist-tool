@@ -299,6 +299,7 @@ def save_config():
         "set_toggles": {
             "censors_enabled": censors.censors_enabled,
             "censors_nsfw_enabled": censors.censors_nsfw_enabled,
+            "censors_across_theme_files": censors.censors_across_theme_files,
             "auto_info_start": state.controls.auto_info_start,
             "auto_info_end": state.controls.auto_info_end,
             "vote_skip_enabled": state.controls.vote_skip_enabled,
@@ -443,6 +444,8 @@ def load_config():
                     censors.censors_enabled = bool(_t["censors_enabled"])
                 if "censors_nsfw_enabled" in _t:
                     censors.censors_nsfw_enabled = bool(_t["censors_nsfw_enabled"])
+                if "censors_across_theme_files" in _t:
+                    censors.censors_across_theme_files = bool(_t["censors_across_theme_files"])
                 if "auto_info_start" in _t:
                     state.controls.auto_info_start = bool(_t["auto_info_start"])
                 if "auto_info_end" in _t:

@@ -1052,9 +1052,18 @@ def _is_main_series_lookup(candidate):
 
 def _filename_lookup_priority(key, candidate):
     """Rank competing metadata records for a file, highest priority first."""
+    mal_id = candidate.get("mal_id")
+    anime = (
+        state.metadata.anime_metadata.get(mal_id)
+        or state.metadata.anime_metadata.get(str(mal_id))
+        or {}
+    )
+    rank = anime.get("popularity")
+    rank = rank if isinstance(rank, (int, float)) and rank > 0 else float("inf")
     filename_slug = _filename_theme_slug(key)
     slug = str(candidate.get("slug") or "").upper()
     return (
+        -rank,
         bool(filename_slug and slug == filename_slug),
         not bool(candidate.get("anisongdb_alternate")),
         _is_main_series_lookup(candidate),
@@ -1094,6 +1103,25 @@ def _store_filename_candidate(key, candidate):
         for existing in candidates
     ):
         candidates.append(candidate)
+
+
+def _get_filename_lookup(filename):
+    """Resolve a bare filename using the current popularity of its owners."""
+    key = filename
+    lookup_data = filename_to_mal.get(key)
+    if not lookup_data:
+        key = os.path.splitext(filename)[0]
+        lookup_data = filename_to_mal.get(key)
+    candidates = filename_to_mal_candidates.get(key, [])
+    if lookup_data and len(candidates) > 1:
+        # File indexes can be built before anime metadata loads, and ranks can
+        # change after a refresh. Recheck shared files without rebuilding the
+        # whole index; keep its existing default when priorities still tie.
+        lookup_data = max(
+            [lookup_data] + candidates,
+            key=lambda candidate: _filename_lookup_priority(key, candidate),
+        )
+    return lookup_data
 
 
 def get_theme_references(filename):
@@ -1255,11 +1283,7 @@ def get_file_metadata_by_name(filename):
             "version": reference["version"],
         }
     else:
-        # Try exact match first, then the base name without its extension.
-        lookup_data = filename_to_mal.get(physical_filename)
-        if not lookup_data:
-            base_name = os.path.splitext(physical_filename)[0]
-            lookup_data = filename_to_mal.get(base_name)
+        lookup_data = _get_filename_lookup(physical_filename)
     
     if not lookup_data:
         return None
@@ -1749,7 +1773,7 @@ def _fetch_metadata_impl(filename, refetch=False, label="", batch_mode=False):
 
     fetching_metadata[metadata_entry] = True
     
-    lookup_data = reference or filename_to_mal.get(filename)
+    lookup_data = reference or _get_filename_lookup(filename)
     if not refetch and lookup_data:
         mal_id = lookup_data["mal_id"]
         slug = lookup_data["slug"]

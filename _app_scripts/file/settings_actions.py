@@ -44,9 +44,9 @@ def open_infinite_settings_editor():
 
     def on_apply(new_settings, selected_name):
         state.settings_presets.selected_infinite_settings = selected_name
-        if state.metadata.playlist.get("infinite", False):
-            infinite.get_pop_time_groups(refetch=True)
         infinite.reset_infinite_caches()
+        if state.metadata.playlist.get("infinite", False):
+            infinite.refresh_pop_time_groups()
 
     generic_settings_editor.open_generic_settings_editor(
         title="Infinite Playlist Settings Editor",

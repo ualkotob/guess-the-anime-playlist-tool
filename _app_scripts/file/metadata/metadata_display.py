@@ -410,7 +410,7 @@ def _prepare_play_history(pl, cur_idx):
     }
 
 
-def _calc_plays_info(filename, data, pl, cur_idx, prepared_history=None):
+def _calc_plays_info(filename, data, pl, cur_idx, prepared_history=None, *, include_dates=False):
     """Return theme-play and series-play stats for the given filename.
 
     Only counts playlist entries up to and including cur_idx (i.e. already played).
@@ -461,14 +461,42 @@ def _calc_plays_info(filename, data, pl, cur_idx, prepared_history=None):
         s_ago = (cur_idx - max(s_prev)) if s_prev else None
         series_plays = {"count": s_normal, "ago": s_ago, "lightning": s_light}
 
+    if include_dates:
+        from datetime import datetime
+        from _app_scripts.file import last_played
+
+        # Date the exact occurrence used by "Ago". Never substitute an older
+        # dated occurrence when the most recent one has no reliable timestamp.
+        indices = {cur_idx - plays["ago"] for plays in (theme_plays, series_plays)
+                   if plays and plays["ago"] is not None}
+        dates = last_played.get_dates(indices, pl, cur_idx) if indices else {}
+        date_now = datetime.now()
+        for plays in (theme_plays, series_plays):
+            if plays and plays["ago"] is not None:
+                when = dates.get(cur_idx - plays["ago"])
+                if when is not None:
+                    plays["last_played"] = when.isoformat(timespec="seconds")
+                    plays["last_played_text"] = last_played.format_timestamp(when)
+                    plays["last_played_short"] = last_played.short_date(when, date_now)
+                    plays["last_played_age"] = last_played.relative_age(when, date_now)
+            if plays is not None:
+                plays["display"] = _fmt_plays(plays)
+
     return theme_plays, series_plays
 
 
 def _fmt_plays(p):
     """Format a plays dict {count, ago, lightning} into a display string."""
     s = str(p["count"])
+    details = []
     if p["ago"] is not None:
-        s += f" ({p['ago']} Ago)"
+        details.append(f"{p['ago']} Ago")
+    if p.get("last_played_short"):
+        details.append(p["last_played_short"])
+        if p.get("last_played_age"):
+            details.append(p["last_played_age"].removesuffix(" ago"))
+    if details:
+        s += " (" + " / ".join(details) + ")"
     if p["lightning"]:
         s += f" ({p['lightning']} L)"
     return s

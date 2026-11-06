@@ -17,6 +17,7 @@ from _app_scripts.search import search as search_ops
 from _app_scripts.file.metadata import metadata_fetch, metadata_display
 from _app_scripts.information import information_popup
 from _app_scripts.playback import cache_download, transport
+from _app_scripts.theme import marks as playlist_marks
 from _app_scripts.ui import menu_registry
 
 
@@ -90,6 +91,7 @@ def _build_theme_web_result(fn, play_history, query_lower=''):
     )
     return {
         'filename': fn,
+        'favorited': bool(playlist_marks.check_favorited(fn)),
         'title': title,
         'title_en': title_en,
         'title_jp': title_jp,

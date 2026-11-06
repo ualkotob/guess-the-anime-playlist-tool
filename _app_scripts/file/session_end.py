@@ -1,6 +1,7 @@
 """End-of-session OSD: 'Thanks for playing!' message with session breakdown and slide-in animation."""
 
 import time
+from collections import Counter
 from datetime import datetime
 
 from PIL import Image, ImageDraw
@@ -8,6 +9,8 @@ from PIL import Image, ImageDraw
 from _app_scripts.file import session_stats
 from core.app_logging import log_exception
 from core.game_state import state
+import _app_scripts.file.metadata.metadata_display as metadata_display
+import _app_scripts.playlists.infinite as infinite
 import _app_scripts.playback.osd_text as osd_text
 import _app_scripts.file.scoreboard_control as scoreboard_control
 # bonus.answers imports this module back; `import ... as` binds the module
@@ -26,6 +29,8 @@ DEFAULT_END_SESSION_MESSAGE = "THANKS FOR\nPLAYING!♥"
 # Re-export for backwards compatibility with code that read it on session_end
 get_op_ed_counts = session_stats.get_op_ed_counts
 
+_FIRST_TIME_PLAYS_MIN_HISTORY = 1000
+
 # ---------------------------------------------------------------------------
 # End-session entry point
 # ---------------------------------------------------------------------------
@@ -41,6 +46,60 @@ def end_session():
 # ---------------------------------------------------------------------------
 # Canvas rendering
 # ---------------------------------------------------------------------------
+def _get_first_time_plays():
+    """Calculate the end-card count from existing history without recording state.
+
+    A theme is new this session when all its regular playlist occurrences can
+    be accounted for by existing regular session entries. Multiple occurrences
+    still contribute one theme. Session logs have no playlist origin, so a
+    manual replay of a historical theme can be indistinguishable from a
+    playlist play; do not create tracking fields to resolve that ambiguity.
+    """
+    playlist = state.metadata.playlist
+    if (
+        not playlist.get("infinite")
+        or not playlist.get("name")
+        or not infinite.get_infinite_settings().get("show_first_time_plays_on_end_card", True)
+    ):
+        return None
+
+    played = playlist.get("playlist", [])[:playlist.get("current_index", -1) + 1]
+    regular_history = [entry for entry in played if not entry.startswith("[L]")]
+    if len(regular_history) < _FIRST_TIME_PLAYS_MIN_HISTORY:
+        return None
+
+    session_counts = Counter()
+    for entry in session_stats.session_data:
+        if (
+            entry.get("type", "theme") != "theme"
+            or entry.get("lightning_mode")
+            or entry.get("fixed_playlist")
+            or not entry.get("filename")
+        ):
+            continue
+        identity = {"mal": entry.get("id"), "slug": entry.get("slug")}
+        session_counts[metadata_display._file_play_key(
+            entry["filename"], identity if identity["mal"] and identity["slug"] else None
+        )] += 1
+    if not session_counts:
+        return None
+
+    # Match the play tracker's identity across sources, versions and shared-file
+    # references. Resolve each distinct playlist entry only once for this render.
+    keys = {}
+    history_counts = Counter()
+    for entry in regular_history:
+        if entry not in keys:
+            keys[entry] = metadata_display._file_play_key(entry)
+        history_counts[keys[entry]] += 1
+    if not session_counts.keys() & history_counts.keys():
+        return None
+    return sum(
+        count <= session_counts[key]
+        for key, count in history_counts.items()
+    )
+
+
 def _end_msg_build_canvas(y_top):
     """Build a full OSD RGBA canvas with the end-session stats box at y_top."""
     player = state.widgets.player
@@ -70,6 +129,7 @@ def _end_msg_build_canvas(y_top):
     lightning_count = summary["lightning_count"]
     fixed_playlist_count = summary["fixed_playlist_count"]
     youtube_count = summary["youtube_count"]
+    first_time_plays = _get_first_time_plays()
 
     end_session_txt = state.config.end_session_txt
     raw_msg  = end_session_txt.replace("\\n", "\n") if end_session_txt else DEFAULT_END_SESSION_MESSAGE
@@ -108,6 +168,8 @@ def _end_msg_build_canvas(y_top):
     rows.append(("text", "SESSION BREAKDOWN:", 40, True))
     rows.append(("text", f"{total_played} THEMES PLAYED", 55, True))
     rows.append(("text", f"{opening_count} OPENINGS  •  {ending_count} ENDINGS", 35, False))
+    if first_time_plays is not None:
+        rows.append(("text", f"{first_time_plays} FIRST-TIME PLAY{'S' if first_time_plays != 1 else ''}", 35, False))
     if lightning_count:
         rows.append(("text", f"{lightning_count} LIGHTNING ROUND{'S' if lightning_count != 1 else ''}", 35, False))
     if fixed_playlist_count:

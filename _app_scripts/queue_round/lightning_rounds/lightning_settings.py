@@ -441,6 +441,7 @@ lightning_mode_settings_default = {
     "episodes": {
         "length": 20,
         "muted": True,
+        "show_episodes_during_answer": True,
         "variety": {
             "enabled": True,
             "popularity": {
@@ -478,6 +479,7 @@ lightning_mode_settings_default = {
     "names": {
         "length": 20,
         "muted": True,
+        "show_names_during_answer": True,
         "variety": {
             "enabled": True,
             "popularity": {
@@ -626,6 +628,7 @@ lightning_mode_settings_default = {
     "tags": {
         "length": 20,
         "muted": True,
+        "show_tags_during_answer": True,
         "use_anilist_tags": True,
         "variety": {
             "enabled": True,

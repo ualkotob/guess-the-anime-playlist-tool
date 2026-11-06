@@ -9,6 +9,7 @@ Contains:
   - Deep-merge helpers
   - Season / slug helpers
   - Alphabetical name comparisons
+  - Background loops that leave the Tk thread responsive
 """
 
 import copy
@@ -16,11 +17,31 @@ import gzip
 import json
 import os
 import tempfile
+import threading
+import time
 import tkinter as tk
 from datetime import datetime
 
 from core.app_logging import log_exception, log_warning
 from core.game_state import state
+
+
+def yield_to_ui(items):
+    """Iterate *items*, letting the Tk thread run between them on a worker.
+
+    Every Tk call releases the GIL and must take it back. While a worker runs
+    a pure-Python loop, taking it back costs ~5ms per call on Windows, so a
+    window built from hundreds of calls stalls for seconds. Yielding after
+    each item keeps those calls fast without slowing the worker. Iterate a
+    copy, since other threads can now run mid-loop. On the Tk thread itself,
+    iterate as usual: giving the GIL away there would only slow the UI.
+    """
+    if threading.current_thread() is threading.main_thread():
+        yield from items
+        return
+    for item in list(items):
+        time.sleep(0)
+        yield item
 
 
 def alphabetical_sort_key(value):

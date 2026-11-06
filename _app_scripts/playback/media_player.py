@@ -8,7 +8,9 @@ owns the property observers and event callbacks, and the player instance lives
 on state.widgets.player.
 """
 
-from core.app_logging import log_exception
+import time
+
+from core.app_logging import log_exception, log_warning
 
 
 _STARTUP_COVER_FILTER_LABEL = "@gta-startup-cover"
@@ -34,8 +36,13 @@ class MediaPlayer:
         # reset. The normal blind-screen uncover removes it once the real
         # round cover is ready.
         self._startup_video_cover_active = False
-        self._startup_video_cover_brightness = 0.0
-        self._startup_video_cover_contrast = 0.0
+        # Read the user's output adjustment once, before media can stall mpv.
+        try:
+            self._startup_video_cover_brightness = float(self._p.brightness or 0.0)
+            self._startup_video_cover_contrast = float(self._p.contrast or 0.0)
+        except Exception:
+            self._startup_video_cover_brightness = 0.0
+            self._startup_video_cover_contrast = 0.0
         # Register double-click to toggle fullscreen (mirrors Player default behaviour)
         try:
             self._p.command('keybind', 'MBTN_LEFT_DBL', 'cycle fullscreen')
@@ -61,6 +68,8 @@ class MediaPlayer:
         self._c_disp_height = None
         self._c_osd_width = 0
         self._c_osd_height = 0
+        self._last_seek_at = None
+        self._requested_volume = None
         try:
             self._p.observe_property('time-pos', self._on_time_pos)
             self._p.observe_property('duration', self._on_duration)
@@ -143,14 +152,14 @@ class MediaPlayer:
         """Resume playback (does NOT load a new file)."""
         try:
             self._c_pause = False  # optimistic; observer confirms shortly after
-            self._p.pause = False
+            self._p.command_async('set', 'pause', 'no')
         except Exception:
             pass
 
     def pause(self):
         try:
             self._c_pause = True  # optimistic; observer confirms shortly after
-            self._p.pause = True
+            self._p.command_async('set', 'pause', 'yes')
         except Exception:
             pass
 
@@ -158,7 +167,7 @@ class MediaPlayer:
         try:
             self._c_time_pos = None  # optimistic; observers confirm shortly after
             self._c_core_idle = True
-            self._p.stop()
+            self._p.command_async('stop')
         except Exception:
             pass
 
@@ -167,6 +176,10 @@ class MediaPlayer:
             return (not self._c_pause) and (not self._c_core_idle) and (self._c_time_pos is not None)
         except Exception:
             return False
+
+    def is_paused(self) -> bool:
+        """Read the observer cache without blocking Tk on a libmpv query."""
+        return self._c_pause
 
     # ---- Time (all in milliseconds) ----
     def get_time_ms(self) -> int:
@@ -177,9 +190,14 @@ class MediaPlayer:
 
     def set_time_ms(self, ms: int):
         try:
-            self._p.seek(ms / 1000.0, 'absolute+exact')
+            self._last_seek_at = time.monotonic()
+            self._p.command_async('seek', ms / 1000.0, 'absolute+exact')
         except Exception:
             pass
+
+    def seek_recently(self, seconds: float) -> bool:
+        """Give a requested seek time to settle before checking for a stall."""
+        return self._last_seek_at is not None and time.monotonic() - self._last_seek_at < seconds
 
     def get_length_ms(self) -> int:
         try:
@@ -195,7 +213,10 @@ class MediaPlayer:
     # ---- Volume: 0-200 scale (app convention) ----
     def set_volume(self, v: int):
         try:
-            self._p.volume = max(0.0, min(100.0, v / 2.0))
+            volume = max(0.0, min(100.0, v / 2.0))
+            if volume != self._requested_volume:
+                self._p.command_async('set', 'volume', str(volume))
+                self._requested_volume = volume
         except Exception:
             pass
 
@@ -211,7 +232,7 @@ class MediaPlayer:
 
     def audio_set_mute(self, muted: bool):
         try:
-            self._p.mute = bool(muted)
+            self._p.command_async('set', 'mute', 'yes' if muted else 'no')
         except Exception:
             pass
 
@@ -224,7 +245,7 @@ class MediaPlayer:
     # ---- Speed ----
     def set_speed(self, rate: float):
         try:
-            self._p.speed = rate
+            self._p.command_async('set', 'speed', str(rate))
         except Exception:
             pass
 
@@ -233,13 +254,13 @@ class MediaPlayer:
     # ---- Fullscreen ----
     def set_fullscreen(self, b: bool):
         try:
-            self._p.fullscreen = bool(b)
+            self._p.command_async('set', 'fullscreen', 'yes' if b else 'no')
         except Exception:
             pass
 
     def toggle_fullscreen(self):
         try:
-            self._p.fullscreen = not self._p.fullscreen
+            self._p.command_async('cycle', 'fullscreen')
         except Exception:
             pass
 
@@ -297,7 +318,7 @@ class MediaPlayer:
         if not getattr(self, "_startup_video_cover_active", False):
             return
         try:
-            self._p.command(
+            self._p.command_async(
                 "vf", "remove", _STARTUP_COVER_FILTER_LABEL
             )
         except Exception:
@@ -305,15 +326,17 @@ class MediaPlayer:
         brightness = getattr(self, "_startup_video_cover_brightness", 0.0)
         contrast = getattr(self, "_startup_video_cover_contrast", 0.0)
         try:
-            self._p.brightness = brightness
-            self._p.contrast = contrast
+            self._p.command_async("set", "brightness", str(brightness))
+            self._p.command_async("set", "contrast", str(contrast))
         except Exception:
-            try:
-                self._p.command("set", "brightness", str(brightness))
-                self._p.command("set", "contrast", str(contrast))
-            except Exception:
-                pass
+            pass
         self._startup_video_cover_active = False
+
+    def set_video_filter(self, filters):
+        """Replace reveal filters while retaining an active startup cover."""
+        if getattr(self, "_startup_video_cover_active", False):
+            filters = f"{filters},{_STARTUP_COVER_FILTER}" if filters else _STARTUP_COVER_FILTER
+        self._p.command("vf", "set", filters)
 
     def set_media(self, path_or_none, start_seconds=None, cover_video=False):
         """Load media, optionally starting covered or at a specific time."""
@@ -332,26 +355,17 @@ class MediaPlayer:
                 self.invalidate_video_geometry()
                 options = []
                 if cover_video:
-                    if not getattr(self, "_startup_video_cover_active", False):
-                        try:
-                            self._startup_video_cover_brightness = float(
-                                self._p.brightness or 0.0
-                            )
-                        except Exception:
-                            self._startup_video_cover_brightness = 0.0
-                        try:
-                            self._startup_video_cover_contrast = float(
-                                self._p.contrast or 0.0
-                            )
-                        except Exception:
-                            self._startup_video_cover_contrast = 0.0
                     self._startup_video_cover_active = True
                     # The labeled drawbox replaces the decoded image with a
                     # solid frame before presentation. Contrast/brightness are
                     # a hardware-output fallback if lavfi cannot initialize.
                     options.append("brightness=-100")
                     options.append("contrast=-100")
-                    options.append(f"vf={_STARTUP_COVER_FILTER}")
+                    # Keep vf global. A per-file vf option saves the old chain
+                    # and restores it at the next load, resurrecting a reveal
+                    # that Python has already cleared. Adding only our labeled
+                    # cover also preserves a reveal armed during async loading.
+                    self._p.command_async("vf", "add", _STARTUP_COVER_FILTER)
                 else:
                     self.release_startup_video_cover()
 
@@ -360,22 +374,22 @@ class MediaPlayer:
                     options.insert(0, f'audio-file={audio_url}')
                     if start_seconds is not None and start_seconds > 0:
                         options.append(f'start={start_seconds}')
-                    self._p.command(
-                        'loadfile', str(video_url), 'replace', '-1', ','.join(options)
-                    )
+                    media_path = str(video_url)
                 elif start_seconds is not None and start_seconds > 0:
                     options.insert(0, f'start={start_seconds}')
-                    self._p.command(
-                        'loadfile', str(path_or_none), 'replace', '-1',
-                        ','.join(options)
-                    )
-                elif options:
-                    self._p.command(
-                        'loadfile', str(path_or_none), 'replace', '-1',
-                        ','.join(options)
-                    )
+                    media_path = str(path_or_none)
                 else:
-                    self._p.play(str(path_or_none))
+                    media_path = str(path_or_none)
+                future = self._p.command_async(
+                    'loadfile', media_path, 'replace', '-1', ','.join(options)
+                )
+                if future is not None:
+                    def report_load_error(done):
+                        try:
+                            done.result()
+                        except Exception as exc:
+                            log_warning("mpv failed to load media %s: %s", media_path, exc)
+                    future.add_done_callback(report_load_error)
             except Exception:
                 # A failed load means silence on stage — make sure it's traceable.
                 log_exception("mpv failed to load media: %s", path_or_none)

@@ -1,10 +1,100 @@
 import re
+from types import SimpleNamespace
 
 from PIL import Image
+import pytest
 
 from _app_scripts.playback.media_player import MediaPlayer
 from _app_scripts.toggles import censors
 from _app_scripts import utils
+
+
+@pytest.fixture
+def shared_theme_censors(monkeypatch):
+    metadata = {
+        "Show-OP1.webm": {"mal": "123", "slug": "OP1", "version": "1"},
+        "Show-OP1v2.webm": {"mal": 123, "slug": "op1", "version": "2"},
+        "Show-ED1.webm": {"mal": "123", "slug": "ED1", "version": "1"},
+        "Other-OP1.webm": {"mal": "456", "slug": "OP1", "version": "1"},
+    }
+    source = [{"start": 1, "end": 3, "color": "black"}]
+    monkeypatch.setattr(censors, "censor_list", {"Show-OP1.webm": source})
+    monkeypatch.setattr(censors, "other_censor_lists", [])
+    monkeypatch.setattr(censors, "_shared_censor_cache_key", None)
+    monkeypatch.setattr(censors, "_shared_censor_sources", {})
+    monkeypatch.setattr(censors, "_youtube_censor_list", {})
+    monkeypatch.setattr(
+        censors.metadata_fetch, "get_file_metadata_by_name",
+        lambda filename: metadata.get(censors.entry_paths.get_clean_filename(filename).replace(".mp4", ".webm")),
+    )
+    return source
+
+
+def test_theme_sharing_defaults_off(shared_theme_censors):
+    assert censors.censors_across_theme_files is False
+    assert censors.get_file_censors("Show-OP1v2.webm") == []
+
+
+def test_enabled_sharing_applies_across_versions_and_converted_files(shared_theme_censors, monkeypatch):
+    monkeypatch.setattr(censors, "censors_across_theme_files", True)
+    assert censors.get_file_censors("Show-OP1v2.webm") is shared_theme_censors
+    assert censors.get_file_censors("Show-OP1v2.mp4") is shared_theme_censors
+    # A converted MP4 resolves to the same logical theme as its WebM metadata.
+    reference = censors.entry_paths.make_theme_reference("Show-OP1v2.webm", "123", "OP1", "2")
+    assert censors.get_file_censors(reference) is shared_theme_censors
+
+
+def test_sharing_keeps_file_specific_and_imported_censors(shared_theme_censors, monkeypatch):
+    monkeypatch.setattr(censors, "censors_across_theme_files", True)
+    own = [{"start": 6, "end": 8}]
+    monkeypatch.setattr(censors, "other_censor_lists", [{"Show-OP1v2.webm": own}])
+    assert censors.get_file_censors("Show-OP1v2.webm") is own
+    censors.censor_list["Show-OP1v2.webm"] = [{"start": 4, "end": 5}]
+    assert censors.get_file_censors("Show-OP1v2.webm") == [{"start": 4, "end": 5}]
+
+
+def test_sharing_stays_within_the_same_anime_and_theme(shared_theme_censors, monkeypatch):
+    monkeypatch.setattr(censors, "censors_across_theme_files", True)
+    assert censors.get_file_censors("Show-ED1.webm") == []
+    assert censors.get_file_censors("Other-OP1.webm") == []
+
+
+def test_sharing_can_use_imported_sources_without_scanning_each_tick(shared_theme_censors, monkeypatch):
+    monkeypatch.setattr(censors, "censors_across_theme_files", True)
+    monkeypatch.setattr(censors, "censor_list", {})
+    monkeypatch.setattr(censors, "other_censor_lists", [{"Show-OP1.webm": shared_theme_censors}])
+    assert censors.get_file_censors("Show-OP1v2.webm") is shared_theme_censors
+    monkeypatch.setattr(censors, "get_censor_sources", lambda: pytest.fail("rescanned sources on a playback tick"))
+    assert censors.get_file_censors("Show-OP1v2.webm") is shared_theme_censors
+
+
+def test_sharing_refreshes_after_censor_edits(shared_theme_censors, monkeypatch):
+    monkeypatch.setattr(censors, "censors_across_theme_files", True)
+    assert censors.get_file_censors("Show-OP1v2.webm") is shared_theme_censors
+    censors.censor_list["Show-OP1.webm"] = [{"start": 10, "end": 12}]
+    censors.invalidate_shared_censor_cache()
+    assert censors.get_file_censors("Show-OP1v2.webm") == [{"start": 10, "end": 12}]
+
+
+def test_youtube_censors_still_take_precedence(shared_theme_censors, monkeypatch):
+    monkeypatch.setattr(censors, "censors_across_theme_files", True)
+    own = [{"start": 10, "end": 11}]
+    censors.set_youtube_censors_for_file("Show-OP1v2.webm", own)
+    assert censors.get_file_censors("Show-OP1v2.webm") is own
+
+
+def test_sharing_toggle_reapplies_censors_and_saves(shared_theme_censors, monkeypatch):
+    monkeypatch.setattr(censors, "censors_across_theme_files", False)
+    monkeypatch.setattr(censors.state.widgets, "player", SimpleNamespace(get_time=lambda: 2000, get_length=lambda: 90000))
+    calls = []
+    monkeypatch.setattr(censors, "remove_all_censor_boxes", lambda: calls.append("clear"))
+    monkeypatch.setattr(censors, "apply_censors", lambda t, length: calls.append((t, length)))
+    monkeypatch.setattr(censors.config_io, "save_config", lambda: calls.append("save"))
+
+    censors.toggle_censors_across_theme_files()
+
+    assert censors.censors_across_theme_files is True
+    assert calls == ["clear", (2, 90), "save"]
 
 
 def test_anisongdb_file_finds_local_censors_by_shared_song_id(monkeypatch):
@@ -401,3 +491,63 @@ def test_censor_rect_is_window_shape_independent_for_anamorphic_files(monkeypatc
     tall_x, _, tall_w, tall_h = _draw_single_censor(monkeypatch, 1200, 900, (720, 540))
     assert round(wide_w / wide_h, 3) == round(tall_w / tall_h, 3) == round(4 / 3, 3)
     assert (wide_x, tall_x) == (240, 0)
+
+
+@pytest.mark.parametrize("shape", ["rect", "ellipse"])
+@pytest.mark.parametrize(
+    "osd_size,display_size,framed_rect,expected_clip",
+    [
+        ((1920, 1080), (720, 540), None, (240, 0, 1680, 1080)),
+        ((1440, 1080), (1920, 1080), None, (0, 135, 1440, 945)),
+        ((1280, 720), (1280, 720), (200, 100, 800, 450), (200, 100, 1000, 550)),
+        ((1280, 720), (1280, 720), (-120, 80, 1440, 810), (0, 80, 1280, 720)),
+    ],
+    ids=["pillarbox", "letterbox", "framed-video", "partially-visible-frame"],
+)
+def test_rotated_censors_are_clipped_to_visible_video(
+    monkeypatch, shape, osd_size, display_size, framed_rect, expected_clip
+):
+    from _app_scripts.playback import blind_screen
+
+    commands = []
+    player = SimpleNamespace(
+        _p=SimpleNamespace(osd_width=osd_size[0], osd_height=osd_size[1]),
+        get_display_aspect=lambda: display_size[0] / display_size[1],
+    )
+    monkeypatch.setattr(censors.state.widgets, "player", player)
+    monkeypatch.setattr(censors, "_osd_command", lambda *args: commands.append(args))
+    monkeypatch.setattr(censors, "_is_filter_suppressing_censors", lambda: False)
+    monkeypatch.setattr(censors.filter_overlay, "get_zoom_state", lambda: None)
+    monkeypatch.setattr(blind_screen, "_video_frame_active", framed_rect is not None)
+    if framed_rect is not None:
+        monkeypatch.setattr(
+            censors.information_popup, "_get_effective_video_rect",
+            lambda: (*osd_size, *framed_rect),
+        )
+    monkeypatch.setattr(censors, "censor_boxes", {
+        "theme:censor": {
+            "censor": {
+                "pos_x": 0, "pos_y": 0, "size_w": 60, "size_h": 100,
+                "rotation": 45, "shape": shape,
+            },
+            "color": "red",
+            "destroying": False,
+        }
+    })
+
+    censors._commit_censor_osd()
+
+    payload = next(cmd[3] for cmd in commands if cmd[2] == "ass-events")
+    clip = re.search(r"\\clip\((-?\d+),(-?\d+),(-?\d+),(-?\d+)\)", payload)
+    assert clip is not None, "Rotated shapes need a clip at the actual video edges"
+    assert tuple(map(int, clip.groups())) == expected_clip
+
+    # Keep the rotated shape intact; clip its rendered output rather than
+    # clamping corners or control points and changing the in-video coverage.
+    drawing = payload.split(r"\p1}")[1].split("{")[0]
+    coords = [int(n) for n in re.findall(r"-?\d+", drawing)]
+    left, top, right, bottom = expected_clip
+    assert any(
+        x < left or x > right or y < top or y > bottom
+        for x, y in zip(coords[0::2], coords[1::2])
+    )

@@ -480,8 +480,7 @@ def show_filter_popup():
     global filter_popup
     playlist = state.metadata.playlist
     if playlist.get("infinite", False):
-        inf_settings = infinite.get_infinite_settings()
-        playlis = playlist_ops.get_directory_files(include_non_local=inf_settings.get("include_non_local_files", False), deduplicate_files=False, deduplicate_versions=False)
+        playlis = infinite.get_infinite_directory_files()
     else:
         playlis = playlist["playlist"]
     aggregate = _aggregate_filter_metadata(playlis)
@@ -1098,12 +1097,7 @@ def get_filter_source():
     """Return the current unmodified source used by playlist filtering."""
     playlist = state.metadata.playlist
     if playlist.get("infinite", False):
-        inf_settings = infinite.get_infinite_settings()
-        return playlist_ops.get_directory_files(
-            include_non_local=inf_settings.get("include_non_local_files", False),
-            deduplicate_files=False,
-            deduplicate_versions=False,
-        )
+        return infinite.get_infinite_directory_files()
     return list(playlist.get("playlist", []))
 
 

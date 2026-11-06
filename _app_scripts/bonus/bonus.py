@@ -58,7 +58,7 @@ BONUS_SETTINGS_DEFAULT = {
     "characters": {"popup": True, "num_correct": 1, "points_per_correct": 1.0, "lightning_points_per_correct": 1.0, "scale": 1.0, "included_in_random": False, "show_in_menu": True},
     "freeform":   {"popup": True, "points": 1.0, "lightning_points": 1.0, "included_in_random": False, "show_in_menu": True},
     "buzzer":     {"popup": False, "player_buzz_popup": True, "sound": True, "sound_volume": 1.0,
-                   "pause_on_buzz": False, "answer_timer_seconds": 0,
+                   "pause_on_buzz": False, "answer_timer_seconds": 0, "multi_buzz": False,
                    "included_in_random": False, "show_in_menu": True,
                    "player_buzz_popup_properties": {
                        "max_alpha": 0.9,

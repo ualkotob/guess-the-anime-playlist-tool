@@ -1104,6 +1104,263 @@ def test_unaccounted_credit_role_is_general_and_handles_different_numbers(catalo
     assert anisongdb.resolve_song_for_mal_slug("1", "OP2", title="Tank!", artists=["Yoko Kanno"]) is catalog["songs"][0]
 
 
+@pytest.mark.parametrize("source_title", [
+    "Tank! -winter ver.-", "Tank! (Studio Yamato Version)",
+    "Tank! ~from Studio Example~", "Tank! (from Studio Example)",
+])
+def test_unaccounted_version_repairs_extra_and_survives_import_reload(catalog_state, source_title):
+    catalog = _catalog()
+    source = catalog["songs"][0]
+    source.update(songName=source_title, songNumber=3)
+    original = deepcopy(catalog)
+    state.metadata.anime_metadata["1"] = {"songs": [
+        {"type": "OP", "slug": "OP2", "title": "Tank!", "artist": ["Seatbelts"]},
+        {**anisongdb.file_identity(source), "type": "OP", "slug": "OP3",
+         "title": source_title, "artist": ["Seatbelts"], "anisongdb_only": True},
+    ]}
+    native = {"source": "DVD", "resolution": 480, "nc": True}
+    state.metadata.file_metadata["1"] = {"themes": {
+        "OP2": {"1": {"Example-OP2.webm": deepcopy(native)}},
+        "OP3": {"1": {"byvisp.webm": {
+            **anisongdb.file_identity(source), "source": "ANISONGDB", "anisongdb_gap": True,
+        }}},
+    }}
+    anisongdb.replace_catalog(catalog)
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP2", title="Tank!", artists=["Seatbelts"]) is None
+    anisongdb.sync_catalog_to_metadata()
+    assert [(song["slug"], song["title"]) for song in state.metadata.anime_metadata["1"]["songs"]] == [("OP2", "Tank!")]
+    files = state.metadata.file_metadata["1"]["themes"]["OP2"]["1"]
+    assert set(files) == {"Example-OP2.webm", "byvisp.webm"}
+    assert {key: value for key, value in files["Example-OP2.webm"].items() if not key.startswith("anisongdb_")} == native
+    assert files["byvisp.webm"]["anisongdb_alternate"] is True
+    assert not files["byvisp.webm"].get("anisongdb_gap")
+    assert state.metadata.anisongdb_metadata == original
+    assert not anisongdb._song_titles_match("Tank!", source_title)
+
+    # Simulate exported JSON arriving without the publisher's override file.
+    saved = json.loads(json.dumps((state.metadata.anime_metadata, state.metadata.file_metadata)))
+    state.metadata.anime_metadata = deepcopy(saved[0])
+    state.metadata.file_metadata = deepcopy(saved[1])
+    state.metadata.anime_metadata_overrides = {}
+    anisongdb.replace_catalog(deepcopy(original))
+    reloaded = state.metadata.anisongdb_metadata["songs"][0]
+    assert anisongdb.theme_slug(reloaded) == "OP2"
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP2", title="Tank!", artists=["Seatbelts"]) is reloaded
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP2", title="Tank!", artists=["Other Singer"]) is None
+    anisongdb.sync_catalog_to_metadata()
+    assert [state.metadata.anime_metadata, state.metadata.file_metadata] == saved
+
+
+def test_unaccounted_studio_ending_is_not_accounted_for_by_same_song_opening(catalog_state):
+    catalog = _catalog()
+    opening = catalog["songs"][0]
+    ending = {**deepcopy(opening), "annSongId": 25, "amqSongId": 9596,
+              "songType": 2, "songNumber": 2, "songName": "Tank! ~from Studio Example~",
+              "HQ": "ending.webm", "MQ": None}
+    catalog["songs"].append(ending)
+    original_catalog = deepcopy(catalog)
+    state.metadata.anime_metadata["1"] = {"songs": [
+        {"type": "OP", "slug": "OP1", "title": "Tank!", "artist": ["Seatbelts"]},
+        {"type": "ED", "slug": "ED2", "title": "Tank!", "artist": ["Seatbelts"], "episodes": "25"},
+    ]}
+    state.metadata.file_metadata["1"] = {"themes": {
+        "OP1": {"1": {"Example-OP1.webm": {"source": "BD", "resolution": 1080}}},
+        "ED2": {"1": {"Example-ED2.webm": {"source": "BD", "resolution": 1080, "overlap": "Transition"}}},
+    }}
+    anisongdb.replace_catalog(catalog)
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.theme_slug(opening) == "OP1"
+    assert anisongdb.theme_slug(ending) == "ED2"
+    assert [song["slug"] for song in state.metadata.anime_metadata["1"]["songs"]] == ["OP1", "ED2"]
+    assert state.metadata.anime_metadata["1"]["songs"][1]["episodes"] == "25"
+    assert set(state.metadata.file_metadata["1"]["themes"]["ED2"]["1"]) == {"Example-ED2.webm", "ending.webm"}
+    assert state.metadata.anisongdb_metadata == original_catalog
+    anisongdb.build_indexes(force=True)
+    assert anisongdb.resolve_song_for_mal_slug("1", "ED2", title="Tank!", artists=["Seatbelts"]) is ending
+
+
+@pytest.mark.parametrize("original_first", [True, False])
+@pytest.mark.parametrize("credit", ["performer", "composer"])
+def test_unaccounted_version_keeps_variant_when_another_source_covers_theme(catalog_state, original_first, credit):
+    catalog = _catalog()
+    variant = catalog["songs"][0]
+    variant.update(songName="Tank! -winter ver.-", songNumber=2)
+    original = {**deepcopy(variant), "annSongId": 25, "amqSongId": 9596,
+                "songName": "Tank!", "songNumber": 1 if original_first else 3,
+                "HQ": "orig01.webm", "MQ": None}
+    catalog["songs"].append(original)
+    artists = ["Yoko Kanno"] if credit == "composer" else ["Seatbelts"]
+    state.metadata.anime_metadata["1"] = {"songs": [
+        {"type": "OP", "slug": "OP2", "title": "Tank!", "artist": artists},
+    ]}
+    state.metadata.file_metadata["1"] = {"themes": {
+        "OP2": {"1": {"Example-OP2.webm": {"source": "DVD", "resolution": 480}}},
+    }}
+    anisongdb.replace_catalog(catalog)
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.theme_slug(original) == "OP2"
+    assert anisongdb.theme_slug(variant) != "OP2"
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP2", title="Tank!", artists=artists) is original
+    assert any(song.get("anisongdb_only") for song in state.metadata.anime_metadata["1"]["songs"])
+
+
+@pytest.mark.parametrize("conflict", [
+    "two_sources", "two_anchors", "different_performer", "guest", "explicit_native_version",
+    "instrumental", "live", "dub", "missing_native_file", "different_title", "other_type",
+])
+def test_unaccounted_version_does_not_invent_coverage_for_conflicting_entries(catalog_state, conflict):
+    catalog = _catalog()
+    source = catalog["songs"][0]
+    source.update(songName="Tank! -winter ver.-", songNumber=2)
+    anchor = {"type": "OP", "slug": "OP2", "title": "Tank!", "artist": ["Seatbelts"]}
+    state.metadata.anime_metadata["1"] = {"songs": [anchor]}
+    state.metadata.file_metadata["1"] = {"themes": {
+        "OP2": {"1": {"Example-OP2.webm": {"source": "DVD", "resolution": 480}}},
+    }}
+    if conflict == "two_sources":
+        catalog["songs"].append({**deepcopy(source), "annSongId": 25, "amqSongId": 9596,
+                                 "songName": "Tank! (Acoustic Version)", "songNumber": 3,
+                                 "HQ": "other1.webm", "MQ": None})
+    elif conflict == "two_anchors":
+        state.metadata.anime_metadata["1"]["songs"].append({**anchor, "slug": "OP1"})
+    elif conflict == "different_performer":
+        anchor["artist"] = ["Other Singer"]
+    elif conflict == "guest":
+        source["artists"].append([19, -1])
+        source["songArtist"] = "Seatbelts & Yoko Kanno"
+    elif conflict == "explicit_native_version":
+        anchor["title"] = "Tank! (Summer Version)"
+    elif conflict == "instrumental":
+        source["songCategory"] = "Instrumental"
+    elif conflict == "live":
+        source["songName"] = "Tank! (Live Version)"
+    elif conflict == "dub":
+        source["isDub"] = True
+    elif conflict == "missing_native_file":
+        state.metadata.file_metadata.clear()
+    elif conflict == "different_title":
+        source["songName"] = "Shine! -winter ver.-"
+    elif conflict == "other_type":
+        source["songType"] = 2
+    anisongdb.replace_catalog(catalog)
+    anisongdb.sync_catalog_to_metadata()
+    if conflict == "dub":
+        assert anisongdb._song_key(source) not in anisongdb._mapped_slugs
+    else:
+        assert anisongdb.theme_slug(source) != "OP2"
+    assert not any(song.get("anisongdb_ann_song_id") == 24 and not song.get("anisongdb_only")
+                   for song in state.metadata.anime_metadata["1"]["songs"])
+
+
+@pytest.fixture
+def reviewed_unaccounted_theme(catalog_state):
+    catalog = _catalog()
+    source = catalog["songs"][0]
+    source.update({"songName": "Tank! (Named Arrangement)", "songArtist": "Source Performer", "songNumber": 2,
+                   "artists": [], "songComposer": None, "songArranger": None,
+                   "composers": [], "arrangers": []})
+    anchor = {"type": "OP", "slug": "OP1", "title": "Tank! Remix", "artist": ["Established Performer"]}
+    state.metadata.anime_metadata["1"] = {"songs": [anchor]}
+    state.metadata.file_metadata["1"] = {
+        "themes": {"OP1": {"1": {"Example-OP1.webm": {"source": "BD", "resolution": 1080}}}},
+    }
+    record = {"ann_song_id": "24", "amq_song_id": "9595", "source_title": source["songName"],
+              "source_artist": "Source Performer", "category": "Standard", "source_slug": "OP2",
+              "source_video": "byvisp.webm", "slug": "OP1", "title": anchor["title"],
+              "artist": anchor["artist"], "native_file": "Example-OP1.webm"}
+    state.metadata.anime_metadata_overrides["1"] = {"anisongdb_matching": {"unaccounted_themes": [record]}}
+    anisongdb.replace_catalog(catalog)
+    return source, anchor, record
+
+
+@pytest.mark.parametrize("category", ["Standard", "Chanting", "Instrumental"])
+def test_reviewed_unaccounted_family_preserves_credits_media_and_imported_mapping(reviewed_unaccounted_theme, category):
+    from _app_scripts.file.metadata import metadata_import
+
+    source, anchor, record = reviewed_unaccounted_theme
+    source["songCategory"] = record["category"] = category
+    raw = deepcopy(state.metadata.anisongdb_metadata)
+    published = deepcopy(state.metadata.anime_metadata_overrides)
+    state.metadata.anime_metadata_overrides["1"] = {"songs": [{"slug": "OP1", "composer": ["Personal Composer"]}]}
+    personal = deepcopy(state.metadata.anime_metadata_overrides)
+    metadata_import._apply_package_stores({"anime_metadata_overrides": published})
+    assert anisongdb.theme_slug(source) == "OP1"
+    assert not anisongdb._reviewed_theme_match(source, anchor, "OP1")
+    assert not anisongdb._artist_names_match(source["songArtist"], anchor["artist"][0])
+    assert anchor["artist"] == ["Established Performer"]
+    assert anchor["composer"] == ["Personal Composer"]
+    assert state.metadata.anime_metadata_overrides == personal
+    assert state.metadata.anisongdb_metadata == raw
+    files = state.metadata.file_metadata["1"]["themes"]["OP1"]["1"]
+    assert files["byvisp.webm"]["anisongdb_alternate"]
+    assert {key: value for key, value in files["Example-OP1.webm"].items()
+            if not key.startswith("anisongdb_")} == {"source": "BD", "resolution": 1080}
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP1", title=anchor["title"], artists=anchor["artist"]) is source
+    saved = deepcopy((state.metadata.anime_metadata, state.metadata.file_metadata))
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert (state.metadata.anime_metadata, state.metadata.file_metadata) == saved
+
+
+@pytest.mark.parametrize("ordinary_first", [True, False])
+def test_reviewed_family_link_stops_absorbing_variant_when_ordinary_coverage_arrives(reviewed_unaccounted_theme, ordinary_first):
+    source, anchor, _record = reviewed_unaccounted_theme
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.theme_slug(source) == "OP1"
+    catalog = deepcopy(state.metadata.anisongdb_metadata)
+    ordinary = deepcopy(source)
+    ordinary.update({"annSongId": 25, "amqSongId": 9596, "songName": anchor["title"],
+                     "songArtist": anchor["artist"][0], "songNumber": 1 if ordinary_first else 3,
+                     "HQ": "ordinary.webm", "MQ": None})
+    catalog["songs"].append(ordinary)
+    anisongdb.replace_catalog(catalog)
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.theme_slug(ordinary) == "OP1"
+    assert anisongdb.theme_slug(source) != "OP1"
+    extra_slug = "OP2" if ordinary_first else "OP0.1"
+    assert {song["slug"] for song in state.metadata.anime_metadata["1"]["songs"]} == {"OP1", extra_slug}
+    files = state.metadata.file_metadata["1"]["themes"]
+    assert files["OP1"]["1"]["ordinary.webm"]["anisongdb_alternate"]
+    assert files[extra_slug]["1"]["byvisp.webm"]["anisongdb_gap"]
+
+
+@pytest.mark.parametrize("conflict", ["source_credit", "source_title", "media", "category", "ordinal",
+                                      "native_credit", "native_title", "native_file", "other_kind", "dub",
+                                      "ambiguous_source", "ambiguous_native", "personal_override"])
+def test_reviewed_unaccounted_family_rejects_changed_or_ambiguous_identity(reviewed_unaccounted_theme, conflict):
+    source, anchor, record = reviewed_unaccounted_theme
+    catalog = deepcopy(state.metadata.anisongdb_metadata)
+    source = catalog["songs"][0]
+    if conflict in ("source_credit", "source_title", "media", "category", "ordinal", "other_kind", "dub"):
+        field, value = {"source_credit": ("songArtist", "Other Performer"),
+                        "source_title": ("songName", "Other Theme"), "media": ("HQ", "other.webm"),
+                        "category": ("songCategory", "Live"), "ordinal": ("songNumber", 3),
+                        "other_kind": ("songType", 2), "dub": ("isDub", True)}[conflict]
+        source[field] = value
+    elif conflict == "native_credit":
+        anchor["artist"] = ["Other Performer"]
+    elif conflict == "native_title":
+        anchor["title"] = "Other Theme"
+    elif conflict == "native_file":
+        state.metadata.file_metadata["1"]["themes"]["OP1"]["1"] = {}
+    elif conflict == "ambiguous_source":
+        other = deepcopy(source)
+        other.update({"annSongId": 25, "amqSongId": 9596, "songName": anchor["title"],
+                      "songArtist": "Another Performer", "HQ": "other.webm", "MQ": None})
+        catalog["songs"].append(other)
+    elif conflict == "ambiguous_native":
+        state.metadata.anime_metadata["1"]["songs"].append({
+            "slug": "OP2", "type": "OP", "title": source["songName"], "artist": ["Other Performer"],
+        })
+    elif conflict == "personal_override":
+        state.metadata.anime_metadata["1"]["anisongdb_matching"] = deepcopy(
+            state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"])
+        state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"] = {"unaccounted_themes": []}
+    anisongdb.replace_catalog(catalog)
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb._mapped_slugs.get(anisongdb._song_key(source)) != "OP1"
+
+
 @pytest.fixture(params=["recording", "official_credit"])
 def reviewed_recording(catalog_state, monkeypatch, request):
     catalog = _catalog()
@@ -1164,6 +1421,58 @@ def test_reviewed_recording_can_use_a_later_established_cut_and_restore_its_slot
     # A different verified filename cannot silently reuse the saved decision.
     themes["OP1"]["2"].clear()
     assert not anisongdb._reviewed_theme_match(source, anchor, "OP1")
+
+
+@pytest.fixture
+def reviewed_language_cut(reviewed_recording):
+    source, anchor = reviewed_recording
+    anchor["slug"] = "OP1-EN"
+    themes = state.metadata.file_metadata["1"]["themes"]
+    themes[anchor["slug"]] = themes.pop("OP1")
+    for records in state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"].values():
+        for record in records:
+            record["slug"] = anchor["slug"]
+    return source, anchor
+
+
+def test_reviewed_language_cut_merges_and_resolves_after_reload_without_absorbing_another_cover(reviewed_language_cut):
+    source, anchor = reviewed_language_cut
+    other = {**deepcopy(source), "annSongId": 25, "amqSongId": 9596, "songNumber": 2,
+             "HQ": "other1.webm", "MQ": None}
+    state.metadata.anisongdb_metadata["songs"].append(other)
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.theme_slug(source) == "OP1-EN"
+    assert anisongdb.theme_slug(other) == "OP2"
+    assert state.metadata.file_metadata["1"]["themes"]["OP1-EN"]["1"]["byvisp.webm"]["anisongdb_alternate"]
+    saved = deepcopy((state.metadata.anime_metadata, state.metadata.file_metadata))
+    anisongdb.build_indexes(force=True)
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP1-EN", title=anchor["title"], artists=anchor["artist"]) is source
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP1-EN", title=anchor["title"], artists=["Unrelated Performer"]) is None
+    anisongdb.sync_catalog_to_metadata()
+    assert (state.metadata.anime_metadata, state.metadata.file_metadata) == saved
+
+
+@pytest.mark.parametrize("changed", ["source_video", "native_video", "review_removed"])
+def test_language_cut_requires_current_review_even_when_title_and_artist_match(reviewed_language_cut, changed):
+    source, anchor = reviewed_language_cut
+    source.update(songName=anchor["title"], songArtist=anchor["artist"][0])
+    for records in state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"].values():
+        for record in records:
+            record.update(source_title=source["songName"], source_artist=source["songArtist"])
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.theme_slug(source) == "OP1-EN"
+    if changed == "source_video":
+        source["HQ"] = "changed.webm"
+    elif changed == "native_video":
+        del state.metadata.file_metadata["1"]["themes"]["OP1-EN"]["1"]["Example-OP1.webm"]
+    else:
+        state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"] = {}
+    anisongdb.build_indexes(force=True)
+    assert anisongdb.resolve_song_for_mal_slug("1", "OP1-EN", title=anchor["title"], artists=anchor["artist"]) is None
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.theme_slug(source) != "OP1-EN"
 
 
 def test_reviewed_media_repairs_partial_source_credit_on_a_complete_native_roster(reviewed_recording):
@@ -2105,6 +2414,34 @@ def test_reload_restores_every_file_mapping_when_multiple_provider_rows_share_a_
     assert len(anisongdb.songs_for_mal_slug("1", "OP2")) == 2
 
 
+@pytest.mark.parametrize("native_source", ["WEB", "BD", None])
+def test_reload_restores_source_identity_retained_only_on_native_file(catalog_state, native_source):
+    state.metadata.anime_metadata["1"] = {"songs": [
+        {"type": "OP", "slug": "OP2", "title": "Tank!", "artist": ["Seatbelts"]},
+    ]}
+    state.metadata.file_metadata["1"] = {"themes": {"OP2": {"1": {
+        "CowboyBebop-OP2.webm": {"source": native_source, "resolution": 1080},
+    }}}}
+    catalog = _catalog()
+    catalog["songs"][0].update({"songNumber": 3, "MQ": None})
+    catalog["songs"].append({**catalog["songs"][0], "annSongId": 25, "songNumber": 4})
+    anisongdb.replace_catalog(catalog)
+    anisongdb.sync_catalog_to_metadata()
+    native = state.metadata.file_metadata["1"]["themes"]["OP2"]["1"]["CowboyBebop-OP2.webm"]
+    assert native["anisongdb_ann_song_id"] == 24
+    theme = state.metadata.anime_metadata["1"]["songs"][0]
+    assert theme["anisongdb_ann_song_id"] == 25
+    saved = deepcopy((state.metadata.anime_metadata, state.metadata.file_metadata))
+
+    anisongdb.build_indexes(force=True)
+
+    assert [anisongdb.theme_slug(song) for song in catalog["songs"]] == ["OP2", "OP2"]
+    assert len(anisongdb.songs_for_mal_slug("1", "OP2")) == 2
+    assert metadata_fetch.get_metadata("byvisp.webm")["slug"] == "OP2"
+    anisongdb.sync_catalog_to_metadata()
+    assert (state.metadata.anime_metadata, state.metadata.file_metadata) == saved
+
+
 def test_covered_theme_retains_every_distinct_provider_clip(catalog_state):
     state.metadata.anime_metadata["1"] = {"songs": [
         {"type": "OP", "slug": "OP2", "title": "Tank!", "artist": ["Seatbelts"]},
@@ -2272,6 +2609,7 @@ def test_animethemes_download_can_fall_back_to_anisongdb(catalog_state, monkeypa
         return Response(url.startswith("https://naedist.animemusicquiz.com/"))
 
     monkeypatch.setattr(cache_download.requests, "get", fake_get)
+    monkeypatch.setattr(cache_download, "_validate_downloaded_video", lambda _path: True)
     destination = tmp_path / filename
 
     assert cache_download._download_theme_file_to_path(filename, destination) is True
@@ -2786,6 +3124,126 @@ def test_shared_artist_override_identity_has_personal_priority_and_cached_reads(
     assert anisongdb._reviewed_artist_data.cache_info().misses == misses
 
 
+@pytest.mark.parametrize("credit_case, expected", [
+    ("group", True),
+    ("duet", True),
+    ("missing_guest", False),
+    ("extra_target", False),
+    ("other_id", False),
+    ("other_source_name", False),
+    ("acoustic", False),
+])
+def test_complete_roster_accepts_guarded_source_alias_without_dropping_performers(catalog_state, credit_case, expected):
+    catalog = _catalog()
+    source = catalog["songs"][0]
+    source["songNumber"] = 2
+    target = ["Translated Band"]
+    if credit_case in ("duet", "missing_guest"):
+        catalog["artists"]["20"] = {"names": ["Guest Singer"], "type": "Person"}
+        source.update({"songArtist": "Seatbelts & Guest Singer", "artists": [[18, -1], [20, -1]]})
+        if credit_case == "duet":
+            target.append("Guest Singer")
+    elif credit_case == "extra_target":
+        target.append("Uncredited Singer")
+    elif credit_case == "other_id":
+        catalog["artists"]["20"] = deepcopy(catalog["artists"]["18"])
+        source["artists"] = [[20, -1]]
+    elif credit_case == "other_source_name":
+        catalog["artists"]["18"]["names"] = ["Other Band"]
+        source["songArtist"] = "Other Band"
+    elif credit_case == "acoustic":
+        source["songName"] = "Tank! (Acoustic Version)"
+    state.metadata.anime_metadata["1"] = {"songs": [
+        {"type": "OP", "slug": "OP1", "title": "Tank!", "artist": target, "artist_complete_roster": True},
+    ]}
+    state.metadata.file_metadata["1"] = {"themes": {
+        "OP1": {"1": {"Example-OP1.webm": {"source": "BD"}}},
+    }}
+    state.metadata.anime_metadata_overrides["1"] = {"anisongdb_matching": {
+        "source_artist_aliases": [
+            {"artist_id": "18", "source_name": "Seatbelts", "names": ["Translated Band"]},
+        ],
+    }}
+    anisongdb.replace_catalog(catalog)
+    original = deepcopy(state.metadata.anisongdb_metadata)
+    anisongdb.sync_catalog_to_metadata()
+    assert (anisongdb.theme_slug(source) == "OP1") == expected
+    assert state.metadata.anisongdb_metadata == original
+    saved = deepcopy((state.metadata.anime_metadata, state.metadata.file_metadata))
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert (state.metadata.anime_metadata, state.metadata.file_metadata) == saved
+
+
+def test_imported_source_alias_repairs_existing_extra_with_complete_native_roster(catalog_state):
+    from _app_scripts.file.metadata import metadata_import
+
+    state.metadata.anime_metadata_overrides.clear()
+    state.metadata.anime_metadata["1"] = {"songs": [
+        {"type": "OP", "slug": "OP1", "title": "Tank!", "artist": ["Translated Band"],
+         "artist_complete_roster": True},
+    ]}
+    state.metadata.file_metadata["1"] = {"themes": {
+        "OP1": {"1": {"Example-OP1.webm": {"source": "BD"}}},
+    }}
+    source = state.metadata.anisongdb_metadata["songs"][0]
+    source["songNumber"] = 2
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert len(state.metadata.anime_metadata["1"]["songs"]) == 2
+    metadata_import._apply_package_stores({"anime_metadata_overrides": {"1": {"anisongdb_matching": {
+        "source_artist_aliases": [
+            {"artist_id": "18", "source_name": "Seatbelts", "names": ["Translated Band"]},
+        ],
+    }}}})
+    assert anisongdb.theme_slug(source) == "OP1"
+    assert len(state.metadata.anime_metadata["1"]["songs"]) == 1
+    assert "Example-OP1.webm" in state.metadata.file_metadata["1"]["themes"]["OP1"]["1"]
+    assert "byvisp.webm" in state.metadata.file_metadata["1"]["themes"]["OP1"]["1"]
+    saved = deepcopy((state.metadata.anime_metadata, state.metadata.file_metadata))
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert (state.metadata.anime_metadata, state.metadata.file_metadata) == saved
+
+
+@pytest.mark.parametrize("flag", ["isDub", "isRebroadcast"])
+@pytest.mark.parametrize("slug", ["OP1", "OP1-EN"])
+def test_projection_preserves_explicitly_registered_excluded_preferred_clip(catalog_state, flag, slug):
+    catalog = _catalog()
+    source = catalog["songs"][0]
+    source[flag] = True
+    state.metadata.anime_metadata["1"] = {"songs": [
+        {"type": "OP", "slug": slug, "title": "Tank!", "artist": ["Seatbelts"]},
+    ]}
+    state.metadata.file_metadata["1"] = {"themes": {
+        slug: {"1": {"Example-OP1.webm": {"source": "BD"}}},
+    }}
+    anisongdb.replace_catalog(catalog)
+    anisongdb.sync_catalog_to_metadata()
+    assert anisongdb.registered_alternate_count() == 0
+    anisongdb.register_detected_file("byvisp.webm", source)
+    # A user's saved language slot must survive, even though automatic catalog
+    # projection deliberately excludes this source row.
+    props = state.metadata.file_metadata["1"]["themes"]["OP1"]["1"].pop("byvisp.webm")
+    state.metadata.file_metadata["1"]["themes"][slug]["1"]["byvisp.webm"] = props
+    if slug != "OP1":
+        state.metadata.anime_metadata["1"]["songs"] = [
+            row for row in state.metadata.anime_metadata["1"]["songs"] if row["slug"] != "OP1"
+        ]
+    anisongdb.build_indexes(force=True)
+    assert anisongdb.theme_slug(source) == slug
+    original = deepcopy(state.metadata.anisongdb_metadata)
+    anisongdb.sync_catalog_to_metadata()
+    assert "byvisp.webm" in state.metadata.file_metadata["1"]["themes"][slug]["1"]
+    assert "t0nxjm.webm" not in state.metadata.file_metadata["1"]["themes"][slug]["1"]
+    assert anisongdb.theme_slug(source) == slug
+    assert state.metadata.anisongdb_metadata == original
+    saved = deepcopy((state.metadata.anime_metadata, state.metadata.file_metadata))
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert (state.metadata.anime_metadata, state.metadata.file_metadata) == saved
+
+
 @pytest.mark.parametrize("records", [None, "bad", [None], [{}], [{"names": "bad"}], [{"names": ["One"]}], [{"names": ["One", None]}]])
 def test_malformed_artist_override_data_is_ignored(catalog_state, records):
     state.metadata.anime_metadata_overrides["1"] = {"anisongdb_matching": {
@@ -2934,3 +3392,128 @@ def test_tv_and_bd_numbers_share_standard_slot_only_with_same_native_video(catal
     assert (anisongdb.theme_slug(source) == "OP4") is shared_native
     anisongdb.build_indexes(force=True)
     assert (anisongdb.theme_slug(source) == "OP4") is shared_native
+
+
+@pytest.fixture
+def split_anime_catalog(catalog_state):
+    catalog = _catalog()
+    for mal, title in (("1", "Part One"), ("2", "Part Two"), ("3", "Part Three")):
+        state.metadata.anime_metadata[mal] = {"title": title, "songs": []}
+        state.metadata.file_metadata[mal] = {"mal": mal, "name": title, "themes": {}}
+    state.metadata.file_metadata["2"].update({"anilist": "202", "kitsu": "302"})
+    state.metadata.anime_metadata["2"]["songs"] = [
+        {"type": "OP", "slug": "OP1", "title": "Tank!", "artist": ["Seatbelts"]},
+    ]
+    state.metadata.file_metadata["2"]["themes"] = {
+        "OP1": {"1": {"PartTwo-OP1.webm": {"source": "BD", "resolution": 1080}}},
+    }
+    other = {**catalog["songs"][0], "annSongId": 25, "amqSongId": 9596,
+             "songName": "Another Song", "HQ": "other1.webm", "MQ": None}
+    catalog["songs"].append(other)
+    source = catalog["songs"][0]
+    record = {
+        "ann_id": "13", "ann_song_id": "24", "amq_song_id": "9595",
+        "source_title": "Tank!", "source_artist": "Seatbelts", "category": "Standard",
+        "source_slug": "OP1", "source_video": "byvisp.webm", "mal": "2",
+    }
+    anisongdb.replace_catalog(catalog)
+    return source, record
+
+
+def test_anime_assignment_moves_only_the_reviewed_source_and_preserves_raw_catalog(split_anime_catalog):
+    source, record = split_anime_catalog
+    anisongdb.sync_catalog_to_metadata()
+    # Preserve a detected lower-quality file and a user's renamed local video.
+    anisongdb.register_detected_file("t0nxjm.webm", source)
+    anisongdb.register_detected_file("Personal [AMQ]9595.webm", source)
+    raw = deepcopy(state.metadata.anisongdb_metadata)
+    native = deepcopy(state.metadata.file_metadata["2"]["themes"]["OP1"]["1"]["PartTwo-OP1.webm"])
+    state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"]["anime_assignments"] = [record]
+    indexes = anisongdb.build_indexes(force=True)
+    assert indexes["mal"]["2"] == [source]
+    assert indexes["mal"]["1"] == [raw["songs"][1]]
+    anisongdb.sync_catalog_to_metadata()
+    for filename in ("byvisp.webm", "t0nxjm.webm", "Personal [AMQ]9595.webm"):
+        data = metadata_fetch.get_metadata(filename)
+        assert data["mal"] == "2"
+        assert data["slug"] == "OP1"
+        assert data["file_properties"]["anisongdb_source_slug"] == "OP1"
+        assert filename in state.metadata.file_metadata["2"]["themes"]["OP1"]["1"]
+        assert all(filename not in files for versions in state.metadata.file_metadata["1"]["themes"].values()
+                   for files in versions.values())
+    assert anisongdb.normalize_song(source)["anime"] == raw["anime"]["13"]
+    assert anisongdb.linked_ids(source) == {"myanimelist": 2, "anilist": "202", "kitsu": "302"}
+    assert state.metadata.anisongdb_metadata == raw
+    current_native = state.metadata.file_metadata["2"]["themes"]["OP1"]["1"]["PartTwo-OP1.webm"]
+    assert {key: value for key, value in current_native.items() if not key.startswith("anisongdb_")} == native
+    assert state.metadata.anime_metadata["2"]["title"] == "Part Two"
+    saved = deepcopy((state.metadata.anime_metadata, state.metadata.file_metadata))
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert (state.metadata.anime_metadata, state.metadata.file_metadata) == saved
+
+
+@pytest.mark.parametrize("field", [
+    "ann_id", "ann_song_id", "amq_song_id", "source_title", "source_artist",
+    "category", "source_slug", "source_video",
+])
+def test_anime_assignment_requires_every_observed_identity_guard(split_anime_catalog, field):
+    source, record = split_anime_catalog
+    record[field] = "different"
+    state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"]["anime_assignments"] = [record]
+    anisongdb.build_indexes(force=True)
+    assert anisongdb._mal_id(source) == "1"
+
+
+@pytest.mark.parametrize("records", [None, "bad", [None], [{}], [{"mal": "2"}]])
+def test_incomplete_anime_assignment_is_ignored(split_anime_catalog, records):
+    source, _record = split_anime_catalog
+    state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"]["anime_assignments"] = records
+    anisongdb.build_indexes(force=True)
+    assert anisongdb._mal_id(source) == "1"
+
+
+@pytest.mark.parametrize("target", [None, [], {}, "", "0", "-1", "missing", "99"])
+def test_anime_assignment_requires_an_existing_positive_mal_target(split_anime_catalog, target):
+    source, record = split_anime_catalog
+    record["mal"] = target
+    state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"]["anime_assignments"] = [record]
+    anisongdb.build_indexes(force=True)
+    assert anisongdb._mal_id(source) == "1"
+
+
+def test_anime_assignment_conflicts_fail_closed_and_reads_are_cached(split_anime_catalog, monkeypatch):
+    source, record = split_anime_catalog
+    matching = state.metadata.anime_metadata_overrides["1"]["anisongdb_matching"]
+    matching["anime_assignments"] = [record, {**record, "mal": "3"}]
+    anisongdb.build_indexes(force=True)
+    assert anisongdb._mal_id(source) == "1"
+    matching["anime_assignments"] = [record]
+    anisongdb.build_indexes(force=True)
+    monkeypatch.setattr(anisongdb, "_theme_matching_overrides",
+                        lambda _mal: pytest.fail("Ordinary lookup scanned the metadata overrides"))
+    for _ in range(100):
+        assert anisongdb._mal_id(source) == "2"
+        assert anisongdb.songs_for_mal_slug("2", "OP1") == [source]
+
+
+def test_anime_assignment_import_repairs_existing_projection_and_respects_personal_priority(split_anime_catalog):
+    from _app_scripts.file.metadata import metadata_import
+
+    source, record = split_anime_catalog
+    anisongdb.sync_catalog_to_metadata()
+    personal = deepcopy(state.metadata.anime_metadata_overrides)
+    metadata_import._apply_package_stores({"anime_metadata_overrides": {"1": {
+        "anisongdb_matching": {"anime_assignments": [record]},
+    }}})
+    assert metadata_fetch.get_metadata("byvisp.webm")["mal"] == "2"
+    assert state.metadata.anime_metadata_overrides == personal
+    anisongdb.replace_catalog(deepcopy(state.metadata.anisongdb_metadata))
+    anisongdb.sync_catalog_to_metadata()
+    assert metadata_fetch.get_metadata("byvisp.webm")["mal"] == "2"
+    # An explicit recipient override supersedes the publisher's routing list.
+    personal["1"]["anisongdb_matching"]["anime_assignments"] = [{**record, "mal": "3"}]
+    state.metadata.anime_metadata_overrides.update(personal)
+    anisongdb.build_indexes(force=True)
+    anisongdb.sync_catalog_to_metadata()
+    assert metadata_fetch.get_metadata("byvisp.webm")["mal"] == "3"

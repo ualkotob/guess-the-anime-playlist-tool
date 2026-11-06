@@ -12,6 +12,9 @@ class _FakeMpv:
     def command(self, *args):
         self.commands.append(args)
 
+    def command_async(self, *args):
+        self.commands.append(args)
+
     def observe_property(self, *_args):
         pass
 
@@ -107,7 +110,7 @@ def test_media_player_loads_separate_youtube_video_and_audio_tracks():
     ]
 
 
-def test_media_player_native_cover_is_part_of_the_incoming_load():
+def test_media_player_native_cover_is_applied_before_the_incoming_load():
     mpv = _FakeMpv()
     player = MediaPlayer(mpv)
     mpv.commands.clear()
@@ -115,27 +118,50 @@ def test_media_player_native_cover_is_part_of_the_incoming_load():
     player.set_media("round.webm", start_seconds=2.5, cover_video=True)
 
     assert mpv.commands == [
+        ("vf", "add", "@gta-startup-cover:lavfi=[drawbox=color=black:t=fill]"),
         (
             "loadfile",
             "round.webm",
             "replace",
             "-1",
-            (
-                "start=2.5,brightness=-100,contrast=-100,"
-                "vf=@gta-startup-cover:"
-                "lavfi=[drawbox=color=black:t=fill]"
-            ),
+            "start=2.5,brightness=-100,contrast=-100",
         )
     ]
     assert player._startup_video_cover_active is True
-
     player.release_startup_video_cover()
-
-    assert mpv.brightness == 12
-    assert mpv.contrast == 34
-    assert mpv.commands[-1] == ("vf", "remove", "@gta-startup-cover")
+    assert mpv.commands[-3:] == [
+        ("vf", "remove", "@gta-startup-cover"),
+        ("set", "brightness", "12.0"),
+        ("set", "contrast", "34.0"),
+    ]
     assert player._startup_video_cover_active is False
 
+
+def test_media_controls_do_not_use_blocking_mpv_commands():
+    mpv = _FakeMpv()
+    player = MediaPlayer(mpv)
+    mpv.commands.clear()
+
+    def blocking_command(*_args):
+        raise AssertionError("synchronous mpv command reached the UI thread")
+
+    mpv.command = blocking_command
+    player.set_media("broken.webm")
+    player.play()
+    player.set_volume(80)
+    player.set_volume(80)  # unchanged volume should not fill mpv's command queue
+    player.set_time(1000)
+    player.pause()
+    player.stop()
+
+    assert mpv.commands == [
+        ("loadfile", "broken.webm", "replace", "-1", ""),
+        ("set", "pause", "no"),
+        ("set", "volume", "40.0"),
+        ("seek", 1.0, "absolute+exact"),
+        ("set", "pause", "yes"),
+        ("stop",),
+    ]
 
 def test_failed_stream_fallback_restores_theme_and_evicts_direct_url(monkeypatch):
     class _Player:

@@ -400,7 +400,7 @@ def get_random_anime_clip_stream_url(anime_title, year, data, limit_channels=Tru
                     "anime mix", "english dub greeting video", "best of 20", "reacts to", "anime boston",
                     "best anime fights compilation", "best anime fight compilation", "best anime battles compilation",
                     "best anime battle compilation", "#animeindo", "first impressions", ") hype reel", "my recommended ",
-                    "in a nutshell", "this year", "recap", "summary"
+                    "in a nutshell", "this year", "recap", "summary", "online fest", "upcoming anime in"
                 ]
                 ost_bad_keywords = [
                     "insert song", "anime songs", "cd single", "theme song", "full album", "extended", "toda la música"

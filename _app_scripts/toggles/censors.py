@@ -23,6 +23,7 @@ import _app_scripts.queue_round.lightning_rounds.filter_overlay as filter_overla
 import _app_scripts.queue_round.youtube.youtube_control as youtube_control
 import _app_scripts.information.information_popup as information_popup
 import _app_scripts.file.metadata.metadata_fetch as metadata_fetch
+from _app_scripts.playlists import entry_paths
 import _app_scripts.data.config_io as config_io
 import _app_scripts.ui.windowing as windowing
 import _app_scripts.file.tooltip as tooltip
@@ -51,6 +52,9 @@ other_censor_lists = []
 _youtube_censor_list    = {}   # {filename: [censor, ...]} â€” populated at YouTube play time
 censors_enabled = True
 censors_nsfw_enabled = True
+censors_across_theme_files = False
+_shared_censor_cache_key = None
+_shared_censor_sources = {}
 
 censor_boxes = {}
 _censor_osd = None       # unused; kept so any stale references don't NameError
@@ -123,6 +127,14 @@ def _commit_censor_osd():
         except Exception:
             ar = 0.0
         video_x, video_y, video_w, video_h = utils.letterbox_rect(osd_w, osd_h, ar)
+
+    # ASS overlays span the whole window. Clip the finished shapes so rotated
+    # corners and curves stay inside the video, including framed-video margins.
+    clip_left = max(0, int(video_x))
+    clip_top = max(0, int(video_y))
+    clip_right = min(osd_w, int(video_x + video_w))
+    clip_bottom = min(osd_h, int(video_y + video_h))
+    clip_tag = f"\\clip({clip_left},{clip_top},{clip_right},{clip_bottom})"
 
     def _to_ass_color(color_str):
         try:
@@ -199,7 +211,7 @@ def _commit_censor_osd():
             ]]
             def _c(p): return f"{p[0]} {p[1]}"
             ass_payload = (
-                f"{{\\an7\\pos(0,0)\\1c{ass_color}\\bord0\\shad0\\p1}}"
+                f"{{\\an7\\pos(0,0)\\1c{ass_color}\\bord0\\shad0{clip_tag}\\p1}}"
                 f"m {_c(pts[0])} "
                 f"b {_c(pts[1])} {_c(pts[2])} {_c(pts[3])} "
                 f"b {_c(pts[4])} {_c(pts[5])} {_c(pts[6])} "
@@ -213,7 +225,7 @@ def _commit_censor_osd():
             p2 = _rot( hw_f,  hh_f)
             p3 = _rot(-hw_f,  hh_f)
             ass_payload = (
-                f"{{\\an7\\pos(0,0)\\1c{ass_color}\\bord0\\shad0\\p1}}"
+                f"{{\\an7\\pos(0,0)\\1c{ass_color}\\bord0\\shad0{clip_tag}\\p1}}"
                 f"m {p0[0]} {p0[1]} l {p1[0]} {p1[1]} {p2[0]} {p2[1]} {p3[0]} {p3[1]}"
                 f"{{\\p0}}"
             )
@@ -305,6 +317,7 @@ def load_censors():
                         print(f"Loaded {len(data)} entries from {fname}")
                 except Exception as e:
                     print(f"Failed to load {fname}: {e}")
+    invalidate_shared_censor_cache()
 
 
 def _prime_start_censors(filename):
@@ -388,6 +401,17 @@ def toggle_censor_nsfw_bar(toggle=None):
         remove_all_censor_boxes()
 
 
+def toggle_censors_across_theme_files():
+    global censors_across_theme_files
+    censors_across_theme_files = not censors_across_theme_files
+    invalidate_shared_censor_cache()
+    remove_all_censor_boxes()
+    player = state.widgets.player
+    if player:
+        apply_censors(player.get_time() / 1000, player.get_length() / 1000)
+    config_io.save_config()
+
+
 def set_youtube_censors_for_file(filename, censors_list):
     """Populate the YouTube censor cache for *filename*. Call when a YouTube video starts."""
     if filename is not None:
@@ -397,6 +421,8 @@ def set_youtube_censors_for_file(filename, censors_list):
 def get_file_censors(filename):
     if not filename:
         return None
+    theme_entry = filename
+    filename = entry_paths.get_clean_filename(filename)
     if filename in _youtube_censor_list:
         return _youtube_censor_list[filename]
     filenames = [filename, filename.replace(".mp4", ".webm")]
@@ -409,7 +435,46 @@ def get_file_censors(filename):
                     return other_file_censors
         else:
             return file_censors
+    if censors_across_theme_files:
+        return _get_shared_theme_censors(theme_entry)
     return []
+
+
+def invalidate_shared_censor_cache():
+    global _shared_censor_cache_key
+    _shared_censor_cache_key = None
+    _shared_censor_sources.clear()
+
+
+def _shared_censor_theme_key(filename):
+    identity = _censor_theme_identity(filename)
+    if identity["mal_id"] and identity["slug"]:
+        return ("metadata", identity["mal_id"], identity["slug"])
+    title, slug, _version = extract_title_and_slug_from_filename(
+        entry_paths.get_clean_filename(filename)
+    )
+    return ("filename", title, slug) if title and slug else None
+
+
+def _get_shared_theme_censors(filename):
+    """Use one source from the same anime/theme, ignoring version and quality."""
+    global _shared_censor_cache_key
+    # This lookup runs on playback ticks and while ranking catalog files.
+    # Index sources once, retaining the main/imported-list lookup precedence.
+    key = (
+        metadata_fetch.metadata_cache_generation,
+        tuple((id(source), len(source)) for source in (censor_list, *other_censor_lists)),
+    )
+    if key != _shared_censor_cache_key:
+        _shared_censor_sources.clear()
+        for source, file_censors in get_censor_sources().items():
+            theme_key = _shared_censor_theme_key(source)
+            if theme_key:
+                _shared_censor_sources.setdefault(theme_key, file_censors)
+        _shared_censor_cache_key = key
+    return _shared_censor_sources.get(_shared_censor_theme_key(filename), [])
+
+
 def get_start_skip_end(filename):
     """Return the end of an enabled skip censor that begins at time zero.
 
@@ -1662,6 +1727,7 @@ def open_censor_editor(refresh=False, refresh_only=False, filename=None):
                 update_censor_button_count()
                 return
         censor_list[filename] = current_censors
+        invalidate_shared_censor_cache()
         config_io._atomic_json_write(CENSOR_JSON_FILE, censor_list, indent=4)
         update_censor_button_count()
 
