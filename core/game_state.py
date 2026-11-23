@@ -224,7 +224,7 @@ class GameState:
             LAUNCH_SCOREBOARD_ON_STARTUP=False,
             AUTO_EXIT_SCOREBOARD=False,
             SYNC_SCOREBOARD_COLORS=True,
-            WEB_SERVER_ENABLED=False,
+            WEB_SERVER_ENABLED=True,
             NGROK_DOMAIN="",
             CLOUDFLARE_TUNNEL_TOKEN="",
             CLOUDFLARE_PUBLIC_URL="",

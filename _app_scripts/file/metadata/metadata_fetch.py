@@ -119,7 +119,7 @@ def _animethemes_cache_key(filename, *, split):
     return ("prefix" if split else "exact", query.casefold())
 
 
-def fetch_animethemes_metadata(filename=None, mal_id=None, split=True, refetch=False):
+def fetch_animethemes_metadata(filename=None, mal_id=None, split=True, refetch=False, timeout=None):
     """Return AnimeThemes data, optionally bypassing all local caches.
 
     ``refetch`` is used by the explicit Fetch Theme Data action.  A normal
@@ -164,7 +164,7 @@ def fetch_animethemes_metadata(filename=None, mal_id=None, split=True, refetch=F
             "filter[resource][external_id]": str(mal_id),
             "include": "series,resources,images,animethemes.animethemeentries.videos,animethemes.song.artists"
         }
-    response = requests.get(url, params=params)
+    response = requests.get(url, params=params, **({'timeout': timeout} if timeout is not None else {}))
     if response.status_code == 200:
         data = response.json()
         if data.get("anime"):

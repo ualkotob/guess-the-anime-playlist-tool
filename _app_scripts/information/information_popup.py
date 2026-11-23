@@ -1273,47 +1273,8 @@ def toggle_title_popup(show, info_type=None, instant=False):
                 if not score and not members:
                     inline_middle_row_string = f"{japanese_title}\n" if japanese_title != title else ""
 
-                anilist_row_string = ""
-                anilist_id = data.get("anilist")
-                if anilist_id and str(anilist_id) in state.metadata.anilist_metadata:
-                    anilist_data = state.metadata.anilist_metadata[str(anilist_id)]
-                    anilist_score = anilist_data.get("score")
-                    anilist_popularity = anilist_data.get("popularity")
-
-                    if anilist_score or anilist_popularity:
-                        anilist_parts = []
-
-                        if anilist_score:
-                            score_str = f"AniList Score: {anilist_score}%"
-                            rank_parts = []
-                            if anilist_data.get("score_rank_season"):
-                                rank_parts.append(f"#{anilist_data['score_rank_season']} Season")
-                            if anilist_data.get("score_rank_year"):
-                                rank_parts.append(f"#{anilist_data['score_rank_year']} Year")
-                            if anilist_data.get("score_rank_all"):
-                                rank_parts.append(f"#{anilist_data['score_rank_all']} All-Time")
-                            if rank_parts:
-                                score_str += f" ({' / '.join(rank_parts)})"
-                            anilist_parts.append(score_str)
-
-                        if anilist_popularity:
-                            pop_str = f"AniList Members: {anilist_popularity:,}"
-                            rank_parts = []
-                            if anilist_data.get("popularity_rank_season"):
-                                rank_parts.append(f"#{anilist_data['popularity_rank_season']} Season")
-                            if anilist_data.get("popularity_rank_year"):
-                                rank_parts.append(f"#{anilist_data['popularity_rank_year']} Year")
-                            if anilist_data.get("popularity_rank_all"):
-                                rank_parts.append(f"#{anilist_data['popularity_rank_all']} All-Time")
-                            if rank_parts:
-                                pop_str += f" ({' / '.join(rank_parts)})"
-                            anilist_parts.append(pop_str)
-
-                        if anilist_parts:
-                            anilist_row_string = " | ".join(anilist_parts) + "\n"
-
-                bottom_row = f"{middle_row_string}{anilist_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
-                inline_bottom_row = f"{inline_middle_row_string}{anilist_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
+                bottom_row = f"{middle_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
+                inline_bottom_row = f"{inline_middle_row_string}{studio} | {tags} | {episodes} | {type} | {source}"
             else:
                 title_row = title_overlay.get_base_title()
                 japanese_title = title_overlay.get_base_title(title=japanese_title)

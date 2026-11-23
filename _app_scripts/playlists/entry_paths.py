@@ -68,17 +68,18 @@ def get_interchangeable_filenames(filename):
     return variants
 
 
-def get_directory_file_path(filename):
+def get_directory_file_path(filename, *, require_on_disk=False):
     """Return an exact or extension-equivalent path from ``directory_files``."""
     clean_filename = get_clean_filename(filename)
     directory_files = state.metadata.directory_files
     for candidate in get_interchangeable_filenames(clean_filename):
-        if candidate in directory_files:
-            return directory_files[candidate]
+        path = directory_files.get(candidate)
+        if path and (not require_on_disk or cache_download.is_nonempty_file(path)):
+            return path
     return None
 
 
-def get_file_path(playlist_entry):
+def get_file_path(playlist_entry, *, require_on_disk=False):
     """Return the full file path for a playlist entry, or None if missing."""
     if isinstance(playlist_entry, dict):
         playlist_entry = playlist_entry.get("filename", playlist_entry.get("filepath", ""))
@@ -87,18 +88,23 @@ def get_file_path(playlist_entry):
     if reference:
         clean_entry = reference["filename"]
 
+    preferred_path = cache_download.get_preferred_download_path(get_clean_filename(playlist_entry))
+    if preferred_path:
+        return preferred_path
+
     if os.path.isabs(clean_entry):
+        exists = cache_download.is_nonempty_file if require_on_disk else os.path.exists
         for candidate in get_interchangeable_filenames(clean_entry):
-            if os.path.exists(candidate):
+            if exists(candidate):
                 return candidate
         return None
 
-    directory_path = get_directory_file_path(clean_entry)
+    directory_path = get_directory_file_path(clean_entry, require_on_disk=require_on_disk)
     if directory_path:
         return directory_path
 
     cached_path = cache_download.get_cached_file_path(clean_entry)
-    if cached_path:
+    if cached_path and (not require_on_disk or cache_download.is_nonempty_file(cached_path)):
         return cached_path
 
     return None

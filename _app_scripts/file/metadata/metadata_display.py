@@ -570,37 +570,24 @@ def up_next_text():
 
 def _push_web_up_next():
     """Compute up-next data and push to web host clients."""
-    fixed_data = state.lightning.fixed_lightning_round_playlist_data or state.lightning.fixed_lightning_queue
-    fixed_rounds = fixed_data.get("rounds", []) if fixed_data else []
-    fixed_current_index = fixed_data.get("current_index", -1) if fixed_data else -1
-    fixed_coming_up = fixed_data and (fixed_current_index + 1) < len(fixed_rounds)
+    from _app_scripts.file.web_server import web_video_queue
 
-    has_next = state.playback.youtube_queue or search_ops.search_queue or fixed_coming_up or state.metadata.playlist["current_index"] + 1 < len(state.metadata.playlist["playlist"])
-    if not has_next:
+    entry, mode_label = web_video_queue.up_next_entry()
+    if not entry:
         web_server.push_up_next({"end_of_playlist": True})
         return
 
-    mode_label = ""
     try:
-        if state.playback.youtube_queue:
-            playlist_entry = state.playback.youtube_queue.get("filename")
-        elif search_ops.search_queue:
-            playlist_entry = search_ops.search_queue
-        elif fixed_coming_up:
-            next_round = fixed_rounds[fixed_current_index + 1]
-            playlist_entry = next_round.get("theme")
-            mode_label = f"[{next_round.get('type', '').upper()}]"
-        else:
-            playlist_entry = state.metadata.playlist["playlist"][state.metadata.playlist["current_index"] + 1]
-
+        playlist_entry, _group, queued_youtube = entry
         next_filename = entry_paths.get_clean_filename(playlist_entry)
+        video = web_video_queue.up_next_status(entry)
 
-        if state.playback.youtube_queue or youtube_control.is_youtube_file(next_filename):
-            yt_data = state.playback.youtube_queue or youtube_control.get_youtube_metadata_by_filename(next_filename) or {}
+        if queued_youtube or youtube_control.is_youtube_file(next_filename):
+            yt_data = queued_youtube or youtube_control.get_youtube_metadata_by_filename(next_filename) or {}
             yt_title = youtube_ui.get_youtube_display_title(yt_data) or next_filename
             yt_duration = utils.format_seconds(youtube_ui.get_youtube_duration(yt_data)) if yt_data else ""
             detail = f"Duration: {yt_duration}" if yt_duration else ""
-            web_server.push_up_next({"title": yt_title, "detail": detail, "mode_label": mode_label})
+            web_server.push_up_next({"title": yt_title, "detail": detail, "mode_label": mode_label, "video": video})
         else:
             d = metadata_fetch.get_metadata(playlist_entry)
             title = get_display_title(d)
@@ -626,6 +613,7 @@ def _push_web_up_next():
                 "marks": get_file_marks(next_filename),
                 "detail": " | ".join(detail_parts),
                 "mode_label": mode_label,
+                "video": video,
                 "reroll": infinite.is_reroll_valid(),
                 "skip_group": infinite.is_reroll_valid(),
             })

@@ -46,6 +46,10 @@ _cache_save_timer       = None
 _cache_save_lock        = threading.Lock()
 _download_failures      = {}   # filename -> policy active when its sources failed
 _unavailable_downloads   = {}   # filename -> (policy, URLs) when all returned 404/410
+_download_sources        = {}
+_download_errors         = {}
+_manual_downloads        = set()
+DOWNLOAD_SOURCES         = {'animethemes': 'AnimeThemes', 'anisongdb': 'AniSongDB'}
 
 
 def _source_policy():
@@ -106,7 +110,7 @@ def get_anisongdb_stream_url(filename):
     return None
 
 
-def get_theme_stream_urls(filename, *, explicit_file=False):
+def get_theme_stream_urls(filename, *, explicit_file=False, source=None):
     """Return remote source URLs in preferred/fallback order."""
     if not isinstance(filename, str) or not filename:
         return []
@@ -123,8 +127,9 @@ def get_theme_stream_urls(filename, *, explicit_file=False):
                else properties.get("stream_url"))
         return [url] if isinstance(url, str) and url.startswith(("https://", "http://")) else []
     candidates = [properties.get("stream_url")]
-    if is_animethemes_stream_file(filename):
-        candidates.append(get_animethemes_stream_url(filename))
+    webm = os.path.splitext(filename)[0] + '.webm' if source == source_preferences.ANIMETHEMES else filename
+    if is_animethemes_stream_file(webm):
+        candidates.append(get_animethemes_stream_url(webm))
     candidates.append(get_anisongdb_stream_url(theme_entry))
     fallback_urls = properties.get("anisongdb_fallback_stream_urls", [])
     if isinstance(fallback_urls, list):
@@ -136,7 +141,7 @@ def get_theme_stream_urls(filename, *, explicit_file=False):
                 candidates.append(_remote_file_properties(alternate).get("stream_url"))
                 candidates.append(get_animethemes_stream_url(alternate))
     urls = []
-    sources = source_preferences.online_sources()
+    sources = (source,) if source else source_preferences.online_sources()
     for url in candidates:
         if (
             isinstance(url, str)
@@ -151,6 +156,25 @@ def get_theme_stream_urls(filename, *, explicit_file=False):
     ))
 
 
+def _manual_stream_urls(theme_entry, source):
+    urls = get_theme_stream_urls(theme_entry, source=source)
+    if urls or source != source_preferences.ANISONGDB:
+        return urls
+    data = metadata_fetch.get_file_metadata_by_name(theme_entry) or {}
+    slug = data.get('slug')
+    if data.get('mal') and slug:
+        song = next((item for item in (data.get('songs') or []) if item.get('slug') == slug), {})
+        match = anisongdb.resolve_song_for_mal_slug(data['mal'], slug, title=song.get('title'), artists=song.get('artist'))
+        if match:
+            urls = [anisongdb.media_url(basename) for basename, *_ in anisongdb.iter_videos(match)]
+            if urls:
+                return urls
+    # A queued theme can be downloaded before the upstream catalog is loaded.
+    from _app_scripts.playback import anisongdb as live_lookup
+    filename = os.path.splitext(entry_paths.get_clean_filename(theme_entry))[0] + '.webm'
+    return live_lookup.get_video_urls(filename)
+
+
 def select_theme_entry(playlist_entry):
     """Apply the policy to a saved filename while retaining its theme identity."""
     entry = playlist_entry.get("filename", "") if isinstance(playlist_entry, dict) else playlist_entry
@@ -158,6 +182,8 @@ def select_theme_entry(playlist_entry):
         return playlist_entry
     filename = entry_paths.get_clean_filename(entry)
     if not filename or (isinstance(playlist_entry, dict) and "filepath" in playlist_entry):
+        return playlist_entry
+    if get_preferred_download_path(filename):
         return playlist_entry
     if source_preferences.file_source(filename) is None:
         return playlist_entry
@@ -304,7 +330,7 @@ def _reconcile_cache_metadata():
                     continue
                 cache_path = os.path.join(folder, basename)
                 normalized_path = os.path.normcase(os.path.abspath(cache_path))
-                if normalized_path == metadata_path or normalized_path in known_paths:
+                if basename.endswith('.part') or normalized_path == metadata_path or normalized_path in known_paths:
                     continue
                 rel_path = os.path.relpath(cache_path, THEMES_CACHE_FOLDER)
                 key = basename
@@ -337,9 +363,47 @@ def get_cached_file_path(filename):
                 paths.append(_cache_path(info.get("path", candidate)))
             paths.append(_cache_path(candidate))  # Flat legacy structure.
     for path in dict.fromkeys(paths):
-        if os.path.exists(path):
+        if is_nonempty_file(path):
             return path
     return None
+
+
+def is_nonempty_file(path):
+    try:
+        return bool(path and os.path.isfile(path) and os.path.getsize(path))
+    except OSError:
+        return False
+
+
+def get_preferred_download_path(filename):
+    """Return the available copy explicitly chosen from the host web UI."""
+    with _cache_lock:
+        records = [cache_metadata.get(name, {}) for name in entry_paths.get_interchangeable_filenames(filename)]
+    for record in records:
+        if record.get('manual'):
+            path = _cache_path(record['path'])
+            if is_nonempty_file(path):
+                return path
+    return None
+
+
+def describe_download(filename, path):
+    source = ''
+    if path:
+        record = source_preferences.download_record(path)
+        with _cache_lock:
+            cached_source = next((cache_metadata[name].get('source')
+                                  for name in entry_paths.get_interchangeable_filenames(filename)
+                                  if name in cache_metadata and _cache_path(cache_metadata[name].get('path', name)) == path), None)
+        source = DOWNLOAD_SOURCES.get(record.get('source') or cached_source)
+        if not source:
+            source = 'Theme cache' if path == get_cached_file_path(filename) else 'Local library'
+    progress = download_progress.get(filename, {})
+    total = progress.get('total_mb', 0)
+    return {'source': source,
+            'downloading': DOWNLOAD_SOURCES.get(_download_sources.get(filename), 'Theme source') if is_downloading(filename) else '',
+            'percent': min(100, int(100 * progress.get('downloaded_mb', 0) / total)) if total else None,
+            'error': _download_errors.get(filename, '')}
 
 
 def _flat_cache_files():
@@ -500,6 +564,8 @@ def evict_cache_for_size(needed_size_bytes):
             if space_freed >= space_needed:
                 break
             filename = file_info["filename"]
+            if filename in active_downloads:
+                continue
             try:
                 os.remove(file_info["path"])
                 _cleanup_empty_cache_dirs(file_info["path"])
@@ -515,7 +581,7 @@ def evict_cache_for_size(needed_size_bytes):
         return space_freed >= space_needed
 
 
-def _finalize_cached_file(filename, rel_path, cache_path):
+def _finalize_cached_file(filename, rel_path, cache_path, *, manual=False):
     """Atomically evict older entries and register a completed download.
 
     The new file is always retained. The return value reports whether all
@@ -535,6 +601,7 @@ def _finalize_cached_file(filename, rel_path, cache_path):
                 "size": actual_size,
                 "play_count": 0,
                 "last_played": datetime.now().isoformat(),
+            "manual": manual,
             }
         save_cache_metadata()
         return eviction_complete
@@ -564,17 +631,18 @@ def _validate_downloaded_video(path):
         return False
 
 
-def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *, theme_entry=None, explicit_file=False):
+def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *, theme_entry=None, explicit_file=False, source=None):
     """Low-level streaming download of a remote theme to *dest_path*.
 
     Returns True on success, False on failure / cancellation.
     """
     dest_path = os.fspath(dest_path)
-    partial_path = dest_path + ".part"
+    partial_path = dest_path + ('.manual.part' if source else '.part')
     urls = []
     missing_sources = 0
     try:
-        urls = get_theme_stream_urls(theme_entry or filename, explicit_file=explicit_file)
+        urls = (_manual_stream_urls(theme_entry or filename, source) if source
+                else get_theme_stream_urls(theme_entry or filename, explicit_file=explicit_file))
         if not urls:
             raise ValueError(f"No remote theme source is registered for {filename}")
         headers = {
@@ -585,14 +653,16 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
         }
         last_error = None
         for url in urls:
-            source = source_preferences.source_for_url(url) or source_preferences.file_source(filename)
-            if last_error is not None and source != source_preferences.online_sources()[0]:
+            provider = source or source_preferences.source_for_url(url) or source_preferences.file_source(filename)
+            if filename in active_downloads:
+                _download_sources[filename] = provider
+            if not source and last_error is not None and provider != source_preferences.online_sources()[0]:
                 data = metadata_fetch.get_file_metadata_by_name(theme_entry or filename) or {}
                 alternatives = metadata_display._collect_theme_filenames(data.get("mal"), data.get("slug"))
                 for candidate in [filename] + alternatives:
                     path = source_preferences.available_path(candidate)
                     if (path and source_preferences.downloaded_allowed(candidate, path)
-                            and source_preferences.downloaded_source(candidate, path) == source):
+                            and source_preferences.downloaded_source(candidate, path) == provider):
                         # Resume playback with the existing fallback, avoiding a
                         # second download of a video already on disk.
                         raise last_error
@@ -624,10 +694,16 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
                     raise ValueError(f"Incomplete video download from {url}: {downloaded}/{total_size} bytes")
                 if not _validate_downloaded_video(partial_path):
                     raise ValueError(f"Downloaded video could not be opened: {url}")
+                if download_cancel_flags.get(filename):
+                    raise InterruptedError('download cancelled')
                 os.replace(partial_path, dest_path)
-                source_preferences.record_download(dest_path, url)
+                if source:
+                    source_preferences.record_download(dest_path, url, source=source)
+                else:
+                    source_preferences.record_download(dest_path, url)
                 _download_failures.pop(filename, None)
                 _unavailable_downloads.pop(filename, None)
+                _download_errors.pop(filename, None)
                 return True
             except Exception as exc:
                 last_error = exc
@@ -639,12 +715,17 @@ def _download_theme_file_to_path(filename, dest_path, progress_callback=None, *,
                 except OSError:
                     pass
                 if download_cancel_flags.get(filename):
+                    _download_errors[filename] = 'Download cancelled.'
                     return False
         raise last_error
     except Exception as e:
-        _download_failures[filename] = _source_policy()
-        if urls and missing_sources == len(urls):
+        if not source:
+            _download_failures[filename] = _source_policy()
+        if not source and urls and missing_sources == len(urls):
             _unavailable_downloads[filename] = (_source_policy(), tuple(urls))
+        provider_label = DOWNLOAD_SOURCES.get(source or _download_sources.get(filename), 'Theme')
+        code = e.response.status_code if isinstance(e, requests.HTTPError) and e.response is not None else None
+        _download_errors[filename] = f'{provider_label} download failed' + (f': HTTP {code}' if code else '.')
         print(f"Download error for {filename}: {e}")
         return False
 
@@ -786,6 +867,8 @@ def retry_download(filename, popup=None):
     _unavailable_downloads.pop(filename, None)
     pending_play_info = pending_play_queue.get(filename)
     context = {}
+    if filename in _manual_downloads:
+        context.update(source=_download_sources.get(filename), manual=True)
     if pending_play_info:
         entry = pending_play_info["playlist_entry"]
         theme_entry = entry.get("filename", filename) if isinstance(entry, dict) else entry
@@ -857,7 +940,7 @@ def queue_play_when_ready(filename, playlist_entry, fullscreen):
     }
 
 
-def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file=False):
+def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file=False, source=None, manual=False):
     """Start a background download of *filename* to the local cache (or themes directory).
 
     Returns True if the download was started, False if already in progress / already on disk.
@@ -866,18 +949,20 @@ def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file
     theme_entry = theme_entry or filename
     filename = entry_paths.get_clean_filename(filename)
 
-    if silent and _download_failures.get(filename) == _source_policy():
+    if manual and source not in DOWNLOAD_SOURCES:
+        return False
+    if not manual and silent and _download_failures.get(filename) == _source_policy():
         return False
 
     if filename in active_downloads:
         return False
     cached_path = get_cached_file_path(filename)
-    if cached_path and (not explicit_file or source_preferences.matches_selected_file(filename, cached_path)):
+    if not manual and cached_path and (not explicit_file or source_preferences.matches_selected_file(filename, cached_path)):
         return False
     directory_path = entry_paths.get_directory_file_path(filename)
-    if directory_path and (not explicit_file or source_preferences.matches_selected_file(filename, directory_path)):
+    if not manual and directory_path and (not explicit_file or source_preferences.matches_selected_file(filename, directory_path)):
         return False
-    if not get_theme_stream_urls(theme_entry, explicit_file=explicit_file):
+    if not manual and not get_theme_stream_urls(theme_entry, explicit_file=explicit_file):
         return False
 
     download_cancel_flags.pop(filename, None)
@@ -897,7 +982,13 @@ def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file
     def do_cache_download():
         global downloads_completed, download_ui_update_pending
         try:
-            dest_path, rel_path, to_directory = _resolve_download_destination(filename)
+            if manual:
+                with _cache_lock:
+                    previous_path = cache_metadata.get(filename, {}).get('path')
+                rel_path = previous_path or os.path.join('_pending_metadata', filename)
+                dest_path, to_directory = _cache_path(rel_path), False
+            else:
+                dest_path, rel_path, to_directory = _resolve_download_destination(filename)
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
 
             last_percent = [-1]
@@ -927,18 +1018,9 @@ def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file
             context = {"theme_entry": theme_entry} if entry_paths.parse_theme_reference(theme_entry) else {}
             if explicit_file:
                 context["explicit_file"] = True
+            if manual:
+                context.update(theme_entry=theme_entry, source=source)
             success = _download_theme_file_to_path(filename, dest_path, progress_callback, **context)
-
-            if download_cancel_flags.get(filename):
-                if os.path.exists(dest_path):
-                    try:
-                        os.remove(dest_path)
-                    except Exception:
-                        # A leftover partial file could later be mistaken for a valid theme.
-                        log_warning("Could not remove cancelled partial download: %s", dest_path)
-                if not silent:
-                    print(f"\rDownload cancelled: {filename}" + " " * 30)
-                return
 
             if not success:
                 if not silent:
@@ -957,7 +1039,11 @@ def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file
                 # a busy main loop and prevent the worker's final cleanup.
                 download_ui_update_pending = True
             else:
-                _finalize_cached_file(filename, rel_path, dest_path)
+                if manual:
+                    _finalize_cached_file(filename, rel_path, dest_path, manual=True)
+                    download_ui_update_pending = True
+                else:
+                    _finalize_cached_file(filename, rel_path, dest_path)
 
             if not silent:
                 mb = actual_size / 1024 / 1024
@@ -966,18 +1052,29 @@ def download_to_cache(filename, silent=False, *, theme_entry=None, explicit_file
                 download_ui_update_pending = True
 
         except Exception as e:
+            _download_errors[filename] = f"{DOWNLOAD_SOURCES.get(source, 'Theme')} download failed."
             if not silent:
                 print(f"Cache download error for {filename}: {e}")
         finally:
-            active_downloads.pop(filename, None)
-            download_cancel_flags.pop(filename, None)
+            with _cache_lock:
+                active_downloads.pop(filename, None)
+                download_cancel_flags.pop(filename, None)
+                _download_sources.pop(filename, None)
+                _manual_downloads.discard(filename)
             # Tk widgets must only be destroyed by the main thread. Leave the
             # registry entry for check_download_ui_updates() to close on its
             # next pass; Cancel may already have removed it.
 
     thread = threading.Thread(target=do_cache_download, daemon=True)
-    active_downloads[filename] = thread
-    thread.start()
+    with _cache_lock:
+        if filename in active_downloads:
+            return False
+        _download_errors.pop(filename, None)
+        if manual:
+            _download_sources[filename] = source
+            _manual_downloads.add(filename)
+        active_downloads[filename] = thread
+        thread.start()
     return True
 
 
@@ -1204,7 +1301,11 @@ def resolve_playable_path(filename, playlist_entry, local_filepath, fullscreen):
         return (filepath, is_stream)
 
     # A forced stream above can start while a cancelled worker shuts down.
-    if is_downloading(filename):
+    preferred_path = None if explicit_file else get_preferred_download_path(filename)
+    if preferred_path:
+        update_cache_play_count(filename)
+        return preferred_path, False
+    if is_downloading(filename) and not (local_filepath and is_nonempty_file(local_filepath)):
         print(f"Download in progress, queuing play: {filename}")
         queue_play_when_ready(filename, playlist_entry, fullscreen)
         return None
@@ -1406,6 +1507,14 @@ def _check_download_ui_updates():
                     transport.play_filename(pe, fs) if generation == state.lightning.round_generation else None,
             )
         elif elapsed > play_info["timeout"]:
+            theme_entry = play_info["playlist_entry"]
+            if isinstance(theme_entry, dict):
+                theme_entry = theme_entry.get("filename", fn)
+            stream_context = ({"explicit_file": True}
+                              if isinstance(play_info["playlist_entry"], dict) and play_info["playlist_entry"].get("_explicit_file") else {})
+            stream_url = get_theme_stream_url(theme_entry if entry_paths.parse_theme_reference(theme_entry) else fn, **stream_context)
+            if fn in _manual_downloads and not stream_url:
+                continue
             log_warning("Download exceeded %ss; switching to streaming: %s (worker active=%s)",
                         play_info["timeout"], fn, fn in active_downloads)
             print(
@@ -1415,13 +1524,10 @@ def _check_download_ui_updates():
             completed.append(fn)
             # Streaming has taken over, so stop the redundant background
             # download and remove its progress window immediately.
-            cancel_download(fn)
-            theme_entry = play_info["playlist_entry"]
-            if isinstance(theme_entry, dict):
-                theme_entry = theme_entry.get("filename", fn)
-            stream_context = ({"explicit_file": True}
-                              if isinstance(play_info["playlist_entry"], dict) and play_info["playlist_entry"].get("_explicit_file") else {})
-            stream_url = get_theme_stream_url(theme_entry if entry_paths.parse_theme_reference(theme_entry) else fn, **stream_context)
+            if fn in _manual_downloads:
+                _close_download_popup(fn)
+            else:
+                cancel_download(fn)
             streaming_entry = (
                 play_info["playlist_entry"].copy()
                 if isinstance(play_info["playlist_entry"], dict)
