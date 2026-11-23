@@ -4,6 +4,12 @@
 
 Guess The Anime - Playlist Tool is a comprehensive Python-based application designed for hosting anime trivia sessions. It features deep integration with AnimeThemes and Jikan APIs, VLC-powered video playback, and an extensive suite of lightning round modes. Perfect for anime clubs, stream entertainment, or personal anime knowledge testing.
 
+## Local browser control
+
+The app starts its built-in web server on port 8080 when it launches. On the host computer, choose **File → Open Local Web UI** or open `http://127.0.0.1:8080`. To connect from a phone or another computer on your home network, use **File → Copy Local Web URL**. The browser controls load without an internet connection or public tunnel. Downloading videos from AnimeThemes or AniSongDB still requires internet access.
+
+To control the game from the browser, set **Host Password** in **Configuration Settings**. Enter your name and that password on the browser's join screen to unlock the host controls. Without a host password, the browser can join as a player but cannot control the game. **Auto-start Web Server** is on by default; if an existing settings file has it off, enable it once. The File menu can start or stop the server manually. Public ngrok and Cloudflare tunnels remain optional. If another device cannot connect, allow the app through your computer's firewall for private networks.
+
 ## Core Features
 
 ### Video Playback & Sources

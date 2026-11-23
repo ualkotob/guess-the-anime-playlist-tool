@@ -180,10 +180,10 @@ if state.config.startup_check_metadata:
 if state.config.startup_check_censors:
     root.after(3000, updates_io.check_for_censor_updates)
 
+web_host_actions.wire_web_server()
 bonus_answers._start_web_server()
 if state.config.LAUNCH_SCOREBOARD_ON_STARTUP and scoreboard_control.AVAILABLE:
     scoreboard_control.launch_on_startup()
-web_host_actions.wire_web_server()
 directory_scan.scan_directory(True)
 menu_builder.create_first_row_buttons()
 menu_builder.rebuild_shortcut_dispatch()

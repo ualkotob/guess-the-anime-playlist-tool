@@ -76,6 +76,43 @@ def test_end_only_republishes_when_session_changed_after_reveal(monkeypatch):
     assert len(pushes) == 2
 
 
+def test_info_popup_omits_anilist_score_and_members(monkeypatch):
+    from _app_scripts.playback import blind_screen
+
+    popup = session_stats.information_popup
+    rendered = []
+    monkeypatch.setattr(popup.state.playback, 'currently_playing', {
+        'filename': 'Example-OP1.webm', 'data': {
+            'title': 'Example', 'slug': 'OP1', 'studios': ['Example Studio'],
+            'season': 'Spring 2020', 'score': 8, 'anilist': 42, 'source': 'Manga',
+        },
+    })
+    monkeypatch.setattr(popup.state.metadata, 'anilist_metadata', {'42': {'score': 99, 'popularity': 500}})
+    monkeypatch.setattr(popup.state.lightning, 'fixed_current_round', None)
+    monkeypatch.setattr(popup.state.info_display, '_title_popup_intent', False)
+    for attr in ('title_info_only', 'artist_info_display', 'studio_info_display', 'season_info_display', 'year_info_display'):
+        monkeypatch.setattr(popup.state.info_display, attr, False)
+    monkeypatch.setattr(popup, '_title_popup_info_type_cache', None)
+    monkeypatch.setattr(popup, '_title_popup_last_mpv_size', None)
+    monkeypatch.setattr(popup.bonus, 'guessing_extra', None)
+    monkeypatch.setattr(blind_screen, 'black_overlay', False)
+    monkeypatch.setattr(popup.peek_dispatch, 'is_peek_active', lambda: False)
+    monkeypatch.setattr(popup.web_server, 'set_info_public', lambda show: None)
+    monkeypatch.setattr(popup.bonus_answers, '_push_web_toggles', lambda: None)
+    monkeypatch.setattr(popup, 'update_popout_title_button_text', lambda show: None)
+    monkeypatch.setattr(popup, '_schedule_revealed_session_history_publish', lambda: None)
+    monkeypatch.setattr(popup, '_title_popup_slide_in', lambda top, title, bottom, *_: rendered.append(bottom))
+    monkeypatch.setattr(popup, '_get_mpv_window_rect', lambda: (0, 0, 640, 360))
+    monkeypatch.setattr(popup, '_register_mpv_tracked_window', lambda *args: None)
+
+    popup.toggle_title_popup(True)
+
+    assert len(rendered) == 1
+    assert 'MAL Score: 8' in rendered[0]
+    assert 'Example Studio' in rendered[0]
+    assert 'AniList' not in rendered[0]
+
+
 def test_info_display_defers_publish_until_theme_is_logged(monkeypatch):
     callbacks = []
     published = []

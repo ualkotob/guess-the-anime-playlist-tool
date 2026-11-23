@@ -37,6 +37,7 @@ _scoreboard_colors_mtime = 0.0
 _scoreboard_scores_mtime = 0.0
 _scoreboard_teams_mtime = 0.0
 _last_pushed_scores_snapshot: dict = {}
+_web_poll_started = False
 
 
 def _load_web_team_assignments():
@@ -637,15 +638,19 @@ def _poll_web_answers():
 
 
 def _start_web_server():
-    """Start the web answer server at startup if enabled and a tunnel is available."""
-    if not web_server.NGROK_AVAILABLE and not web_server.CLOUDFLARED_AVAILABLE:
-        print("[Web Server] No tunnel found (ngrok or cloudflared) — web answer server disabled. "
-              "Place ngrok.exe or cloudflared.exe next to this app or install one to PATH.")
-        return
+    """Start the built-in web server at startup when enabled."""
     if state.config.WEB_SERVER_ENABLED:
-        web_server.start(port=8080, ngrok_domain=state.config.NGROK_DOMAIN or None,
-                         cloudflare_token=state.config.CLOUDFLARE_TUNNEL_TOKEN or None,
-                         cloudflare_url=state.config.CLOUDFLARE_PUBLIC_URL or None)
+        if web_server.start(port=8080, ngrok_domain=state.config.NGROK_DOMAIN or None,
+                            cloudflare_token=state.config.CLOUDFLARE_TUNNEL_TOKEN or None,
+                            cloudflare_url=state.config.CLOUDFLARE_PUBLIC_URL or None):
+            _ensure_web_polling()
+
+
+def _ensure_web_polling():
+    """Keep one poll loop across manual stop/start cycles."""
+    global _web_poll_started
+    if not _web_poll_started:
+        _web_poll_started = True
         state.widgets.root.after(1000, _poll_web_answers)
 
 
@@ -655,7 +660,7 @@ def toggle_web_server():
         web_server.stop()
         print("[Web Server] Stopped.")
     else:
-        web_server.start(port=8080, ngrok_domain=state.config.NGROK_DOMAIN or None,
-                         cloudflare_token=state.config.CLOUDFLARE_TUNNEL_TOKEN or None,
-                         cloudflare_url=state.config.CLOUDFLARE_PUBLIC_URL or None)
-        state.widgets.root.after(1000, _poll_web_answers)
+        if web_server.start(port=8080, ngrok_domain=state.config.NGROK_DOMAIN or None,
+                            cloudflare_token=state.config.CLOUDFLARE_TUNNEL_TOKEN or None,
+                            cloudflare_url=state.config.CLOUDFLARE_PUBLIC_URL or None):
+            _ensure_web_polling()

@@ -1,12 +1,13 @@
 """web_server.py — Live audience answer submission for Guess The Anime.
 
-Players open the public URL on any device and submit answers in real time.
+Players open the local network URL (or an optional public tunnel URL) on any
+device and submit answers in real time.
 The host's Python app polls get_answers() to print/display submitted answers.
 
 Quick start:
-  1. Set WEB_SERVER_ENABLED = True and NGROK_DOMAIN in config.
-  2. Run the app normally — the server and ngrok start automatically.
-  3. Players visit your ngrok URL, enter their name, and submit answers.
+  1. Run the app normally — its built-in web server starts automatically.
+  2. Visit the local network URL from a device on the same network.
+  3. Enter a name and submit answers; set a host password to use web controls.
 """
 
 import itertools
@@ -39,7 +40,7 @@ except ImportError:
     pass
 
 try:
-    from flask import Flask, render_template_string
+    from flask import Flask, Response, render_template_string
     from flask_socketio import SocketIO, emit, disconnect
     # Explicit imports so PyInstaller bundles the threading backend.
     # engineio loads async drivers dynamically — without these, the frozen
@@ -58,6 +59,7 @@ except ImportError:
 # Tunnel availability (resolved at import time in web_tunnels)
 # ---------------------------------------------------------------------------
 from _app_scripts.file.web_server import web_tunnels
+from _app_scripts.file.web_server.socketio_client import SOCKET_IO_CLIENT_JS
 # Re-export availability flags: external modules read web_server.NGROK_AVAILABLE
 # / web_server.CLOUDFLARED_AVAILABLE to gate tunnel menu/settings entries.
 NGROK_AVAILABLE = web_tunnels.NGROK_AVAILABLE
@@ -120,7 +122,8 @@ _buzz_pending: dict[str, int] = {}    # name → id of the buzz the host has not
 _buzz_last_press_ms: dict[str, int] = {}  # name → wall-clock ms of the last accepted buzz
 _ngrok_process = None
 _cloudflared_process = None
-_server_thread = None      # Thread running _socketio.run(); kept alive across stop()/start() cycles
+_server_thread = None      # Thread running the embedded HTTP server
+_http_server = None        # Werkzeug server, used for a real shutdown/restart
 _server_started = False    # True once start() completes successfully
 _titles_provider = None         # callable() → list[str]; set by main app
 _player_names_provider = None   # callable() → list[str]; set by main app
@@ -158,20 +161,17 @@ public_url = None          # Readable from main app after start()
 _server_port = 8080        # Port the server is listening on; set in start()
 
 
-def get_url():
-    """Return the best available URL for this server.
+def get_loopback_url():
+    """Return the browser URL for the computer running the desktop app."""
+    return f"http://127.0.0.1:{_server_port}" if _server_started else ""
 
-    Priority:
-    1. public_url — set when ngrok or a Cloudflare tunnel is active.
-    2. Local LAN URL — http://<machine-ip>:<port> when only running locally.
-    3. Empty string — if the server has not been started.
-    """
-    if public_url:
-        return public_url
+
+def get_local_url():
+    """Return the LAN address, even when a public tunnel is also active."""
     if not _server_started:
         return ""
+    import socket
     try:
-        import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0)
         try:
@@ -179,9 +179,18 @@ def get_url():
             ip = s.getsockname()[0]
         finally:
             s.close()
-    except Exception:
-        ip = "localhost"
+    except OSError:
+        try:
+            candidates = socket.gethostbyname_ex(socket.gethostname())[2]
+            ip = next(addr for addr in candidates if not addr.startswith("127."))
+        except (OSError, StopIteration):
+            ip = "localhost"
     return f"http://{ip}:{_server_port}"
+
+
+def get_url():
+    """Return the public tunnel URL if present, otherwise the LAN address."""
+    return public_url if _server_started and public_url else get_local_url()
 
 
 def _real_client_ip(environ) -> str | None:
@@ -1407,6 +1416,17 @@ def push_playlist_chunk(offset: int, items: list, to_sid: str = None):
             _socketio.emit('playlist_chunk', payload, to=sid)
 
 
+def push_video_queue(page: dict, to_sid: str, error: str = ''):
+    """Send queue details and download results only to the requesting host."""
+    if _socketio and to_sid in _host_sids:
+        _socketio.emit('video_queue', {**page, 'error': error}, to=to_sid)
+
+
+def push_video_status(status: dict, to_sid: str):
+    if _socketio and to_sid in _host_sids:
+        _socketio.emit('video_status', status, to=to_sid)
+
+
 def push_up_next(data_dict: dict):
     """Push up-next track info to all host clients."""
     global _up_next
@@ -1521,63 +1541,51 @@ def has_skip_declined(name: str) -> bool:
 
 
 def start(port=8080, ngrok_domain=None, cloudflare_token=None, cloudflare_url=None):
-    """Start the Flask/SocketIO server in a daemon thread, optionally launch ngrok.
-
-    Returns True if server started, False if Flask is unavailable.
-    Subsequent start() calls after stop() reuse the same thread and SocketIO
-    instance to avoid the "address already in use" crash that would cause all
-    server-to-client emits to silently fail.
-    """
-    global _server_started, _server_thread, _server_port
+    """Start the embedded Flask/SocketIO server and optional public tunnel."""
+    global _server_started, _server_thread, _http_server, _server_port
     global _ngrok_process, _cloudflared_process, public_url
-    _server_port = port
     if not FLASK_AVAILABLE:
         return False
-    # Only build and launch the server thread if it isn't already alive.
-    # Killing and recreating the thread would leave the old Werkzeug server
-    # holding port 8080 while the new _socketio has no active server, which
-    # means every push_question / push_player_colors / etc. emit is silently
-    # discarded.
-    if _server_thread is None or not _server_thread.is_alive():
-        _build_app()
-        # Capture the freshly-built instances in local vars so the lambda
-        # always runs against the correct pair even if globals change later.
-        _cur_app = _app
-        _cur_sio = _socketio
-        t = threading.Thread(
-            target=lambda: _cur_sio.run(
-                _cur_app, host='0.0.0.0', port=port,
-                allow_unsafe_werkzeug=True, log_output=False
-            ),
-            daemon=True
-        )
-        t.start()
-        _server_thread = t
+    if _server_started:
+        return True
+    public_url = None
+    _build_app()
+    try:
+        from werkzeug.serving import make_server
+        _http_server = make_server('0.0.0.0', port, _app, threaded=True)
+    except (OSError, SystemExit) as exc:
+        print(f"[Web Server] Could not listen on port {port}: {exc}")
+        _http_server = None
+        return False
+    _server_port = _http_server.server_port
+    _server_thread = threading.Thread(target=_http_server.serve_forever, daemon=True)
+    _server_thread.start()
     _server_started = True
     if cloudflare_token and cloudflare_url:
         _cloudflared_process, url = web_tunnels.start_cloudflared(cloudflare_token, cloudflare_url)
         if url:
             public_url = url
     elif ngrok_domain:
-        _ngrok_process, url = web_tunnels.start_ngrok(ngrok_domain, port)
+        _ngrok_process, url = web_tunnels.start_ngrok(ngrok_domain, _server_port)
         if url:
             public_url = url
-    else:
-        print(f"[Web Server] Running locally on port {port} (no tunnel configured.)")
+    print(f"[Web Server] Local network: {get_local_url()}")
     return True
 
 
 def stop():
-    """Mark the server as stopped and clean up ngrok + ephemeral connection state.
-
-    The underlying Flask/SocketIO/Werkzeug thread is intentionally left running
-    so that the same _socketio instance stays alive. Killing it would leave the
-    old thread holding port 8080 while the new _socketio (created in the next
-    start() call) has no active server, causing all server-to-client emits to be
-    silently discarded after restart.
-    """
-    global _ngrok_process, _cloudflared_process, _server_started
+    """Stop the HTTP listener and tunnel, then clear connection state."""
+    global _ngrok_process, _cloudflared_process, _server_started, public_url
+    global _http_server, _server_thread
     _server_started = False
+    public_url = None
+    if _http_server is not None:
+        _http_server.shutdown()
+        _http_server.server_close()
+        _http_server = None
+    if _server_thread is not None:
+        _server_thread.join(timeout=2)
+        _server_thread = None
     if _ngrok_process:
         try:
             _ngrok_process.terminate()
@@ -1648,6 +1656,11 @@ def _build_app():
     @_app.route('/')
     def index():
         return render_template_string(_HTML)
+
+    @_app.get('/assets/socket.io-4.7.5.min.js')
+    def socket_io_client():
+        return Response(SOCKET_IO_CLIENT_JS, mimetype='text/javascript',
+                        headers={'Cache-Control': 'public, max-age=31536000, immutable'})
 
     @_app.route('/history')
     def history():

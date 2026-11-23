@@ -16,6 +16,7 @@ from core.app_logging import get_logger
 from core.game_state import state
 import _app_scripts.file.web_server.web_server as web_server
 import _app_scripts.file.web_server.web_search as web_search
+from _app_scripts.file.web_server import web_video_queue
 import _app_scripts.queue_round.lightning_rounds.peek_dispatch as peek_dispatch
 import _app_scripts.queue_round.lightning_rounds.frame_round as frame_round
 import _app_scripts.playback.music as music
@@ -849,12 +850,37 @@ def _handle_host_action(action: str, data: dict):
                 config_io.save_config()
                 metadata_display.up_next_text()
                 cache_download.prefetch_next_themes()
+        elif action == 'get_video_status':
+            indexes = data.get('playlist')
+            indexes = indexes[:80] if isinstance(indexes, list) else []
+            status = web_video_queue.inline_status(_get_web_playlist_source(), indexes, bool(data.get('next')))
+            web_server.push_video_status(status, data.get('_sid'))
+        elif action in ('get_video_queue', 'download_queue_video'):
+            sid = data.get('_sid')
+            offset = data.get('offset', 0)
+            if not isinstance(offset, int):
+                offset = 0
+            scope = data.get('scope')
+            selected = scope in ('next', 'playlist')
+            position, key = data.get('position'), data.get('key')
+            playlist_source = _get_web_playlist_source() if scope == 'playlist' else None
+            error = ''
+            if action == 'download_queue_video':
+                error = web_video_queue.request_download(position, key, data.get('source'),
+                                                         scope=scope if selected else 'queue',
+                                                         playlist_source=playlist_source)
+            page = (web_video_queue.selected_page({'scope': scope, 'position': position, 'key': key}, playlist_source)
+                    if selected else web_video_queue.queue_page(offset))
+            web_server.push_video_queue(page, sid, error)
         elif action == 'get_playlist_info':
             source = _get_web_playlist_source()
             web_server.push_playlist_info(len(source['items']), source['current_index'], to_sid=data.get('_sid'), counter=source['counter'], label=source['label'])
         elif action == 'playlist_goto':
             idx = int(data.get('index', -1))
             source = _get_web_playlist_source()
+            video_key = data.get('video_key')
+            if video_key is not None and video_key != web_video_queue.playlist_video_key(source, idx):
+                return
             if 0 <= idx < len(source['items']):
                 if source['is_fixed']:
                     state.widgets.root.after(0, lists.play_fixed_round_by_index, idx)
@@ -863,8 +889,11 @@ def _handle_host_action(action: str, data: dict):
         elif action == 'playlist_delete':
             idx = int(data.get('index', -1))
             source = _get_web_playlist_source()
+            video_key = data.get('video_key')
             if not source['is_fixed'] and 0 <= idx < len(source['items']):
                 def _do_delete(i=idx):
+                    if video_key is not None and video_key != web_video_queue.playlist_video_key(_get_web_playlist_source(), i):
+                        return
                     pl = state.metadata.playlist.get("playlist", [])
                     if not (0 <= i < len(pl)):
                         return
@@ -932,6 +961,7 @@ def _handle_host_action(action: str, data: dict):
                     'song':    song_title,
                     'artist':  song_artist,
                     'current': abs_i == cur,
+                    'video_key': web_video_queue.playlist_video_key(source, abs_i),
                 })
             web_server.push_playlist_chunk(offset, results, to_sid=data.get('_sid'))
         elif action == 'set_difficulty':

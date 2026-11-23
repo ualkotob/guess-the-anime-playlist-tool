@@ -15,7 +15,7 @@ HTML = r"""<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Guess The Anime</title>
   <link rel="icon" type="image/png" href="data:image/png;base64,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"/>
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="{{ url_for('socket_io_client') }}"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -136,6 +136,17 @@ HTML = r"""<!DOCTYPE html>
     }
     #prev-question-dismiss:hover { background: #4a2020; border-color: #8a3535; color: #cc8080; }
     #prev-question-title { color: #888; margin-bottom: 8px; }
+    #prev-question-results { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+    #prev-question-body { flex: 1 1 200px; min-width: 0; }
+    #prev-question-points {
+      flex: 0 1 130px; min-width: 96px; max-width: 100%; padding: 8px 10px;
+      background: #1b2130; border: 1px solid #3a475e; border-radius: 8px;
+    }
+    #prev-question-points h3 { color: #bac9e4; font-size: .8em; }
+    #prev-question-points-values { display: grid; gap: 3px; margin-top: 4px; max-height: 10em; overflow: auto; }
+    .round-points-entry { display: flex; gap: 8px; justify-content: space-between; overflow-wrap: anywhere; }
+    .round-points-value { color: #a9b5ca; font-weight: bold; white-space: nowrap; }
+    .round-points-value[data-positive="true"] { color: #9be2b8; }
     #prev-question-correct { color: #556; margin-bottom: 4px; }
     #prev-question-mine { color: #aaa; }
     .pq-tag {
@@ -1775,6 +1786,53 @@ HTML = r"""<!DOCTYPE html>
       padding: 0 2px 2px;
       text-align: center;
     }
+    #video-queue-dialog {
+      width: min(640px, calc(100vw - 24px)); max-height: 85vh; box-sizing: border-box;
+      margin: auto; padding: 16px; border: 1px solid #44516b; border-radius: 12px;
+      color: #e1e7f3; background: #151924;
+    }
+    #video-queue-dialog::backdrop { background: rgba(4, 6, 12, .72); }
+    .video-queue-header, .video-queue-row, .video-queue-actions {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .video-queue-header, .video-queue-row { justify-content: space-between; }
+    .video-queue-header h2 { margin: 0; font-size: 1.1rem; }
+    .video-queue-row { padding: 10px 0; border-bottom: 1px solid #30374a; flex-wrap: wrap; }
+    .video-queue-content { flex: 1 1 14rem; min-width: 0; overflow-wrap: anywhere; }
+    .video-queue-actions { flex-wrap: wrap; }
+    .video-queue-status { margin-top: 3px; font-size: .8rem; color: #aebad2; }
+    .video-queue-status[data-state="ready"] { color: #9be2b8; }
+    .video-queue-error { color: #ffb4a5; font-size: .8rem; }
+    .video-queue-error:empty { display: none; }
+    #video-queue-dialog button {
+      min-height: 34px; border: 1px solid #536584; border-radius: 6px;
+      padding: 4px 9px; color: inherit; background: #222d42; cursor: pointer;
+    }
+    #video-queue-dialog button:hover:enabled { background: #334662; }
+    #video-queue-dialog button:disabled { opacity: .48; cursor: default; }
+    .video-playlist-actions { display: flex; gap: 8px; margin-top: 12px; }
+    .video-playlist-actions[hidden] { display: none; }
+    #video-queue-dialog .video-playlist-actions button { flex: 1; }
+    #video-queue-dialog #video-entry-delete { border-color: #a33; color: #ffb4a5; }
+    .video-status-icon {
+      display: inline-grid; place-items: center; vertical-align: middle; flex: 0 0 auto;
+      width: 26px; height: 22px; border: 1px solid transparent; border-radius: 5px;
+      background: transparent; color: #aebad2; font-size: 15px; line-height: 1; cursor: pointer;
+      touch-action: manipulation;
+    }
+    .video-status-icon[hidden] { display: none; }
+    .video-status-icon:hover, .video-status-icon:focus-visible { background: #272f43; border-color: currentColor; }
+    .video-status-icon[data-state="ready"] { color: #9be2b8; }
+    .video-status-icon[data-state="downloading"] { color: #f4ce88; }
+    .video-status-icon[data-state="failed"], .video-status-icon[data-state="missing"] { color: #ffb4a5; }
+    .pl-row .video-status-icon { margin-left: auto; height: 20px; }
+    #ctrl-upnext-video-status { margin-left: 4px; }
+    #ctrl-upnext-title-text {
+      background: none; border: 0; padding: 0; color: inherit; font: inherit;
+      overflow-wrap: anywhere; cursor: pointer;
+    }
+    #ctrl-upnext-title-text:enabled:hover { text-decoration: underline; }
+    #ctrl-upnext-title-text:disabled { cursor: default; }
     #ctrl-upnext-mode { font-size: 0.8em; color: #88a; margin-bottom: 1px; }
     #ctrl-upnext-title { font-weight: bold; color: #dde; word-break: break-word; }
     .ctrl-upnext-label { font-size: 0.78em; color: #88a; font-weight: normal; letter-spacing: .05em; }
@@ -2358,21 +2416,6 @@ HTML = r"""<!DOCTYPE html>
       padding: 14px;
     }
     #fl-action-overlay.active { display: flex; }
-    #pl-entry-overlay {
-      display: none; position: fixed; inset: 0;
-      background: rgba(0,0,0,0.75); z-index: 861;
-      align-items: center; justify-content: center; padding: 14px;
-    }
-    #pl-entry-overlay.active { display: flex; }
-    #pl-entry-box {
-      background: #0d0d1a; border: 1px solid #334; border-radius: 12px;
-      width: min(90vw, 420px);
-      display: flex; flex-direction: column; gap: 10px; padding: 12px;
-    }
-    #pl-entry-title {
-      color: #aaf; font-size: 0.88em; line-height: 1.35;
-      border-bottom: 1px solid #223; padding-bottom: 8px; word-break: break-word;
-    }
     #theme-action-box {
       background: #0d0d1a; border: 1px solid #334; border-radius: 12px;
       width: min(90vw, 420px);
@@ -2796,7 +2839,13 @@ HTML = r"""<!DOCTYPE html>
     <div id="prev-question" style="display:none">
       <div id="prev-question-label">PREVIOUS QUESTION<div id="pq-nav" style="display:none"><button class="pq-nav-btn" id="pq-oldest" onclick="_pqHistorySkip('oldest')" title="Oldest">|&#x25C4;</button><button class="pq-nav-btn" id="pq-prev" onclick="_pqHistoryNav(1)" title="Older">&#x25C4;</button><span id="pq-nav-label"></span><button class="pq-nav-btn" id="pq-next" onclick="_pqHistoryNav(-1)" title="Newer">&#x25BA;</button><button class="pq-nav-btn" id="pq-newest" onclick="_pqHistorySkip('newest')" title="Latest">&#x25BA;|</button></div><button id="prev-question-dismiss" onclick="_dismissPrevQuestion()">CLOSE</button></div>
       <div id="prev-question-title"></div>
-      <div id="prev-question-body"></div>
+      <div id="prev-question-results">
+        <div id="prev-question-body"></div>
+        <aside id="prev-question-points" aria-labelledby="prev-question-points-label" hidden>
+          <h3 id="prev-question-points-label">Points earned</h3>
+          <div id="prev-question-points-values"></div>
+        </aside>
+      </div>
     </div>
     <div id="vote-skip-pane">
       <div id="vote-skip-title">Skip this theme?</div>
@@ -2986,15 +3035,19 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
-  <div id="pl-entry-overlay" onclick="if(event.target===this)_closePlEntryPopup()">
-    <div id="pl-entry-box">
-      <div id="pl-entry-title">Playlist entry</div>
-      <button class="theme-action-btn play" onclick="_plEntryRun('play')">&#9654; Play now</button>
-      <button class="theme-action-btn" style="border-color:#a33;color:#f99" onclick="_plEntryRun('delete')">&#x1F5D1; Delete</button>
-      <button id="theme-action-cancel" onclick="_closePlEntryPopup()">Cancel</button>
+  <dialog id="video-queue-dialog" aria-labelledby="video-queue-heading">
+    <div class="video-queue-header">
+      <h2 id="video-queue-heading">Video download sources</h2>
+      <button type="button" onclick="document.getElementById('video-queue-dialog').close()">Close</button>
     </div>
-  </div>
-
+    <p id="video-queue-error" class="video-queue-error" role="alert"></p>
+    <p id="video-queue-empty" role="status"></p>
+    <div id="video-queue-list"></div>
+    <div class="video-playlist-actions" id="video-playlist-actions" hidden>
+      <button id="video-entry-play" type="button" onclick="_runVideoPlaylistAction('playlist_goto')" disabled>Play now</button>
+      <button id="video-entry-delete" type="button" onclick="_runVideoPlaylistAction('playlist_delete')" disabled>Delete</button>
+    </div>
+  </dialog>
   <div id="fl-action-overlay" onclick="if(event.target===this)_closeFlActionPrompt()">
     <div id="theme-action-box">
       <div id="fl-action-title">Fixed Lightning Round</div>
@@ -3374,7 +3427,7 @@ HTML = r"""<!DOCTYPE html>
             <button class="ctrl-upnext-queue-btn" id="ctrl-upnext-skip-group" style="display:none" onclick="socket.emit('host_action',{action:'invoke',id:'skip_infinite_group'})" ontouchend="this.blur()" title="Skip to the next infinite-playlist group" aria-label="Skip to the next infinite-playlist group">&#x23ED;</button>
           </div>
           <div id="ctrl-upnext-mode"></div>
-          <div id="ctrl-upnext-title"><span class="ctrl-upnext-label">NEXT:</span> <span id="ctrl-upnext-title-text">No upcoming track</span></div>
+          <div id="ctrl-upnext-title"><span class="ctrl-upnext-label">NEXT:</span> <button id="ctrl-upnext-title-text" type="button" onclick="document.getElementById('ctrl-upnext-video-status').click()" disabled>No upcoming track</button><button id="ctrl-upnext-video-status" class="video-status-icon" type="button" hidden></button></div>
           <div id="ctrl-upnext-detail"></div>
         </div>
       </div>
@@ -5070,21 +5123,29 @@ HTML = r"""<!DOCTYPE html>
     });
 
     /* ── Previous question display ── */
-    function _pqPointsBadge(body) {
-      // Append a points badge if we have score data for the current player.
-      const myPts = (playerName && playerName in _prevQPlayerScores) ? _prevQPlayerScores[playerName] : null;
-      if (myPts === null) return;
-      const hint = _prevQScoreHints[playerName] || null;
-      const badgeColor = hint === 'exact' ? '#5c5' : hint === 'close' ? '#ffe500' : '#f66';
-      const ptsAbs = Math.abs(myPts);
-      const ptsLabel = ptsAbs === 1 ? '1 PT' : ptsAbs + ' PTs';
-      const ptsStr = myPts > 0 ? '+' + ptsLabel : myPts === 0 ? '0 PTs' : '\u2212' + ptsLabel;
-      const badge = document.createElement('div');
-      badge.style.cssText = 'font-size:0.8em; font-weight:bold; letter-spacing:0.05em;'
-        + 'text-align:center; margin-top:8px;'
-        + 'color:' + (myPts > 0 ? badgeColor : '#666') + ';';
-      badge.textContent = ptsStr;
-      body.appendChild(badge);
+    const _roundPointsFormat = new Intl.NumberFormat(undefined, {maximumFractionDigits: 4, signDisplay: 'exceptZero'});
+
+    function _renderRoundPoints() {
+      const panel = document.getElementById('prev-question-points');
+      const values = document.getElementById('prev-question-points-values');
+      const scores = Object.entries(_prevQPlayerScores).filter(([, points]) => Number.isFinite(points));
+      const ownScore = scores.find(([name]) => name === playerName)?.[1] ?? 0;
+      const entries = _isHost ? scores.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        : playerName ? [[playerName, ownScore]] : [];
+      panel.hidden = !entries.length;
+      values.replaceChildren();
+      for (const [name, points] of entries) {
+        const row = document.createElement('div');
+        row.className = 'round-points-entry';
+        const label = document.createElement('span');
+        label.textContent = _isHost ? name : 'You';
+        const value = document.createElement('span');
+        value.className = 'round-points-value';
+        value.dataset.positive = points > 0;
+        value.textContent = _roundPointsFormat.format(points);
+        row.append(label, value);
+        values.appendChild(row);
+      }
     }
 
     function _prevQHistoryPush(entry) {
@@ -5144,6 +5205,7 @@ HTML = r"""<!DOCTYPE html>
       if (!_prevQCorrect || _prevQDismissed) { box.style.display = 'none'; return; }
       _pqUpdateNav();
       document.getElementById('prev-question-title').textContent = _prevQTitle;
+      _renderRoundPoints();
       const body = document.getElementById('prev-question-body');
       body.innerHTML = '';
       const qd = _prevQData || {};
@@ -5172,7 +5234,6 @@ HTML = r"""<!DOCTYPE html>
           }
           body.appendChild(btn);
         });
-        _pqPointsBadge(body);
 
       } else if (qd.tags && qd.tags.length) {
         /* ── Tags: reuse tag-chip with pq-tag-correct / pq-tag-wrong colouring ── */
@@ -5208,7 +5269,6 @@ HTML = r"""<!DOCTYPE html>
           noAns.textContent = 'Your answer: No answer submitted';
           body.appendChild(noAns);
         }
-        _pqPointsBadge(body);
 
       } else if (qd.character_choices && qd.character_choices.length) {
         /* ── Character image grid: colour-code correct / wrong / missed ── */
@@ -5238,7 +5298,6 @@ HTML = r"""<!DOCTYPE html>
           grid.appendChild(card);
         });
         body.appendChild(grid);
-        _pqPointsBadge(body);
 
       } else if (qd.rank_slider) {
         /* ── Rank slider: read-only track reusing rank-* CSS, with correct + mine + peer marks ── */
@@ -5310,7 +5369,6 @@ HTML = r"""<!DOCTYPE html>
         wrap.appendChild(track);
         row.appendChild(lbl1); row.appendChild(wrap); row.appendChild(lbl2);
         body.appendChild(row);
-        _pqPointsBadge(body);
 
       } else {
         /* ── Numeric / free text: prominent answer display ── */
@@ -5360,7 +5418,6 @@ HTML = r"""<!DOCTYPE html>
             + 'color:' + answerColor + '; background:' + answerBg + '; border:1px solid ' + answerBorder + ';';
           mineVal.textContent = myAnswer.replace(/,/g, ', ');
           body.appendChild(mineVal);
-          _pqPointsBadge(body);
         } else {
           mineVal.style.cssText = 'font-size:0.95em; color:#555; font-style:italic;';
           mineVal.textContent = 'No answer submitted';
@@ -6983,6 +7040,7 @@ HTML = r"""<!DOCTYPE html>
       document.body.classList.toggle('ctrl-open', _controllerOpen);
       if (_controllerOpen) {
         _ctrlRenderInfo(_currentMetadata);
+        _scheduleVideoStatus();
         if (_ctrlLengthMs === 0)
           socket.emit('host_action', { action: 'request_state' });
       } else {
@@ -10729,6 +10787,10 @@ HTML = r"""<!DOCTYPE html>
       const detailEl   = document.getElementById('ctrl-upnext-detail');
       const rerollBtn  = document.getElementById('ctrl-upnext-reroll');
       const skipBtn    = document.getElementById('ctrl-upnext-skip-group');
+      const videoIcon  = document.getElementById('ctrl-upnext-video-status');
+      videoIcon.dataset.videoKey = d?.video?.key || '';
+      titleText.disabled = !d?.video;
+      _setVideoStatusIcon(videoIcon, d?.video, 'next', d?.title);
       if (!d || !d.title) {
         if (titleText) titleText.textContent = d && d.end_of_playlist ? 'End of playlist' : 'No upcoming track';
         if (modeEl)    modeEl.textContent    = '';
@@ -11024,6 +11086,173 @@ HTML = r"""<!DOCTYPE html>
     let _plPending      = new Set();  // chunkOffsets in-flight
     let _plScrollBound  = false;
 
+    const _videoQueueDialog = document.getElementById('video-queue-dialog');
+    const _videoQueueList = document.getElementById('video-queue-list');
+    const _videoQueueError = document.getElementById('video-queue-error');
+    let _videoQueueTimer;
+    let _videoQueueSnapshot = '';
+    let _videoQueueTarget = null;
+    let _videoStatusScheduled = false;
+
+    function _setVideoStatusIcon(button, item, scope, label) {
+      button.hidden = !item;
+      button.onclick = null;
+      if (!item) return;
+      const state = item.downloading ? 'downloading' : item.error ? 'failed' : item.state;
+      const status = {
+        ready: ['✓', 'Ready on disk'], downloading: ['⏳', `Downloading from ${item.downloading}`],
+        failed: ['⚠', 'Download failed'], online: ['↓', 'Online only'], missing: ['!', 'Video missing']
+      }[state];
+      let detail = status[1];
+      if (item.downloading && item.percent != null) detail += ` (${item.percent}%)`;
+      if (item.source && !item.downloading) detail += ` · ${item.source}`;
+      if (item.error) detail += ` · ${item.error}${item.state === 'ready' ? ' Previous copy is ready.' : ''}`;
+      button.textContent = status[0];
+      button.dataset.state = state;
+      button.title = detail;
+      button.setAttribute('aria-label', `${label || item.title}: ${detail}. Open video download sources.`);
+      button.onclick = event => {
+        event.stopPropagation();
+        _openVideoQueue({scope, position: item.position, key: item.key, label});
+      };
+    }
+
+    function _refreshVideoStatus() {
+      if (!_isHost || !_controllerOpen || !socket.connected || document.hidden) return;
+      const next = document.getElementById('ctrl-upnext-video-status');
+      const includeNext = _ctrlUpNextVisible && Boolean(next.dataset.videoKey);
+      const playlist = _ctrlPlaylistVisible ? Array.from(document.querySelectorAll('#pl-spacer .pl-row'))
+        .filter(row => row.querySelector('.video-status-icon').dataset.videoKey)
+        .map(row => Number(row.dataset.plI)) : [];
+      if (includeNext || playlist.length) socket.emit('host_action', {action: 'get_video_status', next: includeNext, playlist});
+    }
+
+    function _scheduleVideoStatus() {
+      if (_videoStatusScheduled) return;
+      _videoStatusScheduled = true;
+      setTimeout(() => { _videoStatusScheduled = false; _refreshVideoStatus(); }, 100);
+    }
+
+    setInterval(_refreshVideoStatus, 1800);
+
+    socket.on('video_status', data => {
+      if (!_isHost) return;
+      const next = document.getElementById('ctrl-upnext-video-status');
+      if (data.next && next.dataset.videoKey === data.next.key) {
+        _setVideoStatusIcon(next, data.next, 'next', document.getElementById('ctrl-upnext-title-text').textContent);
+      }
+      for (const item of data.playlist || []) {
+        const row = document.querySelector(`#pl-spacer .pl-row[data-pl-i="${item.position}"]`);
+        const button = row?.querySelector('.video-status-icon');
+        if (button?.dataset.videoKey === item.key) {
+          _setVideoStatusIcon(button, item, 'playlist', row.querySelector('.pl-row-title').dataset.fullTitle);
+        }
+      }
+    });
+
+    function _refreshVideoQueue() {
+      if (!_isHost || !_videoQueueDialog.open) return;
+      if (!socket.connected) {
+        _videoQueueError.textContent = 'Disconnected from the host app.';
+        _setVideoPlaylistActions(false);
+        return;
+      }
+      const {scope, position, key} = _videoQueueTarget;
+      if (key) socket.emit('host_action', {action: 'get_video_queue', scope, position, key});
+    }
+
+    function _setVideoPlaylistActions(enabled) {
+      document.getElementById('video-entry-play').disabled = !enabled;
+      document.getElementById('video-entry-delete').disabled = !enabled;
+    }
+
+    function _runVideoPlaylistAction(action) {
+      const target = _videoQueueTarget;
+      if (!_isHost || !socket.connected || target?.scope !== 'playlist') return;
+      socket.emit('host_action', {action, index: target.position, video_key: target.key});
+      _videoQueueDialog.close();
+    }
+
+    function _openVideoQueue(target) {
+      if (!_isHost || _videoQueueDialog.open || !target?.key) return;
+      _videoQueueTarget = target;
+      const heading = document.getElementById('video-queue-heading');
+      heading.textContent = target.label || 'Video download sources';
+      document.getElementById('video-playlist-actions').hidden = target.scope !== 'playlist';
+      _setVideoPlaylistActions(false);
+      _videoQueueSnapshot = '';
+      _videoQueueError.textContent = '';
+      _videoQueueList.replaceChildren();
+      document.getElementById('video-queue-empty').textContent = 'Checking video status\u2026';
+      _videoQueueDialog.showModal();
+      _refreshVideoQueue();
+      _videoQueueTimer = setInterval(_refreshVideoQueue, 1800);
+    }
+
+    _videoQueueDialog.addEventListener('close', () => clearInterval(_videoQueueTimer));
+
+    socket.on('video_queue', data => {
+      if (!_isHost || !_videoQueueDialog.open || !data.target) return;
+      const target = _videoQueueTarget;
+      if (target.key !== data.target.key || target.scope !== data.target.scope || target.position !== data.target.position) return;
+      if (data.error || _videoQueueError.textContent === 'Disconnected from the host app.') {
+        _videoQueueError.textContent = data.error || '';
+      }
+      const [item] = data.rows;
+      _setVideoPlaylistActions(target.scope === 'playlist' && Boolean(item));
+      document.getElementById('video-queue-empty').textContent = item ? '' : 'The queue changed. Select the video again.';
+      const snapshot = JSON.stringify(item || null);
+      if (_videoQueueSnapshot === snapshot) return;
+      _videoQueueSnapshot = snapshot;
+      _videoQueueList.replaceChildren();
+      if (!item) return;
+      if (!target.label) document.getElementById('video-queue-heading').textContent = item.title;
+
+      const row = document.createElement('div');
+      row.className = 'video-queue-row';
+      const content = document.createElement('div');
+      content.className = 'video-queue-content';
+      const status = document.createElement('div');
+      status.className = 'video-queue-status';
+      status.dataset.state = item.state;
+      const stateLabel = {ready: 'Ready on disk', online: 'Online only', missing: 'Missing'}[item.state];
+      const transfer = item.downloading ? `Downloading from ${item.downloading}`
+        + (item.percent == null ? '\u2026' : ` (${item.percent}%)`) : '';
+      status.textContent = [stateLabel, item.source, transfer].filter(Boolean).join(' \u00b7 ');
+      content.append(status);
+      if (item.error) {
+        const error = document.createElement('div');
+        error.className = 'video-queue-error';
+        error.textContent = item.error;
+        content.append(error);
+      }
+      row.append(content);
+      if (item.downloadable) {
+        const actions = document.createElement('div');
+        actions.className = 'video-queue-actions';
+        const verb = item.error ? 'Retry' : 'Download';
+        for (const [source, label] of [['animethemes', 'AnimeThemes'], ['anisongdb', 'AniSongDB']]) {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = `${verb} from ${label}`;
+          button.disabled = Boolean(item.downloading);
+          button.onclick = () => {
+            if (!socket.connected) { _refreshVideoQueue(); return; }
+            _videoQueueError.textContent = '';
+            for (const option of actions.children) option.disabled = true;
+            _videoQueueSnapshot = '';
+            socket.emit('host_action', {action: 'download_queue_video', source,
+              position: item.position, key: item.key, scope: target.scope});
+          };
+          actions.append(button);
+        }
+        row.append(actions);
+      } else {
+        status.textContent += ' \u00b7 No theme download sources';
+      }
+      _videoQueueList.append(row);
+    });
+
     function _plChunkOffset(i) {
       return Math.floor(i / _PL_CHUNK) * _PL_CHUNK;
     }
@@ -11048,29 +11277,6 @@ HTML = r"""<!DOCTYPE html>
     }
     function _plRefreshTrunc() {
       document.querySelectorAll('.pl-row-title[data-full-title]').forEach(_plSetMidTrunc);
-    }
-
-    let _plEntryPopupIndex = -1;
-    function _openPlEntryPopup(index, label) {
-      _plEntryPopupIndex = index;
-      const title = document.getElementById('pl-entry-title');
-      if (title) title.textContent = label || ('Entry #' + (index + 1));
-      const overlay = document.getElementById('pl-entry-overlay');
-      if (overlay) overlay.classList.add('active');
-    }
-    function _closePlEntryPopup() {
-      _plEntryPopupIndex = -1;
-      const overlay = document.getElementById('pl-entry-overlay');
-      if (overlay) overlay.classList.remove('active');
-    }
-    function _plEntryRun(mode) {
-      if (!_isHost || _plEntryPopupIndex < 0) return;
-      if (mode === 'play') {
-        socket.emit('host_action', { action: 'playlist_goto', index: _plEntryPopupIndex });
-      } else if (mode === 'delete') {
-        socket.emit('host_action', { action: 'playlist_delete', index: _plEntryPopupIndex });
-      }
-      _closePlEntryPopup();
     }
 
     function _plOpen() {
@@ -11200,13 +11406,16 @@ HTML = r"""<!DOCTYPE html>
             '<span class="pl-row-lightning"></span>' +
             '<span class="pl-row-slug"></span>' +
             '<span class="pl-row-title"></span>' +
-            '<span class="pl-row-song"></span>';
+            '<span class="pl-row-song"></span>' +
+            '<button type="button" class="video-status-icon" hidden></button>';
           el.addEventListener('click', () => {
             const _tSpan = el.querySelector('.pl-row-title');
             const _sSpan = el.querySelector('.pl-row-slug');
             const _fullTitle = _tSpan ? (_tSpan.dataset.fullTitle || _tSpan.textContent) : '';
             const _slug = _sSpan ? _sSpan.textContent.trim() : '';
-            _openPlEntryPopup(parseInt(el.dataset.plI, 10), _slug ? (_fullTitle + ' \u2013 ' + _slug) : _fullTitle);
+            const key = el.querySelector('.video-status-icon').dataset.videoKey;
+            const label = _slug ? `${_fullTitle} \u2013 ${_slug}` : _fullTitle;
+            _openVideoQueue({scope: 'playlist', position: i, key, label});
           });
           spacer.appendChild(el);
         }
@@ -11223,7 +11432,14 @@ HTML = r"""<!DOCTYPE html>
         el.querySelector('.pl-row-song').textContent  = (_artist) ? (_song ? _song + ' \u00B7 ' + _artist : _artist) : _song;
         el.classList.toggle('pl-current', i === _plCurrentIndex);
         el.style.top = (i * _PL_ROW_H) + 'px';
+        const videoIcon = el.querySelector('.video-status-icon');
+        const videoKey = item?.video_key || '';
+        if (videoIcon.dataset.videoKey !== videoKey) {
+          videoIcon.dataset.videoKey = videoKey;
+          _setVideoStatusIcon(videoIcon, null);
+        }
       }
+      _scheduleVideoStatus();
     }
 
     function _metaHistoryPush(d) {

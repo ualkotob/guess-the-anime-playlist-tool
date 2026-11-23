@@ -106,11 +106,11 @@ def download_sources_key():
                      if isinstance(record, dict))
 
 
-def record_download(path, url):
+def record_download(path, url, *, source=None):
     _load_download_sources()
     with _sources_lock:
         _download_sources[_path_key(path)] = {
-            "source": source_for_url(url),
+            "source": source or source_for_url(url),
             "url": url,
             "filename": os.path.basename(urlparse(url).path),
         }
